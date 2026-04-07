@@ -1,6 +1,6 @@
 //! Shared-lock JSONL reader for `audit merge` and external tools.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
@@ -87,8 +87,7 @@ fn kind_of(payload: &Payload) -> &'static str {
 /// - [`AuditError::Locked`] when the file is held exclusively by another
 ///   process (e.g. a running server).
 pub fn open_shared(path: &Path) -> Result<File, AuditError> {
-    let file = OpenOptions::new()
-        .read(true)
+    let file = crate::fs_ext::reader_open_options()
         .open(path)
         .map_err(|source| AuditError::Open {
             path: path.to_path_buf(),

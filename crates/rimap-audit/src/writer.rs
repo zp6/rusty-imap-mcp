@@ -11,7 +11,7 @@
 //!   record. `fsync` is only issued on `process_*` / `auth` records
 //!   (Task 16 wires that).
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -65,15 +65,15 @@ impl AuditWriter {
             })?;
             set_parent_mode_0700(parent);
         }
-        let file = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create(true)
+        let file = crate::fs_ext::writer_open_options()
             .open(&opts.path)
             .map_err(|source| AuditError::Open {
                 path: opts.path.clone(),
                 source,
             })?;
+        // Defense in depth: re-assert mode in case the file existed pre-open
+        // with wider perms. When the file is newly created, `writer_open_options`
+        // already sets 0600 atomically; this is a no-op in that case.
         set_file_mode_0600(&file);
 
         match FileExt::try_lock_exclusive(&file) {

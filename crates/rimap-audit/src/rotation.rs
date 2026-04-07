@@ -1,6 +1,6 @@
 //! Rotation-under-lock logic. See design spec §10 "File handling & locking".
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
@@ -46,10 +46,7 @@ pub fn rotate_file(active: &Path) -> Result<(BufWriter<File>, u64), AuditError> 
         reason: format!("rename to {}: {source}", dst.display()),
     })?;
 
-    let new_file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
+    let new_file = crate::fs_ext::writer_open_options()
         .open(active)
         .map_err(|source| AuditError::Rotate {
             path: active.to_path_buf(),

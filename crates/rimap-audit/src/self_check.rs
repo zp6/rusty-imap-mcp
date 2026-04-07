@@ -63,11 +63,13 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
         return Ok(TrailingState::default());
     }
 
-    let file = File::open(path).map_err(|source| AuditError::Read {
-        path: path.to_path_buf(),
-        line: None,
-        source,
-    })?;
+    let file = crate::fs_ext::reader_open_options()
+        .open(path)
+        .map_err(|source| AuditError::Read {
+            path: path.to_path_buf(),
+            line: None,
+            source,
+        })?;
     let last_line = read_last_complete_line(&file).map_err(|source| AuditError::Read {
         path: path.to_path_buf(),
         line: None,
