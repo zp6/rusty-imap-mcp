@@ -59,17 +59,30 @@ impl fmt::Display for ProcessId {
 
 /// Millisecond-precision UTC timestamp, serialized as RFC 3339.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Timestamp(pub OffsetDateTime);
+pub struct Timestamp(OffsetDateTime);
 
 impl Timestamp {
     /// Current wall-clock time in UTC, truncated to millisecond precision.
     #[must_use]
     pub fn now() -> Self {
-        let dt = OffsetDateTime::now_utc();
-        // Truncate to milliseconds so that the in-memory value matches the
-        // serialized (RFC 3339 ms-precision) value and round-trips cleanly.
+        Self::from_offset(OffsetDateTime::now_utc())
+    }
+
+    /// Construct from an [`OffsetDateTime`], truncating sub-millisecond
+    /// precision so that the value round-trips cleanly through serde.
+    #[must_use]
+    pub fn from_offset(dt: OffsetDateTime) -> Self {
         let ms = dt.nanosecond() / 1_000_000 * 1_000_000;
-        Self(dt.replace_nanosecond(ms).unwrap_or(dt))
+        let Ok(truncated) = dt.replace_nanosecond(ms) else {
+            unreachable!("ms truncation produces a valid nanosecond value (0..=999_000_000)")
+        };
+        Self(truncated)
+    }
+
+    /// Return the underlying [`OffsetDateTime`] (already millisecond-truncated).
+    #[must_use]
+    pub fn offset(self) -> OffsetDateTime {
+        self.0
     }
 
     /// Format as RFC 3339 with millisecond precision, always ending in `Z`.
@@ -77,11 +90,7 @@ impl Timestamp {
     /// in practice, cannot happen for a well-formed `OffsetDateTime`).
     #[must_use]
     pub fn to_rfc3339_millis(self) -> Option<String> {
-        let truncated = self
-            .0
-            .replace_nanosecond((self.0.nanosecond() / 1_000_000) * 1_000_000)
-            .ok()?;
-        truncated.format(&Rfc3339).ok()
+        self.0.format(&Rfc3339).ok()
     }
 }
 
@@ -98,7 +107,7 @@ impl<'de> Deserialize<'de> for Timestamp {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let s = <&str as Deserialize>::deserialize(de)?;
         let dt = OffsetDateTime::parse(s, &Rfc3339).map_err(serde::de::Error::custom)?;
-        Ok(Self(dt))
+        Ok(Self::from_offset(dt))
     }
 }
 
@@ -142,15 +151,17 @@ mod tests {
 
     #[test]
     fn timestamp_serializes_as_rfc3339_millis() {
-        let ts = Timestamp::now();
+        // Use a fixed timestamp with a non-zero millisecond component so the
+        // serialized form is deterministic (no dependence on wall-clock).
+        let dt = time::OffsetDateTime::from_unix_timestamp(1_700_000_000)
+            .unwrap()
+            .replace_nanosecond(234_000_000)
+            .unwrap();
+        let ts = Timestamp::from_offset(dt);
         let json = serde_json::to_string(&ts).unwrap();
-        // e.g. "\"2026-04-07T14:22:01.234Z\""
         assert!(json.starts_with('"'));
         assert!(json.ends_with("Z\""));
-        assert!(
-            json.contains('.'),
-            "expected milliseconds in serialized form, got {json}",
-        );
+        assert!(json.contains(".234"), "expected .234 ms suffix, got {json}",);
     }
 
     #[test]
@@ -158,8 +169,20 @@ mod tests {
         let ts = Timestamp::now();
         let json = serde_json::to_string(&ts).unwrap();
         let back: Timestamp = serde_json::from_str(&json).unwrap();
-        // Milliseconds only — the nanosecond tail is discarded on the way out.
-        assert_eq!(back.0.unix_timestamp(), ts.0.unix_timestamp());
-        assert_eq!(back.0.millisecond(), ts.0.millisecond());
+        assert_eq!(back, ts);
+    }
+
+    #[test]
+    fn timestamp_deserialize_rejects_malformed_input() {
+        let result: Result<Timestamp, _> = serde_json::from_str("\"not-a-date\"");
+        assert!(
+            result.is_err(),
+            "expected parse error for malformed RFC 3339"
+        );
+        let result: Result<Timestamp, _> = serde_json::from_str("\"2026-04-07\"");
+        assert!(
+            result.is_err(),
+            "date without time component should not parse"
+        );
     }
 }

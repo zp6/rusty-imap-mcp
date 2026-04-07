@@ -93,9 +93,16 @@ impl AuditError {
 
 impl From<AuditError> for RimapError {
     fn from(err: AuditError) -> Self {
-        match err.code() {
-            ErrorCode::Config => Self::Config(err.to_string()),
-            _ => Self::Internal(err.to_string()),
+        let message = err.to_string();
+        match err {
+            AuditError::Open { .. } | AuditError::ParentDir { .. } | AuditError::Locked { .. } => {
+                Self::Config(message)
+            }
+            AuditError::Serialize(_)
+            | AuditError::Write { .. }
+            | AuditError::Fsync { .. }
+            | AuditError::Rotate { .. }
+            | AuditError::Read { .. } => Self::Internal(message),
         }
     }
 }
