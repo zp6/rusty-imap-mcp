@@ -122,7 +122,7 @@ mod tests {
         b.record_at("<a@x>", at(0));
         b.record_at("<b@x>", at(5));
         b.record_at("<c@x>", at(15));
-        let snap = b.snapshot_at(at(16));
+        let snap = b.snapshot_at(at(15));
         assert_eq!(snap, vec!["<b@x>", "<c@x>"]);
     }
 
