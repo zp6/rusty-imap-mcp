@@ -57,6 +57,7 @@ assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.14"
 proptest = "1.6"
+temp-env = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
