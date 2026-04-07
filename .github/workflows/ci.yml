@@ -39,6 +39,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
         with:
           toolchain: 1.94.0
@@ -53,6 +55,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
         with:
           toolchain: 1.94.0
@@ -69,6 +73,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.85.1) # zizmor: ignore[superfluous-actions]
         with:
           toolchain: 1.85.1
@@ -118,6 +124,8 @@ jobs:
           persist-credentials: false
           # Shallow clones disable blame information needed by SonarCloud.
           fetch-depth: 0
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
         with:
           toolchain: 1.94.0
