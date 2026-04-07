@@ -2,6 +2,7 @@
 
 #![deny(missing_docs)]
 
+mod audit_cmd;
 mod cli;
 mod dry_run;
 mod logging;
@@ -15,7 +16,7 @@ use rimap_config::credential::KeyringStore;
 use rimap_config::loader::resolve_config_path;
 use rimap_config::login::{run_login, tty_prompt};
 
-use crate::cli::{Cli, Command};
+use crate::cli::{AuditAction, Cli, Command};
 
 fn main() -> ExitCode {
     logging::init();
@@ -30,13 +31,35 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    if let Some(Command::Login { host, username }) = cli.command {
+    if let Some(Command::Login { host, username }) = &cli.command {
         let store = KeyringStore;
-        run_login(&store, &username, &host, tty_prompt)
+        run_login(&store, username, host, tty_prompt)
             .with_context(|| format!("storing credential for {username}@{host}"))?;
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "credential stored for {username}@{host}")?;
         return Ok(());
+    }
+
+    if let Some(Command::Audit {
+        action:
+            AuditAction::Merge {
+                path,
+                since,
+                until,
+                tool,
+                kind,
+                process,
+            },
+    }) = cli.command
+    {
+        return audit_cmd::run(
+            &path,
+            since.as_deref(),
+            until.as_deref(),
+            tool.as_deref(),
+            kind.as_deref(),
+            process.as_deref(),
+        );
     }
 
     if cli.dry_run {
