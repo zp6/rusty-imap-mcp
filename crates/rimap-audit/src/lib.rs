@@ -5,6 +5,7 @@
 pub mod error;
 pub mod ids;
 pub mod provenance;
+pub mod reader;
 pub mod record;
 pub mod redact;
 pub mod rotation;
@@ -14,6 +15,7 @@ pub mod writer;
 pub use crate::error::AuditError;
 pub use crate::ids::{ProcessId, Seq, Timestamp};
 pub use crate::provenance::ProvenanceBuffer;
+pub use crate::reader::{Filter, open_shared, stream_records};
 pub use crate::record::{
     AuditRecord, Auth, AuthResult, ConfigEvent, Payload, ProcessEnd, ProcessEndReason,
     ProcessStart, Provenance, ResultSummary, ToolEnd, ToolStart, ToolStatus,
