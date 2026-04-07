@@ -35,9 +35,25 @@ confidence-threshold = 0.93
 multiple-versions = "deny"
 wildcards = "deny"
 highlight = "all"
-# Documented exceptions go here. Must stay empty until proven necessary.
-skip = []
-skip-tree = []
+# Documented exceptions. Each entry must justify why a workaround is preferable
+# to upgrading the offending dependency.
+skip = [
+    # `hashbrown` 0.14 is pulled in by `dashmap` (transitive of `governor`),
+    # while 0.16 comes in via `indexmap` (transitive of `toml`). Both are
+    # stable upstream choices we cannot influence without forking.
+    { name = "hashbrown", version = "0.14" },
+]
+# Multiple `windows-sys` major lines coexist because each transitive
+# consumer (`directories`, `keyring`/`dbus-secret-service`, `rpassword`,
+# `clap`/`anstream`, `tempfile`/`rustix`) pins to a different release of the
+# Windows ABI shim. Skipping the older subtrees keeps Windows targets in
+# cargo-deny scope without forcing a coordinated upgrade across unrelated
+# ecosystems. The newest version (0.61) remains the canonical one.
+skip-tree = [
+    { name = "windows-sys", version = "0.48" },
+    { name = "windows-sys", version = "0.52" },
+    { name = "windows-sys", version = "0.59" },
+]
 
 [sources]
 unknown-registry = "deny"

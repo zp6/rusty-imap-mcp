@@ -12,3 +12,15 @@ description = "Configuration loading, validation, and credential resolution for 
 workspace = true
 
 [dependencies]
+rimap-core = { path = "../rimap-core", version = "0.0.0" }
+thiserror = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+directories = { workspace = true }
+keyring = { workspace = true }
+rpassword = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+temp-env = { workspace = true }

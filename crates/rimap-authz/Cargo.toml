@@ -12,3 +12,15 @@ description = "Posture-based authorization, rate limiting, and circuit breaker f
 workspace = true
 
 [dependencies]
+rimap-core = { path = "../rimap-core", version = "0.0.0" }
+rimap-config = { path = "../rimap-config", version = "0.0.0" }
+thiserror = { workspace = true }
+governor = { workspace = true }
+nonzero_ext = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["test-util", "macros", "time"] }

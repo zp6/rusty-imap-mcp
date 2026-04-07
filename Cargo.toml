@@ -21,9 +21,43 @@ readme = "README.md"
 
 # Dependency versions are declared once here and inherited by member crates via
 # `foo = { workspace = true }`. No member crate may declare a version directly.
-# Sprint 0 intentionally declares zero runtime dependencies — features land in
-# later sprints.
 [workspace.dependencies]
+# Error handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Serde / config
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Paths
+directories = "5.0"
+
+# Credentials
+keyring = { version = "3.6", features = ["apple-native", "linux-native-sync-persistent"] }
+rpassword = "7.3"
+
+# Authorization primitives
+governor = "0.7"
+nonzero_ext = "0.3"
+parking_lot = "0.12"
+
+# Async runtime
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Dev dependencies shared across crates
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.14"
+proptest = "1.6"
+temp-env = "0.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
