@@ -16,9 +16,9 @@ name = "rusty-imap-mcp"
 path = "src/main.rs"
 
 [dependencies]
-rimap-core = { path = "../rimap-core" }
-rimap-config = { path = "../rimap-config" }
-rimap-authz = { path = "../rimap-authz" }
+rimap-core = { path = "../rimap-core", version = "0.0.0" }
+rimap-config = { path = "../rimap-config", version = "0.0.0" }
+rimap-authz = { path = "../rimap-authz", version = "0.0.0" }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }
