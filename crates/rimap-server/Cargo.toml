@@ -1,0 +1,18 @@
+[package]
+name = "rimap-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Rusty IMAP MCP server: security-first MCP server for IMAP email access."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "rusty-imap-mcp"
+path = "src/main.rs"
+
+[dependencies]

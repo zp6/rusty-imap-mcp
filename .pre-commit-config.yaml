@@ -1,0 +1,105 @@
+# prek (pre-commit-in-Rust) configuration for rusty-imap-mcp.
+#
+# Fast blocking checks run on every commit; slower checks run on push.
+# Hook revs are cooldown-managed via `prek auto-update --cooldown-days 7`.
+
+default_install_hook_types: [pre-commit, pre-push]
+fail_fast: false
+
+repos:
+  # Generic whitespace and basic hygiene.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+
+  # Rust formatting and linting (pre-commit stage).
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --all-targets --locked -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: branch-name
+        name: refuse commits on main/master
+        entry: scripts/check-branch-name.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: forbidden-macros
+        name: forbid println!/dbg!/todo! in non-test Rust source
+        entry: scripts/check-forbidden-macros.sh
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # Shell script hygiene.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        files: \.sh$
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-2
+    hooks:
+      - id: shfmt
+        args: ["-i", "4", "-d"]
+
+  # GitHub Actions lint + security audit (only when touched).
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.7
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
+  - repo: https://github.com/woodruffw/zizmor-pre-commit
+    rev: v1.5.2
+    hooks:
+      - id: zizmor
+        files: ^\.github/workflows/.*\.ya?ml$
+
+  # Typo checker.
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.29.4
+    hooks:
+      - id: typos
+
+  # Pre-push stage: slower tests and audits.
+  - repo: local
+    hooks:
+      - id: cargo-nextest
+        name: cargo nextest run --workspace
+        entry: cargo nextest run --workspace --locked --no-tests=pass
+        language: system
+        types: [rust]
+        pass_filenames: false
+        stages: [pre-push]
+
+      - id: cargo-deny
+        name: cargo deny check advisories bans
+        entry: cargo deny check advisories bans
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

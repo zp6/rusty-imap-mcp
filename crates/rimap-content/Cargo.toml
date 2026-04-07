@@ -1,0 +1,14 @@
+[package]
+name = "rimap-content"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "MIME parsing, Unicode-safe sanitization, and look-alike detection for rusty-imap-mcp."
+
+[lints]
+workspace = true
+
+[dependencies]
