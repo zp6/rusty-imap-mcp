@@ -1,0 +1,7 @@
+# Pins the *development* toolchain. MSRV is a separate concern enforced by CI.
+# Developers working on this repo will automatically get this toolchain via
+# rustup when they cd into the directory.
+[toolchain]
+channel = "1.94.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
