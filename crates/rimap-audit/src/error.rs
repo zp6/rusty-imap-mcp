@@ -66,14 +66,26 @@ pub enum AuditError {
         reason: String,
     },
     /// Reading the audit file for self-check or `audit merge` failed.
-    #[error("failed to read audit file `{path}`: {source}")]
+    #[error("failed to read audit file `{path}`{}: {source}", Self::fmt_line(*line))]
     Read {
         /// The audit file path.
         path: PathBuf,
+        /// Line number (1-based) when the error originated from JSON parsing
+        /// a specific line. `None` for whole-file I/O errors.
+        line: Option<usize>,
         /// Underlying I/O error.
         #[source]
         source: std::io::Error,
     },
+}
+
+impl AuditError {
+    fn fmt_line(line: Option<usize>) -> String {
+        match line {
+            Some(n) => format!(" (line {n})"),
+            None => String::new(),
+        }
+    }
 }
 
 impl AuditError {

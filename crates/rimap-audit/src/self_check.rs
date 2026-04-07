@@ -54,6 +54,7 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
         Err(source) => {
             return Err(AuditError::Read {
                 path: path.to_path_buf(),
+                line: None,
                 source,
             });
         }
@@ -64,10 +65,12 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
 
     let file = File::open(path).map_err(|source| AuditError::Read {
         path: path.to_path_buf(),
+        line: None,
         source,
     })?;
     let last_line = read_last_complete_line(&file).map_err(|source| AuditError::Read {
         path: path.to_path_buf(),
+        line: None,
         source,
     })?;
     let Some(last_line) = last_line else {
@@ -98,6 +101,7 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
 pub fn current_inode(path: &Path) -> Result<u64, AuditError> {
     let meta = std::fs::metadata(path).map_err(|source| AuditError::Read {
         path: path.to_path_buf(),
+        line: None,
         source,
     })?;
     Ok(inode_of(&meta))
