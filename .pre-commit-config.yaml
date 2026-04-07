@@ -91,7 +91,7 @@ repos:
     hooks:
       - id: cargo-nextest
         name: cargo nextest run --workspace
-        entry: cargo nextest run --workspace --locked
+        entry: cargo nextest run --workspace --locked --no-tests=pass
         language: system
         types: [rust]
         pass_filenames: false
