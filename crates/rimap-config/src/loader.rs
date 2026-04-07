@@ -31,10 +31,10 @@ pub fn resolve_config_path(explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(p) = explicit {
         return Some(p.to_path_buf());
     }
-    if let Ok(v) = std::env::var(CONFIG_ENV_VAR) {
-        if !v.is_empty() {
-            return Some(PathBuf::from(v));
-        }
+    if let Ok(v) = std::env::var(CONFIG_ENV_VAR)
+        && !v.is_empty()
+    {
+        return Some(PathBuf::from(v));
     }
     ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
         .map(|dirs| dirs.config_dir().join("config.toml"))

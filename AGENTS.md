@@ -42,7 +42,7 @@ just fmt             # format the workspace in place
 just fmt-check       # verify formatting without modifying
 just lint            # cargo clippy with -D warnings
 just test            # cargo nextest run --workspace
-just test-msrv       # same as `test` but on the MSRV toolchain (1.85.1)
+just test-msrv       # same as `test` but on the MSRV toolchain (1.88.0)
 just deny            # cargo deny check (advisories, licenses, bans, sources)
 just ci              # full local-CI equivalent — run this before pushing
 just hooks           # re-run prek on all files
@@ -57,7 +57,7 @@ there, not in ad-hoc scripts.
 
 - **Dev toolchain:** Rust 1.94.0, pinned in `rust-toolchain.toml`. Rustup
   auto-installs on `cd`.
-- **MSRV:** Rust 1.85.1, pinned in `[workspace.package] rust-version`. Verified
+- **MSRV:** Rust 1.88.0, pinned in `[workspace.package] rust-version`. Verified
   independently in CI and locally via `just test-msrv`. Never introduce syntax
   or dependencies that break the MSRV build.
 - **Edition:** 2024 (workspace-level).
@@ -148,7 +148,7 @@ are the ones that trip people up or aren't obvious from the lint set.
   underlying issue — do not `--no-verify`. Do not `--amend` commits that have
   been pushed.
 - **PR workflow:** feature branch → push → PR against `main`. CI runs all six
-  status checks (`rustfmt`, `clippy`, `test (stable)`, `test (MSRV 1.85.1)`,
+  status checks (`rustfmt`, `clippy`, `test (stable)`, `test (MSRV 1.88.0)`,
   `cargo-deny`, `zizmor self-check`), plus `SonarQube` for code quality. `main`
   has branch protection requiring the status checks strict (branch must be up
   to date).

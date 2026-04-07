@@ -67,7 +67,7 @@ jobs:
       - run: cargo nextest run --workspace --locked --no-tests=pass
 
   msrv:
-    name: test (MSRV 1.85.1)
+    name: test (MSRV 1.88.0)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -75,9 +75,9 @@ jobs:
           persist-credentials: false
       - name: Install libdbus-1-dev
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.85.1) # zizmor: ignore[superfluous-actions]
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.88.0) # zizmor: ignore[superfluous-actions]
         with:
-          toolchain: 1.85.1
+          toolchain: 1.88.0
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           key: msrv

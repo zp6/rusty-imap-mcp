@@ -31,25 +31,25 @@ impl Filter {
     /// Whether `record` passes this filter.
     #[must_use]
     pub fn matches(&self, record: &AuditRecord) -> bool {
-        if let Some(since) = self.since {
-            if record.ts.offset() < since {
-                return false;
-            }
+        if let Some(since) = self.since
+            && record.ts.offset() < since
+        {
+            return false;
         }
-        if let Some(until) = self.until {
-            if record.ts.offset() > until {
-                return false;
-            }
+        if let Some(until) = self.until
+            && record.ts.offset() > until
+        {
+            return false;
         }
-        if let Some(ref want) = self.process {
-            if record.process_id.to_string() != *want {
-                return false;
-            }
+        if let Some(ref want) = self.process
+            && record.process_id.to_string() != *want
+        {
+            return false;
         }
-        if let Some(ref want) = self.kind {
-            if kind_of(&record.payload) != want {
-                return false;
-            }
+        if let Some(ref want) = self.kind
+            && kind_of(&record.payload) != want
+        {
+            return false;
         }
         if let Some(ref want) = self.tool {
             let got = match &record.payload {

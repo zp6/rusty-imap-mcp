@@ -55,14 +55,15 @@ impl AuditWriter {
     /// - [`AuditError::Open`] on I/O failure during `OpenOptions::open`.
     /// - [`AuditError::Locked`] if another process already holds the lock.
     pub fn open(opts: &AuditOptions) -> Result<Self, AuditError> {
-        if let Some(parent) = opts.path.parent() {
-            if !parent.as_os_str().is_empty() && !parent.exists() {
-                std::fs::create_dir_all(parent).map_err(|source| AuditError::ParentDir {
-                    path: opts.path.clone(),
-                    source,
-                })?;
-                set_parent_mode_0700(parent);
-            }
+        if let Some(parent) = opts.path.parent()
+            && !parent.as_os_str().is_empty()
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(|source| AuditError::ParentDir {
+                path: opts.path.clone(),
+                source,
+            })?;
+            set_parent_mode_0700(parent);
         }
         let file = OpenOptions::new()
             .read(true)
