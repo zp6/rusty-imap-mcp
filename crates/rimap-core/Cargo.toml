@@ -12,3 +12,5 @@ description = "Shared core types for rusty-imap-mcp: Message, Folder, Posture, a
 workspace = true
 
 [dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }

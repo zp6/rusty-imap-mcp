@@ -1,5 +1,8 @@
-//! Shared core types for rusty-imap-mcp: Message, Folder, Posture, audit records.
-//!
-//! This crate is a placeholder during Sprint 0. Real functionality lands in later sprints.
+//! Shared core types for rusty-imap-mcp: errors, postures, tool names, audit
+//! record skeleton.
 
 #![deny(missing_docs)]
+
+pub mod error;
+
+pub use crate::error::{ErrorCode, RimapError};
