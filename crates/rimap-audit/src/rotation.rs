@@ -13,6 +13,10 @@ use crate::error::AuditError;
 /// Example: `audit.jsonl.2026-04-07T14-22-01.000Z`.
 #[must_use]
 pub fn rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
+    // Millisecond-precision stamp. Two rotations within the same millisecond
+    // would clobber each other, but rotation is serialized by the writer's
+    // mutex + the active file's exclusive flock, so two rotations can only
+    // collide if rotate_bytes is pathologically small.
     let stamp = format!(
         "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}.{:03}Z",
         now.year(),
@@ -52,6 +56,14 @@ pub fn rotate_file(active: &Path) -> Result<(BufWriter<File>, u64), AuditError> 
             reason: format!("open fresh file: {source}"),
         })?;
 
+    crate::writer::set_file_mode_0600(&new_file);
+
+    // Race window: between `open` and `try_lock_exclusive` a concurrent
+    // AuditWriter::open on the same path could grab the fresh inode's lock
+    // first, in which case our try_lock_exclusive returns Ok(false) and we
+    // surface AuditError::Rotate. This is the documented failure mode and is
+    // expected to be rare (only relevant if a supervisor restarts the server
+    // mid-rotation).
     match FileExt::try_lock_exclusive(&new_file) {
         Ok(true) => {}
         Ok(false) => {

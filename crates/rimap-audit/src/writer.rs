@@ -128,21 +128,6 @@ impl AuditWriter {
     /// - [`AuditError::Write`] on I/O failure during `write_all` / `flush`.
     /// - [`AuditError::Fsync`] on `fsync` failure.
     pub fn write_record(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
-        use std::io::Write;
-
-        if self.rotate_bytes > 0 {
-            let should_rotate = {
-                let guard = self.inner.lock().map_err(|_| AuditError::Write {
-                    path: self.path.clone(),
-                    source: std::io::Error::other("audit mutex poisoned"),
-                })?;
-                guard.bytes_written >= self.rotate_bytes
-            };
-            if should_rotate {
-                self.rotate()?;
-            }
-        }
-
         let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
         bytes.push(b'\n');
 
@@ -151,20 +136,17 @@ impl AuditWriter {
             source: std::io::Error::other("audit mutex poisoned"),
         })?;
 
-        guard
-            .buf
-            .write_all(&bytes)
-            .map_err(|source| AuditError::Write {
-                path: self.path.clone(),
-                source,
-            })?;
-        guard.buf.flush().map_err(|source| AuditError::Write {
-            path: self.path.clone(),
-            source,
-        })?;
-        let written =
-            u64::try_from(bytes.len()).unwrap_or_else(|_| unreachable!("bytes.len() fits in u64"));
-        guard.bytes_written = guard.bytes_written.saturating_add(written);
+        // Rotation check happens inside the same critical section as the write.
+        // This prevents two clones of AuditWriter from both observing "needs
+        // rotation" and racing on the rename.
+        if self.rotate_bytes > 0 && guard.bytes_written >= self.rotate_bytes {
+            let (new_buf, new_len) = crate::rotation::rotate_file(&self.path)?;
+            guard.buf = new_buf;
+            guard.bytes_written = new_len;
+            tracing::info!(path = %self.path.display(), "audit file rotated");
+        }
+
+        do_write_locked(&mut guard, &bytes, &self.path)?;
 
         if needs_fsync(&record.payload) {
             guard
@@ -209,24 +191,27 @@ impl AuditWriter {
             })?;
         Ok(meta.len())
     }
+}
 
-    /// Rotate the active file: rename it to a timestamped sibling, open a
-    /// fresh file at the original path, lock it, and swap it into the
-    /// `Inner`. The old fd is dropped at the end of this function, which
-    /// releases its lock implicitly.
-    fn rotate(&self) -> Result<(), AuditError> {
-        let (new_buf, new_len) = crate::rotation::rotate_file(&self.path)?;
-        let mut guard = self.inner.lock().map_err(|_| AuditError::Rotate {
-            path: self.path.clone(),
-            reason: "audit mutex poisoned during rotate".to_string(),
+/// Write `bytes` to `guard.buf`, flush, and update `bytes_written`.
+fn do_write_locked(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), AuditError> {
+    use std::io::Write;
+
+    guard
+        .buf
+        .write_all(bytes)
+        .map_err(|source| AuditError::Write {
+            path: path.to_path_buf(),
+            source,
         })?;
-        // Swap the new buffered writer in; the old one is dropped at scope
-        // exit, which closes the old fd and releases its flock.
-        guard.buf = new_buf;
-        guard.bytes_written = new_len;
-        tracing::info!(path = %self.path.display(), "audit file rotated");
-        Ok(())
-    }
+    guard.buf.flush().map_err(|source| AuditError::Write {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let written =
+        u64::try_from(bytes.len()).unwrap_or_else(|_| unreachable!("bytes.len() fits in u64"));
+    guard.bytes_written = guard.bytes_written.saturating_add(written);
+    Ok(())
 }
 
 fn needs_fsync(payload: &crate::record::Payload) -> bool {
@@ -241,17 +226,19 @@ fn needs_fsync(payload: &crate::record::Payload) -> bool {
 }
 
 #[cfg(unix)]
-fn set_file_mode_0600(file: &File) {
+pub(crate) fn set_file_mode_0600(file: &File) {
     use std::os::unix::fs::PermissionsExt;
     if let Ok(meta) = file.metadata() {
         let mut perms = meta.permissions();
         perms.set_mode(0o600);
-        let _ = file.set_permissions(perms);
+        if let Err(err) = file.set_permissions(perms) {
+            tracing::warn!(error = %err, "failed to set audit file mode 0600");
+        }
     }
 }
 
 #[cfg(not(unix))]
-fn set_file_mode_0600(_file: &File) {}
+pub(crate) fn set_file_mode_0600(_file: &File) {}
 
 #[cfg(unix)]
 fn set_parent_mode_0700(parent: &Path) {
@@ -259,7 +246,9 @@ fn set_parent_mode_0700(parent: &Path) {
     if let Ok(meta) = std::fs::metadata(parent) {
         let mut perms = meta.permissions();
         perms.set_mode(0o700);
-        let _ = std::fs::set_permissions(parent, perms);
+        if let Err(err) = std::fs::set_permissions(parent, perms) {
+            tracing::warn!(error = %err, "failed to set audit parent dir mode 0700");
+        }
     }
 }
 
@@ -458,6 +447,12 @@ mod tests {
             .filter_map(|v| v.get("seq").and_then(serde_json::Value::as_u64))
             .collect();
         assert_eq!(seqs, (1_u64..=5).collect::<std::collections::BTreeSet<_>>(),);
+        assert_eq!(
+            seqs.len(),
+            5,
+            "expected exactly 5 distinct seqs across all files"
+        );
+        assert!(path.exists(), "active file still exists after rotation");
     }
 
     #[test]
