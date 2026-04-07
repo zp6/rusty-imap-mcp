@@ -60,7 +60,7 @@ jobs:
       - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace --locked
+      - run: cargo nextest run --workspace --locked --no-tests=pass
 
   msrv:
     name: test (MSRV 1.85.1)
@@ -79,7 +79,7 @@ jobs:
       - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
         with:
           tool: cargo-nextest
-      - run: cargo nextest run --workspace --locked
+      - run: cargo nextest run --workspace --locked --no-tests=pass
 
   deny:
     name: cargo-deny

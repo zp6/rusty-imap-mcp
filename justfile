@@ -68,12 +68,12 @@ lint:
 
 # Unit and fast tests (no Proton Bridge).
 test:
-    cargo nextest run --workspace --locked
+    cargo nextest run --workspace --locked --no-tests=pass
 
 # Verify the MSRV toolchain still builds and tests the workspace.
 test-msrv:
     cargo +{{MSRV}} check --workspace --all-targets --all-features --locked
-    cargo +{{MSRV}} nextest run --workspace --locked
+    cargo +{{MSRV}} nextest run --workspace --locked --no-tests=pass
 
 # Proton Bridge integration suite (gated on PROTON_BRIDGE_TEST=1).
 test-integration:
