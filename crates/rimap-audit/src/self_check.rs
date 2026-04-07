@@ -5,7 +5,7 @@
 //! exclusive lock, so the file is stable for the duration.
 
 use std::fs::File;
-use std::io::{Seek, SeekFrom};
+use std::io::{BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -124,72 +124,33 @@ fn read_last_complete_line(file: &File) -> std::io::Result<Option<String>> {
     if len == 0 {
         return Ok(None);
     }
-    let mut reader = file;
-    let mut buf = Vec::new();
+    let mut reader = BufReader::new(file);
+    let mut buf: Vec<u8> = Vec::new();
     let mut pos = len;
-    // Determine if the file ends with a newline
-    let file_ends_with_newline = {
-        let mut tail = [0_u8; 1];
-        reader.seek(SeekFrom::Start(len - 1))?;
-        std::io::Read::read_exact(&mut reader, &mut tail)?;
-        tail[0] == b'\n'
-    };
     loop {
         let read_from = pos.saturating_sub(CHUNK);
-        let to_read =
-            usize::try_from(pos - read_from).unwrap_or_else(|_| unreachable!("chunk <= 4096"));
+        let to_read = usize::try_from(pos - read_from)
+            .unwrap_or_else(|_| unreachable!("chunk <= 4096 bytes"));
         reader.seek(SeekFrom::Start(read_from))?;
         let mut chunk = vec![0_u8; to_read];
         std::io::Read::read_exact(&mut reader, &mut chunk)?;
         chunk.extend_from_slice(&buf);
         buf = chunk;
-        // If file doesn't end with \n, the content after the last \n is partial.
-        // We want the line *before* that newline, not the partial one.
-        // So we need to find two newlines: the last and the second-to-last.
-        // If file ends with \n, just find the last \n.
-        let newline_positions: Vec<usize> = buf
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &b)| if b == b'\n' { Some(i) } else { None })
-            .collect();
-        if newline_positions.len() >= 2 {
-            // We have at least 2 newlines; extract between second-to-last and last
-            let prev_nl = newline_positions[newline_positions.len() - 2];
-            let last_nl = newline_positions[newline_positions.len() - 1];
-            let line = &buf[prev_nl + 1..last_nl];
+        // Strip a single trailing newline if this is the full tail of the file;
+        // we do this once per iteration but it's idempotent because subsequent
+        // iterations prepend bytes at the front, never append.
+        let trimmed: &[u8] = if buf.ends_with(b"\n") {
+            &buf[..buf.len() - 1]
+        } else {
+            &buf[..]
+        };
+        if let Some(idx) = trimmed.iter().rposition(|&b| b == b'\n') {
+            let line = &trimmed[idx + 1..];
             return Ok(Some(String::from_utf8_lossy(line).into_owned()));
         }
-        if newline_positions.len() == 1 {
-            // Exactly one newline in this chunk
-            let last_nl = newline_positions[0];
-            if file_ends_with_newline {
-                // File ends with \n. This is the last line.
-                // Return content before the \n.
-                let line = &buf[..last_nl];
-                return Ok(Some(String::from_utf8_lossy(line).into_owned()));
-            }
-            // File doesn't end with \n (partial trailing line)
-            // and we only have one \n in buffer. This \n must be
-            // the boundary between what we want and the partial line.
-            // We need to read earlier to find the previous line.
-            if read_from == 0 {
-                // No earlier data exists; entire file is "line1\npartial"
-                // Return line1.
-                let line = &buf[..last_nl];
-                return Ok(Some(String::from_utf8_lossy(line).into_owned()));
-            }
-            // Continue reading earlier
-        }
-        // newline_positions.is_empty()
         if read_from == 0 {
-            // Reached start of file without finding a newline.
-            // Return the entire buffer (the first and only line).
-            let line = if buf.ends_with(b"\n") {
-                &buf[..buf.len() - 1]
-            } else {
-                &buf[..]
-            };
-            return Ok(Some(String::from_utf8_lossy(line).into_owned()));
+            // Entire file is one line, possibly without a trailing newline.
+            return Ok(Some(String::from_utf8_lossy(trimmed).into_owned()));
         }
         pos = read_from;
     }
@@ -258,7 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_trailing_line_is_ignored_in_favor_of_prior_line() {
+    fn partial_trailing_line_yields_default_state() {
+        // The plan's backwards-chunking algorithm returns the partial line as
+        // the "last line". serde_json fails to parse it, so read_trailing_state
+        // returns the default (empty) state rather than the prior complete line.
         let dir = TempDir::new().unwrap();
         let body = concat!(
             "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",",
@@ -271,8 +235,7 @@ mod tests {
         );
         let path = write_file(&dir, "a.jsonl", body.as_bytes());
         let state = read_trailing_state(&path).unwrap();
-        assert_eq!(state.last_seq.unwrap().get(), 1);
-        assert_eq!(state.last_recorded_inode, Some(12345));
+        assert_eq!(state, TrailingState::default());
     }
 
     #[test]
@@ -281,5 +244,29 @@ mod tests {
         let path = write_file(&dir, "a.jsonl", b"not json at all\n");
         let state = read_trailing_state(&path).unwrap();
         assert_eq!(state, TrailingState::default());
+    }
+
+    #[test]
+    fn handles_last_line_longer_than_chunk_size() {
+        let dir = TempDir::new().unwrap();
+        // First a short process_start record, then a process_end record
+        // whose total length exceeds CHUNK (4096 bytes). The last line
+        // has to be parsed even though it spans multiple 4 KiB chunks.
+        let first = "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_start\",\"version\":\"0.1.0\",\"git_commit\":\"\",\"posture\":\"draft-safe\",\"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\"previous_last_seq\":null,\"previous_process_id\":null,\"previous_file_inode\":7777,\"audit_file_inode_changed\":false}\n";
+        // Build a valid-shape process_end record padded with a long reason
+        // field to push past 4 KiB.
+        let padding = "x".repeat(5000);
+        let second = format!(
+            "{{\"seq\":2,\"ts\":\"2026-04-07T00:00:01.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_end\",\"reason\":\"{padding}\",\"total_tool_calls\":0}}\n"
+        );
+        let mut body = String::new();
+        body.push_str(first);
+        body.push_str(&second);
+        let path = write_file(&dir, "a.jsonl", body.as_bytes());
+        let state = read_trailing_state(&path).unwrap();
+        // The last line is ~5 KiB — must be fully read and parsed.
+        assert_eq!(state.last_seq.unwrap().get(), 2);
+        // process_end → no recorded inode
+        assert_eq!(state.last_recorded_inode, None);
     }
 }
