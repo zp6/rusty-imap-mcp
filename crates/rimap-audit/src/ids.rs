@@ -62,10 +62,14 @@ impl fmt::Display for ProcessId {
 pub struct Timestamp(pub OffsetDateTime);
 
 impl Timestamp {
-    /// Current wall-clock time in UTC.
+    /// Current wall-clock time in UTC, truncated to millisecond precision.
     #[must_use]
     pub fn now() -> Self {
-        Self(OffsetDateTime::now_utc())
+        let dt = OffsetDateTime::now_utc();
+        // Truncate to milliseconds so that the in-memory value matches the
+        // serialized (RFC 3339 ms-precision) value and round-trips cleanly.
+        let ms = dt.nanosecond() / 1_000_000 * 1_000_000;
+        Self(dt.replace_nanosecond(ms).unwrap_or(dt))
     }
 
     /// Format as RFC 3339 with millisecond precision, always ending in `Z`.
