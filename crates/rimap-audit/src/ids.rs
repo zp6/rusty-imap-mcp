@@ -72,7 +72,11 @@ impl Timestamp {
     /// precision so that the value round-trips cleanly through serde.
     #[must_use]
     pub fn from_offset(dt: OffsetDateTime) -> Self {
-        let ms = dt.nanosecond() / 1_000_000 * 1_000_000;
+        // `OffsetDateTime::nanosecond()` can return up to 1_999_999_999 during
+        // a positive leap second; clamp to the `replace_nanosecond` input range
+        // (0..=999_999_999) so the let-else never fires.
+        let clamped_ns = dt.nanosecond().min(999_999_999);
+        let ms = clamped_ns / 1_000_000 * 1_000_000;
         let Ok(truncated) = dt.replace_nanosecond(ms) else {
             unreachable!("ms truncation produces a valid nanosecond value (0..=999_000_000)")
         };
@@ -184,5 +188,20 @@ mod tests {
             result.is_err(),
             "date without time component should not parse"
         );
+    }
+
+    #[test]
+    fn from_offset_clamps_leap_second_nanosecond() {
+        // Build an OffsetDateTime with a nanosecond value at the upper edge
+        // of the normal range (999_999_999). A true leap-second OffsetDateTime
+        // with nanosecond > 999_999_999 cannot be constructed via the public
+        // `time` API, but the clamp guard protects against any future platform
+        // that returns such a value from `nanosecond()`.
+        let dt = time::OffsetDateTime::from_unix_timestamp(1_700_000_000)
+            .unwrap()
+            .replace_nanosecond(999_999_999)
+            .unwrap();
+        // This must not panic.
+        let _ts = Timestamp::from_offset(dt);
     }
 }
