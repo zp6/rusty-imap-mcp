@@ -2,16 +2,28 @@
 //! writing a new `process_start`.
 //!
 //! The check is read-only and runs *after* the writer has acquired the
-//! exclusive lock, so the file is stable for the duration.
+//! exclusive lock, so the file is stable for the duration. It streams the
+//! file forward, tolerates a partial trailing line (mid-write crash), and
+//! tracks both the last parseable record (for `seq` / `process_id`
+//! continuation) and the last `process_start` (for the tamper-inode signal).
 
-use std::fs::File;
-use std::io::{BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use serde::Deserialize;
 
 use crate::error::AuditError;
 use crate::ids::{ProcessId, Seq};
+
+/// Hard cap on the file size the self-check will read. Files larger than
+/// this cause the self-check to return default state with a `tracing::warn!`.
+/// The default `rotate_bytes` is 10 MiB so this has headroom for legitimate
+/// use; adversarial files are rejected.
+const MAX_SELF_CHECK_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Hard cap on any single line. Longer lines cause the self-check to skip
+/// the overflowing line (treated as tampered).
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 /// Result of reading the trailing state of an existing audit file. Every
 /// field is `None` when the file is empty or the last line cannot be parsed.
@@ -26,7 +38,7 @@ pub struct TrailingState {
     pub last_recorded_inode: Option<u64>,
 }
 
-/// Shape we peel off the last line. Unused fields are ignored via `#[serde]`.
+/// Shape we peel off each line. Unused fields are ignored via `#[serde]`.
 #[derive(Debug, Deserialize)]
 struct TailEnvelope {
     seq: Seq,
@@ -37,14 +49,18 @@ struct TailEnvelope {
     previous_file_inode: Option<u64>,
 }
 
-/// Scan the audit file from the end and return the parsed trailing state.
+/// Scan the audit file forward and return the parsed trailing state.
 ///
-/// A partial trailing line (from a mid-record crash) is silently skipped —
-/// the next-to-last newline is treated as "end of valid data". An empty or
-/// nonexistent file yields `Ok(TrailingState::default())`.
+/// The scan tracks the last parseable record (for `seq`/`process_id`
+/// continuation) AND the last parseable `process_start` (for the
+/// `previous_file_inode` tamper signal). A malformed trailing line (from a
+/// mid-record crash) is silently skipped. A file larger than
+/// `MAX_SELF_CHECK_BYTES` is treated as tampered and default state is
+/// returned.
 ///
 /// # Errors
-/// Any I/O error from reading the file.
+/// I/O errors from metadata or reading the file (other than oversize, which
+/// is handled internally).
 pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
@@ -62,6 +78,15 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
     if meta.len() == 0 {
         return Ok(TrailingState::default());
     }
+    if meta.len() > MAX_SELF_CHECK_BYTES {
+        tracing::warn!(
+            path = %path.display(),
+            len = meta.len(),
+            cap = MAX_SELF_CHECK_BYTES,
+            "audit file exceeds self-check size cap; treating as tampered",
+        );
+        return Ok(TrailingState::default());
+    }
 
     let file = crate::fs_ext::reader_open_options()
         .open(path)
@@ -70,33 +95,71 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
             line: None,
             source,
         })?;
-    let last_line = read_last_complete_line(&file).map_err(|source| AuditError::Read {
-        path: path.to_path_buf(),
-        line: None,
-        source,
-    })?;
-    let Some(last_line) = last_line else {
-        return Ok(TrailingState::default());
-    };
-    let Ok(envelope) = serde_json::from_str::<TailEnvelope>(&last_line) else {
-        return Ok(TrailingState::default());
-    };
-    let last_recorded_inode = if envelope.kind == "process_start" {
-        envelope.previous_file_inode
-    } else {
-        None
-    };
+
+    let mut reader = BufReader::new(file);
+    let mut last_seq: Option<Seq> = None;
+    let mut last_process_id: Option<ProcessId> = None;
+    let mut last_recorded_inode: Option<u64> = None;
+    let mut line_buf = String::new();
+
+    loop {
+        line_buf.clear();
+        let n = match reader.read_line(&mut line_buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(source) => {
+                return Err(AuditError::Read {
+                    path: path.to_path_buf(),
+                    line: None,
+                    source,
+                });
+            }
+        };
+
+        // A line without a trailing newline is a partial/truncated trailing
+        // line; skip it regardless of parseability.
+        if !line_buf.ends_with('\n') {
+            tracing::warn!(
+                path = %path.display(),
+                "self-check skipping partial trailing line",
+            );
+            break;
+        }
+
+        // Enforce the per-line cap. Lines at the cap are treated as
+        // tampered: skip and continue (rather than abort) so one bad line
+        // doesn't hide a good prior inode.
+        if n > MAX_LINE_BYTES {
+            tracing::warn!(
+                path = %path.display(),
+                bytes = n,
+                cap = MAX_LINE_BYTES,
+                "self-check skipping oversize line",
+            );
+            continue;
+        }
+
+        let trimmed = line_buf.trim_end_matches('\n').trim_end_matches('\r');
+        let Ok(envelope) = serde_json::from_str::<TailEnvelope>(trimmed) else {
+            // Malformed but newline-terminated line: skip quietly.
+            continue;
+        };
+
+        last_seq = Some(envelope.seq);
+        last_process_id = Some(envelope.process_id);
+        if envelope.kind == "process_start" {
+            last_recorded_inode = envelope.previous_file_inode;
+        }
+    }
+
     Ok(TrailingState {
-        last_seq: Some(envelope.seq),
-        last_process_id: Some(envelope.process_id),
+        last_seq,
+        last_process_id,
         last_recorded_inode,
     })
 }
 
-/// Returns the current inode of `path`. Returns `0` on non-Unix platforms
-/// (Windows inode-equivalent is best-effort and not required for the spec's
-/// tamper signal, which specifically says "if a manual `rm` occurred between
-/// runs").
+/// Returns the current inode of `path`. Returns `0` on non-Unix platforms.
 ///
 /// # Errors
 /// I/O error reading metadata.
@@ -118,65 +181,6 @@ fn inode_of(meta: &std::fs::Metadata) -> u64 {
 #[cfg(not(unix))]
 fn inode_of(_meta: &std::fs::Metadata) -> u64 {
     0
-}
-
-/// Reads the last line of a newline-terminated file by walking backwards in
-/// 4 KiB chunks until a `\n` is found. Tolerates a partial trailing line
-/// (no final `\n`) by using that partial line as the result if no earlier
-/// newline exists, otherwise returning the *previous* line.
-fn read_last_complete_line(file: &File) -> std::io::Result<Option<String>> {
-    const CHUNK: u64 = 4096;
-    let len = file.metadata()?.len();
-    if len == 0 {
-        return Ok(None);
-    }
-    let mut reader = BufReader::new(file);
-    let mut buf: Vec<u8> = Vec::new();
-    let mut pos = len;
-    loop {
-        let read_from = pos.saturating_sub(CHUNK);
-        let to_read = usize::try_from(pos - read_from)
-            .unwrap_or_else(|_| unreachable!("chunk <= 4096 bytes"));
-        reader.seek(SeekFrom::Start(read_from))?;
-        let mut chunk = vec![0_u8; to_read];
-        std::io::Read::read_exact(&mut reader, &mut chunk)?;
-        chunk.extend_from_slice(&buf);
-        buf = chunk;
-
-        // Step 1: identify the "complete" prefix — everything up to and
-        // including the last `\n` in the buffer. Anything after the last
-        // `\n` is either empty (file ended with `\n`) or a partial trailing
-        // line (mid-write crash) we will discard.
-        let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
-            // No newline found yet in the portion we've read.
-            if read_from == 0 {
-                // Entire file is one partial line. Return it as-is; the
-                // caller will try to parse it and fall back to default
-                // state if it's truncated.
-                return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
-            }
-            pos = read_from;
-            continue;
-        };
-
-        // `buf[..last_nl]` is the content that ends at a valid line boundary.
-        // The LAST COMPLETE LINE is what sits between the PRIOR `\n` and
-        // `last_nl`.
-        let complete = &buf[..last_nl];
-        if let Some(prior_nl) = complete.iter().rposition(|&b| b == b'\n') {
-            let line = &complete[prior_nl + 1..];
-            return Ok(Some(String::from_utf8_lossy(line).into_owned()));
-        }
-
-        // Only one newline in the buffer so far. The last complete line
-        // might start earlier in the file — keep reading backwards.
-        if read_from == 0 {
-            // We've read the whole file and only found one `\n`. The complete
-            // line runs from byte 0 up to `last_nl`.
-            return Ok(Some(String::from_utf8_lossy(complete).into_owned()));
-        }
-        pos = read_from;
-    }
 }
 
 #[cfg(test)]
@@ -228,8 +232,9 @@ mod tests {
         let state = read_trailing_state(&path).unwrap();
         assert_eq!(state.last_seq.unwrap().get(), 2);
         assert!(state.last_process_id.is_some());
-        // last line is process_end → no recorded inode
-        assert_eq!(state.last_recorded_inode, None);
+        // process_start inode is recorded from scanning forward even though
+        // the last record is process_end.
+        assert_eq!(state.last_recorded_inode, Some(1234));
     }
 
     #[test]
@@ -263,26 +268,48 @@ mod tests {
     }
 
     #[test]
-    fn handles_last_line_longer_than_chunk_size() {
+    fn records_most_recent_process_start_inode_after_process_end() {
+        // Scenario: process_start (inode=9999) then process_end. The
+        // tamper-inode signal should still surface 9999 because we scan
+        // for the last process_start, not just the last line.
         let dir = TempDir::new().unwrap();
-        // First a short process_start record, then a process_end record
-        // whose total length exceeds CHUNK (4096 bytes). The last line
-        // has to be parsed even though it spans multiple 4 KiB chunks.
-        let first = "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_start\",\"version\":\"0.1.0\",\"git_commit\":\"\",\"posture\":\"draft-safe\",\"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\"previous_last_seq\":null,\"previous_process_id\":null,\"previous_file_inode\":7777,\"audit_file_inode_changed\":false}\n";
-        // Build a valid-shape process_end record padded with a long reason
-        // field to push past 4 KiB.
-        let padding = "x".repeat(5000);
-        let second = format!(
-            "{{\"seq\":2,\"ts\":\"2026-04-07T00:00:01.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_end\",\"reason\":\"{padding}\",\"total_tool_calls\":0}}\n"
+        let body = concat!(
+            "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_start\",\"version\":\"0.1.0\",\"git_commit\":\"\",\"posture\":\"draft-safe\",\"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\"previous_last_seq\":null,\"previous_process_id\":null,\"previous_file_inode\":9999,\"audit_file_inode_changed\":false}\n",
+            "{\"seq\":2,\"ts\":\"2026-04-07T00:00:01.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_end\",\"reason\":\"eof\",\"total_tool_calls\":0}\n",
         );
-        let mut body = String::new();
-        body.push_str(first);
-        body.push_str(&second);
         let path = write_file(&dir, "a.jsonl", body.as_bytes());
         let state = read_trailing_state(&path).unwrap();
-        // The last line is ~5 KiB — must be fully read and parsed.
         assert_eq!(state.last_seq.unwrap().get(), 2);
-        // process_end → no recorded inode
-        assert_eq!(state.last_recorded_inode, None);
+        assert_eq!(state.last_recorded_inode, Some(9999));
+    }
+
+    #[test]
+    fn file_exceeding_size_cap_returns_default_state() {
+        // Write a file just over 32 MiB. Forward scan should refuse and
+        // return TrailingState::default() with a warn.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("big.jsonl");
+        // Cheapest way to create a 32 MiB+ file: set_len via File.
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(33 * 1024 * 1024).unwrap();
+        drop(f);
+        let state = read_trailing_state(&path).unwrap();
+        assert_eq!(state, TrailingState::default());
+    }
+
+    #[test]
+    fn oversize_line_is_skipped_but_prior_record_still_parsed() {
+        // First a valid process_start, then a 2 MiB single line, then no
+        // trailing newline. Expect the process_start's inode to survive.
+        let dir = TempDir::new().unwrap();
+        let first = "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_start\",\"version\":\"0.1.0\",\"git_commit\":\"\",\"posture\":\"draft-safe\",\"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\"previous_last_seq\":null,\"previous_process_id\":null,\"previous_file_inode\":5555,\"audit_file_inode_changed\":false}\n";
+        let oversize = "x".repeat(2 * 1024 * 1024);
+        let mut body = String::new();
+        body.push_str(first);
+        body.push_str(&oversize);
+        body.push('\n');
+        let path = write_file(&dir, "a.jsonl", body.as_bytes());
+        let state = read_trailing_state(&path).unwrap();
+        assert_eq!(state.last_recorded_inode, Some(5555));
     }
 }
