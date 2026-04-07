@@ -103,3 +103,34 @@ jobs:
         with:
           tool: zizmor
       - run: zizmor .github/workflows/
+
+  sonarqube:
+    name: SonarQube
+    # Skip on PRs from forks (they can't access the SONAR_TOKEN secret).
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-24.04
+    # SONAR_TOKEN lives in the `sonarcloud` environment for future hardening
+    # (branch restrictions, required reviewers) without changing the workflow.
+    environment: sonarcloud
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+          # Shallow clones disable blame information needed by SonarCloud.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: 1.94.0
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: sonarqube
+      - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage report
+        run: cargo llvm-cov --locked --workspace --all-features --lcov --output-path lcov.info
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@299e4b793aaa83bf2aba7c9c14bedbb485688ec4  # v7.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
