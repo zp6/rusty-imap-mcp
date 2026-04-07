@@ -110,8 +110,90 @@ pub struct Auth {
     pub error_code: Option<String>,
 }
 
-/// Payload enum discriminated by the `kind` field. Additional variants are
-/// added in subsequent tasks (`ToolStart`, `ToolEnd`, `Config`).
+/// Payload of the `tool_start` kind. Recorded before dispatch begins so a
+/// crash mid-call still leaves a breadcrumb.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolStart {
+    /// The v1 tool name as a string (matches `ToolName::as_str`).
+    pub tool: String,
+    /// Effective posture at dispatch time (after any config-override merge).
+    pub posture_effective: String,
+    /// Redacted arguments object produced by `redact::Redactor`.
+    pub arguments_redacted: serde_json::Value,
+    /// SHA-256 of the canonical JSON serialization of the *unredacted* payload,
+    /// hex-encoded. Enables integrity checks without leaking content.
+    pub arguments_hash_sha256: String,
+}
+
+/// Outcome status for a tool call. `Ok` means a structured result was
+/// returned; `Error` means dispatch failed and `error_code` is populated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    /// Tool call succeeded.
+    Ok,
+    /// Tool call failed.
+    Error,
+}
+
+/// A coarse summary of what a tool returned. Structured so reviewers can
+/// reconstruct activity without reading message bodies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ResultSummary {
+    /// RFC 822 `Message-ID` values returned to the caller.
+    #[serde(default)]
+    pub message_ids_returned: Vec<String>,
+    /// Approximate bytes returned to the caller (post-truncation).
+    #[serde(default)]
+    pub bytes_returned: u64,
+    /// Whether the server truncated the result to fit a limit.
+    #[serde(default)]
+    pub truncated: bool,
+    /// Security warning codes emitted alongside the payload (e.g.
+    /// `LOOKALIKE_SENDER_MIXED_SCRIPT`). Sprint 4 populates this.
+    #[serde(default)]
+    pub security_warnings_emitted: Vec<String>,
+}
+
+/// Snapshot of the provenance ring buffer at `tool_end` time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Provenance {
+    /// Configured window in seconds.
+    pub window_seconds: u32,
+    /// Message IDs read by this process within the window, oldest to newest.
+    pub message_ids_recently_read: Vec<String>,
+}
+
+/// Payload of the `tool_end` kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolEnd {
+    /// `seq` of the paired `tool_start` record.
+    pub start_seq: Seq,
+    /// Tool name (duplicated from `tool_start` for self-contained log lines).
+    pub tool: String,
+    /// Outcome.
+    pub status: ToolStatus,
+    /// On `status = Error`, the stable error code; `None` on success.
+    pub error_code: Option<String>,
+    /// Wall-clock duration in milliseconds.
+    pub duration_ms: u64,
+    /// Coarse result summary.
+    pub result_summary: ResultSummary,
+    /// Provenance snapshot at end-of-call time.
+    pub provenance: Provenance,
+}
+
+/// Payload of the `config` kind. Declared now so Sprint 5 can emit it; no
+/// code path writes it yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigEvent {
+    /// Path the config was loaded from.
+    pub path: PathBuf,
+    /// SHA-256 of the config file contents, hex-encoded.
+    pub hash_sha256: String,
+}
+
+/// Payload enum discriminated by the `kind` field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Payload {
@@ -121,6 +203,12 @@ pub enum Payload {
     ProcessEnd(ProcessEnd),
     /// IMAP authentication attempt.
     Auth(Auth),
+    /// A tool call has entered the dispatch chain.
+    ToolStart(ToolStart),
+    /// A tool call has exited the dispatch chain.
+    ToolEnd(ToolEnd),
+    /// Config-related event (declared for Sprint 5; not emitted in Sprint 2).
+    Config(ConfigEvent),
 }
 
 #[cfg(test)]
@@ -232,6 +320,93 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&crate::record::AuthResult::Failure).unwrap(),
             "\"failure\"",
+        );
+    }
+
+    #[test]
+    fn tool_start_round_trips_with_snake_case_kind() {
+        let rec = AuditRecord {
+            seq: Seq(10),
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ToolStart(crate::record::ToolStart {
+                tool: "fetch_message".to_string(),
+                posture_effective: "draft-safe".to_string(),
+                arguments_redacted: serde_json::json!({
+                    "folder": "INBOX",
+                    "uid": 12345,
+                    "include_html": false,
+                }),
+                arguments_hash_sha256: "de".repeat(32),
+            }),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "tool_start");
+        assert_eq!(v["tool"], "fetch_message");
+        assert_eq!(v["arguments_redacted"]["folder"], "INBOX");
+        let back: AuditRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn tool_end_round_trips_with_provenance_and_summary() {
+        let rec = AuditRecord {
+            seq: Seq(11),
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ToolEnd(crate::record::ToolEnd {
+                start_seq: Seq(10),
+                tool: "fetch_message".to_string(),
+                status: crate::record::ToolStatus::Ok,
+                error_code: None,
+                duration_ms: 47,
+                result_summary: crate::record::ResultSummary {
+                    message_ids_returned: vec!["<abc@example>".to_string()],
+                    bytes_returned: 4821,
+                    truncated: false,
+                    security_warnings_emitted: vec![],
+                },
+                provenance: crate::record::Provenance {
+                    window_seconds: 60,
+                    message_ids_recently_read: vec!["<abc@example>".to_string()],
+                },
+            }),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "tool_end");
+        assert_eq!(v["start_seq"], 10);
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["result_summary"]["bytes_returned"], 4821);
+        assert_eq!(v["provenance"]["window_seconds"], 60);
+        let back: AuditRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn config_event_serializes_as_config_kind() {
+        let rec = AuditRecord {
+            seq: Seq(3),
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::Config(crate::record::ConfigEvent {
+                path: PathBuf::from("/tmp/config.toml"),
+                hash_sha256: "aa".repeat(32),
+            }),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "config");
+        let back: AuditRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn tool_status_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&crate::record::ToolStatus::Error).unwrap(),
+            "\"error\"",
         );
     }
 }
