@@ -78,8 +78,40 @@ pub struct AuditRecord {
     pub payload: Payload,
 }
 
+/// Outcome of an IMAP authentication attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthResult {
+    /// Credential resolved and server accepted it.
+    Success,
+    /// Credential resolved but server rejected it.
+    Failure,
+}
+
+/// Payload of the `auth` kind.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Auth {
+    /// Outcome.
+    pub result: AuthResult,
+    /// IMAP host attempted.
+    pub host: String,
+    /// IMAP port attempted.
+    pub port: u16,
+    /// Username attempted.
+    pub username: String,
+    /// Observed TLS certificate fingerprint (SHA-256 hex, lowercase, no colons).
+    /// `None` if the connection never reached TLS handshake completion.
+    pub tls_fingerprint_sha256: Option<String>,
+    /// Whether the observed fingerprint matched `imap.tls_fingerprint_sha256`
+    /// from the config. `None` means the config did not pin a fingerprint.
+    pub fingerprint_match: Option<bool>,
+    /// On failure, the stable error code (`ERR_TLS`, `ERR_AUTH`, …); `None`
+    /// on success.
+    pub error_code: Option<String>,
+}
+
 /// Payload enum discriminated by the `kind` field. Additional variants are
-/// added in subsequent tasks (`Auth`, `ToolStart`, `ToolEnd`, `Config`).
+/// added in subsequent tasks (`ToolStart`, `ToolEnd`, `Config`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Payload {
@@ -87,6 +119,8 @@ pub enum Payload {
     ProcessStart(ProcessStart),
     /// Process shutdown event — best-effort.
     ProcessEnd(ProcessEnd),
+    /// IMAP authentication attempt.
+    Auth(Auth),
 }
 
 #[cfg(test)]
@@ -163,5 +197,41 @@ mod tests {
     fn process_end_reason_serializes_snake_case() {
         let json = serde_json::to_string(&ProcessEndReason::SignalTerm).unwrap();
         assert_eq!(json, "\"signal_term\"");
+    }
+
+    #[test]
+    fn auth_record_round_trips_and_uses_snake_case_kind() {
+        let rec = AuditRecord {
+            seq: Seq(2),
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::Auth(crate::record::Auth {
+                result: crate::record::AuthResult::Success,
+                host: "127.0.0.1".to_string(),
+                port: 1143,
+                username: "alice@example.test".to_string(),
+                tls_fingerprint_sha256: Some("ab".repeat(32)),
+                fingerprint_match: Some(true),
+                error_code: None,
+            }),
+        };
+        let json = serde_json::to_string(&rec).unwrap();
+        let v: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["kind"], "auth");
+        assert_eq!(v["result"], "success");
+        assert_eq!(v["host"], "127.0.0.1");
+        assert_eq!(v["port"], 1143);
+        assert_eq!(v["fingerprint_match"], true);
+        assert!(v["error_code"].is_null());
+        let back: AuditRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn auth_result_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&crate::record::AuthResult::Failure).unwrap(),
+            "\"failure\"",
+        );
     }
 }

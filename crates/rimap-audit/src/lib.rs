@@ -8,4 +8,6 @@ pub mod record;
 
 pub use crate::error::AuditError;
 pub use crate::ids::{ProcessId, Seq, Timestamp};
-pub use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason, ProcessStart};
+pub use crate::record::{
+    AuditRecord, Auth, AuthResult, Payload, ProcessEnd, ProcessEndReason, ProcessStart,
+};
