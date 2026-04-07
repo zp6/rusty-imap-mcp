@@ -13,10 +13,6 @@ use crate::error::AuditError;
 /// Example: `audit.jsonl.2026-04-07T14-22-01.000Z`.
 #[must_use]
 pub fn rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
-    // Millisecond-precision stamp. Two rotations within the same millisecond
-    // would clobber each other, but rotation is serialized by the writer's
-    // mutex + the active file's exclusive flock, so two rotations can only
-    // collide if rotate_bytes is pathologically small.
     let stamp = format!(
         "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}.{:03}Z",
         now.year(),
@@ -33,6 +29,33 @@ pub fn rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
     active.with_file_name(name)
 }
 
+/// Resolve a non-colliding rotation destination, trying the millisecond-stamped
+/// path first and appending `-1`, `-2`, … on collision. Returns the first path
+/// that does not yet exist.
+///
+/// Two rotations within the same millisecond — possible on fast hardware with
+/// a small `rotate_bytes` — would otherwise clobber each other because
+/// `std::fs::rename` overwrites the destination on Unix. The collision counter
+/// makes the rename safe regardless of timestamp resolution.
+fn unique_rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
+    let base = rotated_path(active, now);
+    if !base.exists() {
+        return base;
+    }
+    let base_name = base.file_name().unwrap_or_default().to_os_string();
+    for counter in 1_u32..=u32::MAX {
+        let mut candidate_name = base_name.clone();
+        candidate_name.push(format!("-{counter}"));
+        let candidate = base.with_file_name(candidate_name);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // u32::MAX rotations within one millisecond is implausible; fall back to
+    // the base name (overwriting) rather than panicking.
+    base
+}
+
 /// Perform the rename + new-file dance. Returns the freshly-locked `File`
 /// for the new active path (with an empty `BufWriter` wrapping it).
 ///
@@ -40,7 +63,7 @@ pub fn rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
 /// Any I/O error during `rename`, `open`, or `try_lock_exclusive` surfaces as
 /// [`AuditError::Rotate`] with a descriptive `reason`.
 pub fn rotate_file(active: &Path) -> Result<(BufWriter<File>, u64), AuditError> {
-    let dst = rotated_path(active, OffsetDateTime::now_utc());
+    let dst = unique_rotated_path(active, OffsetDateTime::now_utc());
     std::fs::rename(active, &dst).map_err(|source| AuditError::Rotate {
         path: active.to_path_buf(),
         reason: format!("rename to {}: {source}", dst.display()),
@@ -85,9 +108,10 @@ pub fn rotate_file(active: &Path) -> Result<(BufWriter<File>, u64), AuditError> 
 mod tests {
     use std::path::Path;
 
+    use tempfile::TempDir;
     use time::macros::datetime;
 
-    use crate::rotation::rotated_path;
+    use crate::rotation::{rotated_path, unique_rotated_path};
 
     #[test]
     fn rotated_path_appends_utc_stamp() {
@@ -97,6 +121,31 @@ mod tests {
         assert_eq!(
             r.file_name().unwrap().to_string_lossy(),
             "audit.jsonl.2026-04-07T14-22-01.234Z",
+        );
+    }
+
+    #[test]
+    fn unique_rotated_path_appends_counter_when_base_exists() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+        let now = datetime!(2026-04-07 14:22:01.234 UTC);
+
+        // Pre-create the base rotated path so the first call has to skip it.
+        let base = rotated_path(&active, now);
+        std::fs::write(&base, b"existing").unwrap();
+
+        let p1 = unique_rotated_path(&active, now);
+        assert_eq!(
+            p1.file_name().unwrap().to_string_lossy(),
+            "audit.jsonl.2026-04-07T14-22-01.234Z-1",
+        );
+
+        // Pre-create -1 too; next call should pick -2.
+        std::fs::write(&p1, b"existing").unwrap();
+        let p2 = unique_rotated_path(&active, now);
+        assert_eq!(
+            p2.file_name().unwrap().to_string_lossy(),
+            "audit.jsonl.2026-04-07T14-22-01.234Z-2",
         );
     }
 }
