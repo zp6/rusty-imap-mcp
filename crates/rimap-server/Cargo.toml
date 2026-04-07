@@ -19,6 +19,9 @@ path = "src/main.rs"
 rimap-core = { path = "../rimap-core", version = "0.0.0" }
 rimap-config = { path = "../rimap-config", version = "0.0.0" }
 rimap-authz = { path = "../rimap-authz", version = "0.0.0" }
+rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
+serde_json = { workspace = true }
+time = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

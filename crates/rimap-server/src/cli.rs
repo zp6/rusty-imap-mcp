@@ -6,6 +6,7 @@
 //!
 //! Subcommand:
 //!   - `login` — interactively store a credential in the keychain.
+//!   - `audit <action>` — audit log inspection utilities (see `AuditAction`).
 
 use std::path::PathBuf;
 
@@ -45,6 +46,38 @@ pub enum Command {
         /// IMAP username (e.g. `alice@example.com`).
         #[arg(long)]
         username: String,
+    },
+    /// Audit log inspection utilities.
+    Audit {
+        /// Audit subcommand.
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+}
+
+/// Actions under `rusty-imap-mcp audit <action>`.
+#[derive(Debug, Subcommand)]
+pub enum AuditAction {
+    /// Stream the active (or rotated) audit file as filtered JSONL on stdout.
+    Merge {
+        /// Path to an audit file.
+        #[arg(value_name = "PATH")]
+        path: std::path::PathBuf,
+        /// Only include records at or after this RFC 3339 timestamp.
+        #[arg(long)]
+        since: Option<String>,
+        /// Only include records at or before this RFC 3339 timestamp.
+        #[arg(long)]
+        until: Option<String>,
+        /// Only include records whose `tool` field matches this string.
+        #[arg(long)]
+        tool: Option<String>,
+        /// Only include records whose `kind` field matches this string.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only include records whose `process_id` matches this ULID.
+        #[arg(long)]
+        process: Option<String>,
     },
 }
 
@@ -93,5 +126,47 @@ mod tests {
         let cli = Cli::try_parse_from(["rusty-imap-mcp"]).unwrap();
         assert!(!cli.dry_run);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parses_audit_merge_with_all_filters() {
+        let cli = Cli::try_parse_from([
+            "rusty-imap-mcp",
+            "audit",
+            "merge",
+            "/tmp/audit.jsonl",
+            "--since",
+            "2026-04-07T00:00:00Z",
+            "--until",
+            "2026-04-08T00:00:00Z",
+            "--tool",
+            "search",
+            "--kind",
+            "tool_end",
+            "--process",
+            "01JXAAAAAAAAAAAAAAAAAAAAAA",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Audit {
+                action:
+                    crate::cli::AuditAction::Merge {
+                        path,
+                        since,
+                        until,
+                        tool,
+                        kind,
+                        process,
+                    },
+            }) => {
+                assert_eq!(path, std::path::PathBuf::from("/tmp/audit.jsonl"));
+                assert_eq!(since.as_deref(), Some("2026-04-07T00:00:00Z"));
+                assert_eq!(until.as_deref(), Some("2026-04-08T00:00:00Z"));
+                assert_eq!(tool.as_deref(), Some("search"));
+                assert_eq!(kind.as_deref(), Some("tool_end"));
+                assert_eq!(process.as_deref(), Some("01JXAAAAAAAAAAAAAAAAAAAAAA"));
+            }
+            other => panic!("expected Audit::Merge, got {other:?}"),
+        }
     }
 }

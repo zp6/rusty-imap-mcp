@@ -34,7 +34,7 @@ just setup    # install required tooling and pre-commit hooks
 just ci       # run the full local-CI equivalent
 ```
 
-Developer toolchain is pinned in `rust-toolchain.toml`. MSRV is 1.85.1, verified
+Developer toolchain is pinned in `rust-toolchain.toml`. MSRV is 1.88.0, verified
 independently in CI.
 
 ## License

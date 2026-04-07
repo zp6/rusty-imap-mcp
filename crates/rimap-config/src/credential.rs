@@ -48,15 +48,15 @@ pub fn resolve_credential<S: CredentialStore>(
     host: &str,
 ) -> Result<String, ConfigError> {
     let account = account_key(username, host);
-    if let Some(p) = store.get_password(&account)? {
-        if !p.is_empty() {
-            return Ok(p);
-        }
+    if let Some(p) = store.get_password(&account)?
+        && !p.is_empty()
+    {
+        return Ok(p);
     }
-    if let Ok(env) = std::env::var(PASSWORD_ENV_VAR) {
-        if !env.is_empty() {
-            return Ok(env);
-        }
+    if let Ok(env) = std::env::var(PASSWORD_ENV_VAR)
+        && !env.is_empty()
+    {
+        return Ok(env);
     }
     Err(ConfigError::NoCredential {
         account,

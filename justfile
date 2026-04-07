@@ -5,7 +5,7 @@
 
 set shell := ["bash", "-uc"]
 
-MSRV := "1.85.1"
+MSRV := "1.88.0"
 
 # Default: print available targets.
 default:
