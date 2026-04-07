@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rimap-core",
+    "crates/rimap-config",
+    "crates/rimap-imap",
+    "crates/rimap-content",
+    "crates/rimap-audit",
+    "crates/rimap-authz",
+    "crates/rimap-server",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/randomparity/rusty-imap-mcp"
+authors = ["David Christensen"]
+readme = "README.md"
+
+# Dependency versions are declared once here and inherited by member crates via
+# `foo = { workspace = true }`. No member crate may declare a version directly.
+# Sprint 0 intentionally declares zero runtime dependencies — features land in
+# later sprints.
+[workspace.dependencies]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Panic prevention
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+panic_in_result_fn = "deny"
+unimplemented = "deny"
+# No cheating
+allow_attributes = "deny"
+# Code hygiene
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+# Safety
+await_holding_lock = "deny"
+large_futures = "deny"
+exit = "deny"
+mem_forget = "deny"
+# Pedantic relaxations (too noisy in practice)
+module_name_repetitions = "allow"
+similar_names = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
