@@ -2,11 +2,16 @@
 
 #![deny(missing_docs)]
 
+pub mod credential;
 pub mod error;
 pub mod loader;
 pub mod model;
 pub mod validate;
 
+pub use crate::credential::{
+    CredentialStore, KEYCHAIN_SERVICE, KeyringStore, PASSWORD_ENV_VAR, account_key,
+    resolve_credential,
+};
 pub use crate::error::ConfigError;
 pub use crate::loader::{CONFIG_ENV_VAR, load_from_path, resolve_config_path};
 pub use crate::model::{
