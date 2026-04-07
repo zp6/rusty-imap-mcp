@@ -13,4 +13,8 @@ rimap = "rimap"
 extend-exclude = [
     "target/",
     "Cargo.lock",
+    # Plan documents quote example source and deliberately-malformed test
+    # fixtures (e.g. truncated JSON strings). Both produce false positives
+    # that the typos auto-fixer turns into harmful edits.
+    "docs/superpowers/plans/",
 ]
