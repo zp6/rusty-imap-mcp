@@ -3,5 +3,7 @@
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod matrix;
 
 pub use crate::error::AuthzError;
+pub use crate::matrix::{EffectiveMatrix, base_allows};
