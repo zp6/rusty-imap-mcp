@@ -7,6 +7,7 @@ pub mod ids;
 pub mod provenance;
 pub mod record;
 pub mod redact;
+pub mod rotation;
 pub mod self_check;
 pub mod writer;
 

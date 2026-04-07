@@ -130,6 +130,19 @@ impl AuditWriter {
     pub fn write_record(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
         use std::io::Write;
 
+        if self.rotate_bytes > 0 {
+            let should_rotate = {
+                let guard = self.inner.lock().map_err(|_| AuditError::Write {
+                    path: self.path.clone(),
+                    source: std::io::Error::other("audit mutex poisoned"),
+                })?;
+                guard.bytes_written >= self.rotate_bytes
+            };
+            if should_rotate {
+                self.rotate()?;
+            }
+        }
+
         let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
         bytes.push(b'\n');
 
@@ -195,6 +208,24 @@ impl AuditWriter {
                 source,
             })?;
         Ok(meta.len())
+    }
+
+    /// Rotate the active file: rename it to a timestamped sibling, open a
+    /// fresh file at the original path, lock it, and swap it into the
+    /// `Inner`. The old fd is dropped at the end of this function, which
+    /// releases its lock implicitly.
+    fn rotate(&self) -> Result<(), AuditError> {
+        let (new_buf, new_len) = crate::rotation::rotate_file(&self.path)?;
+        let mut guard = self.inner.lock().map_err(|_| AuditError::Rotate {
+            path: self.path.clone(),
+            reason: "audit mutex poisoned during rotate".to_string(),
+        })?;
+        // Swap the new buffered writer in; the old one is dropped at scope
+        // exit, which closes the old fd and releases its flock.
+        guard.buf = new_buf;
+        guard.bytes_written = new_len;
+        tracing::info!(path = %self.path.display(), "audit file rotated");
+        Ok(())
     }
 }
 
@@ -367,5 +398,102 @@ mod tests {
             writer.write_record(&rec).unwrap();
         }
         assert_eq!(writer.bytes_written(), writer.on_disk_len().unwrap());
+    }
+
+    #[test]
+    fn rotation_creates_new_file_and_preserves_contents() {
+        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 200,
+        })
+        .unwrap();
+
+        for seq in 1_u64..=5 {
+            let rec = AuditRecord {
+                seq: Seq(seq),
+                ts: Timestamp::now(),
+                process_id: ProcessId::new_now(),
+                payload: Payload::ProcessEnd(ProcessEnd {
+                    reason: ProcessEndReason::Eof,
+                    total_tool_calls: seq,
+                }),
+            };
+            writer.write_record(&rec).unwrap();
+        }
+
+        let mut rotated = 0;
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with("audit.jsonl.") {
+                rotated += 1;
+            }
+        }
+        assert!(
+            rotated >= 1,
+            "expected at least one rotated file, got {rotated}"
+        );
+
+        let mut all = String::new();
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let entry = entry.unwrap();
+            let p = entry.path();
+            if p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("audit.jsonl")
+            {
+                all.push_str(&std::fs::read_to_string(&p).unwrap());
+            }
+        }
+        let seqs: std::collections::BTreeSet<u64> = all
+            .lines()
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .filter_map(|v| v.get("seq").and_then(serde_json::Value::as_u64))
+            .collect();
+        assert_eq!(seqs, (1_u64..=5).collect::<std::collections::BTreeSet<_>>(),);
+    }
+
+    #[test]
+    fn after_rotation_the_lock_still_blocks_new_writers() {
+        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 200,
+        })
+        .unwrap();
+
+        for seq in 1_u64..=5 {
+            let rec = AuditRecord {
+                seq: Seq(seq),
+                ts: Timestamp::now(),
+                process_id: ProcessId::new_now(),
+                payload: Payload::ProcessEnd(ProcessEnd {
+                    reason: ProcessEndReason::Eof,
+                    total_tool_calls: seq,
+                }),
+            };
+            writer.write_record(&rec).unwrap();
+        }
+
+        let err = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+        })
+        .unwrap_err();
+        match err {
+            AuditError::Locked { .. } => {}
+            other => panic!("expected Locked after rotation, got {other:?}"),
+        }
     }
 }
