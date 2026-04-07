@@ -110,6 +110,9 @@ pub fn open_shared(path: &Path) -> Result<File, AuditError> {
 /// parse failure aborts with [`AuditError::Read`] containing the offending
 /// line number.
 ///
+/// Memory is bounded by the length of the longest single line — the file is
+/// not fully loaded into memory before processing.
+///
 /// # Errors
 /// I/O error from reading the file, or a JSON parse failure on a
 /// non-trailing line.
@@ -123,48 +126,86 @@ where
 {
     let file = open_shared(path)?;
     let reader = BufReader::new(file);
-    let mut lines: Vec<String> = Vec::new();
-    for line in reader.lines() {
-        let line = line.map_err(|source| AuditError::Read {
+    let mut count = 0_usize;
+    let mut prev: Option<(usize, String)> = None; // (line_no, content)
+    let mut line_no = 0_usize;
+
+    for raw in reader.lines() {
+        let line = raw.map_err(|source| AuditError::Read {
             path: path.to_path_buf(),
             line: None,
             source,
         })?;
-        lines.push(line);
+        line_no += 1;
+
+        if let Some((prev_no, prev_line)) = prev.take() {
+            process_record(
+                path,
+                prev_no,
+                &prev_line,
+                filter,
+                &mut on_record,
+                &mut count,
+                false,
+            )?;
+        }
+        prev = Some((line_no, line));
     }
 
-    let mut count = 0_usize;
-    let total = lines.len();
-    for (idx, line) in lines.into_iter().enumerate() {
-        if line.is_empty() {
-            continue;
-        }
-        let parsed: Result<AuditRecord, _> = serde_json::from_str(&line);
-        match parsed {
-            Ok(rec) => {
-                if filter.matches(&rec) {
-                    on_record(&rec)?;
-                    count += 1;
-                }
-            }
-            Err(err) if idx + 1 == total => {
-                tracing::warn!(
-                    path = %path.display(),
-                    line = idx + 1,
-                    error = %err,
-                    "skipping malformed trailing line in audit file",
-                );
-            }
-            Err(err) => {
-                return Err(AuditError::Read {
-                    path: path.to_path_buf(),
-                    line: Some(idx + 1),
-                    source: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
-                });
-            }
-        }
+    // The final buffered line is the "trailing" one — malformed trailing is tolerated.
+    if let Some((prev_no, prev_line)) = prev {
+        process_record(
+            path,
+            prev_no,
+            &prev_line,
+            filter,
+            &mut on_record,
+            &mut count,
+            true,
+        )?;
     }
+
     Ok(count)
+}
+
+fn process_record<F>(
+    path: &Path,
+    line_no: usize,
+    line: &str,
+    filter: &Filter,
+    on_record: &mut F,
+    count: &mut usize,
+    is_trailing: bool,
+) -> Result<(), AuditError>
+where
+    F: FnMut(&AuditRecord) -> Result<(), AuditError>,
+{
+    if line.is_empty() {
+        return Ok(());
+    }
+    match serde_json::from_str::<AuditRecord>(line) {
+        Ok(rec) => {
+            if filter.matches(&rec) {
+                on_record(&rec)?;
+                *count += 1;
+            }
+            Ok(())
+        }
+        Err(err) if is_trailing => {
+            tracing::warn!(
+                path = %path.display(),
+                line = line_no,
+                error = %err,
+                "skipping malformed trailing line in audit file",
+            );
+            Ok(())
+        }
+        Err(err) => Err(AuditError::Read {
+            path: path.to_path_buf(),
+            line: Some(line_no),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
+        }),
+    }
 }
 
 #[cfg(test)]
