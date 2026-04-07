@@ -128,7 +128,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.85.1"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/davidchristensen/rusty-imap-mcp"
+repository = "https://github.com/randomparity/rusty-imap-mcp"
 authors = ["David Christensen"]
 readme = "README.md"
 
@@ -1295,7 +1295,7 @@ Create `SECURITY.md`:
 ## Reporting a vulnerability
 
 Please report security issues by opening a private security advisory on GitHub:
-<https://github.com/davidchristensen/rusty-imap-mcp/security/advisories/new>
+<https://github.com/randomparity/rusty-imap-mcp/security/advisories/new>
 
 Do not report security issues in public issues, discussions, or pull requests.
 
