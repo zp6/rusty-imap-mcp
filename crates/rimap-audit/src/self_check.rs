@@ -136,21 +136,38 @@ fn read_last_complete_line(file: &File) -> std::io::Result<Option<String>> {
         std::io::Read::read_exact(&mut reader, &mut chunk)?;
         chunk.extend_from_slice(&buf);
         buf = chunk;
-        // Strip a single trailing newline if this is the full tail of the file;
-        // we do this once per iteration but it's idempotent because subsequent
-        // iterations prepend bytes at the front, never append.
-        let trimmed: &[u8] = if buf.ends_with(b"\n") {
-            &buf[..buf.len() - 1]
-        } else {
-            &buf[..]
+
+        // Step 1: identify the "complete" prefix — everything up to and
+        // including the last `\n` in the buffer. Anything after the last
+        // `\n` is either empty (file ended with `\n`) or a partial trailing
+        // line (mid-write crash) we will discard.
+        let Some(last_nl) = buf.iter().rposition(|&b| b == b'\n') else {
+            // No newline found yet in the portion we've read.
+            if read_from == 0 {
+                // Entire file is one partial line. Return it as-is; the
+                // caller will try to parse it and fall back to default
+                // state if it's truncated.
+                return Ok(Some(String::from_utf8_lossy(&buf).into_owned()));
+            }
+            pos = read_from;
+            continue;
         };
-        if let Some(idx) = trimmed.iter().rposition(|&b| b == b'\n') {
-            let line = &trimmed[idx + 1..];
+
+        // `buf[..last_nl]` is the content that ends at a valid line boundary.
+        // The LAST COMPLETE LINE is what sits between the PRIOR `\n` and
+        // `last_nl`.
+        let complete = &buf[..last_nl];
+        if let Some(prior_nl) = complete.iter().rposition(|&b| b == b'\n') {
+            let line = &complete[prior_nl + 1..];
             return Ok(Some(String::from_utf8_lossy(line).into_owned()));
         }
+
+        // Only one newline in the buffer so far. The last complete line
+        // might start earlier in the file — keep reading backwards.
         if read_from == 0 {
-            // Entire file is one line, possibly without a trailing newline.
-            return Ok(Some(String::from_utf8_lossy(trimmed).into_owned()));
+            // We've read the whole file and only found one `\n`. The complete
+            // line runs from byte 0 up to `last_nl`.
+            return Ok(Some(String::from_utf8_lossy(complete).into_owned()));
         }
         pos = read_from;
     }
@@ -219,23 +236,16 @@ mod tests {
     }
 
     #[test]
-    fn partial_trailing_line_yields_default_state() {
-        // The plan's backwards-chunking algorithm returns the partial line as
-        // the "last line". serde_json fails to parse it, so read_trailing_state
-        // returns the default (empty) state rather than the prior complete line.
+    fn partial_trailing_line_is_ignored_in_favor_of_prior_line() {
         let dir = TempDir::new().unwrap();
         let body = concat!(
-            "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",",
-            "\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_start\",",
-            "\"version\":\"0.1.0\",\"git_commit\":\"\",\"posture\":\"draft-safe\",",
-            "\"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",",
-            "\"previous_last_seq\":null,\"previous_process_id\":null,",
-            "\"previous_file_inode\":12345,\"audit_file_inode_changed\":false}\n",
+            "{\"seq\":1,\"ts\":\"2026-04-07T00:00:00.000Z\",\"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\"kind\":\"process_start\",\"version\":\"0.1.0\",\"git_commit\":\"\",\"posture\":\"draft-safe\",\"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\"previous_last_seq\":null,\"previous_process_id\":null,\"previous_file_inode\":12345,\"audit_file_inode_changed\":false}\n",
             "{\"seq\":2,\"ts\":\"2026-04-07T00:00:01.000Z\",\"process",
         );
         let path = write_file(&dir, "a.jsonl", body.as_bytes());
         let state = read_trailing_state(&path).unwrap();
-        assert_eq!(state, TrailingState::default());
+        assert_eq!(state.last_seq.unwrap().get(), 1);
+        assert_eq!(state.last_recorded_inode, Some(12345));
     }
 
     #[test]
