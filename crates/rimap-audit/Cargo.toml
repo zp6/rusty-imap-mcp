@@ -12,7 +12,7 @@ description = "Append-only JSONL audit log with exclusive file locking for rusty
 workspace = true
 
 [dependencies]
-rimap-core = { workspace = true }
+rimap-core = { path = "../rimap-core", version = "0.0.0" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
