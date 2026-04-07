@@ -14,7 +14,6 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 /// Initialize the global default subscriber. Safe to call exactly once per
 /// process; subsequent calls are no-ops.
-#[expect(dead_code, reason = "wired into main() in Task 21")]
 pub fn init() {
     let filter = EnvFilter::try_from_env("RIMAP_LOG")
         .or_else(|_| EnvFilter::try_from_default_env())
