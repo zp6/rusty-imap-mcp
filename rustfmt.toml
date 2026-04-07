@@ -1,0 +1,7 @@
+# Stable-compatible formatter settings. Nightly-only options are commented out.
+edition = "2024"
+max_width = 100
+use_small_heuristics = "Default"
+newline_style = "Unix"
+hard_tabs = false
+tab_spaces = 4
