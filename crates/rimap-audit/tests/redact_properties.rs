@@ -62,8 +62,9 @@ proptest! {
         let s = schema();
         let salt = salt();
         let r = Redactor::new(&s, &salt);
-        let out = r.apply(&input);
         let in_obj = input.as_object().unwrap();
+        prop_assume!(in_obj.contains_key("folder") || in_obj.contains_key("uid"));
+        let out = r.apply(&input);
         let out_obj = out.as_object().unwrap();
         if let Some(v) = in_obj.get("folder") {
             prop_assert_eq!(out_obj.get("folder"), Some(v));
@@ -71,6 +72,25 @@ proptest! {
         if let Some(v) = in_obj.get("uid") {
             prop_assert_eq!(out_obj.get("uid"), Some(v));
         }
+    }
+
+    #[test]
+    fn forbidden_field_is_always_dropped_when_present(
+        pw in "[^\\n]{1,20}",
+        subject in prop::option::of("[^\\n]{0,40}"),
+    ) {
+        let s = schema();
+        let salt = salt();
+        let r = Redactor::new(&s, &salt);
+        let mut m = Map::new();
+        m.insert("password".to_string(), Value::String(pw));
+        if let Some(v) = subject {
+            m.insert("subject".to_string(), Value::String(v));
+        }
+        let input = Value::Object(m);
+        let out = r.apply(&input);
+        let obj = out.as_object().unwrap();
+        prop_assert!(!obj.contains_key("password"));
     }
 
     #[test]

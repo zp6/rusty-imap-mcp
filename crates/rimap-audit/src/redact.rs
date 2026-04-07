@@ -156,7 +156,8 @@ impl<'a> Redactor<'a> {
         // Canonicalize via `serde_json::to_vec`; equal values hash to the same
         // bytes within a process because `serde_json` preserves Map insertion
         // order (BTreeMap in our inputs).
-        let bytes = serde_json::to_vec(value).unwrap_or_default();
+        let bytes = serde_json::to_vec(value)
+            .unwrap_or_else(|_| unreachable!("serde_json::to_vec of Value is infallible"));
         let mut hasher = Sha256::new();
         hasher.update(self.salt.as_bytes());
         hasher.update(&bytes);
@@ -164,7 +165,7 @@ impl<'a> Redactor<'a> {
         let mut hex_s = String::with_capacity(16);
         for byte in digest.iter().take(8) {
             use std::fmt::Write as _;
-            write!(hex_s, "{byte:02x}").unwrap_or_default();
+            let _ = write!(hex_s, "{byte:02x}");
         }
         Value::String(format!("salted:{hex_s}"))
     }
@@ -174,13 +175,14 @@ impl<'a> Redactor<'a> {
 /// for the `arguments_hash_sha256` audit field.
 #[must_use]
 pub fn hash_arguments(args: &Value) -> String {
-    let bytes = serde_json::to_vec(args).unwrap_or_default();
+    let bytes = serde_json::to_vec(args)
+        .unwrap_or_else(|_| unreachable!("serde_json::to_vec of Value is infallible"));
     let digest = Sha256::digest(&bytes);
     hex::encode(digest)
 }
 
-/// Registry of per-tool redaction schemas. Called once at startup and stored
-/// in an `Arc<[RedactionSchema]>` alongside the `RedactionSalt`.
+/// Registry of per-tool redaction schemas. Called once at startup; Sprint 5's
+/// dispatch layer will store the result alongside the per-process `RedactionSalt`.
 ///
 /// Schemas cover every v1 `ToolName` variant per design spec §10 "Argument
 /// redaction". Field lists mirror the tool argument shapes documented in
@@ -395,16 +397,20 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "s/r/a/b/c are idiomatic in compact test assertions"
+    )]
     fn salted_hash_is_deterministic_for_same_process() {
-        let sch = schema();
+        let s = schema();
         let salt = salt();
-        let redactor = Redactor::new(&sch, &salt);
-        let alice1 = redactor.apply(&json!({"to": "alice@example.test"}));
-        let alice2 = redactor.apply(&json!({"to": "alice@example.test"}));
-        assert_eq!(alice1, alice2);
-        let bob = redactor.apply(&json!({"to": "bob@example.test"}));
-        assert_ne!(alice1, bob);
-        let prefix = alice1["to"].as_str().unwrap();
+        let r = Redactor::new(&s, &salt);
+        let a = r.apply(&json!({"to": "alice@example.test"}));
+        let b = r.apply(&json!({"to": "alice@example.test"}));
+        assert_eq!(a, b);
+        let c = r.apply(&json!({"to": "bob@example.test"}));
+        assert_ne!(a, c);
+        let prefix = a["to"].as_str().unwrap();
         assert!(prefix.starts_with("salted:"));
     }
 
