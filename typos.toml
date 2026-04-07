@@ -1,0 +1,16 @@
+[default]
+extend-ignore-re = [
+    # Allow hex blobs used in doc examples
+    "[0-9a-f]{32,}",
+]
+
+[default.extend-words]
+# Intentional project vocabulary. Add sparingly with a comment.
+imap = "imap"
+rimap = "rimap"
+
+[files]
+extend-exclude = [
+    "target/",
+    "Cargo.lock",
+]
