@@ -97,7 +97,13 @@ pub struct Auth {
     pub host: String,
     /// IMAP port attempted.
     pub port: u16,
-    /// Username attempted.
+    /// IMAP login identity (typically a username or email address).
+    ///
+    /// **This field MUST NEVER carry a password, OAuth / SASL token, auth
+    /// blob, or any other credential material.** Sprint 3's rimap-imap
+    /// wiring is required to populate this from the config-resolved
+    /// principal only; a copy-paste typo that lands a secret here leaks
+    /// it to disk via the audit log.
     pub username: String,
     /// Observed TLS certificate fingerprint (SHA-256 hex, lowercase, no colons).
     /// `None` if the connection never reached TLS handshake completion.

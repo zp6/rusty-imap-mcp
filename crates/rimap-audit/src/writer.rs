@@ -165,12 +165,15 @@ impl AuditWriter {
 
     /// Total bytes written through this writer since `open` (including bytes
     /// already present at open time). Used by rotation logic.
-    #[must_use]
-    pub fn bytes_written(&self) -> u64 {
-        self.inner
-            .lock()
-            .map(|g| g.bytes_written)
-            .unwrap_or_default()
+    ///
+    /// # Errors
+    /// Returns `AuditError::Write` if the internal mutex is poisoned.
+    pub fn bytes_written(&self) -> Result<u64, AuditError> {
+        let guard = self.inner.lock().map_err(|_| AuditError::Write {
+            path: self.path.clone(),
+            source: std::io::Error::other("audit mutex poisoned"),
+        })?;
+        Ok(guard.bytes_written)
     }
 
     /// Returns the current on-disk length of the active file. Used by tests.
@@ -387,7 +390,10 @@ mod tests {
             };
             writer.write_record(&rec).unwrap();
         }
-        assert_eq!(writer.bytes_written(), writer.on_disk_len().unwrap());
+        assert_eq!(
+            writer.bytes_written().unwrap(),
+            writer.on_disk_len().unwrap()
+        );
     }
 
     #[test]
