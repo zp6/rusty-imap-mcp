@@ -1,9 +1,13 @@
 //! Rusty IMAP MCP server entry point.
 //!
-//! Sprint 0 placeholder: exits immediately. Real MCP wiring lands in Sprint 5.
+//! Sprint 1: the entry point will grow `clap` parsing and a `--dry-run` path
+//! in subsequent tasks. For now it declares the submodules so they can be
+//! unit-tested independently.
+
+#![deny(missing_docs)]
+
+mod cli;
 
 fn main() {
-    // Intentionally silent: stdout is reserved for MCP transport, and the
-    // workspace lint set denies stderr printing as well. Real logging via
-    // `tracing` lands in Sprint 1.
+    // Real dispatch lands in Task 21.
 }
