@@ -36,18 +36,13 @@ pub struct AuditOptions {
 pub struct AuditWriter {
     path: PathBuf,
     rotate_bytes: u64,
-    // Used by write_record (Task 16) and rotate (Task 17).
-    #[expect(dead_code, reason = "used by write_record added in Task 16")]
     inner: Arc<Mutex<Inner>>,
 }
 
 #[derive(Debug)]
 pub(crate) struct Inner {
-    // Used by write_record (Task 16) and rotate (Task 17).
-    #[expect(dead_code, reason = "used by write_record added in Task 16")]
     pub(crate) buf: BufWriter<File>,
     /// Total bytes written to the active file (used by rotation).
-    #[expect(dead_code, reason = "used by write_record added in Task 16")]
     pub(crate) bytes_written: u64,
 }
 
@@ -123,6 +118,94 @@ impl AuditWriter {
     #[must_use]
     pub fn rotate_bytes(&self) -> u64 {
         self.rotate_bytes
+    }
+
+    /// Serialize `record` as one JSONL line, append it to the active file,
+    /// flush the buffer, and fsync on `process_*` / `auth` / `config` kinds.
+    ///
+    /// # Errors
+    /// - [`AuditError::Serialize`] on JSON failure.
+    /// - [`AuditError::Write`] on I/O failure during `write_all` / `flush`.
+    /// - [`AuditError::Fsync`] on `fsync` failure.
+    pub fn write_record(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
+        use std::io::Write;
+
+        let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
+        bytes.push(b'\n');
+
+        let mut guard = self.inner.lock().map_err(|_| AuditError::Write {
+            path: self.path.clone(),
+            source: std::io::Error::other("audit mutex poisoned"),
+        })?;
+
+        guard
+            .buf
+            .write_all(&bytes)
+            .map_err(|source| AuditError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        guard.buf.flush().map_err(|source| AuditError::Write {
+            path: self.path.clone(),
+            source,
+        })?;
+        let written =
+            u64::try_from(bytes.len()).unwrap_or_else(|_| unreachable!("bytes.len() fits in u64"));
+        guard.bytes_written = guard.bytes_written.saturating_add(written);
+
+        if needs_fsync(&record.payload) {
+            guard
+                .buf
+                .get_ref()
+                .sync_data()
+                .map_err(|source| AuditError::Fsync {
+                    path: self.path.clone(),
+                    source,
+                })?;
+        }
+
+        Ok(())
+    }
+
+    /// Total bytes written through this writer since `open` (including bytes
+    /// already present at open time). Used by rotation logic.
+    #[must_use]
+    pub fn bytes_written(&self) -> u64 {
+        self.inner
+            .lock()
+            .map(|g| g.bytes_written)
+            .unwrap_or_default()
+    }
+
+    /// Returns the current on-disk length of the active file. Used by tests.
+    ///
+    /// # Errors
+    /// I/O error from `metadata()`.
+    pub fn on_disk_len(&self) -> Result<u64, AuditError> {
+        let guard = self.inner.lock().map_err(|_| AuditError::Write {
+            path: self.path.clone(),
+            source: std::io::Error::other("audit mutex poisoned"),
+        })?;
+        let meta = guard
+            .buf
+            .get_ref()
+            .metadata()
+            .map_err(|source| AuditError::Write {
+                path: self.path.clone(),
+                source,
+            })?;
+        Ok(meta.len())
+    }
+}
+
+fn needs_fsync(payload: &crate::record::Payload) -> bool {
+    use crate::record::Payload;
+    match payload {
+        Payload::ProcessStart(_)
+        | Payload::ProcessEnd(_)
+        | Payload::Auth(_)
+        | Payload::Config(_) => true,
+        Payload::ToolStart(_) | Payload::ToolEnd(_) => false,
     }
 }
 
@@ -223,5 +306,66 @@ mod tests {
         .unwrap();
         assert!(path.exists());
         assert!(path.parent().unwrap().is_dir());
+    }
+
+    #[test]
+    fn write_record_appends_one_jsonl_line() {
+        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+        })
+        .unwrap();
+
+        let rec = AuditRecord {
+            seq: Seq::FIRST,
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+        writer.write_record(&rec).unwrap();
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(contents.lines().count(), 1);
+        let line = contents.lines().next().unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["kind"], "process_end");
+        assert!(contents.ends_with('\n'));
+    }
+
+    #[test]
+    fn write_record_tracks_bytes_written() {
+        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+        })
+        .unwrap();
+
+        for seq in 1_u64..=5 {
+            let rec = AuditRecord {
+                seq: Seq(seq),
+                ts: Timestamp::now(),
+                process_id: ProcessId::new_now(),
+                payload: Payload::ProcessEnd(ProcessEnd {
+                    reason: ProcessEndReason::Eof,
+                    total_tool_calls: seq,
+                }),
+            };
+            writer.write_record(&rec).unwrap();
+        }
+        assert_eq!(writer.bytes_written(), writer.on_disk_len().unwrap());
     }
 }
