@@ -186,6 +186,16 @@ Some changes deserve extra scrutiny. When touching:
 - "Finish the job" means: handle the edge cases you can see, clean up what you
   touched, flag adjacent brokenness. It does **not** mean: expand scope, add
   speculative features, or refactor code you didn't need to change.
+- **Deferrals become GitHub issues.** When a plan, review, or implementation
+  consciously defers work that needs follow-up beyond the current scope —
+  punted features, partial implementations, cross-platform parity gaps,
+  config fields whose behavior isn't wired yet, etc. — open a GitHub issue
+  for each item before the plan/PR is considered done. Do not rely on prose
+  in a plan document or a TODO comment to track follow-up work; both rot.
+  Each issue should name the deferral, link the plan/PR that introduced it,
+  cite the relevant spec section, and state acceptance criteria. Work that
+  is *already covered* by an upcoming sprint's spec scope does not need a
+  separate issue; work that falls between sprints does.
 
 ## What not to do
 
