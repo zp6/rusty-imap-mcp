@@ -5,6 +5,10 @@
 //! Entries older than `window_seconds` are evicted on every push and on every
 //! snapshot. This is a pure-Rust in-memory structure — no I/O, no locking
 //! beyond what the caller holds.
+//!
+//! Duplicate Message-IDs are permitted: if the same ID is recorded twice it
+//! will appear twice in the snapshot. Deduplication, if desired, is the
+//! caller's responsibility.
 
 use std::collections::VecDeque;
 
@@ -71,7 +75,9 @@ impl ProvenanceBuffer {
         self.entries.iter().map(|e| e.message_id.clone()).collect()
     }
 
-    /// Current entry count (after the next eviction, not before).
+    /// Returns the number of entries currently buffered, including any
+    /// stale entries that have not yet been evicted. `record*` and
+    /// `snapshot*` evict before they act; `len` does not.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -83,6 +89,8 @@ impl ProvenanceBuffer {
         self.entries.is_empty()
     }
 
+    /// Evict entries whose `seen_at` is strictly older than `now - window`.
+    /// An entry timestamped exactly at the cutoff is retained.
     fn evict_before(&mut self, now: OffsetDateTime) {
         let cutoff = now - self.window;
         while let Some(front) = self.entries.front() {
