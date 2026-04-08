@@ -212,6 +212,17 @@ impl AuditWriter {
     /// programmer errors and never suppressed regardless of `fail_open`.
     /// Suppressed failures are counted via [`Self::suppressed_failures`].
     ///
+    /// # Blocking
+    ///
+    /// This function performs synchronous filesystem I/O: at minimum a
+    /// `write_all` + `flush` + (conditionally) `fsync`, and on rotation
+    /// additionally `rename`, `open`, `try_lock_exclusive`, `read_dir`,
+    /// `symlink_metadata`, and `remove_file`. Callers in an async context
+    /// MUST invoke this inside `tokio::task::spawn_blocking` to avoid
+    /// stalling the runtime executor. The existing production call sites
+    /// (`Connection::emit_auth` and future tool-audit emitters) route
+    /// through `spawn_blocking` for this reason. (RUST-ASYNC-04)
+    ///
     /// # Errors
     /// - [`AuditError::Serialize`] on JSON failure (never suppressed).
     /// - [`AuditError::Write`] / [`AuditError::Fsync`] / [`AuditError::Rotate`]
@@ -225,9 +236,16 @@ impl AuditWriter {
                 Err(AuditError::Serialize(e))
             }
             Err(err) if self.fail_open => {
+                // Emit only the stable error code, not the full Display
+                // chain which would duplicate the audit path (already in
+                // the explicit `path` field below) and any filesystem
+                // layout contained in an underlying io::Error. Operators
+                // who want the full Display can enable TRACE-level
+                // logging where `write_record_inner` records it.
+                // (LOCAL-ERR-05)
                 tracing::error!(
                     path = %self.path.display(),
-                    error = %err,
+                    error_code = %err.code(),
                     "audit write failed; fail_open=true so suppressing and continuing",
                 );
                 self.suppressed_failures.fetch_add(1, Ordering::Relaxed);
@@ -273,8 +291,19 @@ impl AuditWriter {
     }
 
     /// Number of write/flush/fsync failures suppressed by `fail_open = true`
-    /// since this writer was opened. Read by `process_end` to populate the
-    /// `audit_write_failures_suppressed` field.
+    /// since this writer was opened. Accumulated via `Relaxed` atomic
+    /// increments inside `write_record`.
+    ///
+    /// ## Not yet wired into `process_end`
+    ///
+    /// The intent is for the shutdown `process_end` record to read this
+    /// counter and persist it as `audit_write_failures_suppressed` so
+    /// operators running `fail_open = true` can see how many records
+    /// were dropped in the process's lifetime. That wiring depends on
+    /// the audit lifecycle glue (`process_start`/`process_end` emission)
+    /// tracked in issue #8 and is not yet in place. Today this accessor
+    /// is available for ad-hoc inspection and tests; the persistent
+    /// audit trail will follow when #8 lands.
     #[must_use]
     pub fn suppressed_failures(&self) -> u64 {
         self.suppressed_failures.load(Ordering::Relaxed)
