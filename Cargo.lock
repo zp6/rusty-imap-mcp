@@ -1378,6 +1378,7 @@ version = "0.0.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-imap",
+ "futures-util",
  "rimap-audit",
  "rimap-config",
  "rimap-core",

@@ -83,9 +83,6 @@ impl std::fmt::Debug for Connection {
     }
 }
 
-// Private and pub(crate) methods are called by ops (T11-T13) which are not
-// yet implemented. Suppress dead_code until the callers exist.
-#[expect(dead_code, reason = "called by IMAP ops implemented in T11-T13")]
 impl Connection {
     /// Build a connection handle. Does NOT open a socket.
     #[must_use]
@@ -301,6 +298,80 @@ impl Connection {
                 )))
             })?;
         Ok(())
+    }
+
+    /// `LIST` against `pattern` (e.g. `"*"`, `"INBOX/*"`).
+    ///
+    /// Drops the cached session on `ConnectionLost` so the next call
+    /// lazy-reconnects without auto-retrying the failed command.
+    ///
+    /// # Errors
+    /// Propagates any `Error` produced by `time::with_timeout` or the
+    /// underlying `ops::folders::list` call.
+    pub async fn list_folders(&self, pattern: &str) -> Result<Vec<crate::types::Folder>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("list", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::list(session, pattern).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// `STATUS` for `folder` selecting the requested items.
+    ///
+    /// # Errors
+    /// Propagates any `Error` produced by `time::with_timeout` or the
+    /// underlying `ops::folders::status` call.
+    pub async fn status(
+        &self,
+        folder: &str,
+        items: crate::types::StatusItems,
+    ) -> Result<crate::types::FolderStatus, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("status", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::status(session, folder, items).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// `SELECT` (or `EXAMINE` if `read_only`) the named folder.
+    ///
+    /// # Errors
+    /// Propagates any `Error` produced by `time::with_timeout` or the
+    /// underlying `ops::folders::select` call.
+    pub async fn select(
+        &self,
+        folder: &str,
+        read_only: bool,
+    ) -> Result<crate::types::SelectedFolder, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("select", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::select(session, folder, read_only).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
     }
 }
 
