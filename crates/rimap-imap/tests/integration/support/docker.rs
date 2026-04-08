@@ -174,41 +174,78 @@ impl DovecotHarness {
             .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))
     }
 
-    /// Restart the dovecot container, killing every in-flight TCP session
-    /// the test client may have cached. Used by `case_11` to deterministically
-    /// trigger the half-open recovery path.
+    /// Stop and start the dovecot container, killing every in-flight TCP
+    /// session the test client may have cached. Used by `case_11` to
+    /// deterministically trigger the half-open recovery path.
     ///
     /// `pkill -9 imap` from inside the container is not a reliable
     /// substitute: dovecot's master process auto-respawns the worker
     /// before the client's next command lands, so the cached session
-    /// transparently survives. A full container restart sends SIGTERM
-    /// to dovecot's master and tears down all worker fds with no respawn.
-    /// The same self-signed cert survives the restart (entrypoint.sh
-    /// guards generation behind a file-existence check), so the pinned
-    /// fingerprint is unchanged and the post-disconnect reconnect works.
+    /// transparently survives. A container stop+start sends SIGTERM
+    /// (with a 5s grace period so dovecot can cleanly release its
+    /// runtime state) to dovecot's master and tears down every worker
+    /// fd with no respawn. The same self-signed cert survives the cycle
+    /// (`entrypoint.sh` guards generation behind a file-existence
+    /// check), so the pinned fingerprint is unchanged and the
+    /// post-disconnect reconnect works.
+    ///
+    /// On failure, dumps the last container logs into the error message
+    /// so CI runners can diagnose entrypoint regressions.
     pub fn restart(&self) -> Result<(), HarnessError> {
-        let status = Command::new("docker")
+        let stop_status = Command::new("docker")
             .arg("compose")
             .arg("-p")
             .arg(&self.project)
-            .arg("restart")
-            .arg("--timeout")
-            .arg("1")
+            .arg("stop")
+            .arg("-t")
+            .arg("5")
             .arg("dovecot")
             .current_dir(&self.compose_dir)
             .status()
-            .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
-        if !status.success() {
+            .map_err(|e| HarnessError::DockerCommandFailed(format!("stop: {e}")))?;
+        if !stop_status.success() {
             return Err(HarnessError::DockerCommandFailed(format!(
-                "compose restart exit {status}"
+                "compose stop exit {stop_status}"
+            )));
+        }
+        let start_status = Command::new("docker")
+            .arg("compose")
+            .arg("-p")
+            .arg(&self.project)
+            .arg("start")
+            .arg("dovecot")
+            .current_dir(&self.compose_dir)
+            .status()
+            .map_err(|e| HarnessError::DockerCommandFailed(format!("start: {e}")))?;
+        if !start_status.success() {
+            return Err(HarnessError::DockerCommandFailed(format!(
+                "compose start exit {start_status}"
             )));
         }
         // Wait for dovecot to be accepting on the same host port again.
         let started = Instant::now();
-        let timeout = Duration::from_secs(60);
+        let timeout = Duration::from_secs(45);
         loop {
             if started.elapsed() > timeout {
-                return Err(HarnessError::Timeout);
+                let logs = Command::new("docker")
+                    .arg("compose")
+                    .arg("-p")
+                    .arg(&self.project)
+                    .arg("logs")
+                    .arg("--tail")
+                    .arg("60")
+                    .arg("dovecot")
+                    .current_dir(&self.compose_dir)
+                    .output()
+                    .map_or_else(
+                        |e| format!("logs fetch failed: {e}"),
+                        |o| String::from_utf8_lossy(&o.stdout).into_owned(),
+                    );
+                return Err(HarnessError::DockerCommandFailed(format!(
+                    "dovecot did not rebind port {} within 45s after stop/start. \
+                     Last container logs:\n{logs}",
+                    self.port
+                )));
             }
             if std::net::TcpStream::connect_timeout(
                 &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),

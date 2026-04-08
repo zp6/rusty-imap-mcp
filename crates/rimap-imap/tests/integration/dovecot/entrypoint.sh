@@ -1,9 +1,16 @@
 #!/bin/sh
 set -eu
 
+# Clean up any stale state from a previous run. docker compose stop/start
+# (used by case_11's server-restart path) sends SIGTERM and eventually
+# SIGKILL, which can leave dovecot's runtime socket dir and pid files in
+# a half-open state that blocks the next startup.
+rm -rf /var/run/dovecot 2>/dev/null || true
+mkdir -p /var/run/dovecot
+
 # Generate a self-signed cert at container start so each test run gets a
-# fresh fingerprint. Skip if a cert already exists — `docker compose
-# restart` (used by case_11 to break the client TCP) re-runs the
+# fresh fingerprint. Skip if a cert already exists — case_11 uses
+# docker compose stop/start to break the client TCP, which re-runs this
 # entrypoint, and the test relies on the SAME pinned fingerprint surviving
 # across the restart so the post-disconnect reconnect succeeds.
 if [ ! -f /etc/dovecot/cert.pem ]; then
