@@ -468,7 +468,7 @@ fn detect_smuggling_spans(logical: &[&[u8]]) -> Vec<bool> {
     while idx < logical.len() {
         let header = logical[idx];
         let search_start = scan_from.min(header.len());
-        let Some(rel) = find_subslice(&header[search_start..], b"=?") else {
+        let Some(rel) = header[search_start..].windows(2).position(|w| w == b"=?") else {
             idx += 1;
             scan_from = 0;
             continue;
@@ -515,49 +515,27 @@ fn locate_encoded_word_end(
 ) -> EncodedWordEnd {
     let first = logical[start_idx];
     if start_offset < first.len()
-        && let Some(rel) = find_subslice(&first[start_offset..], b"?=")
+        && let Some(rel) = first[start_offset..].windows(2).position(|w| w == b"?=")
     {
         return EncodedWordEnd::SameHeader(start_offset + rel);
     }
     for (offset, line) in logical.iter().enumerate().skip(start_idx + 1) {
-        if find_subslice(line, b"?=").is_some() {
+        if line.windows(2).any(|w| w == b"?=") {
             return EncodedWordEnd::LaterHeader(offset);
         }
     }
     EncodedWordEnd::Missing
 }
 
-/// Return the byte offset of the first occurrence of `needle` in `hay`.
-fn find_subslice(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || hay.len() < needle.len() {
-        return None;
-    }
-    let last = hay.len() - needle.len();
-    for i in 0..=last {
-        if &hay[i..i + needle.len()] == needle {
-            return Some(i);
-        }
-    }
-    None
-}
-
 /// Find the byte offset where the header block ends (exclusive of the
 /// blank-line separator). Handles both CRLF and LF line endings.
 /// Returns `(header_end, separator_length)`.
 fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
-    if raw.len() >= 4 {
-        for i in 0..=raw.len() - 4 {
-            if &raw[i..i + 4] == b"\r\n\r\n" {
-                return Some((i + 2, 2));
-            }
-        }
+    if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some((pos + 2, 2));
     }
-    if raw.len() >= 2 {
-        for i in 0..=raw.len() - 2 {
-            if &raw[i..i + 2] == b"\n\n" {
-                return Some((i + 1, 1));
-            }
-        }
+    if let Some(pos) = raw.windows(2).position(|w| w == b"\n\n") {
+        return Some((pos + 1, 1));
     }
     None
 }
@@ -571,7 +549,7 @@ fn split_header_lines(headers: &[u8]) -> Vec<&[u8]> {
     let mut line_start = 0_usize;
     let mut i = 0_usize;
     while i < headers.len() {
-        let line_end = match memchr_lf(&headers[i..]) {
+        let line_end = match headers[i..].iter().position(|&b| b == b'\n') {
             Some(off) => i + off + 1,
             None => headers.len(),
         };
@@ -590,10 +568,6 @@ fn split_header_lines(headers: &[u8]) -> Vec<&[u8]> {
         out.push(&headers[line_start..]);
     }
     out
-}
-
-fn memchr_lf(bytes: &[u8]) -> Option<usize> {
-    bytes.iter().position(|&b| b == b'\n')
 }
 
 /// Walk `message.attachments` and build an `AttachmentMeta` for each,

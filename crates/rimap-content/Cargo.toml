@@ -21,7 +21,6 @@ mail-parser = { workspace = true }
 encoding_rs = { workspace = true }
 unicode-normalization = { workspace = true }
 unicode-segmentation = { workspace = true }
-unicode-properties = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
