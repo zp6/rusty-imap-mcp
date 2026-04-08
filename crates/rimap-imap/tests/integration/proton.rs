@@ -61,6 +61,7 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
         path: dir.path().join("audit.jsonl"),
         rotate_bytes: 0,
         rotate_keep: 0,
+        fail_open: false,
         initial_seq: Seq::FIRST,
     })
     .unwrap();

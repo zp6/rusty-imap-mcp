@@ -47,6 +47,7 @@ pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
         path: audit_path.clone(),
         rotate_bytes,
         rotate_keep,
+        fail_open: validated.config.audit.fail_open,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .with_context(|| format!("opening audit log at {}", audit_path.display()))?;
@@ -121,6 +122,7 @@ path = "{}"
             path: audit_path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: rimap_audit::Seq::FIRST,
         })
         .unwrap();

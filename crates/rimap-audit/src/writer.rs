@@ -14,6 +14,7 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fs4::fs_std::FileExt;
@@ -31,6 +32,13 @@ pub struct AuditOptions {
     /// `0` means "keep none — delete every rotated sibling immediately
     /// after rotation". The default at the config layer is 5.
     pub rotate_keep: u32,
+    /// If `true`, write/flush/fsync failures inside `write_record` are
+    /// logged via `tracing::error!` and converted to `Ok(())` so the
+    /// surrounding tool call still succeeds. The default is `false`
+    /// (a write failure fails the tool call). Operators who explicitly
+    /// accept losing audit records on storage failures opt in via this
+    /// flag — see the audit security model docs for the trade-off.
+    pub fail_open: bool,
     /// First `Seq` value this writer will allocate. Callers compute this from
     /// `read_trailing_state(path).last_seq.map(Seq::next).unwrap_or(Seq::FIRST)`
     /// before calling `open`.
@@ -45,7 +53,9 @@ pub struct AuditWriter {
     path: PathBuf,
     rotate_bytes: u64,
     rotate_keep: u32,
+    fail_open: bool,
     process_id: crate::ids::ProcessId,
+    suppressed_failures: Arc<AtomicU64>,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -115,7 +125,9 @@ impl AuditWriter {
             path: opts.path.clone(),
             rotate_bytes: opts.rotate_bytes,
             rotate_keep: opts.rotate_keep,
+            fail_open: opts.fail_open,
             process_id: crate::ids::ProcessId::new_now(),
+            suppressed_failures: Arc::new(AtomicU64::new(0)),
             inner: Arc::new(Mutex::new(Inner {
                 buf: BufWriter::new(file),
                 bytes_written,
@@ -195,11 +207,37 @@ impl AuditWriter {
     /// Serialize `record` as one JSONL line, append it to the active file,
     /// flush the buffer, and fsync on `process_*` / `auth` / `config` kinds.
     ///
+    /// If `fail_open` is `true`, write/flush/fsync failures are logged via
+    /// `tracing::error!` and converted to `Ok(())`. Serialization errors are
+    /// programmer errors and never suppressed regardless of `fail_open`.
+    /// Suppressed failures are counted via [`Self::suppressed_failures`].
+    ///
     /// # Errors
-    /// - [`AuditError::Serialize`] on JSON failure.
-    /// - [`AuditError::Write`] on I/O failure during `write_all` / `flush`.
-    /// - [`AuditError::Fsync`] on `fsync` failure.
+    /// - [`AuditError::Serialize`] on JSON failure (never suppressed).
+    /// - [`AuditError::Write`] / [`AuditError::Fsync`] / [`AuditError::Rotate`]
+    ///   when `fail_open == false`.
     pub fn write_record(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
+        match self.write_record_inner(record) {
+            Ok(()) => Ok(()),
+            Err(AuditError::Serialize(e)) => {
+                // Serialization failures are programmer errors, not storage
+                // failures. Never suppressed regardless of fail_open.
+                Err(AuditError::Serialize(e))
+            }
+            Err(err) if self.fail_open => {
+                tracing::error!(
+                    path = %self.path.display(),
+                    error = %err,
+                    "audit write failed; fail_open=true so suppressing and continuing",
+                );
+                self.suppressed_failures.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn write_record_inner(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
         let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
         bytes.push(b'\n');
 
@@ -232,6 +270,14 @@ impl AuditWriter {
         }
 
         Ok(())
+    }
+
+    /// Number of write/flush/fsync failures suppressed by `fail_open = true`
+    /// since this writer was opened. Read by `process_end` to populate the
+    /// `audit_write_failures_suppressed` field.
+    #[must_use]
+    pub fn suppressed_failures(&self) -> u64 {
+        self.suppressed_failures.load(Ordering::Relaxed)
     }
 
     /// Total bytes written through this writer since `open` (including bytes
@@ -409,6 +455,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -424,6 +471,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -431,6 +479,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
@@ -449,6 +498,7 @@ mod tests {
                 path: path.clone(),
                 rotate_bytes: 0,
                 rotate_keep: 0,
+                fail_open: false,
                 initial_seq: crate::ids::Seq::FIRST,
             })
             .unwrap();
@@ -458,6 +508,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -471,6 +522,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -489,6 +541,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -524,6 +577,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -557,6 +611,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 200,
             rotate_keep: 5,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -625,6 +680,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 200,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -646,6 +702,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
@@ -663,6 +720,7 @@ mod tests {
             path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -679,6 +737,7 @@ mod tests {
             path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -698,6 +757,7 @@ mod tests {
             path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq(42),
         })
         .unwrap();
@@ -715,6 +775,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -754,6 +815,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -795,6 +857,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -837,6 +900,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();

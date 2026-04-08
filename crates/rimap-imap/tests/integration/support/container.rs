@@ -436,6 +436,7 @@ impl ConnectedHarness {
             path: audit_path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: Seq::FIRST,
         })
         .expect("audit open");

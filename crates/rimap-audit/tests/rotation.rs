@@ -35,6 +35,7 @@ fn writes_survive_multiple_rotations() {
         path: path.clone(),
         rotate_bytes: 300,
         rotate_keep: 50,
+        fail_open: false,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
@@ -73,6 +74,7 @@ fn lock_persists_across_rotations() {
         path: path.clone(),
         rotate_bytes: 300,
         rotate_keep: 5,
+        fail_open: false,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
@@ -84,6 +86,7 @@ fn lock_persists_across_rotations() {
         path: path.clone(),
         rotate_bytes: 0,
         rotate_keep: 0,
+        fail_open: false,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap_err();

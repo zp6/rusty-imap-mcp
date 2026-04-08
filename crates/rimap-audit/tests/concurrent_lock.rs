@@ -15,6 +15,7 @@ fn concurrent_open_fails_fast_with_locked() {
         path: path.clone(),
         rotate_bytes: 0,
         rotate_keep: 0,
+        fail_open: false,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
@@ -23,6 +24,7 @@ fn concurrent_open_fails_fast_with_locked() {
         path: path.clone(),
         rotate_bytes: 0,
         rotate_keep: 0,
+        fail_open: false,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap_err();
@@ -41,6 +43,7 @@ fn lock_released_after_drop_allows_reopen() {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: rimap_audit::Seq::FIRST,
         })
         .unwrap();
@@ -49,6 +52,7 @@ fn lock_released_after_drop_allows_reopen() {
         path,
         rotate_bytes: 0,
         rotate_keep: 0,
+        fail_open: false,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();

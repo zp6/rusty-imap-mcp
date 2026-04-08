@@ -25,6 +25,7 @@ pub fn init_audit_writer(
         path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
         rotate_keep: cfg.config.audit.rotate_keep,
+        fail_open: cfg.config.audit.fail_open,
         initial_seq,
     })?;
 
@@ -140,6 +141,7 @@ path = "{}"
                 path: audit_path.clone(),
                 rotate_bytes: 0,
                 rotate_keep: 0,
+                fail_open: false,
                 initial_seq: Seq::FIRST,
             })
             .unwrap();

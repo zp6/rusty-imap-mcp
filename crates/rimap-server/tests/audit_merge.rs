@@ -37,6 +37,7 @@ fn audit_merge_round_trips_synthetic_log() {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: Seq::FIRST,
         })
         .unwrap();
@@ -96,6 +97,7 @@ fn audit_merge_filters_by_kind() {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            fail_open: false,
             initial_seq: Seq::FIRST,
         })
         .unwrap();
