@@ -149,7 +149,13 @@ impl DovecotHarness {
         let timeout = Duration::from_secs(60);
         let result = loop {
             if started.elapsed() > timeout {
-                break Err(HarnessError::Timeout);
+                // Dump container logs so the failure tells us WHY dovecot
+                // never reached ready state instead of just "timeout".
+                let logs = dump_logs(&project, &compose_dir);
+                break Err(HarnessError::DockerCommandFailed(format!(
+                    "dovecot container did not become ready within 60s. \
+                     Last container logs:\n{logs}"
+                )));
             }
             if let Ok(fp) = read_fingerprint(&project) {
                 // Fingerprint is in place, but dovecot inside the container
@@ -261,20 +267,7 @@ impl DovecotHarness {
         let timeout = Duration::from_secs(45);
         loop {
             if started.elapsed() > timeout {
-                let logs = Command::new(runtime())
-                    .arg("compose")
-                    .arg("-p")
-                    .arg(&self.project)
-                    .arg("logs")
-                    .arg("--tail")
-                    .arg("60")
-                    .arg("dovecot")
-                    .current_dir(&self.compose_dir)
-                    .output()
-                    .map_or_else(
-                        |e| format!("logs fetch failed: {e}"),
-                        |o| String::from_utf8_lossy(&o.stdout).into_owned(),
-                    );
+                let logs = dump_logs(&self.project, &self.compose_dir);
                 return Err(HarnessError::DockerCommandFailed(format!(
                     "dovecot did not rebind port {} within 45s after recreate. \
                      Last container logs:\n{logs}",
@@ -292,6 +285,35 @@ impl DovecotHarness {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
+    }
+}
+
+fn dump_logs(project: &str, compose_dir: &std::path::Path) -> String {
+    match Command::new(runtime())
+        .arg("compose")
+        .arg("-p")
+        .arg(project)
+        .arg("logs")
+        .arg("--tail")
+        .arg("200")
+        .arg("dovecot")
+        .current_dir(compose_dir)
+        .output()
+    {
+        Ok(o) => {
+            let mut out = String::from_utf8_lossy(&o.stdout).into_owned();
+            let err = String::from_utf8_lossy(&o.stderr);
+            if !err.trim().is_empty() {
+                out.push_str("\n--- stderr ---\n");
+                out.push_str(&err);
+            }
+            if out.trim().is_empty() {
+                "<no container logs>".into()
+            } else {
+                out
+            }
+        }
+        Err(e) => format!("logs fetch failed: {e}"),
     }
 }
 
