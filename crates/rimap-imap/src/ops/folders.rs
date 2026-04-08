@@ -96,19 +96,74 @@ fn build_status_items(items: StatusItems) -> String {
 
 /// Classify an async-imap error into our Error taxonomy.
 ///
-/// Detects connection-lost-style errors (reset, closed, EOF, broken pipe)
-/// and surfaces them as `ConnectionLost` so the caller can drop the session
-/// and lazy-reconnect on the next op. Other errors become `Protocol`.
+/// Walks the `std::error::Error::source()` chain looking for a
+/// `std::io::Error` whose `ErrorKind` indicates a dead TCP connection
+/// (`ConnectionReset`, `ConnectionAborted`, `BrokenPipe`, `UnexpectedEof`,
+/// `NotConnected`). Those surface as `ConnectionLost` so the caller can
+/// drop the cached session and lazy-reconnect on the next op. Anything
+/// else becomes `Protocol`.
+///
+/// The previous implementation substring-matched the lowercased `Display`
+/// text, which missed async-imap's `Io(BrokenPipe)` formatting (the text
+/// "I/O error: Broken pipe" does not contain the word "connection") and
+/// left the session cached in a dead state. See #38 for the follow-up.
 pub(super) fn map_err(err: async_imap::error::Error) -> Error {
-    let msg = err.to_string().to_lowercase();
-    let looks_lost = msg.contains("connection")
-        && (msg.contains("reset")
-            || msg.contains("closed")
-            || msg.contains("eof")
-            || msg.contains("broken pipe"));
-    if looks_lost {
+    if is_connection_lost(&err) {
         Error::ConnectionLost
     } else {
         Error::Protocol(err)
+    }
+}
+
+fn is_connection_lost(err: &async_imap::error::Error) -> bool {
+    use std::error::Error as _;
+
+    // Check the top-level error first — async-imap's `Io` variant wraps
+    // the `io::Error` directly.
+    if let async_imap::error::Error::Io(io_err) = err
+        && is_dead_tcp_kind(io_err.kind())
+    {
+        return true;
+    }
+
+    // Otherwise walk the source chain in case a future async-imap version
+    // wraps the io::Error more deeply.
+    let mut src: Option<&(dyn std::error::Error + 'static)> = err.source();
+    while let Some(cause) = src {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>()
+            && is_dead_tcp_kind(io_err.kind())
+        {
+            return true;
+        }
+        src = cause.source();
+    }
+
+    false
+}
+
+fn is_dead_tcp_kind(kind: std::io::ErrorKind) -> bool {
+    use std::io::ErrorKind;
+    match kind {
+        ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::BrokenPipe
+        | ErrorKind::UnexpectedEof
+        | ErrorKind::NotConnected => true,
+        ErrorKind::NotFound
+        | ErrorKind::PermissionDenied
+        | ErrorKind::ConnectionRefused
+        | ErrorKind::AddrInUse
+        | ErrorKind::AddrNotAvailable
+        | ErrorKind::AlreadyExists
+        | ErrorKind::WouldBlock
+        | ErrorKind::InvalidInput
+        | ErrorKind::InvalidData
+        | ErrorKind::TimedOut
+        | ErrorKind::WriteZero
+        | ErrorKind::Interrupted
+        | ErrorKind::Unsupported
+        | ErrorKind::OutOfMemory
+        | ErrorKind::Other
+        | _ => false,
     }
 }
