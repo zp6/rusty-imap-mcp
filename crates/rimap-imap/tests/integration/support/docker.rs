@@ -1,14 +1,53 @@
-//! `DovecotHarness`: hand-rolled `docker compose up`/`down` lifecycle with a
-//! Drop guard. Each test run gets a unique compose project name so parallel
+//! `DovecotHarness`: hand-rolled `compose up`/`down` lifecycle with a Drop
+//! guard. Supports both `docker compose` and `podman compose` — the first
+//! available binary wins, or `RIMAP_CONTAINER_TOOL={docker,podman}` forces
+//! a choice. Each test run gets a unique compose project name so parallel
 //! tests don't collide.
 
 #![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use rimap_core::TlsFingerprint;
+
+/// Name of the container runtime binary to invoke (`docker` or `podman`).
+/// Detected once per process. Falls back to `"docker"` even when nothing is
+/// installed — callers gate on [`runtime_available`] before using it.
+fn runtime() -> &'static str {
+    static TOOL: OnceLock<&'static str> = OnceLock::new();
+    TOOL.get_or_init(|| {
+        // Explicit override wins. Unrecognized values fall through to
+        // autodetect silently — the harness has no logger available and
+        // `print_stderr` is denied by the workspace lint policy.
+        match std::env::var("RIMAP_CONTAINER_TOOL").as_deref() {
+            Ok("docker") => return "docker",
+            Ok("podman") => return "podman",
+            _ => {}
+        }
+        if binary_present("docker") {
+            "docker"
+        } else if binary_present("podman") {
+            "podman"
+        } else {
+            "docker"
+        }
+    })
+}
+
+fn binary_present(bin: &str) -> bool {
+    Command::new(bin)
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn runtime_available() -> bool {
+    binary_present("docker") || binary_present("podman")
+}
 
 #[derive(Debug)]
 pub enum HarnessError {
@@ -22,8 +61,10 @@ pub enum HarnessError {
 impl std::fmt::Display for HarnessError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DockerUnavailable => f.write_str("docker is not available"),
-            Self::DockerCommandFailed(s) => write!(f, "docker command failed: {s}"),
+            Self::DockerUnavailable => {
+                f.write_str("no container runtime (docker or podman) is available")
+            }
+            Self::DockerCommandFailed(s) => write!(f, "{} command failed: {s}", runtime()),
             Self::Timeout => f.write_str("timed out waiting for dovecot ready"),
             Self::FingerprintReadFailed(s) => write!(f, "fingerprint read failed: {s}"),
             Self::PortReadFailed(s) => write!(f, "port read failed: {s}"),
@@ -46,7 +87,8 @@ impl DovecotHarness {
     /// `RIMAP_REQUIRE_DOCKER=1` is set, in which case each becomes a
     /// hard error):
     ///
-    /// - Docker is not installed.
+    /// - Neither `docker` nor `podman` is installed. Pick one explicitly
+    ///   with `RIMAP_CONTAINER_TOOL={docker,podman}`.
     /// - The host architecture is not `x86_64`. The pinned
     ///   `dovecot/dovecot:2.3.21` image is amd64-only, and running it
     ///   under Rosetta/QEMU emulation crashes dovecot's worker processes
@@ -54,10 +96,10 @@ impl DovecotHarness {
     ///   can bind port 993. See the comment in `docker-compose.yml` for
     ///   the full context and why a 2.4 bump isn't viable in Sprint 3.
     pub fn try_start() -> Result<Self, HarnessError> {
-        let require_docker = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
+        let require_runtime = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
 
         if std::env::consts::ARCH != "x86_64" {
-            if require_docker {
+            if require_runtime {
                 return Err(HarnessError::DockerCommandFailed(format!(
                     "host arch {} cannot run amd64 dovecot image but RIMAP_REQUIRE_DOCKER=1",
                     std::env::consts::ARCH
@@ -66,10 +108,10 @@ impl DovecotHarness {
             return Err(HarnessError::DockerUnavailable);
         }
 
-        if !docker_available() {
-            if require_docker {
+        if !runtime_available() {
+            if require_runtime {
                 return Err(HarnessError::DockerCommandFailed(
-                    "docker missing but RIMAP_REQUIRE_DOCKER=1".into(),
+                    "neither docker nor podman found but RIMAP_REQUIRE_DOCKER=1".into(),
                 ));
             }
             return Err(HarnessError::DockerUnavailable);
@@ -87,7 +129,7 @@ impl DovecotHarness {
         // cached client Connection after a recreate.
         let host_port = pick_free_port()?;
 
-        let status = Command::new("docker")
+        let status = Command::new(runtime())
             .arg("compose")
             .arg("-p")
             .arg(&project)
@@ -165,7 +207,7 @@ impl DovecotHarness {
 
     /// Run an arbitrary command inside the running dovecot container.
     pub fn exec(&self, args: &[&str]) -> Result<std::process::Output, HarnessError> {
-        let mut cmd = Command::new("docker");
+        let mut cmd = Command::new(runtime());
         cmd.arg("compose").arg("-p").arg(&self.project);
         cmd.arg("exec").arg("-T").arg("dovecot");
         for a in args {
@@ -192,7 +234,7 @@ impl DovecotHarness {
     /// On failure, dumps the last container logs into the error message
     /// so CI runners can diagnose entrypoint regressions.
     pub fn restart(&self) -> Result<(), HarnessError> {
-        let status = Command::new("docker")
+        let status = Command::new(runtime())
             .arg("compose")
             .arg("-p")
             .arg(&self.project)
@@ -219,7 +261,7 @@ impl DovecotHarness {
         let timeout = Duration::from_secs(45);
         loop {
             if started.elapsed() > timeout {
-                let logs = Command::new("docker")
+                let logs = Command::new(runtime())
                     .arg("compose")
                     .arg("-p")
                     .arg(&self.project)
@@ -254,7 +296,7 @@ impl DovecotHarness {
 }
 
 fn probe_ready_marker(project: &str, compose_dir: &std::path::Path) -> bool {
-    Command::new("docker")
+    Command::new(runtime())
         .arg("compose")
         .arg("-p")
         .arg(project)
@@ -277,7 +319,7 @@ impl Drop for DovecotHarness {
 }
 
 fn compose_down(project: &str, compose_dir: &std::path::Path) {
-    let _ = Command::new("docker")
+    let _ = Command::new(runtime())
         .arg("compose")
         .arg("-p")
         .arg(project)
@@ -288,16 +330,8 @@ fn compose_down(project: &str, compose_dir: &std::path::Path) {
         .status();
 }
 
-fn docker_available() -> bool {
-    Command::new("docker")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
-    let out = Command::new("docker")
+    let out = Command::new(runtime())
         .arg("compose")
         .arg("-p")
         .arg(project)

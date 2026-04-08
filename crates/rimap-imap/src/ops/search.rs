@@ -11,7 +11,7 @@ pub(crate) async fn search(
     folder: &str,
     query: SearchQuery,
 ) -> Result<Vec<Uid>, Error> {
-    // Caller should have SELECTed via the public API; this is a defensive
+    // Caller should have sent SELECT via the public API; this is a defensive
     // re-EXAMINE to keep the search scoped to the requested folder.
     session
         .examine(folder)
