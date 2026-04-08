@@ -133,6 +133,27 @@ fn validate_paths(config: &Config) -> Result<(), ConfigError> {
 /// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
 /// `directories::ProjectDirs` resolves; returns `None` otherwise (which
 /// causes the containment check to fail with a clear error).
+/// Compute the default audit base when `audit.allowed_base_dir` is unset.
+/// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
+/// `directories::ProjectDirs` resolves; returns `None` otherwise (which
+/// causes the containment check to fail with a clear error).
+///
+/// ## macOS Time Machine caveat (LOCAL-PRI-06)
+///
+/// On macOS, `ProjectDirs::data_local_dir()` resolves to
+/// `~/Library/Application Support/rusty-imap-mcp/`, which is covered by
+/// Time Machine backups by default. The audit log appears in every
+/// backup snapshot and is readable from any restore. A stolen laptop or
+/// stolen Time Machine disk gives cold-attacker access to the full audit
+/// history even if the live process was never touched.
+///
+/// The backup-exclude xattr fix (setting
+/// `com.apple.metadata:com_apple_backup_excludeItem` on the audit path)
+/// is tracked in issue #45. Until that lands, operators on macOS should
+/// either (a) set `audit.allowed_base_dir` explicitly to a path that
+/// Time Machine does not back up (e.g., under `~/Library/Caches/`), or
+/// (b) manually exclude `~/Library/Application Support/rusty-imap-mcp/`
+/// via `tmutil addexclusion`.
 fn default_audit_base() -> Option<PathBuf> {
     let dirs = directories::ProjectDirs::from("", "", "rusty-imap-mcp")?;
     Some(dirs.data_local_dir().to_path_buf())

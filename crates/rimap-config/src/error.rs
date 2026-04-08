@@ -51,6 +51,26 @@ pub enum ConfigError {
     },
     /// `audit.path` resolved to a location outside the configured
     /// `allowed_base_dir`.
+    ///
+    /// ## Path disclosure exemption (LOCAL-ERR-05)
+    ///
+    /// The `Display` for this variant embeds both canonicalized paths.
+    /// The LOCAL-ERR-05 rule normally forbids filesystem paths in error
+    /// messages because they leak layout into operator-visible logs.
+    /// This variant is exempted because:
+    ///
+    ///   - It fires only at config validation time, during startup,
+    ///     against a path the OPERATOR themselves wrote in their config
+    ///     file. The audience is never an attacker — it is the same
+    ///     operator who supplied the misconfigured path.
+    ///   - The canonicalized paths are the actionable information the
+    ///     operator needs to diagnose the problem (e.g. "I wrote
+    ///     `~/audit.jsonl` but my allowed base is `~/Library/...`").
+    ///
+    /// Both paths are filesystem layout, which is sensitive if this
+    /// variant ever starts firing from runtime (non-startup) code paths
+    /// or from attacker-controlled config. If that changes, revisit
+    /// this exemption.
     #[error("audit path `{path}` is not contained in allowed base `{base}`")]
     AuditPathOutsideBase {
         /// The canonicalized audit path.
