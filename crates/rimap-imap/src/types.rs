@@ -5,7 +5,7 @@ use std::num::NonZeroU32;
 
 /// IMAP UID. Always non-zero per RFC 3501 §2.3.1.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Uid(pub NonZeroU32);
+pub struct Uid(NonZeroU32);
 
 impl Uid {
     /// Construct from a raw integer. Returns `None` for `0`.
@@ -23,7 +23,21 @@ impl Uid {
 
 /// Opaque RFC 5322 `Message-ID` header value, as raw bytes (no decoding).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageId(pub Vec<u8>);
+pub struct MessageId(Vec<u8>);
+
+impl MessageId {
+    /// Construct from raw bytes.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// Underlying raw bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// IMAP `LIST` response entry.
 #[derive(Debug, Clone, PartialEq, Eq)]

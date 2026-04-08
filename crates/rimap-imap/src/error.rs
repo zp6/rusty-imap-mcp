@@ -20,7 +20,7 @@ pub enum Error {
     #[error("ERR_TLS: handshake failed")]
     TlsHandshake(#[source] rustls::Error),
     /// TCP connect failed.
-    #[error("ERR_NETWORK: connect failed")]
+    #[error("connect failed")]
     Connect(#[source] std::io::Error),
     /// `tokio::time::timeout` fired around an IMAP command.
     #[error("ERR_TIMEOUT: {op} exceeded deadline")]
