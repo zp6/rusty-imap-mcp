@@ -1,0 +1,1 @@
+//! `SEARCH` (structured + raw).

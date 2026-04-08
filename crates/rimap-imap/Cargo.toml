@@ -6,9 +6,34 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Async IMAP session wrapper with TLS fingerprint pinning for rusty-imap-mcp."
+readme.workspace = true
+description = "IMAP session, TLS pinning, and read operations for rusty-imap-mcp"
 
 [lints]
 workspace = true
 
 [dependencies]
+# Internal — direct path + explicit version to satisfy cargo-deny's wildcard ban.
+rimap-core = { path = "../rimap-core", version = "0.0.0" }
+rimap-config = { path = "../rimap-config", version = "0.0.0" }
+rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
+
+# Async runtime
+tokio = { workspace = true }
+
+# IMAP + TLS
+async-imap = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Observability
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
+serde_json = { workspace = true }
