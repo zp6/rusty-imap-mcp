@@ -147,6 +147,41 @@ Cite category IDs in findings (e.g., `[LOCAL-MEM-02]`).
   and optionally exclude via platform mechanisms (e.g., the
   `com.apple.metadata:com_apple_backup_excludeItem` xattr on macOS).
 
+### Error-disclosure taxonomy
+
+Information disclosure via error messages, timing, and error shape
+differentials. The taxonomy lives in this agent (rather than a dedicated
+`error-taxonomy-reviewer`) per the #15 decision: it is small enough to
+fit and the boundary with privacy/PII findings is fuzzy.
+
+- **LOCAL-ERR-01 Username / account enumeration** — `auth failed for user X`
+  must not differ in error text, timing, or shape from `user X does not
+  exist`. The audit log records both as `ERR_AUTH` for the same reason.
+- **LOCAL-ERR-02 Mailbox / resource enumeration** — `list messages in
+  folder X` must not produce different errors for "no such folder" vs
+  "folder exists but access denied".
+- **LOCAL-ERR-03 Non-constant-time string comparison on secrets** — pin
+  verification, HMAC verification, and password comparison must use
+  constant-time comparison (`subtle::ConstantTimeEq` or similar).
+- **LOCAL-ERR-04 Divergent timing across auth success/failure paths** —
+  the time spent on a failed login should be indistinguishable from a
+  successful one. Pre-emptive credential lookup helps; staged execution
+  helps more.
+- **LOCAL-ERR-05 Filesystem path in error chain** —
+  `format!("{:#}", err)` expanding an `io::Error` with path context
+  reveals filesystem layout. Audit-record errors must use the
+  `code: ErrorCode` enum, never the raw chain.
+- **LOCAL-ERR-06 Internal config value in error chain** — error messages
+  that quote a config value (a host name, a fingerprint, a secret) leak
+  it to anywhere the error surfaces.
+- **LOCAL-ERR-07 Different error shape for existence vs access-denied** —
+  the structural variant matters as much as the message. Same
+  `ErrorCode` for both, even if the inner message differs in trace logs.
+- **LOCAL-ERR-08 Tool error codes too granular** — leaks internal state
+  (e.g. `ERR_RATE_LIMITED_BUCKET_3`).
+- **LOCAL-ERR-09 Tool error codes too coarse** — `ERR_INTERNAL` for
+  everything masks bugs and prevents observability.
+
 ## Review process
 
 1. **Orient.** Read `AGENTS.md`, the design spec section relevant to the change, and `SECURITY.md` if it exists. Understand what the change claims to do at the host level.
