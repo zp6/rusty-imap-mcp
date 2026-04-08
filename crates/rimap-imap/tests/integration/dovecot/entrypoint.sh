@@ -8,6 +8,15 @@ set -eu
 rm -rf /var/run/dovecot 2>/dev/null || true
 mkdir -p /var/run/dovecot
 
+# Delete the readiness markers from any previous boot. /shared is a
+# named volume that survives container recreation, so without this the
+# host harness would see the old markers and proceed before dovecot in
+# the new container has actually bound port 993 — exactly the TLS
+# handshake EOF race we hit on CI. /shared/cert.pem and /shared/key.pem
+# are NOT deleted: they're load-bearing for fingerprint persistence
+# across the recreate that case_11 uses.
+rm -f /shared/ready /shared/fingerprint.hex
+
 # Generate the self-signed cert ON THE SHARED VOLUME (not in the
 # container's own filesystem) so it survives container recreation.
 # case_11 uses `docker compose up -d --force-recreate dovecot` to

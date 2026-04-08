@@ -210,7 +210,11 @@ impl DovecotHarness {
                 "compose up --force-recreate exit {status}"
             )));
         }
-        // Wait for dovecot to be accepting on the same host port again.
+        // Wait for dovecot to be ready. Two gates: (1) the new entrypoint
+        // must rewrite /shared/ready (which it only touches AFTER dovecot
+        // has bound 993 inside the container), and (2) a direct TCP probe
+        // from the host must succeed (catches the case where docker's
+        // userland proxy is lagging the actual container state).
         let started = Instant::now();
         let timeout = Duration::from_secs(45);
         loop {
@@ -230,22 +234,40 @@ impl DovecotHarness {
                         |o| String::from_utf8_lossy(&o.stdout).into_owned(),
                     );
                 return Err(HarnessError::DockerCommandFailed(format!(
-                    "dovecot did not rebind port {} within 45s after stop/start. \
+                    "dovecot did not rebind port {} within 45s after recreate. \
                      Last container logs:\n{logs}",
                     self.port
                 )));
             }
-            if std::net::TcpStream::connect_timeout(
-                &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
-                Duration::from_millis(500),
-            )
-            .is_ok()
+            if probe_ready_marker(&self.project, &self.compose_dir)
+                && std::net::TcpStream::connect_timeout(
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
+                    Duration::from_millis(500),
+                )
+                .is_ok()
             {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(500));
         }
     }
+}
+
+fn probe_ready_marker(project: &str, compose_dir: &std::path::Path) -> bool {
+    Command::new("docker")
+        .arg("compose")
+        .arg("-p")
+        .arg(project)
+        .arg("exec")
+        .arg("-T")
+        .arg("dovecot")
+        .arg("test")
+        .arg("-f")
+        .arg("/shared/ready")
+        .current_dir(compose_dir)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 impl Drop for DovecotHarness {
