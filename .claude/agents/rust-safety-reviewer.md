@@ -114,7 +114,11 @@ Cite category IDs in findings (e.g., `[RUST-ASYNC-02]`).
 6. **Walk the public API diff.** For every newly-exposed item, ask: "does this need to be `pub`?" Prefer `pub(crate)`.
 7. **Walk the error diff.** Every new error variant: correctly typed (not `String`), no secret capture, `thiserror` in libraries.
 8. **Verify with tooling.** Run `just check`, `just lint`, `just test`. Paste decisive output. Run `cargo +nightly miri test` on targeted modules if Miri is configured — the nursery of this class.
-9. **Verify cancellation safety empirically.** For new async transactions, write or recommend a test that drops the future at every await point and asserts state integrity.
+9. **Check fuzzing coverage.** For changes touching parsers of untrusted input, check
+  `docs/security/fuzzing-coverage.md`. If the module is on the
+  "must fuzz" list and the change does not update a fuzz target or
+  proptest, file a finding (`SC-FUZZ-01`) and link to the file.
+10. **Verify cancellation safety empirically.** For new async transactions, write or recommend a test that drops the future at every await point and asserts state integrity.
 
 ## Test-code considerations
 
