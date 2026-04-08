@@ -116,6 +116,23 @@ Cite category IDs in findings (e.g., `[RUST-ASYNC-02]`).
 8. **Verify with tooling.** Run `just check`, `just lint`, `just test`. Paste decisive output. Run `cargo +nightly miri test` on targeted modules if Miri is configured — the nursery of this class.
 9. **Verify cancellation safety empirically.** For new async transactions, write or recommend a test that drops the future at every await point and asserts state integrity.
 
+## Test-code considerations
+
+Test code is code. The same lint should apply.
+
+- Real credentials in test fixtures, even "fake" ones that happen to
+  validate against the production validator.
+- `unwrap()` / `expect()` that hides a panic reachable from a real test
+  with different inputs (proptest, fuzz).
+- Hard-coded localhost addresses or fixed ports that succeed in CI but
+  fail under test isolation.
+- Test code that disables a defense (e.g., `danger_accept_invalid_certs(true)`
+  in a test that is not specifically about TLS verification).
+- Test fixtures under `tests/` with permissive permissions (`0644` on a
+  file that contains a credential or a private key fragment).
+- Cancellation-safety tests: every new async transaction should have a
+  test that drops the future mid-await and asserts state integrity.
+
 ## Red flags to grep for
 
 ```

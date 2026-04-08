@@ -160,6 +160,22 @@ Cite category IDs in findings (e.g., `[LOCAL-MEM-02]`).
 9. **Walk the PII exposure.** Every email-derived value persisted to disk (audit, cache, attachments) must have a documented retention policy and a redaction or hash policy. Cross-reference LOCAL-PRI-*.
 10. **Verify, don't speculate.** Run `just check`, `just lint`, `just test`, `just deny`, and the specific greps below. Never claim a defense works without seeing it execute. If you can't run a command because the crate is still a placeholder, say so and flag the category to revisit when the code lands.
 
+## Test-code considerations
+
+Test code is code. The same lint should apply.
+
+- Real credentials in test fixtures, even "fake" ones that happen to
+  validate against the production validator.
+- `unwrap()` / `expect()` that hides a panic reachable from a real test
+  with different inputs (proptest, fuzz).
+- Hard-coded localhost addresses or fixed ports that succeed in CI but
+  fail under test isolation.
+- Test code that disables a defense (e.g., `danger_accept_invalid_certs(true)`
+  in a test that is not specifically about TLS verification).
+- Test fixtures under `tests/` with permissive permissions (`0644` on a
+  file that contains a credential or a private key fragment).
+- Tests that dump environment variables into log output for debugging.
+
 ## Red flags to grep for
 
 ```
