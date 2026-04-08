@@ -108,6 +108,9 @@ Use these IDs in findings (`[MAIL-TLS-02]`, etc.) so reviews are stable and diff
 - **MAIL-DOS-03 Connection / retry storms.** Missing backoff on failed connect/login; missing circuit breaker in `rimap-authz`. A flapping server can lock out an account via repeated failed auth.
 - **MAIL-DOS-04 Unbounded header length.** A single header line of tens of MB can wedge a naive parser; enforce per-header and total-header caps.
 - **MAIL-DOS-05 Unicode normalization bomb.** Long strings with characters that expand dramatically under NFKC / case-folding. Cap pre-normalization length and normalize with a ceiling.
+- **MAIL-DOS-06 Slow-loris IMAP reads** — an IMAP server (or MITM) trickling response bytes indefinitely pins a task and its connection slot. IDLE is the canonical exposure. Requires a read timeout per line AND a total-operation timeout, not just a connect timeout.
+- **MAIL-DOS-07 Per-connection byte-rate ceiling** — an attacker that sustains just enough throughput to avoid the slow-loris timer can still exhaust memory by streaming a single large FETCH. Enforce a minimum throughput or a maximum byte budget per command.
+- **MAIL-DOS-08 Task-per-connection leaks in multi-account** — when the server grows to multiple accounts, each account spawning a background IDLE task without a `JoinSet` or `TaskTracker` is a task leak. Cross-references `[RUST-ASYNC-05]` from `rust-safety-reviewer`.
 
 ### Provenance & audit for email
 - **MAIL-AUD-01 Missing per-fetch provenance.** Every audit record touching a message must contain: account id, mailbox name, `UIDVALIDITY`, `UID`, `Message-ID`, observed TLS fingerprint, auth mechanism, posture at time of call, and the sanitizer's warnings list.
@@ -119,7 +122,8 @@ Use these IDs in findings (`[MAIL-TLS-02]`, etc.) so reviews are stable and diff
 1. **Orient.** Read `AGENTS.md`, the design spec (`docs/superpowers/specs/2026-04-07-rusty-imap-mcp-design.md`), and any sprint plan under `docs/superpowers/plans/` that touches the changed crate. Know what the change *claims* to do.
 2. **Identify every byte source.** For changed files, list: IMAP server responses, MIME part bodies, headers (raw and decoded), filenames, mailbox names, config values, env vars, keyring returns, network responses, stdin. Each is a threat surface.
 3. **Walk the transport layer first.** For anything in `rimap-imap`, verify: pinning check runs before application data; no system-trust fallback on pinning failure; STARTTLS path discards buffered bytes; post-TLS capability re-issue; no plaintext LOGIN.
-4. **Walk the parse layer.** For anything in `rimap-content`: does the MIME walker enforce depth/part caps? Does the header decoder reject bare CR/LF and cap fold depth? Does RFC 2047 decoding restrict charset labels to an allowlist? Does RFC 2231 reassembly handle gaps/ordering?
+4. **IDLE-specific timeout coverage.** For IDLE paths: confirm a per-line read timeout AND a total-operation timeout exist (MAIL-DOS-06). A connect-only timeout is insufficient. Check for background task spawning in multi-account scenarios and ensure proper `JoinSet` or `TaskTracker` usage (MAIL-DOS-08).
+5. **Walk the parse layer.** For anything in `rimap-content`: does the MIME walker enforce depth/part caps? Does the header decoder reject bare CR/LF and cap fold depth? Does RFC 2047 decoding restrict charset labels to an allowlist? Does RFC 2231 reassembly handle gaps/ordering?
 5. **Walk the HTML→text layer.** Script/style/iframe/object/embed/link/base/meta stripped; event handlers stripped; `javascript:`/`data:`/`vbscript:`/`file:` URL schemes blocked; remote-content URLs recorded + stripped; hidden-content classes surfaced as warnings; `cid:` refs validated.
 6. **Walk the attachment layer.** Filenames normalized (no `..`, no NUL, no control chars, no RTL overrides, no reserved names); type ↔ magic ↔ extension agreement checked; archive expansion capped; polyglot flagged.
 7. **Walk the provenance layer.** Every new tool dispatch path emits an audit record with the fields in MAIL-AUD-01. Writer errors surface as `ERR_INTERNAL`.
@@ -168,6 +172,9 @@ rg -n 'zip|gzip|deflate|bzip2|xz|ZipArchive|GzDecoder|DeflateDecoder'
 
 # Unicode normalization ceilings
 rg -n 'nfkc|nfc|normalize|unicode-normalization'
+
+# IDLE-specific timeout coverage
+rg 'tokio::time::timeout.*idle|IDLE.*timeout' crates/rimap-imap/src/
 
 # Stdout pollution in non-test code
 ast-grep --pattern 'println!($$$)' --lang rust
