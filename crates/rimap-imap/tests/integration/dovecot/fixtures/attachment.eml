@@ -1,0 +1,22 @@
+From: Attach Sender <attach@example.test>
+To: rimap-test <rimap-test@example.test>
+Subject: Sprint 3 attachment fixture
+X-Test: marker
+Message-ID: <attach-001@example.test>
+Date: Tue, 7 Apr 2026 10:00:02 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="boundaryAA"
+
+--boundaryAA
+Content-Type: text/plain; charset=us-ascii
+
+Body of the attachment fixture.
+
+--boundaryAA
+Content-Type: application/octet-stream; name="payload.bin"
+Content-Disposition: attachment; filename="payload.bin"
+Content-Transfer-Encoding: base64
+
+SGVsbG8gd29ybGQK
+
+--boundaryAA--

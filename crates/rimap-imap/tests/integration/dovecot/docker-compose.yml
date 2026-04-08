@@ -1,0 +1,21 @@
+services:
+  dovecot:
+    image: dovecot/dovecot:2.3.21
+    container_name: ${COMPOSE_PROJECT_NAME:-rimap-it}-dovecot
+    ports:
+      - "0:993"
+    volumes:
+      - ./dovecot.conf:/etc/dovecot/dovecot.conf:ro
+      - ./users:/etc/dovecot/users:ro
+      - ./fixtures:/fixtures:ro
+      - ./entrypoint.sh:/entrypoint.sh:ro
+      - shared:/shared
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/shared/ready"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+volumes:
+  shared:
