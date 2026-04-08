@@ -39,9 +39,13 @@ pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
 
     let audit_path = validated.config.audit.path.clone();
     let rotate_bytes = validated.config.audit.rotate_bytes;
+    // dry-run is a one-shot diagnostic path that exits immediately after
+    // printing the matrix. Chain-of-history continuation (trailing state) is
+    // not useful here; Seq::FIRST is correct.
     let _audit_writer = AuditWriter::open(&AuditOptions {
         path: audit_path.clone(),
         rotate_bytes,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .with_context(|| format!("opening audit log at {}", audit_path.display()))?;
 
@@ -114,6 +118,7 @@ path = "{}"
         let _held = AuditWriter::open(&AuditOptions {
             path: audit_path,
             rotate_bytes: 0,
+            initial_seq: rimap_audit::Seq::FIRST,
         })
         .unwrap();
 

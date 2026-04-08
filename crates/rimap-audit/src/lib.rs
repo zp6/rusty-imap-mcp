@@ -25,4 +25,4 @@ pub use crate::redact::{
     FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments, schemas,
 };
 pub use crate::self_check::{TrailingState, current_inode, read_trailing_state};
-pub use crate::writer::{AuditOptions, AuditWriter};
+pub use crate::writer::{AuditOptions, AuditWriter, ProcessStartInputs};

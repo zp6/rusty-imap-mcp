@@ -92,6 +92,7 @@ path = "/tmp/rimap-audit.jsonl"
         assert_eq!(cfg.imap.host, "127.0.0.1");
         assert_eq!(cfg.imap.port, 1143);
         assert_eq!(cfg.imap.command_timeout_seconds, 30);
+        assert_eq!(cfg.imap.connect_timeout_seconds, 10);
         assert_eq!(cfg.security.posture, Posture::DraftSafe);
         assert_eq!(cfg.limits.commands_per_second, 10);
         assert_eq!(cfg.limits.drafts_per_minute, 5);

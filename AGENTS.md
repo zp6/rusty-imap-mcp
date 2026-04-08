@@ -53,6 +53,16 @@ just test-integration  # Proton Bridge integration tests (gated, future)
 `just` targets are defined in the `justfile` at the repo root. Add new targets
 there, not in ad-hoc scripts.
 
+### Container runtime for integration tests
+
+The rimap-imap Dovecot integration harness autodetects `docker` first, then
+falls back to `podman` (via `podman compose` / `podman-compose`). Both
+runtimes work on macOS, Ubuntu CI, and Fedora. Override with
+`RIMAP_CONTAINER_TOOL=docker` or `RIMAP_CONTAINER_TOOL=podman` if you need
+to force a specific one. Set `RIMAP_REQUIRE_DOCKER=1` to fail loudly
+instead of silently skipping when no runtime is installed (the env var
+name is historical — it gates both docker and podman).
+
 ## Toolchain and MSRV
 
 - **Dev toolchain:** Rust 1.94.0, pinned in `rust-toolchain.toml`. Rustup

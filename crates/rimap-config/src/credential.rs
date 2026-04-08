@@ -39,11 +39,16 @@ pub fn account_key(username: &str, host: &str) -> String {
 
 /// Resolve a credential: try the store first, then env var, then fail.
 ///
+/// Accepts `&dyn CredentialStore` so callers that hold an
+/// `Arc<dyn CredentialStore>` can pass `&*arc` without a generic bound.
+/// Concrete references (e.g. `&KeyringStore`) coerce to `&dyn CredentialStore`
+/// automatically, so existing callers are unaffected.
+///
 /// # Errors
 /// - `ConfigError::Keychain` if the store itself errored.
 /// - `ConfigError::NoCredential` if neither source had a value.
-pub fn resolve_credential<S: CredentialStore>(
-    store: &S,
+pub fn resolve_credential(
+    store: &dyn CredentialStore,
     username: &str,
     host: &str,
 ) -> Result<String, ConfigError> {

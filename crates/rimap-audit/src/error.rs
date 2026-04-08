@@ -105,21 +105,16 @@ impl AuditError {
 
 impl From<AuditError> for RimapError {
     fn from(err: AuditError) -> Self {
-        let message = err.to_string();
-        match err {
-            AuditError::Open { .. } | AuditError::ParentDir { .. } | AuditError::Locked { .. } => {
-                Self::Config(message)
-            }
-            AuditError::Serialize(_)
-            | AuditError::Write { .. }
-            | AuditError::Fsync { .. }
-            | AuditError::Rotate { .. }
-            | AuditError::Read { .. } => Self::Internal(message),
+        let code = err.code();
+        Self::Audit {
+            code,
+            source: Box::new(err),
         }
     }
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use std::path::PathBuf;
 
@@ -161,11 +156,36 @@ mod tests {
     }
 
     #[test]
-    fn rimap_error_conversion_preserves_code() {
+    fn rimap_error_conversion_preserves_code_and_source() {
+        use std::error::Error as _;
+
         let err = AuditError::Locked {
             path: PathBuf::from("/tmp/a.jsonl"),
         };
         let rimap: rimap_core::RimapError = err.into();
+
+        // Open-time errors still carry ERR_CONFIG.
         assert_eq!(rimap.code(), ErrorCode::Config);
+
+        // Display form must include the code AND the original path so
+        // operators see what went wrong.
+        let display = rimap.to_string();
+        assert!(display.contains("ERR_CONFIG"), "got: {display}");
+        assert!(display.contains("/tmp/a.jsonl"), "got: {display}");
+
+        // Source chain preserved.
+        let source = rimap.source().expect("source chain must be preserved");
+        assert!(
+            source.to_string().contains("/tmp/a.jsonl"),
+            "source should be the AuditError with path, got: {source}",
+        );
+
+        // Runtime error still maps to ERR_INTERNAL.
+        let err = AuditError::Write {
+            path: PathBuf::from("/tmp/a.jsonl"),
+            source: std::io::Error::from(std::io::ErrorKind::BrokenPipe),
+        };
+        let rimap: rimap_core::RimapError = err.into();
+        assert_eq!(rimap.code(), ErrorCode::Internal);
     }
 }

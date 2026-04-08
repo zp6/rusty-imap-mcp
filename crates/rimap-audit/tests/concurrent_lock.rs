@@ -14,12 +14,14 @@ fn concurrent_open_fails_fast_with_locked() {
     let _first = AuditWriter::open(&AuditOptions {
         path: path.clone(),
         rotate_bytes: 0,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
 
     let err = AuditWriter::open(&AuditOptions {
         path: path.clone(),
         rotate_bytes: 0,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap_err();
     match err {
@@ -36,12 +38,14 @@ fn lock_released_after_drop_allows_reopen() {
         let _first = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: rimap_audit::Seq::FIRST,
         })
         .unwrap();
     }
     let _second = AuditWriter::open(&AuditOptions {
         path,
         rotate_bytes: 0,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
 }

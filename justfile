@@ -16,21 +16,97 @@ default:
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
+    # Detect host OS / Linux distro family once, then build one install hint
+    # per tool targeted at that platform. Language-native package managers
+    # (cargo, go) are the fallback when a distro does not ship the tool.
+    os="$(uname -s)"
+    flavor="unknown"
+    if [ "$os" = "Darwin" ]; then
+        flavor="mac"
+    elif [ "$os" = "Linux" ] && [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        for id in ${ID:-} ${ID_LIKE:-}; do
+            case "$id" in
+                fedora|rhel|centos)  flavor="fedora"; break ;;
+                debian|ubuntu)       flavor="debian"; break ;;
+                arch)                flavor="arch";   break ;;
+                opensuse*|suse|sles) flavor="suse";   break ;;
+            esac
+        done
+    fi
+    # Per-flavor install commands. Only the selected flavor's hints are built.
+    case "$flavor" in
+        mac)
+            H_JUST='brew install just'
+            H_PREK='brew install prek'
+            H_SHELLCHECK='brew install shellcheck'
+            H_SHFMT='brew install shfmt'
+            H_ACTIONLINT='brew install actionlint'
+            H_ZIZMOR='brew install zizmor'
+            H_TYPOS='brew install typos-cli'
+            ;;
+        fedora)
+            H_JUST='sudo dnf install just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo dnf install ShellCheck'
+            H_SHFMT='sudo dnf install shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        debian)
+            H_JUST='sudo apt install just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo apt install shellcheck'
+            H_SHFMT='sudo apt install shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        arch)
+            H_JUST='sudo pacman -S just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo pacman -S shellcheck'
+            H_SHFMT='sudo pacman -S shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        suse)
+            H_JUST='sudo zypper install just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo zypper install ShellCheck'
+            H_SHFMT='sudo zypper install shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        *)
+            H_JUST='cargo install --locked just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='install shellcheck via your package manager'
+            H_SHFMT='go install mvdan.cc/sh/v3/cmd/shfmt@latest'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+    esac
     missing=()
     need() {
         if ! command -v "$1" >/dev/null 2>&1; then
             missing+=("$1 ($2)")
         fi
     }
-    need rustup "install from https://rustup.rs"
-    need cargo "bundled with rustup"
-    need just "brew install just"
-    need prek "brew install prek"
-    need shellcheck "brew install shellcheck"
-    need shfmt "brew install shfmt"
-    need actionlint "brew install actionlint"
-    need zizmor "brew install zizmor"
-    need typos "cargo install --locked typos-cli"
+    need rustup     "install from https://rustup.rs"
+    need cargo      "bundled with rustup"
+    need just       "$H_JUST"
+    need prek       "$H_PREK"
+    need shellcheck "$H_SHELLCHECK"
+    need shfmt      "$H_SHFMT"
+    need actionlint "$H_ACTIONLINT"
+    need zizmor     "$H_ZIZMOR"
+    need typos      "$H_TYPOS"
     if [ "${#missing[@]}" -ne 0 ]; then
         echo "Missing required tools:"
         printf '  - %s\n' "${missing[@]}"

@@ -1,0 +1,41 @@
+services:
+  dovecot:
+    # Pinned amd64-only. Multi-arch (arm64) is only available on dovecot/dovecot:2.4.x
+    # but the 2.4 line has breaking config-format changes that would require a
+    # parallel dovecot.conf migration. CI runs on Linux amd64 natively so this
+    # works there; local arm64 Mac hosts cannot run the suite under Rosetta
+    # because dovecot's child processes hit "mmap_anonymous_rw mmap failed".
+    # Fully-qualified so podman (with short-name-mode=enforcing, the Fedora
+    # default) does not try to prompt a TTY to disambiguate registries.
+    image: docker.io/dovecot/dovecot:2.3.21
+    container_name: ${COMPOSE_PROJECT_NAME:-rimap-it}-dovecot
+    ports:
+      # Loopback-only. The host port is pre-allocated by the Rust harness
+      # (DovecotHarness picks a free port via a localhost bind+drop) and
+      # passed in via RIMAP_DOVECOT_HOST_PORT so that `compose up
+      # --force-recreate` (used by case_11 to break the client TCP)
+      # preserves the SAME host port across the recreate. Without the
+      # fixed port, recreate would get a fresh random port and the
+      # client's pinned Connection could not reconnect.
+      - "127.0.0.1:${RIMAP_DOVECOT_HOST_PORT}:993"
+    volumes:
+      # `,z` asks podman to SELinux-relabel these host paths (shared label so
+      # parallel nextest containers can all read the same sources). Docker
+      # without SELinux treats the suffix as a no-op, so the line works in
+      # both runtimes. Without this, Fedora's enforcing SELinux denies the
+      # container's reads of entrypoint.sh / dovecot.conf and it exits before
+      # running the script.
+      - ./dovecot.conf:/etc/dovecot/dovecot.conf:ro,z
+      - ./users:/etc/dovecot/users:ro,z
+      - ./fixtures:/fixtures:ro,z
+      - ./entrypoint.sh:/entrypoint.sh:ro,z
+      - shared:/shared
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/shared/ready"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+volumes:
+  shared:

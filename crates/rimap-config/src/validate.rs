@@ -12,19 +12,22 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::str::FromStr;
 
+use rimap_core::tls::TlsFingerprint;
 use rimap_core::tool::ToolName;
 
 use crate::error::ConfigError;
 use crate::model::{Config, Verdict};
 
 /// Validated config: a `Config` plus the resolved per-tool override map
-/// keyed by `ToolName` instead of raw string.
+/// keyed by `ToolName`, plus the parsed TLS fingerprint (if any).
 #[derive(Debug, Clone)]
 pub struct ValidatedConfig {
     /// The underlying parsed config (untouched).
     pub config: Config,
     /// Resolved per-tool overrides.
     pub tool_overrides: BTreeMap<ToolName, Verdict>,
+    /// Parsed pinned TLS fingerprint, if `imap.tls_fingerprint_sha256` was set.
+    pub tls_fingerprint: Option<TlsFingerprint>,
 }
 
 /// Validate a parsed config and resolve override tool names.
@@ -32,34 +35,25 @@ pub struct ValidatedConfig {
 /// # Errors
 /// Returns `ConfigError` on any validation failure.
 pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
-    validate_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
+    let tls_fingerprint = parse_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
     validate_limits(&config)?;
     validate_paths(&config)?;
     let tool_overrides = resolve_tool_overrides(&config)?;
     Ok(ValidatedConfig {
         config,
         tool_overrides,
+        tls_fingerprint,
     })
 }
 
-fn validate_fingerprint(maybe_fp: Option<&str>) -> Result<(), ConfigError> {
+fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, ConfigError> {
     let Some(raw) = maybe_fp else {
-        return Ok(());
+        return Ok(None);
     };
-    let cleaned: String = raw.chars().filter(|c| *c != ':').collect();
-    if cleaned.len() != 64 {
-        return Err(ConfigError::TlsFingerprint {
-            reason: format!("got {} hex chars (want 64)", cleaned.len()),
-        });
-    }
-    for c in cleaned.chars() {
-        if !c.is_ascii_hexdigit() {
-            return Err(ConfigError::TlsFingerprint {
-                reason: format!("non-hex character `{c}`"),
-            });
-        }
-    }
-    Ok(())
+    let fp = TlsFingerprint::from_hex(raw).map_err(|e| ConfigError::TlsFingerprint {
+        reason: e.to_string(),
+    })?;
+    Ok(Some(fp))
 }
 
 fn validate_limits(config: &Config) -> Result<(), ConfigError> {
@@ -190,6 +184,7 @@ mod tests {
                 username: "alice@example.test".into(),
                 tls_fingerprint_sha256: None,
                 command_timeout_seconds: 30,
+                connect_timeout_seconds: 10,
             },
             security: SecurityConfig::default(),
             limits: LimitsConfig::default(),
@@ -284,6 +279,41 @@ mod tests {
         cfg.imap.tls_fingerprint_sha256 = Some("z".repeat(64));
         let err = validate(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::TlsFingerprint { .. }));
+    }
+
+    #[test]
+    fn validate_returns_parsed_tls_fingerprint() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.imap.tls_fingerprint_sha256 = Some(
+            "0123456789abcdef0123456789abcdef\
+             0123456789abcdef0123456789abcdef"
+                .to_string(),
+        );
+        let validated = validate(cfg).unwrap();
+        let Some(fp) = validated.tls_fingerprint else {
+            panic!("fingerprint should be set");
+        };
+        assert_eq!(
+            fp.to_hex(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+    }
+
+    #[test]
+    fn validate_returns_none_when_fingerprint_absent() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        let validated = validate(cfg).unwrap();
+        assert!(validated.tls_fingerprint.is_none());
+    }
+
+    #[test]
+    fn validate_uses_default_connect_timeout_when_unset() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        let validated = validate(cfg).unwrap();
+        assert_eq!(validated.config.imap.connect_timeout_seconds, 10);
     }
 
     #[test]
