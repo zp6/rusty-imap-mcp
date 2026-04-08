@@ -370,12 +370,22 @@ fn check_mime_depth(
 
 /// Walk the MIME tree from part 0 and return the maximum depth.
 fn compute_max_depth(message: &Message<'_>) -> usize {
+    debug_assert!(
+        message.parts.len() <= MAX_MIME_PARTS,
+        "compute_max_depth must only be called after MAX_MIME_PARTS enforcement"
+    );
     depth_recursive(message, 0, 1)
 }
 
 /// Recursive helper used by [`compute_max_depth`]; visits `part_id`
 /// at level `current` and returns the deepest level reachable.
 fn depth_recursive(message: &Message<'_>, part_id: usize, current: usize) -> usize {
+    // Defensive short-circuit: bound recursion independently of any
+    // mail-parser tree invariant. If current already exceeds
+    // MAX_MIME_DEPTH, the caller will reject; no need to walk deeper.
+    if current > MAX_MIME_DEPTH {
+        return current;
+    }
     let Some(part) = message.parts.get(part_id) else {
         return current;
     };
