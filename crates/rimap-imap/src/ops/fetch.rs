@@ -7,6 +7,16 @@ use crate::connection::ImapSession;
 use crate::error::Error;
 use crate::types::{Address, BodyStructure, Envelope, FetchSpec, FetchedMessage, MessageId, Uid};
 
+/// Maximum BODYSTRUCTURE nesting depth before we refuse to descend.
+/// Real-world MIME almost never exceeds ~10 levels; 64 is a generous
+/// `DoS` guard that still covers legitimate deeply-nested forwarded
+/// messages and `message/rfc822` chains.
+const MAX_BODYSTRUCTURE_DEPTH: u32 = 64;
+
+/// Maximum parts in a single Multipart before we truncate. Protects
+/// against pathological `multipart/mixed` with millions of children.
+const MAX_MULTIPART_PARTS: usize = 1024;
+
 pub(crate) async fn fetch(
     session: &mut ImapSession,
     folder: &str,
@@ -194,11 +204,34 @@ fn convert_addresses(addrs: Option<&[async_imap::imap_proto::Address<'_>]>) -> V
 fn convert_bodystructure(
     bs: Option<&async_imap::imap_proto::BodyStructure<'_>>,
 ) -> Option<BodyStructure> {
-    bs.map(convert_bs_inner)
+    bs.map(|b| convert_bs_inner(b, 0))
 }
 
-fn convert_bs_inner(bs: &async_imap::imap_proto::BodyStructure<'_>) -> crate::types::BodyStructure {
+/// Recursively convert an `imap_proto::BodyStructure` into our own type.
+///
+/// Depth and breadth caps prevent stack overflow and excessive allocation from
+/// hostile IMAP servers:
+/// - Nesting beyond [`MAX_BODYSTRUCTURE_DEPTH`] (64) returns a synthetic
+///   `application/octet-stream` sentinel instead of recursing further.
+/// - Multipart bodies with more than [`MAX_MULTIPART_PARTS`] (1024) children
+///   are silently truncated at the cap.
+fn convert_bs_inner(
+    bs: &async_imap::imap_proto::BodyStructure<'_>,
+    depth: u32,
+) -> crate::types::BodyStructure {
     use async_imap::imap_proto::BodyStructure as ImapProtoBodyStructure;
+
+    if depth >= MAX_BODYSTRUCTURE_DEPTH {
+        // Truncate — return a synthetic leaf so the rest of the tree still
+        // round-trips without propagating an error all the way out.
+        return crate::types::BodyStructure::Single {
+            mime_type: "application".to_string(),
+            mime_subtype: "octet-stream".to_string(),
+            params: Vec::new(),
+            encoding: "7bit".to_string(),
+            size: 0,
+        };
+    }
 
     match bs {
         ImapProtoBodyStructure::Multipart {
@@ -207,7 +240,11 @@ fn convert_bs_inner(bs: &async_imap::imap_proto::BodyStructure<'_>) -> crate::ty
             extension: _,
         } => {
             let subtype = common.ty.subtype.to_string();
-            let parts = bodies.iter().map(convert_bs_inner).collect();
+            let parts = bodies
+                .iter()
+                .take(MAX_MULTIPART_PARTS)
+                .map(|b| convert_bs_inner(b, depth + 1))
+                .collect();
             crate::types::BodyStructure::Multipart { subtype, parts }
         }
         ImapProtoBodyStructure::Basic {
@@ -256,7 +293,7 @@ fn convert_bs_inner(bs: &async_imap::imap_proto::BodyStructure<'_>) -> crate::ty
             let mime_subtype = common.ty.subtype.to_string();
             crate::types::BodyStructure::Message {
                 mime_subtype,
-                body: Box::new(convert_bs_inner(body)),
+                body: Box::new(convert_bs_inner(body, depth + 1)),
             }
         }
     }
@@ -280,7 +317,7 @@ fn convert_flag(f: &async_imap::types::Flag<'_>) -> crate::types::Flag {
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_bs_inner, project_size};
+    use super::{MAX_BODYSTRUCTURE_DEPTH, convert_bs_inner, project_size};
     use crate::error::Error;
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
@@ -288,11 +325,8 @@ mod tests {
     };
     use std::borrow::Cow;
 
-    #[test]
-    #[expect(clippy::panic, reason = "test")]
-    fn convert_bs_inner_preserves_message_variant_with_nested_body() {
-        // Construct an inner Basic text/plain part
-        let inner_bs = ImapProtoBodyStructure::Basic {
+    fn make_basic_leaf() -> ImapProtoBodyStructure<'static> {
+        ImapProtoBodyStructure::Basic {
             common: BodyContentCommon {
                 ty: ContentType {
                     ty: Cow::Borrowed("text"),
@@ -311,7 +345,14 @@ mod tests {
                 octets: 42,
             },
             extension: None,
-        };
+        }
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "test")]
+    fn convert_bs_inner_preserves_message_variant_with_nested_body() {
+        // Construct an inner Basic text/plain part
+        let inner_bs = make_basic_leaf();
 
         // Construct a Message body with the Basic part inside
         let msg_bs = ImapProtoBodyStructure::Message {
@@ -349,7 +390,7 @@ mod tests {
             extension: None,
         };
 
-        let result = convert_bs_inner(&msg_bs);
+        let result = convert_bs_inner(&msg_bs, 0);
 
         // Verify the Message variant is preserved and the nested body is intact
         match result {
@@ -370,6 +411,121 @@ mod tests {
                 }
             }
             other => panic!("expected Message variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "test failure path")]
+    fn bodystructure_depth_cap_returns_sentinel_at_boundary() {
+        // Passing depth = MAX_BODYSTRUCTURE_DEPTH directly must immediately
+        // return the synthetic sentinel without recursing into the tree.
+        let leaf = make_basic_leaf();
+        let result = convert_bs_inner(&leaf, MAX_BODYSTRUCTURE_DEPTH);
+        match result {
+            crate::types::BodyStructure::Single {
+                mime_type,
+                mime_subtype,
+                ..
+            } => {
+                assert_eq!(
+                    mime_type, "application",
+                    "expected synthetic sentinel mime_type"
+                );
+                assert_eq!(
+                    mime_subtype, "octet-stream",
+                    "expected synthetic sentinel mime_subtype"
+                );
+            }
+            other => panic!("expected synthetic Single sentinel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "test failure path")]
+    fn bodystructure_depth_cap_truncates_pathological_input() {
+        // Build a 100-deep Message → Message → ... → Basic chain.
+        // convert_bs_inner must return without stack-overflowing, and the node
+        // at depth 64 must be the synthetic sentinel.
+        let mut bs = make_basic_leaf();
+        for _ in 0..100 {
+            bs = ImapProtoBodyStructure::Message {
+                common: BodyContentCommon {
+                    ty: ContentType {
+                        ty: Cow::Borrowed("message"),
+                        subtype: Cow::Borrowed("rfc822"),
+                        params: None,
+                    },
+                    disposition: None,
+                    language: None,
+                    location: None,
+                },
+                other: BodyContentSinglePart {
+                    id: None,
+                    md5: None,
+                    description: None,
+                    transfer_encoding: ContentEncoding::SevenBit,
+                    octets: 0,
+                },
+                envelope: async_imap::imap_proto::Envelope {
+                    date: None,
+                    subject: None,
+                    from: None,
+                    sender: None,
+                    reply_to: None,
+                    to: None,
+                    cc: None,
+                    bcc: None,
+                    in_reply_to: None,
+                    message_id: None,
+                },
+                body: Box::new(bs),
+                lines: 0,
+                extension: None,
+            };
+        }
+
+        // Reaching this line without a stack overflow is the primary assertion.
+        let result = convert_bs_inner(&bs, 0);
+
+        // Navigate 64 levels deep to confirm the sentinel is there.
+        let mut current = &result;
+        for level in 0..MAX_BODYSTRUCTURE_DEPTH {
+            match current {
+                crate::types::BodyStructure::Message { body, .. } => {
+                    current = body.as_ref();
+                }
+                crate::types::BodyStructure::Single {
+                    mime_type,
+                    mime_subtype,
+                    ..
+                } => {
+                    // Hit a leaf — must be the sentinel and we must still be within cap.
+                    assert_eq!(
+                        mime_type, "application",
+                        "sentinel mime_type wrong at level {level}"
+                    );
+                    assert_eq!(
+                        mime_subtype, "octet-stream",
+                        "sentinel mime_subtype wrong at level {level}"
+                    );
+                    return;
+                }
+                other @ crate::types::BodyStructure::Multipart { .. } => {
+                    panic!("unexpected variant at level {level}: {other:?}")
+                }
+            }
+        }
+        // At depth MAX_BODYSTRUCTURE_DEPTH the next node must be the sentinel.
+        match current {
+            crate::types::BodyStructure::Single {
+                mime_type,
+                mime_subtype,
+                ..
+            } => {
+                assert_eq!(mime_type, "application");
+                assert_eq!(mime_subtype, "octet-stream");
+            }
+            other => panic!("expected sentinel at cap depth, got {other:?}"),
         }
     }
 

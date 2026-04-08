@@ -431,6 +431,24 @@ impl Connection {
     /// the connection on size-limit overflow OR connection loss so the
     /// half-consumed response state never leaks to the next op.
     ///
+    /// # Size cap is enforced post-parse, not pre-allocation
+    ///
+    /// `async-imap 0.11` yields each FETCH item as an already-materialized
+    /// `Fetch` whose `body()` slice has been parsed into memory by the
+    /// upstream crate before this function gets a chance to inspect its
+    /// length. That means a hostile (or misconfigured) server can force a
+    /// single-item allocation up to the literal size it announces in the
+    /// FETCH response, **independent of `max_fetch_body_bytes`**. Our cap
+    /// is checked immediately after the item lands — so the session is
+    /// torn down and `Error::SizeLimit` is returned before any bytes reach
+    /// the caller — but the intermediate allocation inside async-imap has
+    /// already happened.
+    ///
+    /// Callers exposed to untrusted servers should pair this with an
+    /// external wall-clock memory limit (cgroups, `RLIMIT_AS`) until
+    /// <https://github.com/randomparity/rusty-imap-mcp/issues/32> lands
+    /// a pre-allocation path.
+    ///
     /// # Errors
     /// Propagates `Error::SizeLimit` if the body exceeds the configured
     /// `max_fetch_body_bytes`, plus the usual timeout / protocol /
@@ -459,7 +477,8 @@ impl Connection {
                 | Error::Connect(_)
                 | Error::Timeout { .. }
                 | Error::Auth { .. }
-                | Error::Protocol(_),
+                | Error::Protocol(_)
+                | Error::InvalidInput { .. },
             )
             | Ok(_) => false,
         };
@@ -509,5 +528,6 @@ fn error_code_for(err: &Error) -> &'static str {
         Error::Auth { .. } => "ERR_AUTH",
         Error::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
         Error::Protocol(_) => "ERR_IMAP_PROTOCOL",
+        Error::InvalidInput { .. } => "ERR_INVALID_INPUT",
     }
 }

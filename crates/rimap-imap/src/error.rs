@@ -46,6 +46,14 @@ pub enum Error {
     /// TCP half-open: detected dead connection during a command.
     #[error("ERR_CONNECTION_LOST: connection torn down mid-command")]
     ConnectionLost,
+    /// Caller supplied invalid input (e.g. control bytes in a search string).
+    #[error("ERR_INVALID_INPUT: {field}: {reason}")]
+    InvalidInput {
+        /// Short name identifying the field or parameter that is invalid.
+        field: &'static str,
+        /// Human-readable explanation of the validation failure.
+        reason: &'static str,
+    },
 }
 
 /// Specific authentication failure mode for `Error::Auth`.
@@ -87,6 +95,7 @@ impl From<Error> for RimapError {
             Error::Auth { .. } => ErrorCode::Auth,
             Error::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
             Error::Protocol(_) => ErrorCode::ImapProtocol,
+            Error::InvalidInput { .. } => ErrorCode::InvalidInput,
         };
         let message = err.to_string();
         RimapError::Imap {
