@@ -217,3 +217,22 @@ Some changes deserve extra scrutiny. When touching:
   code is self-documenting, then comment WHY if it's non-obvious.
 - Do not restructure unrelated code "while you're there."
 - Do not claim a task is complete before `just ci` is green locally.
+
+## Operator notes
+
+### Operator notes — `audit merge`
+
+`audit merge` re-emits records to stdout. When the output is redirected to a
+file, the new file is created with the shell's current umask, which on most
+systems is `0022` and produces a world-readable `0644` dump. Operators may
+assume "audit log = `0600`" and not realize the merged dump isn't.
+
+Recommended patterns:
+
+```bash
+# 1. Set a tight umask before the redirect:
+umask 077 && rusty-imap-mcp audit merge … > dump.jsonl
+
+# 2. Or pipe through `install` for an atomic mode-set:
+rusty-imap-mcp audit merge … | install -m 0600 /dev/stdin /target/dump.jsonl
+```
