@@ -198,7 +198,16 @@ mod tests {
         let colon = fp.to_hex_colon();
         assert_eq!(colon.len(), 64 + 31, "32 bytes + 31 colons");
         assert!(colon.starts_with("01:23:45"));
-        assert!(colon.chars().all(|c| c == ':' || c.is_ascii_hexdigit()));
+        // Letters MUST be uppercase to match `openssl x509 -fingerprint -sha256`.
+        for c in colon.chars() {
+            assert!(
+                c == ':' || c.is_ascii_digit() || c.is_ascii_uppercase(),
+                "to_hex_colon must emit uppercase hex (got `{c}`)"
+            );
+        }
+        // Spot check the AB and CD bytes are uppercase in the output.
+        assert!(colon.contains(":AB:"));
+        assert!(colon.contains(":CD:"));
     }
 
     #[test]
