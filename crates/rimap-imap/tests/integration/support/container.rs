@@ -435,6 +435,7 @@ impl ConnectedHarness {
         let audit = AuditWriter::open(&AuditOptions {
             path: audit_path,
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: Seq::FIRST,
         })
         .expect("audit open");

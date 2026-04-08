@@ -24,6 +24,7 @@ pub fn init_audit_writer(
     let writer = AuditWriter::open(&AuditOptions {
         path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
+        rotate_keep: cfg.config.audit.rotate_keep,
         initial_seq,
     })?;
 
@@ -138,6 +139,7 @@ path = "{}"
             let writer = AuditWriter::open(&AuditOptions {
                 path: audit_path.clone(),
                 rotate_bytes: 0,
+                rotate_keep: 0,
                 initial_seq: Seq::FIRST,
             })
             .unwrap();

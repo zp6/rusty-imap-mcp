@@ -27,6 +27,10 @@ pub struct AuditOptions {
     pub path: PathBuf,
     /// Rotate when the file exceeds this many bytes. `0` disables rotation.
     pub rotate_bytes: u64,
+    /// Number of rotated sibling files to keep on disk after a rotation.
+    /// `0` means "keep none — delete every rotated sibling immediately
+    /// after rotation". The default at the config layer is 5.
+    pub rotate_keep: u32,
     /// First `Seq` value this writer will allocate. Callers compute this from
     /// `read_trailing_state(path).last_seq.map(Seq::next).unwrap_or(Seq::FIRST)`
     /// before calling `open`.
@@ -40,6 +44,7 @@ pub struct AuditOptions {
 pub struct AuditWriter {
     path: PathBuf,
     rotate_bytes: u64,
+    rotate_keep: u32,
     process_id: crate::ids::ProcessId,
     inner: Arc<Mutex<Inner>>,
 }
@@ -109,6 +114,7 @@ impl AuditWriter {
         Ok(Self {
             path: opts.path.clone(),
             rotate_bytes: opts.rotate_bytes,
+            rotate_keep: opts.rotate_keep,
             process_id: crate::ids::ProcessId::new_now(),
             inner: Arc::new(Mutex::new(Inner {
                 buf: BufWriter::new(file),
@@ -206,7 +212,7 @@ impl AuditWriter {
         // This prevents two clones of AuditWriter from both observing "needs
         // rotation" and racing on the rename.
         if self.rotate_bytes > 0 && guard.bytes_written >= self.rotate_bytes {
-            let (new_buf, new_len) = crate::rotation::rotate_file(&self.path)?;
+            let (new_buf, new_len) = crate::rotation::rotate_file(&self.path, self.rotate_keep)?;
             guard.buf = new_buf;
             guard.bytes_written = new_len;
             tracing::info!(path = %self.path.display(), "audit file rotated");
@@ -402,6 +408,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -416,12 +423,14 @@ mod tests {
         let _first = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
         let err = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
@@ -439,6 +448,7 @@ mod tests {
             let _first = AuditWriter::open(&AuditOptions {
                 path: path.clone(),
                 rotate_bytes: 0,
+                rotate_keep: 0,
                 initial_seq: crate::ids::Seq::FIRST,
             })
             .unwrap();
@@ -447,6 +457,7 @@ mod tests {
         let _second = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -459,6 +470,7 @@ mod tests {
         let _writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -476,6 +488,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -510,6 +523,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -542,6 +556,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 200,
+            rotate_keep: 5,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -609,6 +624,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 200,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -629,6 +645,7 @@ mod tests {
         let err = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
@@ -645,6 +662,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path,
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -660,6 +678,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path,
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -678,6 +697,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path,
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq(42),
         })
         .unwrap();
@@ -694,6 +714,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -732,6 +753,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -772,6 +794,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -813,6 +836,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();

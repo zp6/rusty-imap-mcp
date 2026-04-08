@@ -36,6 +36,7 @@ fn audit_merge_round_trips_synthetic_log() {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: Seq::FIRST,
         })
         .unwrap();
@@ -94,6 +95,7 @@ fn audit_merge_filters_by_kind() {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
             initial_seq: Seq::FIRST,
         })
         .unwrap();
