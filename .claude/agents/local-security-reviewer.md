@@ -120,7 +120,32 @@ Cite category IDs in findings (e.g., `[LOCAL-MEM-02]`).
 ### Updates and rotation
 - **LOCAL-UPD-01 Secret rotation story.** If a user's Proton app-password leaks, how do they rotate? The keyring entry update path must be documented and tested — not just on happy path, but with "keyring had a stale value and the new value auths successfully."
 - **LOCAL-UPD-02 Pin rotation story.** See LOCAL-PIN-05. Multiple pins per account, and an audit entry on drift.
-- **LOCAL-UPD-03 Audit log retention.** Indefinite retention inflates blast radius. Configurable retention with a default (e.g., 90 days). Rotation honors LOCAL-FS-11 and LOCAL-LOG-05.
+- **LOCAL-UPD-03 Audit log retention.** Indefinite retention inflates blast radius. Configurable retention with a default (e.g., 90 days). Rotation honors LOCAL-FS-11 and LOCAL-LOG-05. Cross-references `LOCAL-PRI-01` (audit log retention cap).
+
+### Privacy and retention
+
+- **LOCAL-PRI-01 Audit log retention cap** — indefinite retention inflates
+  blast radius and creates a compliance liability (GDPR, CCPA). Configurable
+  retention with a sane default (e.g. 90 days). Links to `LOCAL-UPD-03`.
+- **LOCAL-PRI-02 PII-bearing header residue** — beyond `From`/`To`/`Subject`,
+  headers like `Received:`, `X-Originating-IP`, `User-Agent`, `X-Mailer`,
+  `Message-ID` local part, and DKIM signatures leak recipient/sender
+  identity details into the audit log. Redact or hash before persistence.
+- **LOCAL-PRI-03 Body snippet retention** — if audit records include body
+  snippets for debugging, the snippet itself is PII. Either exclude or cap
+  length and hash for correlation only.
+- **LOCAL-PRI-04 Consent semantics for posture changes** — if posture ever
+  includes "forward message content to a third-party LLM," the consent
+  state at the time of the forward must be recorded per-message, not
+  per-session.
+- **LOCAL-PRI-05 Right-to-delete story** — a user asking "forget account X"
+  must have a documented deletion procedure covering audit log, keyring,
+  config, and any cache. The absence of such a procedure is a compliance
+  finding.
+- **LOCAL-PRI-06 Backup and sync exposure** — config and audit paths
+  landing in Time Machine, iCloud Drive, or OneDrive by default. Document
+  and optionally exclude via platform mechanisms (e.g., the
+  `com.apple.metadata:com_apple_backup_excludeItem` xattr on macOS).
 
 ## Review process
 
@@ -132,7 +157,8 @@ Cite category IDs in findings (e.g., `[LOCAL-MEM-02]`).
 6. **Check logging.** Grep for `info!`, `warn!`, `error!`, `debug!`, `trace!`, `#[instrument]`, `panic!`, `unwrap`, `expect`. For each, ask: "could this emit a secret or a secret-derived value?"
 7. **Check arguments and environment.** Any new CLI flag that accepts a secret is a finding. Any new env var read that bypasses the documented resolution order is a finding.
 8. **Check audit provenance.** Secret-material events (auth success/failure, pin drift, keyring fallback, permission warnings) must land in the audit log with enough context to investigate, with no raw secret bytes.
-9. **Verify, don't speculate.** Run `just check`, `just lint`, `just test`, `just deny`, and the specific greps below. Never claim a defense works without seeing it execute. If you can't run a command because the crate is still a placeholder, say so and flag the category to revisit when the code lands.
+9. **Walk the PII exposure.** Every email-derived value persisted to disk (audit, cache, attachments) must have a documented retention policy and a redaction or hash policy. Cross-reference LOCAL-PRI-*.
+10. **Verify, don't speculate.** Run `just check`, `just lint`, `just test`, `just deny`, and the specific greps below. Never claim a defense works without seeing it execute. If you can't run a command because the crate is still a placeholder, say so and flag the category to revisit when the code lands.
 
 ## Red flags to grep for
 
@@ -193,6 +219,9 @@ rg -n 'keyring::|Entry::new|set_password|get_password|delete_credential' crates/
 # Audit log lock / await discipline
 rg -n 'lock_exclusive|try_lock|flock|fs2' crates/rimap-audit
 rg -B1 -A3 'lock_exclusive|fs2::' crates/rimap-audit
+
+# PII-bearing headers in audit/content paths
+rg 'Received:|X-Originating-IP|User-Agent|X-Mailer' crates/rimap-audit crates/rimap-content
 ```
 
 ## Reporting format
