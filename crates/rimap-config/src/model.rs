@@ -46,10 +46,17 @@ pub struct ImapConfig {
     /// Per-command timeout in seconds.
     #[serde(default = "default_command_timeout")]
     pub command_timeout_seconds: u32,
+    /// TCP + TLS handshake + greeting + CAPABILITY probe deadline.
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_seconds: u32,
 }
 
 fn default_command_timeout() -> u32 {
     30
+}
+
+fn default_connect_timeout() -> u32 {
+    10
 }
 
 /// Override verdict for a per-tool override.

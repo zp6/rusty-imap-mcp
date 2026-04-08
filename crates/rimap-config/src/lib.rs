@@ -21,3 +21,4 @@ pub use crate::model::{
     SecurityConfig, Verdict,
 };
 pub use crate::validate::{ValidatedConfig, validate};
+pub use rimap_core::tls::{FingerprintParseError, TlsFingerprint};
