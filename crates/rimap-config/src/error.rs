@@ -35,7 +35,7 @@ pub enum ConfigError {
     #[error("invalid tool override: {0}")]
     ToolOverride(#[from] ParseToolNameError),
     /// TLS fingerprint did not parse as 32 hex bytes.
-    #[error("invalid tls_fingerprint_sha256: expected 32 hex bytes, {reason}")]
+    #[error("invalid tls_fingerprint_sha256: {reason}")]
     TlsFingerprint {
         /// Specific parse failure reason.
         reason: String,
