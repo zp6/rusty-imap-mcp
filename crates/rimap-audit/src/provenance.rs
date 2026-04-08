@@ -62,9 +62,11 @@ impl ProvenanceBuffer {
 
     /// Variant taking an explicit clock so eviction can be asserted
     /// deterministically. Applies the same length cap and count cap as
-    /// [`record`](Self::record).
-    #[doc(hidden)]
-    pub fn record_at(&mut self, message_id: impl Into<String>, now: OffsetDateTime) {
+    /// [`record`](Self::record). Crate-private; tests inside `rimap-audit`
+    /// see it via `pub(crate)`.
+    #[allow(clippy::allow_attributes)]
+    #[allow(dead_code)]
+    pub(crate) fn record_at(&mut self, message_id: impl Into<String>, now: OffsetDateTime) {
         self.evict_before(now);
 
         let mut message_id = message_id.into();
@@ -96,9 +98,11 @@ impl ProvenanceBuffer {
         self.entries.iter().map(|e| e.message_id.clone()).collect()
     }
 
-    /// Test-only snapshot with explicit clock.
-    #[doc(hidden)]
-    pub fn snapshot_at(&mut self, now: OffsetDateTime) -> Vec<String> {
+    /// Test-only snapshot with explicit clock. Crate-private; integration
+    /// tests do not need this seam.
+    #[allow(clippy::allow_attributes)]
+    #[allow(dead_code)]
+    pub(crate) fn snapshot_at(&mut self, now: OffsetDateTime) -> Vec<String> {
         self.evict_before(now);
         self.entries.iter().map(|e| e.message_id.clone()).collect()
     }
