@@ -22,7 +22,13 @@ use sha2::{Digest, Sha256};
 /// Per-field policy for the redaction pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldPolicy {
-    /// Copy the field's JSON value into the record unchanged.
+    /// Copy the field's JSON value into the record unchanged. This policy
+    /// assumes the value has already passed the `rimap-content` mailbox-name
+    /// validator (no bare CR/LF, no NUL, no other ASCII control chars). The
+    /// invariant matters for downstream consumers of the audit JSONL who
+    /// pretty-print or grep the file: smuggled control bytes would surface
+    /// as confusing output, and a permissive JSONL re-parser could
+    /// re-introduce the bytes into a downstream sink.
     Verbatim,
     /// Replace string values with `"<redacted:N>"`. Non-string values are
     /// replaced with `"<redacted:?>"`.
