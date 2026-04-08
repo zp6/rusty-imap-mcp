@@ -7,6 +7,17 @@
 //! `OnceLock` regardless of whether the handshake succeeds. After the
 //! `tokio_rustls::TlsConnector::connect` call returns, `Connection` reads
 //! the slot and uses it to populate the `Auth` audit record.
+//!
+//! ## Protocol version admission
+//!
+//! `build_tls_config` calls `with_safe_default_protocol_versions()`, which
+//! admits both TLS 1.2 and TLS 1.3. This is deliberate: real-world IMAP
+//! servers — Dovecot, Gmail, Proton Bridge, and most legacy deployments —
+//! still require TLS 1.2 compatibility. Forcing TLS-1.3-only via
+//! `with_protocol_versions(&[&rustls::version::TLS13])` would break the
+//! Sprint 3 Dovecot integration suite and most production IMAP targets.
+//! The modern rustls ring provider is safe with TLS 1.2 (no RC4, no CBC
+//! without ETM, no weak ciphers). (MAIL-TLS-06)
 
 use std::sync::{Arc, OnceLock};
 
@@ -187,6 +198,14 @@ pub fn build_tls_config(
                 Arc::clone(&provider),
             )
             .build()
+            // VerifierBuilderError has variants including `NoRootAnchors`
+            // (unreachable because we extended from webpki_roots which
+            // ships ~150 trust anchors) and `InvalidCrl(...)` (unreachable
+            // because webpki-roots 1.0 ships only static trust anchors,
+            // no CRLs — so `InvalidCrl` cannot fire from this builder).
+            // Both failure paths are therefore extremely unlikely; we
+            // still propagate them as TlsHandshake errors rather than
+            // panicking. (MAIL-TLS-03)
             .map_err(|e| {
                 crate::error::Error::TlsHandshake(tokio_rustls::rustls::Error::General(format!(
                     "WebPkiServerVerifier builder failed: {e}"
