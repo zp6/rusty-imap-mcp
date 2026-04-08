@@ -66,8 +66,8 @@ impl core::fmt::Display for ErrorCode {
 }
 
 /// Top-level tool error returned from dispatch. Library crates produce more
-/// specific errors (`AuthzError`, `ConfigError`, …) which map into this via
-/// `From` impls added in later sprints.
+/// specific errors (`AuthzError`, `ConfigError`, `rimap_imap::Error`,
+/// `AuditError`, …) which map into this via `From` impls.
 #[derive(Debug, Error)]
 pub enum RimapError {
     /// Authorization, posture, rate limit, or breaker failure.
@@ -77,6 +77,30 @@ pub enum RimapError {
         code: ErrorCode,
         /// Human-readable message.
         message: String,
+    },
+    /// IMAP-layer failure (TLS, auth, network, protocol, timeout, size cap).
+    #[error("{code}: {message}")]
+    Imap {
+        /// Stable error code.
+        code: ErrorCode,
+        /// Human-readable message.
+        message: String,
+        /// Underlying source error from `rimap_imap::Error`, if any.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    },
+    /// Audit log failure. Carries both the stable code (open-time errors
+    /// map to `ErrorCode::Config`, runtime errors to `ErrorCode::Internal`)
+    /// and the original `AuditError` via the source chain. The Display
+    /// form includes the source's message so operators see the audit
+    /// path and underlying I/O error.
+    #[error("{code}: {source}")]
+    Audit {
+        /// Stable error code — `Config` for open-time, `Internal` for runtime.
+        code: ErrorCode,
+        /// The original audit error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
     },
     /// Startup-time configuration error.
     #[error("ERR_CONFIG: {0}")]
@@ -91,7 +115,7 @@ impl RimapError {
     #[must_use]
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Authz { code, .. } => *code,
+            Self::Authz { code, .. } | Self::Imap { code, .. } | Self::Audit { code, .. } => *code,
             Self::Config(_) => ErrorCode::Config,
             Self::Internal(_) => ErrorCode::Internal,
         }

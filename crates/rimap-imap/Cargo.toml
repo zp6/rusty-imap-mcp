@@ -30,6 +30,9 @@ webpki-roots = { workspace = true }
 # Error handling
 thiserror = { workspace = true }
 
+# Date types for SearchQuery
+time = { workspace = true }
+
 # Observability
 tracing = { workspace = true }
 
