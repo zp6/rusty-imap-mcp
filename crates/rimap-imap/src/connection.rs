@@ -425,6 +425,49 @@ impl Connection {
         }
         result
     }
+
+    /// Fetch the full `BODY[]` of `uid` from `folder`. Returns raw bytes
+    /// (no MIME parsing — Sprint 4's `rimap-content` owns that). Drops
+    /// the connection on size-limit overflow OR connection loss so the
+    /// half-consumed response state never leaks to the next op.
+    ///
+    /// # Errors
+    /// Propagates `Error::SizeLimit` if the body exceeds the configured
+    /// `max_fetch_body_bytes`, plus the usual timeout / protocol /
+    /// connection-lost errors.
+    pub async fn fetch_body(&self, folder: &str, uid: crate::types::Uid) -> Result<Vec<u8>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let limit = self.inner.cfg.max_fetch_body_bytes;
+        let result = crate::time::with_timeout("fetch_body", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::fetch::fetch_body(session, folder, uid, limit).await
+        })
+        .await;
+        // Drop the cached session on EITHER ConnectionLost OR SizeLimit.
+        // SizeLimit means we aborted mid-stream, so the IMAP response
+        // state is half-consumed and the session cannot be reused.
+        // The match here lists every Error variant explicitly because
+        // workspace lints ban `_ =>` wildcards.
+        let should_invalidate = match &result {
+            Err(Error::ConnectionLost | Error::SizeLimit { .. }) => true,
+            Err(
+                Error::Tls { .. }
+                | Error::TlsHandshake(_)
+                | Error::Connect(_)
+                | Error::Timeout { .. }
+                | Error::Auth { .. }
+                | Error::Protocol(_),
+            )
+            | Ok(_) => false,
+        };
+        if should_invalidate {
+            self.invalidate().await;
+        }
+        result
+    }
 }
 
 /// Drain the unsolicited-response channel and return `true` if any

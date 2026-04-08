@@ -74,6 +74,74 @@ pub(crate) async fn fetch(
     Ok(out)
 }
 
+/// Fetch the full `BODY[]` of a single UID. Aborts with `Error::SizeLimit`
+/// if the projected total would exceed `limit`. The caller MUST drop the
+/// session on overflow — the IMAP response state is half-consumed and
+/// cannot be reused.
+///
+/// # Errors
+/// - `Error::SizeLimit { limit }` if the body exceeds `limit` bytes.
+/// - `Error::Protocol(_)` if the server returned no body data for the UID.
+/// - `Error::ConnectionLost` if the underlying transport tore down.
+/// - Other `async-imap` errors propagated through `super::folders::map_err`.
+///
+/// NOTE: `async-imap` delivers each `Fetch` response as a parsed unit, so
+/// the body bytes are already in memory before the size check fires. The
+/// limit acts as an accept/reject gate, not a backpressure mechanism. A
+/// future async-imap version with chunked body streaming would let us
+/// enforce the limit mid-network-read.
+pub(crate) async fn fetch_body(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: Uid,
+    limit: u64,
+) -> Result<Vec<u8>, Error> {
+    session
+        .examine(folder)
+        .await
+        .map_err(super::folders::map_err)?;
+
+    let mut stream = session
+        .uid_fetch(uid.get().to_string(), "BODY.PEEK[]")
+        .await
+        .map_err(super::folders::map_err)?;
+
+    let mut acc: Vec<u8> = Vec::new();
+    let mut total: u64 = 0;
+    let mut found = false;
+
+    while let Some(msg) = stream.next().await {
+        let msg = msg.map_err(super::folders::map_err)?;
+        if let Some(body) = msg.body() {
+            found = true;
+            let new_total = project_size(total, body.len(), limit)?;
+            acc.extend_from_slice(body);
+            total = new_total;
+        }
+    }
+
+    if !found {
+        return Err(Error::Protocol(async_imap::error::Error::Bad(
+            "FETCH BODY[] returned no body".to_string(),
+        )));
+    }
+    Ok(acc)
+}
+
+/// Projection helper: extend `total` by `chunk` and return the new total,
+/// or `Err(Error::SizeLimit { limit })` if it would exceed `limit`.
+/// Saturates `chunk` at `u64::MAX` to handle hypothetical platforms where
+/// `usize > u64`.
+fn project_size(total: u64, chunk: usize, limit: u64) -> Result<u64, Error> {
+    let chunk_u64 = u64::try_from(chunk).unwrap_or(u64::MAX);
+    let projected = total.saturating_add(chunk_u64);
+    if projected > limit {
+        Err(Error::SizeLimit { limit })
+    } else {
+        Ok(projected)
+    }
+}
+
 fn build_fetch_items(spec: FetchSpec) -> String {
     let mut parts: Vec<&str> = vec!["UID"]; // always request UID
     if spec.envelope {
@@ -212,7 +280,8 @@ fn convert_flag(f: &async_imap::types::Flag<'_>) -> crate::types::Flag {
 
 #[cfg(test)]
 mod tests {
-    use super::convert_bs_inner;
+    use super::{convert_bs_inner, project_size};
+    use crate::error::Error;
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
         ContentEncoding, ContentType,
@@ -301,6 +370,30 @@ mod tests {
                 }
             }
             other => panic!("expected Message variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn project_size_under_limit_returns_new_total() {
+        let result = project_size(100, 50, 1000).unwrap();
+        assert_eq!(result, 150);
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn project_size_at_exact_limit_is_accepted() {
+        let result = project_size(950, 50, 1000).unwrap();
+        assert_eq!(result, 1000);
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "tests")]
+    fn project_size_over_limit_returns_size_limit_error() {
+        let result = project_size(950, 51, 1000);
+        match result {
+            Err(Error::SizeLimit { limit }) => assert_eq!(limit, 1000),
+            other => panic!("expected SizeLimit, got {other:?}"),
         }
     }
 }
