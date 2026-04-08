@@ -81,7 +81,7 @@ No file is allowed to exceed the workspace 100-line function limit. Each file ma
 
 ```rust
 // rimap-imap/src/lib.rs
-pub use connection::Connection;
+pub use connection::{Connection, ConnectionConfig};
 pub use error::{Error, AuthFailure};
 pub use rimap_core::tls::TlsFingerprint;
 pub use types::{
@@ -90,9 +90,27 @@ pub use types::{
 };
 
 // connection.rs
+/// Everything `Connection` needs to open a session, pulled out of
+/// `rimap-config::ValidatedConfig` by the caller. `Connection` owns a clone
+/// of this value for the lifetime of the handle.
+pub struct ConnectionConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub pinned_fingerprint: Option<TlsFingerprint>,
+    pub connect_timeout: Duration,
+    pub command_timeout: Duration,
+    pub max_fetch_body_bytes: u64,
+}
+
 impl Connection {
-    /// Build a connection handle. Does NOT open a socket.
-    pub fn new(account: AccountConfig, audit: Arc<AuditWriter>) -> Self;
+    /// Build a connection handle. Does NOT open a socket. The credential
+    /// store is fetched fresh for each LOGIN attempt via `resolve_credential`.
+    pub fn new(
+        cfg: ConnectionConfig,
+        audit: AuditWriter,
+        credentials: Arc<dyn CredentialStore>,
+    ) -> Self;
 
     /// Lazy-connect: opens the socket on first use, reuses thereafter.
     /// Reconnects automatically only if the previous connection was torn
@@ -126,7 +144,7 @@ This uses `tokio::sync::Mutex`, not `std::sync::Mutex`, because the lock is held
 - `FetchSpec` — bitflags-style: `ENVELOPE | BODYSTRUCTURE | UID | FLAGS | SIZE`. `BODY[]` is its own method (`fetch_body`) because it is the only large/streaming op.
 - `FetchedMessage` — populated subset matching the requested `FetchSpec`.
 
-`AccountConfig` and `AuditWriter` come from `rimap-config` and `rimap-audit` respectively. `Connection::new` borrows the typed handles; no `From` impls back into those crates.
+`ConnectionConfig` is assembled by the caller from `rimap-config::ValidatedConfig` (pulling `imap.host`, `imap.port`, `imap.username`, the parsed `TlsFingerprint`, `imap.command_timeout_seconds`, a new `imap.connect_timeout_seconds` field this sprint adds with a 10-second default, and `limits.max_fetch_body_bytes`). `AuditWriter` comes from `rimap-audit` and is cheaply cloneable (`Arc<Mutex<_>>` internally). `CredentialStore` is the existing `rimap-config::credential::CredentialStore` trait; `Arc<dyn CredentialStore>` lets tests inject an in-memory store.
 
 ## 4. TLS pinning subsystem
 
@@ -157,9 +175,9 @@ impl fmt::Display for TlsFingerprint { /* lowercase hex */ }
 
 Lives in `rimap-core` (not `rimap-imap`) because both `rimap-config` (parses from TOML) and `rimap-audit` (records in `Auth.tls_fingerprint_sha256`) need it. Adds `subtle = "2"` to `rimap-core`'s deps for constant-time equality. RustCrypto crate, single-purpose, already in the project's transitive trust set via `sha2`.
 
-### Audit field type change
+### Audit field stays `Option<String>`
 
-The current `Auth.tls_fingerprint_sha256: Option<String>` becomes `Auth.tls_fingerprint_sha256: Option<TlsFingerprint>`. Serde impls emit lowercase hex on the wire, so the JSONL on-disk format is unchanged. Sprint 2 has zero in-tree consumers of the `Auth` variant (no emission yet), so the in-memory type change has no migration cost.
+The existing `Auth.tls_fingerprint_sha256: Option<String>` (lowercase hex) is kept as-is. The emission site in `rimap-imap` converts the observed `TlsFingerprint` via `to_hex()` before building the record. No change to `rimap-audit` record schemas, no cascading changes to Sprint 2 tests. Issue #21 is scoped strictly to introducing the `TlsFingerprint` newtype in `rimap-core` and using it in `rimap-config::ValidatedConfig` (the parsed form of the pin) and `rimap-imap` (observed and compared in the verifier).
 
 ### `PinningVerifier`
 
@@ -208,16 +226,18 @@ The verifier writes the observed fingerprint into a `OnceLock<TlsFingerprint>` *
 
 ### Connect sequence (`Connection::ensure_connected`)
 
-1. Resolve `AccountConfig` → host, port, username, secret reference, optional pinned fingerprint, timeouts.
-2. Open TCP under `connect_timeout` deadline (which covers TCP + TLS + greeting). On failure, emit `Auth { outcome: NetworkError(kind) }` and return `Error::Connect`.
+1. Read the `ConnectionConfig` held on `Connection`: host, port, username, optional pinned fingerprint, timeouts, body size cap.
+2. Open TCP under `connect_timeout` deadline (covers TCP + TLS + greeting). On failure, emit an `Auth` failure record (see §5 audit emission) with `error_code = Some("ERR_NETWORK")` and return `Error::Connect`.
 3. TLS handshake using the `TlsConfig` from §4. The verifier captures the observed fingerprint into its `OnceLock` regardless of outcome.
-4. **TLS error path:** if the verifier rejected the cert, read the captured `OnceLock` (which must be `Some` because the cert was seen before the mismatch decision), emit `Auth { outcome: TlsFingerprintMismatch { observed, expected }, tls_fingerprint_sha256: Some(observed) }`, and return `Error::Tls { observed, expected }`.
-5. **Other TLS handshake errors** (signature algorithm, protocol, etc.) → emit `Auth { outcome: TlsHandshakeFailed }`, return `Error::TlsHandshake(err)`.
-6. Wait for the IMAP greeting under the remaining `connect_timeout` budget. A `BYE` greeting triggers `Auth { outcome: ServerRejected }` and returns.
-7. Run `CAPABILITY`. If `LOGINDISABLED` is advertised, emit `Auth { outcome: CapabilityMissing { needed: "LOGIN" } }`, return `Error::Auth(CapabilityMissing)`, and tear down the connection.
-8. Issue `LOGIN <username> <secret>`. The secret is fetched from `rimap-config`'s credential resolver at this exact moment (not stored on `Connection`); it lives in a `secrecy::SecretString` and is zeroized after the LOGIN command bytes are written. The username is structurally present in the audit record but is never traced or logged in plaintext anywhere else (Sprint 2's `secret invariant` from commit 68cf620).
-9. **LOGIN reject:** emit `Auth { outcome: LoginRejected, username, tls_fingerprint_sha256: Some(observed) }` and return `Error::Auth(LoginRejected)`.
-10. **LOGIN success:** emit `Auth { outcome: Ok, username, server, tls_fingerprint_sha256: Some(observed), expected_fingerprint: pinned }`. Connection is now ready for ops.
+4. **TLS fingerprint mismatch:** the verifier rejected the cert. Read the captured `OnceLock` (must be `Some` because the cert was seen before the mismatch decision), emit `Auth { result: Failure, tls_fingerprint_sha256: Some(observed.to_hex()), fingerprint_match: Some(false), error_code: Some("ERR_TLS") }`, return `Error::Tls { observed, expected }`.
+5. **Other TLS handshake errors** (signature algorithm, protocol, webpki path error in unpinned mode) → emit `Auth { result: Failure, tls_fingerprint_sha256: observed.map(|f| f.to_hex()), fingerprint_match: None, error_code: Some("ERR_TLS") }`, return `Error::TlsHandshake(err)`. `observed` is `None` here only if the handshake failed before the verifier ran.
+6. Wait for the IMAP greeting under the remaining `connect_timeout` budget. A `BYE` greeting triggers `Auth { result: Failure, error_code: Some("ERR_AUTH") }` and returns `Error::Auth(ServerRejected)`.
+7. Run `CAPABILITY`. If `LOGINDISABLED` is advertised, emit `Auth { result: Failure, error_code: Some("ERR_AUTH") }`, return `Error::Auth(CapabilityMissing { needed: "LOGIN" })`, and tear down the connection.
+8. Fetch the password via `resolve_credential(&*credentials, &cfg.username, &cfg.host)`. The returned `String` is used exactly once (pass it to `async-imap`'s `login` call), then the local variable is dropped. It is never stored on `Connection`, never borrowed across `.await` boundaries except inside the LOGIN call itself, and never referenced by any audit record. The username is structurally present in the audit record but is never traced or logged in plaintext anywhere else (Sprint 2's secret invariant from commit 68cf620).
+9. **LOGIN reject:** emit `Auth { result: Failure, tls_fingerprint_sha256: Some(observed.to_hex()), fingerprint_match: pinned.map(|p| p == observed), error_code: Some("ERR_AUTH") }`, return `Error::Auth(LoginRejected)`.
+10. **LOGIN success:** emit `Auth { result: Success, tls_fingerprint_sha256: Some(observed.to_hex()), fingerprint_match: pinned.map(|p| p == observed), error_code: None }`. Connection is now ready for ops.
+
+All ten Auth records share the same `host`, `port`, and `username` fields from `ConnectionConfig`.
 
 ### Audit lock discipline (load-bearing rule)
 
@@ -230,49 +250,82 @@ tokio::task::spawn_blocking(move || audit.log_auth(record)).await??;
 
 Yes, every connect pays one task hop for audit emission. This is intentional, worth it, and documented inline at every emission site so future maintainers do not "optimize" it away. A workspace-level note in `docs/architecture/audit-locking.md` explains the std-mutex-no-await vs tokio-mutex-yes-await split between the two locks.
 
+### Per-process state on `AuditWriter` (new in Sprint 3)
+
+Sprint 2 ships `AuditWriter::write_record(&self, &AuditRecord)` as the only emission entry point, requiring callers to supply `seq`, `ts`, `process_id` explicitly. That's fine for the Sprint 2 unit tests but wrong for a real running process, where `process_id` must be stable across every record of a run and `seq` must be per-process monotonic.
+
+Sprint 3 extends `AuditWriter` with:
+
+- A per-writer `process_id: ProcessId`, set at open time from `ProcessId::new_now()`.
+- A per-writer `next_seq: Seq` counter (inside `Inner` under the existing mutex), initialized from a caller-supplied `Seq` (derived from `TrailingState::last_seq + 1` at open time, or `Seq::FIRST` for a fresh file).
+- New typed emission helpers that allocate `seq`, stamp `ts = Timestamp::now()`, use the writer's `process_id`, and delegate to the existing `write_record` for the actual I/O:
+  ```rust
+  pub fn log_process_start(&self, inputs: ProcessStartInputs) -> Result<Seq, AuditError>;
+  pub fn log_auth(&self, payload: Auth) -> Result<Seq, AuditError>;
+  ```
+- `AuditOptions` gains an `initial_seq: Seq` field (default `Seq::FIRST`). The caller runs `read_trailing_state` before `AuditWriter::open` and passes `trailing.last_seq.map(Seq::next).unwrap_or(Seq::FIRST)`.
+- The existing `write_record(&self, &AuditRecord) -> Result<(), AuditError>` stays public for integration tests that need to inject specific seq values, but is only called from the typed helpers in production code.
+
 ### `log_process_start` helper (closes #24)
 
-Sprint 3 is the first sprint that emits *anything* during the process lifetime, so the chain-of-history tamper signal needs an anchor. Without it, every gap looks like tampering.
+Sprint 3 is the first sprint that emits anything during the process lifetime, so the chain-of-history tamper signal needs an anchor. Without it, every gap looks like tampering.
+
+The helper takes an input struct because the caller is the only one that knows the config path, posture, and can pre-compute the hash:
 
 ```rust
 // rimap-audit additions
-pub struct ProcessStart {
-    pub version: &'static str,                  // CARGO_PKG_VERSION
-    pub pid: u32,
-    pub started_at: Timestamp,                  // Timestamp::now() — preserves leap-second clamp
-    pub config_hash: [u8; 32],                  // sha256(canonicalized config minus secrets)
+pub struct ProcessStartInputs {
+    pub version: String,              // CARGO_PKG_VERSION
+    pub git_commit: String,           // empty until vergen wired in Sprint 5
+    pub posture: String,              // e.g. "draft-safe"
+    pub config_path: PathBuf,
+    pub config_hash_sha256: String,   // hex, caller computes
+    pub trailing: TrailingState,      // from read_trailing_state before open
+    pub current_inode: u64,           // from current_inode(path) after open
 }
 
 impl AuditWriter {
-    pub fn log_process_start(&self, record: ProcessStart) -> Result<(), AuditError>;
+    /// Build a `ProcessStart` record from `inputs` and the writer's own
+    /// `process_id`, allocate a `seq`, and write it through `write_record`.
+    /// This is the ONLY supported way to emit a `process_start` record from
+    /// a long-running process — tests still use the low-level `write_record`
+    /// directly.
+    pub fn log_process_start(&self, inputs: ProcessStartInputs) -> Result<Seq, AuditError>;
 }
 ```
 
-`rimap-server::main` calls `log_process_start` once after opening the audit writer, before any other emission. The existing audit-merge round-trip test asserts the first record on a fresh log is `ProcessStart`.
+Implementation: builds the `ProcessStart` struct by mapping `trailing.last_seq` → `previous_last_seq`, `trailing.last_process_id` → `previous_process_id`, `current_inode` → `previous_file_inode`, and `audit_file_inode_changed = trailing.last_recorded_inode.is_some_and(|i| i != current_inode)`. Then delegates to `write_record`.
 
-### `Auth` record schema
+`rimap-server::main` calls `log_process_start` once after opening the audit writer, before any other emission. The existing audit-merge round-trip test is updated to assert the first record on a fresh log is `process_start`.
+
+### `log_auth` helper
 
 ```rust
-pub struct Auth {
-    pub username: String,
-    pub server: ServerEndpoint,                 // host + port newtype
-    pub tls_fingerprint_sha256: Option<TlsFingerprint>,    // observed
-    pub expected_fingerprint: Option<TlsFingerprint>,      // configured pin, if any
-    pub outcome: AuthOutcome,
-}
-
-pub enum AuthOutcome {
-    Ok,
-    NetworkError { kind: NetworkErrorKind },    // ConnectRefused, Timeout, Dns, Other
-    TlsHandshakeFailed,
-    TlsFingerprintMismatch { observed: TlsFingerprint, expected: TlsFingerprint },
-    ServerRejected,                             // BYE greeting
-    CapabilityMissing { needed: &'static str },
-    LoginRejected,
+impl AuditWriter {
+    /// Allocate a seq, stamp the timestamp, wrap `payload` in an
+    /// `AuditRecord`, and write. Returns the allocated seq.
+    pub fn log_auth(&self, payload: Auth) -> Result<Seq, AuditError>;
 }
 ```
 
-All variants are exhaustive at every match site. No `_ =>` wildcards, no `matches!` macro — workspace lint rules.
+Where `Auth` is the existing Sprint 2 record type (not a new one):
+
+```rust
+// From crates/rimap-audit/src/record.rs — unchanged this sprint.
+pub struct Auth {
+    pub result: AuthResult,                     // Success | Failure
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub tls_fingerprint_sha256: Option<String>, // lowercase hex
+    pub fingerprint_match: Option<bool>,
+    pub error_code: Option<String>,             // stable code e.g. "ERR_TLS"
+}
+
+pub enum AuthResult { Success, Failure }
+```
+
+Every `Auth` record the dispatch in §5 emits is built directly as this struct — no intermediate enum layer, no new types.
 
 ## 6. Error taxonomy
 
@@ -396,25 +449,27 @@ fn require_proton_bridge() -> ProtonBridgeConfig {
 
 Each item below is a single reviewable atomic commit. This list becomes the implementation plan's chunk list.
 
-1. `feat(core): add TlsFingerprint newtype` — closes #21. New `rimap-core/src/tls.rs`, `subtle` dep, hex parse/display, constant-time eq, serde impls. Unit tests on parse/format/round-trip. No callers yet — pure type addition.
-2. `refactor(audit): type Auth.tls_fingerprint_sha256 as TlsFingerprint` — switches the field type, updates the JSONL serializer, no schema change on disk.
-3. `feat(audit): add log_process_start helper` — closes #24. New `AuditWriter::log_process_start`, `ProcessStart` record type with `version` / `pid` / `started_at` / `config_hash`. Unit test asserts the record lands in the JSONL stream and is replayable by the reader.
-4. `feat(server): emit process_start at startup` — `rimap-server::main` calls `log_process_start` once after opening the audit writer, before any other emission. Updates the existing e2e audit-merge round-trip test to assert the first record is `ProcessStart`.
-5. `chore(imap): scaffold rimap-imap dependencies and module skeleton` — adds `async-imap`, `tokio-rustls`, `webpki-roots` (and `rustls` to workspace if not pinned). Empty modules per §2 layout. `cargo build` green, `cargo deny check` green (most likely place to surface dupes — fix via `cargo update` per the watchlist; do not add deny.toml skips).
-6. `feat(imap): TlsConfig builder with PinningVerifier and system-trust modes` — `tls.rs` complete, no network. Unit tests in `tests/tls_pinning.rs` construct both verifier modes and exercise the `OnceLock` capture path with synthetic cert DER.
-7. `feat(imap): types and error taxonomy` — `types.rs` (`Uid`, `Envelope`, `BodyStructure`, `Folder`, `FolderStatus`, `Flag`, `SearchQuery`, `FetchSpec`, `FetchedMessage`) and `error.rs` (`Error`, `AuthFailure`, `From` impls). `tests/error_mapping.rs` asserts the `#[source]` chain is preserved through `From<rimap_imap::Error> for RimapError` and closes #27 in passing.
-8. `feat(imap): Connection::ensure_connected with auth and audit emission` — connect / handshake / login / `CAPABILITY` flow per §5, including the `spawn_blocking` audit emission. Unit-testable parts unit-tested; the full path waits for the Dovecot harness in step 12.
-9. `feat(imap): list/status/select read ops` — `ops/folders.rs` with `list_folders` / `status` / `select`. Wires `command_timeout`. No integration test yet.
-10. `feat(imap): search structured + raw and fetch envelope/bodystructure/uid/flags/size` — `ops/search.rs`, `ops/fetch.rs` (without `BODY[]`).
-11. `feat(imap): fetch_body with size cap and connection drop on overflow` — the streaming path. Most subtle code in the sprint. Has its own integration test (case 10 above) and a unit test against a tokio mock for the size-cap-mid-stream path.
-12. `test(imap): dovecot integration harness` — `tests/integration/dovecot/` directory tree, `support/docker.rs`, fixture files. Just the harness, no test bodies yet.
-13. `test(imap): dovecot integration test cases 1-11` — the 11 dovecot tests + the `time.rs` unit test from §7. CI runs Docker; local devs without Docker get the skip path.
-14. `docs(imap): proton bridge harness README and gated tests` — documentation + two gated tests. Never runs in CI.
-15. `docs(audit): document the spawn_blocking audit emission rule` — short paragraph on `Connection::ensure_connected` and a workspace-level note in `docs/architecture/audit-locking.md` (new file) explaining std-mutex-no-await vs tokio-mutex-yes-await for the two locks.
+1. `feat(core): add TlsFingerprint newtype` — closes #21. New `rimap-core/src/tls.rs`, `subtle` dep, hex parse / display / serde impls, `from_cert_der`, constant-time eq. Unit tests on parse/format/round-trip/eq. No callers yet — pure type addition.
+2. `feat(config): parse tls_fingerprint_sha256 into TlsFingerprint and add connect_timeout_seconds` — `rimap-config::validate` turns the raw `Option<String>` from `ImapConfig` into `Option<TlsFingerprint>` on `ValidatedConfig`. Adds a new `imap.connect_timeout_seconds: u32` TOML field with a 10-second default (serde default). No schema break: existing configs omit the field and get the default.
+3. `feat(audit): add per-process seq counter and process_id to AuditWriter` — `AuditOptions` gains `initial_seq: Seq`; `AuditWriter::open` records a `ProcessId::new_now()` and initializes `next_seq`. New helper `pub fn process_id(&self) -> ProcessId`. Existing `write_record` still accepts explicit seq/pid for tests. Unit test: two calls to a new typed helper produce records with the same `process_id` and monotonic `seq`.
+4. `feat(audit): log_auth helper on AuditWriter` — `pub fn log_auth(&self, payload: Auth) -> Result<Seq, AuditError>`. Allocates `seq`, stamps `ts = Timestamp::now()`, wraps in `AuditRecord`, delegates to `write_record`. Unit test asserts the written line has the expected flat-kind discriminator and the allocated seq.
+5. `feat(audit): log_process_start helper on AuditWriter` — closes #24. `ProcessStartInputs` struct, `pub fn log_process_start(&self, inputs: ProcessStartInputs) -> Result<Seq, AuditError>` that computes `audit_file_inode_changed` from `inputs.trailing.last_recorded_inode` vs `inputs.current_inode`. Unit test asserts chain-of-history fields populate correctly when `trailing` contains a previous run.
+6. `feat(server): emit process_start at startup` — `rimap-server::main` runs `read_trailing_state` → `AuditWriter::open(initial_seq)` → `current_inode` → `log_process_start(...)` in that order. Updates the existing e2e audit-merge round-trip test to assert the first record on a fresh log is `process_start` with a matching `config_hash_sha256`.
+7. `chore(imap): scaffold rimap-imap dependencies and module skeleton` — adds `async-imap`, `tokio-rustls`, `rustls` (if not already workspace-pinned), `webpki-roots`. Empty modules per §2 layout. Internal deps (`rimap-core`, `rimap-config`, `rimap-audit`) added via path+version per the workspace rule. `cargo build` green, `cargo deny check` green (if a duplicate version trips the ban, resolve via `cargo update`, never add deny.toml skips).
+8. `feat(imap): types and error taxonomy` — `types.rs` (`Uid`, `Envelope`, `BodyStructure`, `Folder`, `FolderStatus`, `Flag`, `SearchQuery`, `FetchSpec`, `FetchedMessage`, `SelectedFolder`, `StatusItems`, `StructuredQuery`) and `error.rs` (`Error`, `AuthFailure`, `From<rimap_imap::Error> for RimapError`). `tests/error_mapping.rs` asserts the `#[source]` chain is preserved all the way through. Closes #27 in passing by adding `From<AuditError> for RimapError` with the same `#[source]` preservation.
+9. `feat(imap): TlsConfig builder with PinningVerifier and system-trust modes` — `tls.rs` complete, no network. Unit tests in `tests/tls_pinning.rs` construct both verifier modes and exercise the `OnceLock` capture path with synthetic cert DER.
+10. `feat(imap): ConnectionConfig and Connection::ensure_connected with auth and audit emission` — connect / handshake / login / `CAPABILITY` flow per §5, including the `spawn_blocking` audit emission. `auth.rs` holds the Auth-record construction helpers. Unit-testable pieces unit-tested; the full path waits for the Dovecot harness in step 14.
+11. `feat(imap): list/status/select read ops` — `ops/folders.rs` with `list_folders` / `status` / `select`. Wires `command_timeout` via `time.rs` helper. No integration test yet.
+12. `feat(imap): search and fetch envelope/bodystructure/uid/flags/size` — `ops/search.rs` (structured + raw) and `ops/fetch.rs` (without `BODY[]`).
+13. `feat(imap): fetch_body with size cap and connection drop on overflow` — the streaming path. Unit test for `time.rs` timeout helper using `tokio::time::pause()`.
+14. `test(imap): dovecot integration harness` — `tests/integration/dovecot/` directory tree, `support/docker.rs`, fixture files. Just the harness, no test bodies yet.
+15. `test(imap): dovecot integration test cases 1-11` — the 11 dovecot tests from §7. CI runs Docker; local devs without Docker get the skip path.
+16. `docs(imap): proton bridge harness README and gated tests` — documentation + two gated tests. Never runs in CI.
+17. `docs(audit): document the spawn_blocking audit emission rule` — short paragraph on `Connection::ensure_connected` and a workspace-level note in `docs/architecture/audit-locking.md` (new file) explaining std-mutex-no-await vs tokio-mutex-yes-await for the two locks.
 
 ## 9. Exit criteria
 
-- All 15 commits land via `feat/sprint-3-implementation` branch into a single PR.
+- All 17 commits land via `feat/sprint-3-implementation` branch into a single PR.
 - All 7 CI checks green: rustfmt, clippy (`-D warnings`), test (stable), test (MSRV 1.88.0), cargo-deny, zizmor, SonarQube.
 - Dovecot integration tests pass under `RIMAP_REQUIRE_DOCKER=1` (CI sets this).
 - Local Proton Bridge tests pass (developer-verified, recorded in PR description).
