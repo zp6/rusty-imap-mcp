@@ -5,12 +5,13 @@
 use core::fmt;
 use core::str::FromStr;
 
+use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
 /// Identifier for a dispatchable capability. This is a superset of the MCP
 /// tool names because some MCP tools expose multiple gated capabilities
 /// (e.g. `search` and `search_advanced`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, EnumIter)]
 pub enum ToolName {
     /// `list_folders`
     ListFolders,
@@ -64,24 +65,12 @@ impl ToolName {
     }
 
     /// Every v1 tool, in declaration order. Used for exhaustive matrix tests
-    /// and for building the advertised-tools set in `list_tools`.
+    /// and for building the advertised-tools set in `list_tools`. Built from
+    /// `EnumIter` so adding a new variant cannot silently desynchronize this
+    /// list (compile-time parity).
     #[must_use]
-    pub fn all() -> [Self; 13] {
-        [
-            Self::ListFolders,
-            Self::Search,
-            Self::SearchAdvanced,
-            Self::FetchMessage,
-            Self::FetchMessageHtml,
-            Self::ListAttachments,
-            Self::DownloadAttachment,
-            Self::MarkRead,
-            Self::MarkUnread,
-            Self::Flag,
-            Self::Unflag,
-            Self::MoveMessage,
-            Self::CreateDraft,
-        ]
+    pub fn all() -> Vec<Self> {
+        Self::iter().collect()
     }
 }
 
@@ -128,10 +117,12 @@ impl FromStr for ToolName {
 mod tests {
     use crate::tool::{ParseToolNameError, ToolName};
     use core::str::FromStr;
+    use strum::IntoEnumIterator;
 
     #[test]
     fn all_has_exactly_thirteen_variants() {
         assert_eq!(ToolName::all().len(), 13);
+        assert_eq!(ToolName::iter().count(), 13);
     }
 
     #[test]
