@@ -22,8 +22,10 @@ posture = "readonly"
 
 [audit]
 path = "{}"
+allowed_base_dir = "{}"
 "#,
-        audit.display()
+        audit.display(),
+        dir.path().display()
     );
     std::fs::write(&path, body).unwrap();
     path
@@ -76,8 +78,10 @@ nuke_inbox = "deny"
 
 [audit]
 path = "{}"
+allowed_base_dir = "{}"
 "#,
-        audit.display()
+        audit.display(),
+        dir.path().display()
     );
     std::fs::write(&config, body).unwrap();
     Command::cargo_bin("rusty-imap-mcp")

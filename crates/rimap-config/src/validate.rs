@@ -9,7 +9,7 @@
 //!   - All numeric limits are positive and cap/default invariants hold.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use rimap_core::tls::TlsFingerprint;
@@ -122,8 +122,66 @@ fn validate_paths(config: &Config) -> Result<(), ConfigError> {
             reason: "audit path has no parent directory".to_string(),
         })?;
     require_writable_dir(audit_parent)?;
+    enforce_audit_containment(config)?;
     if !config.attachments.download_dir.is_empty() {
         require_writable_dir(Path::new(&config.attachments.download_dir))?;
+    }
+    Ok(())
+}
+
+/// Compute the default audit base when `audit.allowed_base_dir` is unset.
+/// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
+/// `directories::ProjectDirs` resolves; returns `None` otherwise (which
+/// causes the containment check to fail with a clear error).
+fn default_audit_base() -> Option<PathBuf> {
+    let dirs = directories::ProjectDirs::from("", "", "rusty-imap-mcp")?;
+    Some(dirs.data_local_dir().to_path_buf())
+}
+
+/// Canonicalize the audit path and verify it is contained in the allowed
+/// base. Called after `require_writable_dir` so the parent dir is known to
+/// exist. The parent is canonicalized first (not the path itself, which
+/// may not exist yet), then joined with the file name to produce the
+/// canonical audit path.
+fn enforce_audit_containment(config: &Config) -> Result<(), ConfigError> {
+    let audit_path = &config.audit.path;
+    let parent = audit_path
+        .parent()
+        .ok_or_else(|| ConfigError::PathNotWritable {
+            path: audit_path.clone(),
+            reason: "audit path has no parent directory".to_string(),
+        })?;
+    let canon_parent = std::fs::canonicalize(parent).map_err(|e| ConfigError::PathNotWritable {
+        path: parent.to_path_buf(),
+        reason: format!("canonicalize parent: {e}"),
+    })?;
+    let file_name = audit_path
+        .file_name()
+        .ok_or_else(|| ConfigError::PathNotWritable {
+            path: audit_path.clone(),
+            reason: "audit path has no file name".to_string(),
+        })?;
+    let canon_path = canon_parent.join(file_name);
+
+    let base = config
+        .audit
+        .allowed_base_dir
+        .clone()
+        .or_else(default_audit_base)
+        .ok_or_else(|| ConfigError::PathNotWritable {
+            path: audit_path.clone(),
+            reason: "no allowed_base_dir configured and platform default unavailable".to_string(),
+        })?;
+    let canon_base = std::fs::canonicalize(&base).map_err(|e| ConfigError::PathNotWritable {
+        path: base.clone(),
+        reason: format!("canonicalize allowed_base_dir: {e}"),
+    })?;
+
+    if !canon_path.starts_with(&canon_base) {
+        return Err(ConfigError::AuditPathOutsideBase {
+            path: canon_path,
+            base: canon_base,
+        });
     }
     Ok(())
 }
@@ -194,6 +252,7 @@ mod tests {
                 rotate_keep: 5,
                 provenance_window_seconds: 60,
                 fail_open: false,
+                allowed_base_dir: Some(audit_dir.to_path_buf()),
             },
             attachments: AttachmentsConfig::default(),
         }
@@ -367,5 +426,35 @@ mod tests {
         cfg.audit.path = dir.path().join("nope/nested/audit.jsonl");
         let err = validate(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::PathNotWritable { .. }));
+    }
+
+    #[test]
+    fn audit_path_inside_allowed_base_passes() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn audit_path_outside_allowed_base_fails() {
+        let base = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let mut cfg = base_config(outside.path());
+        cfg.audit.allowed_base_dir = Some(base.path().to_path_buf());
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::AuditPathOutsideBase { .. }));
+    }
+
+    #[test]
+    fn audit_path_with_traversal_segments_is_canonicalized_before_containment() {
+        let base = TempDir::new().unwrap();
+        let nested = base.path().join("inner");
+        std::fs::create_dir_all(&nested).unwrap();
+        let mut cfg = base_config(&nested);
+        // Path with "../../" attempting to escape to the base's parent:
+        cfg.audit.path = nested.join("..").join("..").join("escape.jsonl");
+        cfg.audit.allowed_base_dir = Some(nested);
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::AuditPathOutsideBase { .. }));
     }
 }

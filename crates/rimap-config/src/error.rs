@@ -48,6 +48,15 @@ pub enum ConfigError {
         /// Explanation.
         reason: String,
     },
+    /// `audit.path` resolved to a location outside the configured
+    /// `allowed_base_dir`.
+    #[error("audit path `{path}` is not contained in allowed base `{base}`")]
+    AuditPathOutsideBase {
+        /// The canonicalized audit path.
+        path: PathBuf,
+        /// The canonicalized base directory.
+        base: PathBuf,
+    },
     /// A numeric limit was zero or out of range.
     #[error("invalid value for `{field}`: {reason}")]
     InvalidLimit {

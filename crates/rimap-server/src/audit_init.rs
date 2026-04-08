@@ -78,8 +78,10 @@ posture = "readonly"
 
 [audit]
 path = "{}"
+allowed_base_dir = "{}"
 "#,
-            audit.display()
+            audit.display(),
+            dir.path().display()
         );
         std::fs::write(&config_path, body).unwrap();
         config_path
