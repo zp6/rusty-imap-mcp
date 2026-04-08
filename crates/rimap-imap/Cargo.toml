@@ -42,3 +42,7 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+
+[[test]]
+name = "dovecot"
+path = "tests/integration/dovecot.rs"

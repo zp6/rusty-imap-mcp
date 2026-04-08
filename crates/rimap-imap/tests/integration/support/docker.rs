@@ -75,27 +75,35 @@ impl DovecotHarness {
 
         let started = Instant::now();
         let timeout = Duration::from_secs(30);
-        loop {
+        let result = loop {
             if started.elapsed() > timeout {
-                return Err(HarnessError::Timeout);
+                break Err(HarnessError::Timeout);
             }
-            if let (Ok(fp), Ok(p)) =
-                (read_fingerprint(&project), read_port(&project, &compose_dir))
-            {
-                return Ok(Self {
-                    project,
-                    compose_dir,
-                    fingerprint: fp,
-                    port: p,
-                });
+            if let (Ok(fp), Ok(p)) = (
+                read_fingerprint(&project),
+                read_port(&project, &compose_dir),
+            ) {
+                break Ok((fp, p));
             }
             std::thread::sleep(Duration::from_millis(500));
+        };
+        match result {
+            Ok((fingerprint, port)) => Ok(Self {
+                project,
+                compose_dir,
+                fingerprint,
+                port,
+            }),
+            Err(e) => {
+                compose_down(&project, &compose_dir);
+                Err(e)
+            }
         }
     }
 
     #[must_use]
     #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
-    pub fn host(&self) -> &str {
+    pub fn host() -> &'static str {
         "127.0.0.1"
     }
 
@@ -111,13 +119,13 @@ impl DovecotHarness {
 
     #[must_use]
     #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
-    pub fn username(&self) -> &str {
+    pub fn username() -> &'static str {
         "rimap-test"
     }
 
     #[must_use]
     #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
-    pub fn password(&self) -> &str {
+    pub fn password() -> &'static str {
         "testpass"
     }
 
@@ -138,16 +146,20 @@ impl DovecotHarness {
 
 impl Drop for DovecotHarness {
     fn drop(&mut self) {
-        let _ = Command::new("docker")
-            .arg("compose")
-            .arg("-p")
-            .arg(&self.project)
-            .arg("down")
-            .arg("-v")
-            .arg("--remove-orphans")
-            .current_dir(&self.compose_dir)
-            .status();
+        compose_down(&self.project, &self.compose_dir);
     }
+}
+
+fn compose_down(project: &str, compose_dir: &std::path::Path) {
+    let _ = Command::new("docker")
+        .arg("compose")
+        .arg("-p")
+        .arg(project)
+        .arg("down")
+        .arg("-v")
+        .arg("--remove-orphans")
+        .current_dir(compose_dir)
+        .status();
 }
 
 fn docker_available() -> bool {
@@ -174,8 +186,7 @@ fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
         return Err(HarnessError::FingerprintReadFailed("not yet ready".into()));
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    TlsFingerprint::from_hex(&s)
-        .map_err(|e| HarnessError::FingerprintReadFailed(e.to_string()))
+    TlsFingerprint::from_hex(&s).map_err(|e| HarnessError::FingerprintReadFailed(e.to_string()))
 }
 
 fn read_port(project: &str, compose_dir: &std::path::Path) -> Result<u16, HarnessError> {
