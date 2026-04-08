@@ -1,0 +1,17 @@
+{
+  "description": "Classic plaintext prompt-injection body text passes through to untrusted.body_text intact with zero security warnings (content, not an attack on the pipeline).",
+  "expect": "ok",
+  "must_contain": ["Ignore all previous instructions"],
+  "must_not_contain": [],
+  "warning_codes": [],
+  "forbidden_warning_codes": [
+    "parse_header_smuggling_blocked",
+    "unicode_zero_width_stripped",
+    "unicode_bidi_override_stripped"
+  ],
+  "meta": {
+    "mailing_list_present": false,
+    "attachment_count": 0,
+    "body_truncated": false
+  }
+}

@@ -1,0 +1,33 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "alice@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 138,
+    "references": [],
+    "subject": null,
+    "to": [
+      "bob@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "parse_header_smuggling_blocked",
+      "detail": "count=3 names=[Subject,Bcc]",
+      "location": "headers"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "body text"
+  }
+}

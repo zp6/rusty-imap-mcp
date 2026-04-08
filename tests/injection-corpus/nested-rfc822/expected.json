@@ -1,0 +1,11 @@
+{
+  "description": "A message/rfc822 attachment surfaces in meta.attachments with the correct content type; its inner body is not recursively parsed into untrusted.body_text.",
+  "expect": "ok",
+  "must_contain": ["See forwarded message below"],
+  "must_not_contain": ["This is the original body"],
+  "warning_codes": [],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 1
+  }
+}

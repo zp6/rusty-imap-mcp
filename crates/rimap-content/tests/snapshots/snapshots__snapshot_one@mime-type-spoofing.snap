@@ -1,0 +1,39 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [
+      {
+        "content_id": null,
+        "content_type": "image/png",
+        "filename": "fake.png",
+        "is_inline": false,
+        "size_bytes": 128
+      }
+    ],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "a@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 327,
+    "references": [],
+    "subject": "attachment with spoofed type",
+    "to": []
+  },
+  "security_warnings": [
+    {
+      "code": "parse_mime_type_mismatch",
+      "detail": "declared=image/png sniffed=application/x-msdownload",
+      "location": "attachment[0]"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "see attached"
+  }
+}

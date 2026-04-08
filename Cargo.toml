@@ -80,12 +80,36 @@ subtle = "2"
 strum = { version = "0.26", features = ["derive"] }
 rand = "0.8"
 
+# Content pipeline (Sprint 4a)
+# mail-parser 0.11 transitively pulls hashify (proc-macro), executing
+# arbitrary Rust at build time. Reviewed v0.2.9 during Sprint 4a
+# supply-chain audit: same publisher as mail-parser (Stalwart Labs),
+# Apache-2.0 OR MIT, no build.rs, no std::net/fs/process/env in
+# source, sole purpose is compile-time perfect-hash codegen for
+# mail-parser's header lookup tables. No RUSTSEC advisories.
+# Re-audit on any mail-parser minor bump. (SC-PROC-01)
+#
+# mail-parser itself is pre-1.0 and parses the most security-critical
+# input in the crate graph. On every version bump the reviewer must
+# verify: new build.rs? new transitive deps? new feature flags
+# enabled? new unsafe? new proc-macros? changes to header parsing or
+# MIME walk semantics that would change rimap-content's threat
+# model? The Sprint 4a adversarial corpus and insta snapshots are
+# the regression-detection mechanism — any snapshot diff on upgrade
+# requires a re-audit, not a cargo insta accept. (SC-DEP-09)
+mail-parser = "0.11"
+encoding_rs = "0.8"
+unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-properties = "0.1"
+
 # Dev dependencies shared across crates
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.14"
 proptest = "1.6"
 temp-env = "0.3"
+insta = { version = "1.47", features = ["json"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

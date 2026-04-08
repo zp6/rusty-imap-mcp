@@ -17,4 +17,9 @@ extend-exclude = [
     # fixtures (e.g. truncated JSON strings). Both produce false positives
     # that the typos auto-fixer turns into harmful edits.
     "docs/superpowers/plans/",
+    # Adversarial email corpus contains Unicode-poisoning and other
+    # deliberately-malformed text (e.g. zero-width codepoints that split
+    # "hello" into "hel\u200blo"). Typos misreads the fragments and its
+    # auto-fixer would destroy the fixtures.
+    "tests/injection-corpus/",
 ]

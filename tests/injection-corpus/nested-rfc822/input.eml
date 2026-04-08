@@ -1,0 +1,18 @@
+From: forwarder@example.com
+Subject: FWD: original message
+Content-Type: multipart/mixed; boundary="OUT"
+
+--OUT
+Content-Type: text/plain; charset=utf-8
+
+See forwarded message below.
+--OUT
+Content-Type: message/rfc822
+Content-Disposition: attachment
+
+From: original-sender@example.com
+Subject: original
+Content-Type: text/plain; charset=utf-8
+
+This is the original body.
+--OUT--

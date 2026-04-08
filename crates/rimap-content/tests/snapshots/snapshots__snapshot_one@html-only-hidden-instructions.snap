@@ -1,0 +1,34 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+assertion_line: 41
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "attacker@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 292,
+    "references": [],
+    "subject": "Important",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "html_body_unsanitized",
+      "detail": null,
+      "location": "body:text[0]"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": ""
+  }
+}

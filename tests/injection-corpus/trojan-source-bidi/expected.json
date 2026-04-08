@@ -1,0 +1,11 @@
+{
+  "description": "Bidi override codepoints (RLO / PDF) in subject and body are stripped; unicode_bidi_override_stripped warning is emitted.",
+  "expect": "ok",
+  "must_contain": ["safeevil.txt"],
+  "must_not_contain": ["\u202e", "\u202c"],
+  "warning_codes": ["unicode_bidi_override_stripped"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 0
+  }
+}

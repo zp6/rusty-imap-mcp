@@ -1,0 +1,39 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [
+      {
+        "content_id": null,
+        "content_type": "application/octet-stream",
+        "filename": "______etc_passwd",
+        "is_inline": false,
+        "size_bytes": 146
+      }
+    ],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "a@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 291,
+    "references": [],
+    "subject": null,
+    "to": []
+  },
+  "security_warnings": [
+    {
+      "code": "parse_attachment_filename_rewritten",
+      "detail": "original=\"../../../etc/passwd\"",
+      "location": "attachment[0]:filename"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "see attached"
+  }
+}
