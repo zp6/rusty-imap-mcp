@@ -70,7 +70,11 @@ async fn case_02_connect_with_wrong_pin_emits_audit_and_returns_tls_error() {
         .find(|v| v["kind"] == "auth" && v["error_code"] == "ERR_TLS")
         .expect("expected an ERR_TLS auth record");
     assert_eq!(mismatch["fingerprint_match"], false);
-    assert!(mismatch["tls_fingerprint_sha256"].as_str().unwrap().len() == 64);
+    // Verify the audit captured the *live* observed fingerprint, not a placeholder.
+    assert_eq!(
+        mismatch["tls_fingerprint_sha256"].as_str().unwrap(),
+        h.harness.pinned_fingerprint().to_hex(),
+    );
 }
 
 #[tokio::test]
@@ -207,7 +211,8 @@ async fn case_08_fetch_envelope_and_bodystructure() {
     let msgs = h.connection.fetch("INBOX", &uids, spec).await.unwrap();
     assert_eq!(msgs.len(), uids.len());
     let envelope = msgs[0].envelope.as_ref().expect("envelope");
-    assert!(envelope.subject_raw.is_some());
+    let subject = envelope.subject_raw.as_ref().expect("subject_raw");
+    assert_eq!(subject.as_slice(), b"Sprint 3 multipart fixture");
     assert!(msgs[0].bodystructure.is_some());
 }
 
