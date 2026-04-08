@@ -72,3 +72,15 @@ fn connect_io_error_maps_to_err_connection_lost() {
     let rimap: RimapError = err.into();
     assert_eq!(rimap.code(), ErrorCode::ConnectionLost);
 }
+
+#[test]
+fn audit_variant_maps_to_internal_error_code() {
+    let err = Error::Audit {
+        op: "emit_auth",
+        message: "disk full".to_string(),
+        source: Box::new(std::io::Error::other("disk full")),
+    };
+    let mapped: RimapError = err.into();
+    assert_eq!(mapped.code(), ErrorCode::Internal);
+    assert!(mapped.to_string().contains("ERR_INTERNAL"));
+}

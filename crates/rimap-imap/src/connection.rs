@@ -282,22 +282,35 @@ impl Connection {
 
     /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside
     /// `spawn_blocking` so the `std::sync::Mutex` inside `AuditWriter` is
-    /// never held across an `.await` boundary.
+    /// never held across an `.await` boundary. Audit failures are mapped
+    /// to `Error::Audit` (not `Error::Connect`) so observability can tell
+    /// audit-storage failures from network failures.
     async fn emit_auth(&self, record: Auth) -> Result<(), Error> {
         let audit = self.inner.audit.clone();
-        tokio::task::spawn_blocking(move || audit.log_auth(record))
-            .await
-            .map_err(|join_err| {
-                Error::Connect(std::io::Error::other(format!(
-                    "audit join error: {join_err}"
-                )))
-            })?
-            .map_err(|audit_err| {
-                Error::Connect(std::io::Error::other(format!(
-                    "audit write error: {audit_err}"
-                )))
-            })?;
-        Ok(())
+        let join_result = tokio::task::spawn_blocking(move || audit.log_auth(record)).await;
+        match join_result {
+            Err(join_err) => {
+                let message = format!("audit join error: {join_err}");
+                Err(Error::Audit {
+                    op: "emit_auth",
+                    message,
+                    source: Box::new(join_err),
+                })
+            }
+            Ok(Err(audit_err)) => {
+                tracing::error!(
+                    error = %audit_err,
+                    "audit log_auth failed; converting to Error::Audit",
+                );
+                let message = audit_err.to_string();
+                Err(Error::Audit {
+                    op: "emit_auth",
+                    message,
+                    source: Box::new(audit_err),
+                })
+            }
+            Ok(Ok(_seq)) => Ok(()),
+        }
     }
 
     /// `LIST` against `pattern` (e.g. `"*"`, `"INBOX/*"`).
@@ -478,7 +491,8 @@ impl Connection {
                 | Error::Timeout { .. }
                 | Error::Auth { .. }
                 | Error::Protocol(_)
-                | Error::InvalidInput { .. },
+                | Error::InvalidInput { .. }
+                | Error::Audit { .. },
             )
             | Ok(_) => false,
         };
@@ -529,5 +543,6 @@ fn error_code_for(err: &Error) -> &'static str {
         Error::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
         Error::Protocol(_) => "ERR_IMAP_PROTOCOL",
         Error::InvalidInput { .. } => "ERR_INVALID_INPUT",
+        Error::Audit { .. } => "ERR_AUDIT",
     }
 }

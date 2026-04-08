@@ -54,6 +54,20 @@ pub enum Error {
         /// Human-readable explanation of the validation failure.
         reason: &'static str,
     },
+    /// Audit-subsystem failure during a tool call. The IMAP transport may
+    /// be healthy; this variant exists so audit-write failures stay
+    /// distinguishable from network failures in metrics and observability.
+    #[error("ERR_AUDIT: {message}")]
+    Audit {
+        /// Short identifier of the audit operation that failed
+        /// (e.g. `"emit_auth"`).
+        op: &'static str,
+        /// Human-readable failure summary captured at construction.
+        message: String,
+        /// Underlying error from the audit subsystem.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
 }
 
 /// Specific authentication failure mode for `Error::Auth`.
@@ -96,6 +110,7 @@ impl From<Error> for RimapError {
             Error::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
             Error::Protocol(_) => ErrorCode::ImapProtocol,
             Error::InvalidInput { .. } => ErrorCode::InvalidInput,
+            Error::Audit { .. } => ErrorCode::Internal,
         };
         let message = err.to_string();
         RimapError::Imap {
