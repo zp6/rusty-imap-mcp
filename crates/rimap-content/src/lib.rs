@@ -5,8 +5,10 @@
 
 #![deny(missing_docs)]
 
+pub mod error;
 pub mod output;
 
+pub use error::ContentError;
 pub use output::{
     AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
 };
