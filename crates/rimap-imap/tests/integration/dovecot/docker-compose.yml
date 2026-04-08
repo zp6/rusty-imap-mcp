@@ -19,10 +19,16 @@ services:
       # client's pinned Connection could not reconnect.
       - "127.0.0.1:${RIMAP_DOVECOT_HOST_PORT}:993"
     volumes:
-      - ./dovecot.conf:/etc/dovecot/dovecot.conf:ro
-      - ./users:/etc/dovecot/users:ro
-      - ./fixtures:/fixtures:ro
-      - ./entrypoint.sh:/entrypoint.sh:ro
+      # `,z` asks podman to SELinux-relabel these host paths (shared label so
+      # parallel nextest containers can all read the same sources). Docker
+      # without SELinux treats the suffix as a no-op, so the line works in
+      # both runtimes. Without this, Fedora's enforcing SELinux denies the
+      # container's reads of entrypoint.sh / dovecot.conf and it exits before
+      # running the script.
+      - ./dovecot.conf:/etc/dovecot/dovecot.conf:ro,z
+      - ./users:/etc/dovecot/users:ro,z
+      - ./fixtures:/fixtures:ro,z
+      - ./entrypoint.sh:/entrypoint.sh:ro,z
       - shared:/shared
     entrypoint: ["/bin/sh", "/entrypoint.sh"]
     healthcheck:
