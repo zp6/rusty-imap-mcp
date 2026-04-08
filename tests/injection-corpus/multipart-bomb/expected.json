@@ -1,0 +1,5 @@
+{
+  "description": "A deeply nested multipart structure exceeds MAX_MIME_DEPTH and is rejected with ContentError::LimitExceeded.",
+  "expect": "error",
+  "error_kind": "LimitExceeded"
+}

@@ -1,8 +1,8 @@
 //! Pure Unicode sanitization pipeline.
 //!
 //! The pipeline is a sequence of independent pure functions:
-//! [`decode`] → [`normalize_nfkc`] → [`filter_codepoints`] →
-//! [`normalize_line_endings`] → [`truncate_graphemes`]. The [`sanitize`]
+//! [`decode`] → [`normalize_nfkc`] → [`normalize_line_endings`] →
+//! [`filter_codepoints`] → [`truncate_graphemes`]. The [`sanitize`]
 //! composer runs the full sequence and returns the output string
 //! alongside any [`SecurityWarning`]s emitted during filtering.
 //!
@@ -180,9 +180,9 @@ pub fn sanitize(
 ) -> (String, Vec<SecurityWarning>) {
     let decoded = decode(bytes, charset_label);
     let normalized = normalize_nfkc(&decoded);
-    let filter_result = filter_codepoints(&normalized);
-    let line_normalized = normalize_line_endings(&filter_result.text);
-    let truncated = truncate_graphemes(&line_normalized, max_bytes);
+    let line_normalized = normalize_line_endings(&normalized);
+    let filter_result = filter_codepoints(&line_normalized);
+    let truncated = truncate_graphemes(&filter_result.text, max_bytes);
 
     let warnings = build_warnings(&filter_result, location);
     (truncated, warnings)

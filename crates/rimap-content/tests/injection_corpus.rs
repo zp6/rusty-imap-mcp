@@ -214,7 +214,6 @@ fn assert_err_kind(name: &str, err: &ContentError, expected: &Expected) -> Resul
 }
 
 #[test]
-#[ignore = "no fixtures yet; Task 10 seeds them and removes this ignore"]
 fn all_corpus_fixtures_pass() {
     let fixtures = load_fixtures();
     assert!(

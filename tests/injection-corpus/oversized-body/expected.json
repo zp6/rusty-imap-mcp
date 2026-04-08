@@ -1,0 +1,11 @@
+{
+  "description": "A body exceeding MAX_BODY_BYTES is truncated; parse_body_truncated warning is emitted and meta.body_truncated is true.",
+  "expect": "ok",
+  "must_contain": ["aaaaa"],
+  "must_not_contain": [],
+  "warning_codes": ["parse_body_truncated"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "body_truncated": true
+  }
+}

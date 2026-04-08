@@ -1,0 +1,12 @@
+{
+  "description": "Zero-width codepoints in subject and body are stripped; unicode_zero_width_stripped warning is emitted.",
+  "expect": "ok",
+  "must_contain": ["This is a poisoned message."],
+  "must_not_contain": ["\u200b", "\ufeff", "\u2060"],
+  "warning_codes": ["unicode_zero_width_stripped"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 0,
+    "body_truncated": false
+  }
+}

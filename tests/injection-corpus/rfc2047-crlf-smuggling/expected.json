@@ -1,0 +1,11 @@
+{
+  "description": "An RFC 2047 encoded-word containing raw CRLF attempts to smuggle a Bcc header. The pre-parse scrub drops the Subject line entirely and emits parse_header_smuggling_blocked. The rest of the message parses normally.",
+  "expect": "ok",
+  "must_contain": ["body text"],
+  "must_not_contain": ["victim@example.com", "Bcc"],
+  "warning_codes": ["parse_header_smuggling_blocked"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 0
+  }
+}

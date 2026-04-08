@@ -1,0 +1,11 @@
+{
+  "description": "An attachment with MZ-exe bytes declared as image/png produces parse_mime_type_mismatch.",
+  "expect": "ok",
+  "must_contain": ["see attached"],
+  "must_not_contain": [],
+  "warning_codes": ["parse_mime_type_mismatch"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 1
+  }
+}

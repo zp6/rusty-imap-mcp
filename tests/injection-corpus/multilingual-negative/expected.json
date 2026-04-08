@@ -1,0 +1,15 @@
+{
+  "description": "Legitimate multilingual mail (Japanese, Arabic, Hebrew, German) produces zero security warnings.",
+  "expect": "ok",
+  "must_contain": ["こんにちは世界", "مرحبا بالعالم", "שלום עולם", "Grüße aus Bayern"],
+  "must_not_contain": [],
+  "warning_codes": [],
+  "forbidden_warning_codes": [
+    "unicode_zero_width_stripped",
+    "unicode_bidi_override_stripped",
+    "unicode_c0_c1_stripped",
+    "parse_header_smuggling_blocked",
+    "parse_mime_type_mismatch",
+    "parse_body_truncated"
+  ]
+}

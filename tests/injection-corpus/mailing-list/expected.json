@@ -1,0 +1,15 @@
+{
+  "description": "List-* headers populate ContentMeta.mailing_list with zero spurious warnings.",
+  "expect": "ok",
+  "must_contain": ["Version 1.2.3 is out"],
+  "must_not_contain": [],
+  "warning_codes": [],
+  "forbidden_warning_codes": [
+    "unicode_zero_width_stripped",
+    "unicode_bidi_override_stripped",
+    "parse_header_smuggling_blocked"
+  ],
+  "meta": {
+    "mailing_list_present": true
+  }
+}

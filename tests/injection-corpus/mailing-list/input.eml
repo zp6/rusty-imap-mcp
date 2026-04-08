@@ -1,0 +1,9 @@
+From: announce@example.com
+To: subscribers@example.com
+Subject: [dev] new release
+List-ID: Example Dev List <dev.example.com>
+List-Unsubscribe: <mailto:unsub@example.com>, <https://example.com/unsub>
+List-Post: <mailto:dev@example.com>
+Content-Type: text/plain; charset=utf-8
+
+Version 1.2.3 is out.
