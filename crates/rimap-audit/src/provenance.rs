@@ -64,8 +64,6 @@ impl ProvenanceBuffer {
     /// deterministically. Applies the same length cap and count cap as
     /// [`record`](Self::record). Crate-private; tests inside `rimap-audit`
     /// see it via `pub(crate)`.
-    #[allow(clippy::allow_attributes)]
-    #[allow(dead_code)]
     pub(crate) fn record_at(&mut self, message_id: impl Into<String>, now: OffsetDateTime) {
         self.evict_before(now);
 
@@ -100,8 +98,7 @@ impl ProvenanceBuffer {
 
     /// Test-only snapshot with explicit clock. Crate-private; integration
     /// tests do not need this seam.
-    #[allow(clippy::allow_attributes)]
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn snapshot_at(&mut self, now: OffsetDateTime) -> Vec<String> {
         self.evict_before(now);
         self.entries.iter().map(|e| e.message_id.clone()).collect()
