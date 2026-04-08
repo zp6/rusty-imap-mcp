@@ -1,0 +1,27 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "polyglot@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 250,
+    "references": [],
+    "subject": "Multilingual greeting",
+    "to": [
+      "reader@example.com"
+    ]
+  },
+  "security_warnings": [],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "Japanese: こんにちは世界\nArabic: مرحبا بالعالم\nHebrew: שלום עולם\nGerman: Grüße aus Bayern\n"
+  }
+}

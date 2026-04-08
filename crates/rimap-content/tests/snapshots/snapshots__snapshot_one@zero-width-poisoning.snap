@@ -1,0 +1,36 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "a@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 119,
+    "references": [],
+    "subject": "hello",
+    "to": []
+  },
+  "security_warnings": [
+    {
+      "code": "unicode_zero_width_stripped",
+      "detail": "count=1",
+      "location": "header:subject"
+    },
+    {
+      "code": "unicode_zero_width_stripped",
+      "detail": "count=3",
+      "location": "body:text[0]"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "This is a poisoned message."
+  }
+}

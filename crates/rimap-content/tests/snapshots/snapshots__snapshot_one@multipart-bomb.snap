@@ -1,0 +1,8 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "error": "content limit exceeded: mime_depth (limit=8)",
+  "error_kind": "LimitExceeded"
+}

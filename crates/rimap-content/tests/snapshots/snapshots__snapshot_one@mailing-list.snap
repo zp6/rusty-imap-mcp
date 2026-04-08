@@ -1,0 +1,31 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "announce@example.com",
+    "in_reply_to": null,
+    "mailing_list": {
+      "list_id": "Example Dev List <dev.example.com>",
+      "list_post": "mailto:dev@example.com",
+      "list_unsubscribe": "mailto:unsub@example.com, https://example.com/unsub"
+    },
+    "message_id": null,
+    "original_size_bytes": 308,
+    "references": [],
+    "subject": "[dev] new release",
+    "to": [
+      "subscribers@example.com"
+    ]
+  },
+  "security_warnings": [],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "Version 1.2.3 is out.\n"
+  }
+}

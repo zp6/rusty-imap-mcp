@@ -23,8 +23,9 @@ repos:
       - id: check-added-large-files
         args: ["--maxkb=500"]
         # The oversized-body adversarial fixture intentionally exceeds
-        # MAX_BODY_BYTES (1 MiB) to exercise the truncation warning.
-        exclude: ^tests/injection-corpus/
+        # MAX_BODY_BYTES (1 MiB) to exercise the truncation warning,
+        # and its insta snapshot captures the same ~1 MiB body.
+        exclude: ^(tests/injection-corpus/|crates/rimap-content/tests/snapshots/)
       - id: mixed-line-ending
         args: ["--fix=lf"]
         # RFC 5322 email messages require CRLF line endings; the

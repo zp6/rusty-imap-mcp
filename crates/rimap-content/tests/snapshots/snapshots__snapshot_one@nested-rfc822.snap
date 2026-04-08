@@ -1,0 +1,33 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [
+      {
+        "content_id": null,
+        "content_type": "message/rfc822",
+        "filename": null,
+        "is_inline": false,
+        "size_bytes": 0
+      }
+    ],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "forwarder@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 396,
+    "references": [],
+    "subject": "FWD: original message",
+    "to": []
+  },
+  "security_warnings": [],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_text": "See forwarded message below."
+  }
+}
