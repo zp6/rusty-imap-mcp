@@ -102,7 +102,6 @@ impl DovecotHarness {
     }
 
     #[must_use]
-    #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
     pub fn host() -> &'static str {
         "127.0.0.1"
     }
@@ -118,19 +117,16 @@ impl DovecotHarness {
     }
 
     #[must_use]
-    #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
     pub fn username() -> &'static str {
         "rimap-test"
     }
 
     #[must_use]
-    #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
     pub fn password() -> &'static str {
         "testpass"
     }
 
     /// Run an arbitrary command inside the running dovecot container.
-    #[expect(dead_code, reason = "consumed by Task 15 integration tests")]
     pub fn exec(&self, args: &[&str]) -> Result<std::process::Output, HarnessError> {
         let mut cmd = Command::new("docker");
         cmd.arg("compose").arg("-p").arg(&self.project);
@@ -217,4 +213,87 @@ fn uuid_like() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{nanos:x}")
+}
+
+// ── Task 15 additions ────────────────────────────────────────────────────────
+
+use rimap_audit::{AuditOptions, AuditWriter, Seq};
+use rimap_config::credential::CredentialStore;
+use rimap_imap::{Connection, ConnectionConfig};
+use std::sync::Arc;
+use tempfile::TempDir;
+
+pub struct StaticCreds(pub String);
+
+impl CredentialStore for StaticCreds {
+    fn get_password(&self, _account: &str) -> Result<Option<String>, rimap_config::ConfigError> {
+        Ok(Some(self.0.clone()))
+    }
+
+    fn set_password(
+        &self,
+        _account: &str,
+        _password: &str,
+    ) -> Result<(), rimap_config::ConfigError> {
+        unreachable!("tests do not write credentials")
+    }
+}
+
+pub struct ConnectedHarness {
+    pub harness: DovecotHarness,
+    pub audit_dir: TempDir,
+    pub audit: AuditWriter,
+    pub connection: Connection,
+}
+
+impl ConnectedHarness {
+    pub fn new(pin_with: PinChoice) -> Result<Self, HarnessError> {
+        let harness = DovecotHarness::try_start()?;
+        let audit_dir = TempDir::new().expect("tempdir");
+        let audit_path = audit_dir.path().join("audit.jsonl");
+        let audit = AuditWriter::open(&AuditOptions {
+            path: audit_path,
+            rotate_bytes: 0,
+            initial_seq: Seq::FIRST,
+        })
+        .expect("audit open");
+
+        let pinned = match pin_with {
+            PinChoice::Correct => Some(harness.pinned_fingerprint()),
+            PinChoice::Wrong => Some(rimap_core::TlsFingerprint::from_cert_der(
+                b"deliberately-wrong",
+            )),
+            PinChoice::None => None,
+        };
+
+        let cfg = ConnectionConfig {
+            host: DovecotHarness::host().to_string(),
+            port: harness.port(),
+            username: DovecotHarness::username().to_string(),
+            pinned_fingerprint: pinned,
+            connect_timeout: std::time::Duration::from_secs(10),
+            command_timeout: std::time::Duration::from_secs(10),
+            max_fetch_body_bytes: 5_242_880,
+        };
+        let creds: Arc<dyn CredentialStore> =
+            Arc::new(StaticCreds(DovecotHarness::password().to_string()));
+        let connection = Connection::new(cfg, audit.clone(), creds);
+        Ok(Self {
+            harness,
+            audit_dir,
+            audit,
+            connection,
+        })
+    }
+
+    pub fn audit_path(&self) -> std::path::PathBuf {
+        self.audit_dir.path().join("audit.jsonl")
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PinChoice {
+    Correct,
+    Wrong,
+    None,
 }
