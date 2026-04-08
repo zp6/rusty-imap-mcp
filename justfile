@@ -16,8 +16,9 @@ default:
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Pick install hints based on host OS and (on Linux) distro family. We emit
-    # a single concrete command per tool so the user can copy/paste it directly.
+    # Detect host OS / Linux distro family once, then build one install hint
+    # per tool targeted at that platform. Language-native package managers
+    # (cargo, go) are the fallback when a distro does not ship the tool.
     os="$(uname -s)"
     flavor="unknown"
     if [ "$os" = "Darwin" ]; then
@@ -27,44 +28,85 @@ setup:
         . /etc/os-release
         for id in ${ID:-} ${ID_LIKE:-}; do
             case "$id" in
-                fedora|rhel|centos)            flavor="fedora"; break ;;
-                debian|ubuntu)                 flavor="debian"; break ;;
-                arch)                          flavor="arch";   break ;;
-                opensuse*|suse|sles)           flavor="suse";   break ;;
+                fedora|rhel|centos)  flavor="fedora"; break ;;
+                debian|ubuntu)       flavor="debian"; break ;;
+                arch)                flavor="arch";   break ;;
+                opensuse*|suse|sles) flavor="suse";   break ;;
             esac
         done
     fi
-    hint() {
-        # hint <mac> <fedora> <debian> <arch> <suse> <fallback>
-        case "$flavor" in
-            mac)    echo "$1" ;;
-            fedora) echo "$2" ;;
-            debian) echo "$3" ;;
-            arch)   echo "$4" ;;
-            suse)   echo "$5" ;;
-            *)      echo "$6" ;;
-        esac
-    }
+    # Per-flavor install commands. Only the selected flavor's hints are built.
+    case "$flavor" in
+        mac)
+            H_JUST='brew install just'
+            H_PREK='brew install prek'
+            H_SHELLCHECK='brew install shellcheck'
+            H_SHFMT='brew install shfmt'
+            H_ACTIONLINT='brew install actionlint'
+            H_ZIZMOR='brew install zizmor'
+            H_TYPOS='brew install typos-cli'
+            ;;
+        fedora)
+            H_JUST='sudo dnf install just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo dnf install ShellCheck'
+            H_SHFMT='sudo dnf install shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        debian)
+            H_JUST='sudo apt install just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo apt install shellcheck'
+            H_SHFMT='sudo apt install shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        arch)
+            H_JUST='sudo pacman -S just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo pacman -S shellcheck'
+            H_SHFMT='sudo pacman -S shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        suse)
+            H_JUST='sudo zypper install just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='sudo zypper install ShellCheck'
+            H_SHFMT='sudo zypper install shfmt'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+        *)
+            H_JUST='cargo install --locked just'
+            H_PREK='cargo install --locked prek'
+            H_SHELLCHECK='install shellcheck via your package manager'
+            H_SHFMT='go install mvdan.cc/sh/v3/cmd/shfmt@latest'
+            H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+            H_ZIZMOR='cargo install --locked zizmor'
+            H_TYPOS='cargo install --locked typos-cli'
+            ;;
+    esac
     missing=()
     need() {
         if ! command -v "$1" >/dev/null 2>&1; then
             missing+=("$1 ($2)")
         fi
     }
-    CARGO_JUST='cargo install --locked just'
-    CARGO_PREK='cargo install --locked prek'
-    CARGO_ZIZMOR='cargo install --locked zizmor'
-    GO_SHFMT='go install mvdan.cc/sh/v3/cmd/shfmt@latest'
-    GO_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
     need rustup     "install from https://rustup.rs"
     need cargo      "bundled with rustup"
-    need just       "$(hint 'brew install just'       'sudo dnf install just'       'sudo apt install just'       'sudo pacman -S just'       'sudo zypper install just'       "$CARGO_JUST")"
-    need prek       "$(hint 'brew install prek'       "$CARGO_PREK"                 "$CARGO_PREK"                 "$CARGO_PREK"              "$CARGO_PREK"                    "$CARGO_PREK")"
-    need shellcheck "$(hint 'brew install shellcheck' 'sudo dnf install ShellCheck' 'sudo apt install shellcheck' 'sudo pacman -S shellcheck' 'sudo zypper install ShellCheck' 'install shellcheck via your package manager')"
-    need shfmt      "$(hint 'brew install shfmt'      'sudo dnf install shfmt'      'sudo apt install shfmt'      'sudo pacman -S shfmt'     'sudo zypper install shfmt'      "$GO_SHFMT")"
-    need actionlint "$(hint 'brew install actionlint' "$GO_ACTIONLINT"              "$GO_ACTIONLINT"              "$GO_ACTIONLINT"           "$GO_ACTIONLINT"                 "$GO_ACTIONLINT")"
-    need zizmor     "$(hint 'brew install zizmor'     "$CARGO_ZIZMOR"               "$CARGO_ZIZMOR"               "$CARGO_ZIZMOR"            "$CARGO_ZIZMOR"                  "$CARGO_ZIZMOR")"
-    need typos      "cargo install --locked typos-cli"
+    need just       "$H_JUST"
+    need prek       "$H_PREK"
+    need shellcheck "$H_SHELLCHECK"
+    need shfmt      "$H_SHFMT"
+    need actionlint "$H_ACTIONLINT"
+    need zizmor     "$H_ZIZMOR"
+    need typos      "$H_TYPOS"
     if [ "${#missing[@]}" -ne 0 ]; then
         echo "Missing required tools:"
         printf '  - %s\n' "${missing[@]}"
