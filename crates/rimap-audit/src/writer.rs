@@ -262,6 +262,69 @@ impl AuditWriter {
     }
 }
 
+/// Inputs to [`AuditWriter::log_process_start`]. Caller computes the
+/// inode-tamper signal by passing the trailing state from
+/// [`crate::self_check::read_trailing_state`] (run before `open`) and the
+/// current inode (run after `open`, via [`crate::self_check::current_inode`]).
+#[derive(Debug, Clone)]
+pub struct ProcessStartInputs {
+    /// `CARGO_PKG_VERSION` of the running binary.
+    pub version: String,
+    /// Git commit SHA at build time. Empty string until `vergen` lands in
+    /// Sprint 5.
+    pub git_commit: String,
+    /// Effective base posture at startup.
+    pub posture: String,
+    /// Absolute path of the loaded config file.
+    pub config_path: std::path::PathBuf,
+    /// SHA-256 of the config file contents at load time, hex-encoded.
+    pub config_hash_sha256: String,
+    /// Trailing state read from the audit file BEFORE this writer was opened.
+    pub trailing: crate::self_check::TrailingState,
+    /// Inode of the audit file as observed AFTER this writer was opened
+    /// (call `crate::self_check::current_inode` on the path).
+    pub current_inode: u64,
+}
+
+impl AuditWriter {
+    /// Build a `process_start` record from `inputs` and the writer's own
+    /// `process_id`, allocate a seq, and write it. Computes the
+    /// `audit_file_inode_changed` tamper signal from
+    /// `inputs.trailing.last_recorded_inode` vs `inputs.current_inode`.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_process_start(
+        &self,
+        inputs: ProcessStartInputs,
+    ) -> Result<crate::ids::Seq, AuditError> {
+        let inode_changed = inputs
+            .trailing
+            .last_recorded_inode
+            .is_some_and(|prior| prior != inputs.current_inode);
+        let payload = crate::record::ProcessStart {
+            version: inputs.version,
+            git_commit: inputs.git_commit,
+            posture: inputs.posture,
+            config_path: inputs.config_path,
+            config_hash_sha256: inputs.config_hash_sha256,
+            previous_last_seq: inputs.trailing.last_seq,
+            previous_process_id: inputs.trailing.last_process_id,
+            previous_file_inode: inputs.current_inode,
+            audit_file_inode_changed: inode_changed,
+        };
+        let seq = self.allocate_seq()?;
+        let record = crate::record::AuditRecord {
+            seq,
+            ts: crate::ids::Timestamp::now(),
+            process_id: self.process_id,
+            payload: crate::record::Payload::ProcessStart(payload),
+        };
+        self.write_record(&record)?;
+        Ok(seq)
+    }
+}
+
 /// Write `bytes` to `guard.buf`, flush, and update `bytes_written`.
 fn do_write_locked(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), AuditError> {
     use std::io::Write;
@@ -697,5 +760,81 @@ mod tests {
         assert_eq!(lines[1]["process_id"], pid.to_string());
         assert_eq!(lines[0]["seq"], 1);
         assert_eq!(lines[1]["seq"], 2);
+    }
+
+    #[test]
+    fn log_process_start_populates_chain_of_history_fields() {
+        use crate::self_check::TrailingState;
+        use crate::writer::ProcessStartInputs;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let prior_pid = crate::ids::ProcessId::new_now();
+        let inputs = ProcessStartInputs {
+            version: "0.0.0".to_string(),
+            git_commit: String::new(),
+            posture: "draft-safe".to_string(),
+            config_path: std::path::PathBuf::from("/tmp/config.toml"),
+            config_hash_sha256: "ab".repeat(32),
+            trailing: TrailingState {
+                last_seq: Some(crate::ids::Seq(99)),
+                last_process_id: Some(prior_pid),
+                last_recorded_inode: Some(7777),
+            },
+            current_inode: 8888,
+        };
+        let seq = writer.log_process_start(inputs).unwrap();
+        assert_eq!(seq, crate::ids::Seq::FIRST);
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert_eq!(v["kind"], "process_start");
+        assert_eq!(v["previous_last_seq"], 99);
+        assert_eq!(v["previous_process_id"], prior_pid.to_string());
+        assert_eq!(v["previous_file_inode"], 8888);
+        assert_eq!(v["audit_file_inode_changed"], true);
+    }
+
+    #[test]
+    fn log_process_start_marks_inode_unchanged_when_matching() {
+        use crate::self_check::TrailingState;
+        use crate::writer::ProcessStartInputs;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let inputs = ProcessStartInputs {
+            version: "0.0.0".to_string(),
+            git_commit: String::new(),
+            posture: "draft-safe".to_string(),
+            config_path: std::path::PathBuf::from("/tmp/c.toml"),
+            config_hash_sha256: "00".repeat(32),
+            trailing: TrailingState {
+                last_seq: None,
+                last_process_id: None,
+                last_recorded_inode: Some(4242),
+            },
+            current_inode: 4242,
+        };
+        writer.log_process_start(inputs).unwrap();
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert_eq!(v["audit_file_inode_changed"], false);
     }
 }
