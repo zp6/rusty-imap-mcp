@@ -2182,22 +2182,21 @@ EOF
 - Modify: `crates/rimap-imap/src/tls.rs` (replace stub)
 - Create: `crates/rimap-imap/tests/tls_pinning.rs`
 
-- [ ] **Step 1: Enable rustls `dangerous_configuration` feature**
+- [ ] **Step 1: Check whether the rustls `dangerous_configuration` feature is needed**
 
-The custom `ServerCertVerifier` requires `rustls`'s `dangerous_configuration` feature. Edit `Cargo.toml` workspace deps:
+As of rustls 0.23.37 the `.dangerous()` API is unconditionally available — no feature gate required. Try building first without touching `Cargo.toml`:
+
+```bash
+cargo build -p rimap-imap
+```
+
+If it compiles, skip the feature addition (smaller dep surface). If `.dangerous().with_custom_certificate_verifier(...)` fails to resolve, add the feature gate:
 
 ```toml
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring", "dangerous_configuration"] }
 ```
 
-Then re-run:
-
-```bash
-cargo build --workspace
-cargo deny check
-```
-
-Expected: clean. If `dangerous_configuration` is renamed in rustls 0.23 (it was in earlier versions), check `cargo doc --open -p rustls` for the current feature name. As of rustls 0.23 the feature is named `dangerous_configuration`.
+Then re-run `cargo build --workspace && cargo deny check`.
 
 - [ ] **Step 2: Write `crates/rimap-imap/src/tls.rs`**
 
@@ -2218,6 +2217,7 @@ use rimap_core::TlsFingerprint;
 use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
+use tokio_rustls::rustls::DistinguishedName;
 use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
 
@@ -2331,6 +2331,10 @@ impl ServerCertVerifier for CapturingVerifier {
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.inner.supported_verify_schemes()
     }
+
+    fn root_hint_subjects(&self) -> Option<&[DistinguishedName]> {
+        self.inner.root_hint_subjects()
+    }
 }
 
 /// A `ClientConfig` plus the slot the verifier writes the observed
@@ -2402,8 +2406,6 @@ Create `crates/rimap-imap/tests/tls_pinning.rs`:
 //! Verifier-level tests. No network. We exercise the `OnceLock` capture
 //! path with synthetic cert DER bytes.
 
-#![expect(clippy::unwrap_used, reason = "tests")]
-
 use rimap_core::TlsFingerprint;
 use rimap_imap::tls::build_tls_config;
 
@@ -2428,7 +2430,7 @@ fn unpinned_mode_builds_a_client_config_with_webpki_roots() {
 }
 
 #[test]
-fn fingerprint_eq_uses_constant_time_path() {
+fn fingerprint_equality_holds_for_same_input() {
     let a = TlsFingerprint::from_cert_der(b"alpha");
     let b = TlsFingerprint::from_cert_der(b"alpha");
     let c = TlsFingerprint::from_cert_der(b"beta");
