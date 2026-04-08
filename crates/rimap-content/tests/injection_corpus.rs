@@ -113,7 +113,11 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
         WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
         WarningCode::HtmlBodyUnsanitized => "html_body_unsanitized",
-        _ => "unknown",
+        // Required because WarningCode is #[non_exhaustive] (exhaustive
+        // match is not allowed outside the defining crate). Any future
+        // variant reaching this arm is a test-harness gap and should
+        // cause the corpus run to fail loudly.
+        _ => panic!("corpus harness encountered unclassified WarningCode variant {code:?}"),
     }
 }
 
@@ -122,7 +126,9 @@ fn error_kind_label(err: &ContentError) -> &'static str {
         ContentError::Malformed { .. } => "Malformed",
         ContentError::LimitExceeded { .. } => "LimitExceeded",
         ContentError::Decoding { .. } => "Decoding",
-        _ => "Unknown",
+        // Required because ContentError is #[non_exhaustive]. Any
+        // future variant reaching this arm should fail the corpus run.
+        _ => panic!("corpus harness encountered unclassified ContentError variant {err:?}"),
     }
 }
 

@@ -419,15 +419,37 @@ fn scrub_header_smuggling(raw: &[u8], warnings: &mut Vec<SecurityWarning>) -> Ve
     let dropped = drop_mask.iter().filter(|flag| **flag).count();
 
     let mut kept: Vec<u8> = Vec::with_capacity(headers.len());
+    let mut dropped_names: Vec<String> = Vec::new();
     for (idx, line) in logical.iter().enumerate() {
-        if !drop_mask[idx] {
+        if drop_mask[idx] {
+            // Capture the header name (bytes before first ':') for
+            // audit reconstruction. Bounded at 8 names to cap log
+            // growth; names are routed through the unicode sanitizer
+            // so attacker-controlled bytes cannot leak into the
+            // warning detail verbatim.
+            if dropped_names.len() < 8
+                && let Some(colon) = line.iter().position(|&b| b == b':')
+                && let Ok(name) = std::str::from_utf8(&line[..colon])
+            {
+                let (sanitized, _) =
+                    crate::unicode::sanitize(name.as_bytes(), Some("utf-8"), 64, "headers");
+                if !sanitized.is_empty() {
+                    dropped_names.push(sanitized);
+                }
+            }
+        } else {
             kept.extend_from_slice(line);
         }
     }
     if dropped > 0 {
+        let detail = if dropped_names.is_empty() {
+            format!("count={dropped}")
+        } else {
+            format!("count={dropped} names=[{}]", dropped_names.join(","))
+        };
         warnings.push(SecurityWarning {
             code: WarningCode::ParseHeaderSmugglingBlocked,
-            detail: Some(format!("count={dropped}")),
+            detail: Some(detail),
             location: Some("headers".to_string()),
         });
     }
@@ -959,6 +981,15 @@ mod tests {
         assert!(!out_str.contains("Subject:"));
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, WarningCode::ParseHeaderSmugglingBlocked);
+        assert!(
+            warnings[0]
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("names=[Subject"),
+            "detail should include names=[Subject..., got: {:?}",
+            warnings[0].detail
+        );
     }
 
     #[test]

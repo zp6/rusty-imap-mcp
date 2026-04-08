@@ -22,7 +22,7 @@ expression: value
   "security_warnings": [
     {
       "code": "parse_header_smuggling_blocked",
-      "detail": "count=3",
+      "detail": "count=3 names=[Subject,Bcc]",
       "location": "headers"
     }
   ],

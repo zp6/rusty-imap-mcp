@@ -163,6 +163,49 @@ pub enum WarningCode {
     HtmlBodyUnsanitized,
 }
 
+/// Severity classification for [`WarningCode`] variants. Sprint 5
+/// posture rules can use this to partition warnings into
+/// informational signals vs. adversarial signals without each
+/// caller maintaining its own classification table.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WarningSeverity {
+    /// Emitted for normal-operation events (e.g. a legitimate
+    /// newsletter larger than `MAX_BODY_BYTES`).
+    Informational,
+    /// Emitted when the pipeline detected and mitigated an attack
+    /// signature or a policy violation.
+    Adversarial,
+}
+
+impl WarningCode {
+    /// Classify this warning code by severity.
+    ///
+    /// The match is deliberately non-wildcarded so adding a new
+    /// [`WarningCode`] variant inside this crate forces an explicit
+    /// severity decision via compile error. `#[non_exhaustive]` only
+    /// requires a wildcard for downstream matches, not for matches
+    /// inside the defining crate.
+    #[must_use]
+    pub fn severity(&self) -> WarningSeverity {
+        match self {
+            WarningCode::UnicodeZeroWidthStripped
+            | WarningCode::UnicodeBidiOverrideStripped
+            | WarningCode::UnicodeC0C1Stripped
+            | WarningCode::ParseHeaderSmugglingBlocked
+            | WarningCode::ParseMimeTypeMismatch
+            | WarningCode::ParseAttachmentPolyglot
+            | WarningCode::ParseMimeDepthExceeded
+            | WarningCode::ParseMimePartCountExceeded
+            | WarningCode::ParseHeaderCountExceeded
+            | WarningCode::ParseAttachmentFilenameRewritten
+            | WarningCode::HtmlBodyUnsanitized => WarningSeverity::Adversarial,
+            WarningCode::ParseBodyTruncated => WarningSeverity::Informational,
+        }
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
 mod tests {
@@ -218,6 +261,32 @@ mod tests {
         let json = serde_json::to_string(&original).unwrap();
         let parsed: WarningCode = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn severity_classifies_known_variants() {
+        // Compile-time exhaustiveness is enforced by the non-wildcarded
+        // match in severity(). This test pins a few known mappings.
+        assert_eq!(
+            WarningCode::ParseBodyTruncated.severity(),
+            WarningSeverity::Informational
+        );
+        assert_eq!(
+            WarningCode::ParseHeaderSmugglingBlocked.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::HtmlBodyUnsanitized.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::ParseAttachmentFilenameRewritten.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::ParseAttachmentPolyglot.severity(),
+            WarningSeverity::Adversarial
+        );
     }
 
     #[test]
