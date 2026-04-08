@@ -211,6 +211,16 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
             "list_folders",
             &[("password", Forbidden), ("token", Forbidden)],
         ),
+        // SEARCH criteria policy: from/to/subject/body use `RedactString`,
+        // not `SaltedHash`. The Sprint 2 review brief recommended SaltedHash
+        // so incident responders could answer "did this LLM session search
+        // for the same string twice?" — but that adds within-process
+        // correlation surface for low-entropy queries (e.g. `{"from":"alice@x"}`)
+        // and offers little forensic value beyond what `arguments_hash_sha256`
+        // already provides at the record level. RedactString is the more
+        // conservative choice (less leakage, no correlation by design) and
+        // still records the byte length for unusual-payload detection.
+        // Decision recorded in #22.
         RedactionSchema::new(
             "search",
             &[
@@ -227,6 +237,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
                 ("token", Forbidden),
             ],
         ),
+        // SEE search schema above for the RedactString rationale (#22).
         RedactionSchema::new(
             "search.advanced_query",
             &[
