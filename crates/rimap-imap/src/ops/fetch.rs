@@ -42,7 +42,13 @@ fn compress_uid_set(uids: &[Uid]) -> String {
     let mut run_end = sorted[0];
 
     for &uid in &sorted[1..] {
-        if uid == run_end + 1 {
+        // `run_end + 1` cannot overflow because `sorted` is monotonically
+        // increasing after `sort_unstable + dedup`, so any `uid` that
+        // compares equal to `run_end + 1` must satisfy `run_end < uid`,
+        // which means `run_end < u32::MAX`. Use `checked_add` to make the
+        // invariant explicit and to future-proof against a refactor
+        // changing the input type.
+        if run_end.checked_add(1) == Some(uid) {
             run_end = uid;
         } else {
             emit_run(&mut out, run_start, run_end);
@@ -641,11 +647,33 @@ mod tests {
         assert_eq!(compress_uid_set(&input), "1:3");
     }
 
+    #[test]
+    fn compress_handles_u32_max_boundary() {
+        // Verify the checked_add guard: the final UID is u32::MAX, and
+        // we must NOT attempt u32::MAX + 1 inside the run extension.
+        let input = [uid(u32::MAX - 1), uid(u32::MAX)];
+        assert_eq!(compress_uid_set(&input), "4294967294:4294967295");
+    }
+
+    #[test]
+    fn compress_singleton_u32_max() {
+        let input = [uid(u32::MAX)];
+        assert_eq!(compress_uid_set(&input), "4294967295");
+    }
+
+    // NOTE: The round-trip parser in this proptest is a SIMPLIFIED model.
+    // It splits on ',' and ':' and does not use `imap-proto`'s
+    // sequence-set parser. The proptest therefore proves internal
+    // consistency of `compress_uid_set` against its own inverse, not
+    // server-level acceptance. Real IMAP parsers accept the same grammar
+    // per RFC 3501 §9, so the internal consistency is a load-bearing
+    // proxy for wire-format correctness.
     proptest::proptest! {
         #[test]
         #[expect(clippy::unwrap_used, reason = "tests")]
         fn compress_round_trip_via_split(
-            mut uids in proptest::collection::vec(1_u32..=10_000_u32, 1..200)
+            // Full u32 range exercises the u32::MAX boundary (SC-FUZZ-01).
+            mut uids in proptest::collection::vec(1_u32..=u32::MAX, 1..200)
         ) {
             uids.sort_unstable();
             uids.dedup();
