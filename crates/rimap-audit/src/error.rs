@@ -106,9 +106,11 @@ impl AuditError {
 impl From<AuditError> for RimapError {
     fn from(err: AuditError) -> Self {
         let code = err.code();
+        let source: Box<dyn std::error::Error + Send + Sync + 'static> = Box::new(err);
         Self::Audit {
             code,
-            source: Box::new(err),
+            message: source.to_string(),
+            source,
         }
     }
 }

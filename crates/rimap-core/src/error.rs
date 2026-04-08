@@ -91,13 +91,16 @@ pub enum RimapError {
     },
     /// Audit log failure. Carries both the stable code (open-time errors
     /// map to `ErrorCode::Config`, runtime errors to `ErrorCode::Internal`)
-    /// and the original `AuditError` via the source chain. The Display
-    /// form includes the source's message so operators see the audit
-    /// path and underlying I/O error.
-    #[error("{code}: {source}")]
+    /// and the original `AuditError` via the source chain. `message` is
+    /// the source's `to_string()` captured at construction time so the
+    /// Display form does not double-print the source when reporters walk
+    /// the chain.
+    #[error("{code}: {message}")]
     Audit {
         /// Stable error code — `Config` for open-time, `Internal` for runtime.
         code: ErrorCode,
+        /// Human-readable message captured from the source at construction.
+        message: String,
         /// The original audit error.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
@@ -167,5 +170,22 @@ mod tests {
             message: "tool disabled".to_string(),
         };
         assert_eq!(err.to_string(), "ERR_POSTURE_DENIED: tool disabled");
+    }
+
+    #[test]
+    fn rimap_error_audit_display_does_not_duplicate_source() {
+        use std::io;
+
+        let inner: Box<dyn std::error::Error + Send + Sync> =
+            Box::new(io::Error::other("disk full"));
+        let err = RimapError::Audit {
+            code: ErrorCode::Internal,
+            message: inner.to_string(),
+            source: inner,
+        };
+        let displayed = err.to_string();
+        // The display string should contain "disk full" exactly once.
+        assert_eq!(displayed.matches("disk full").count(), 1);
+        assert!(displayed.starts_with("ERR_INTERNAL: "));
     }
 }
