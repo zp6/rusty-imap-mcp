@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+# Progress markers — every line below is meant to appear in
+# `podman compose logs` so a stuck startup points at a specific stage.
+log() { printf '[entrypoint] %s\n' "$*" >&2; }
+
+log "start"
+
 # Clean up any stale dovecot runtime state. When case_11 recreates the
 # container via `docker compose up -d --force-recreate`, this dir starts
 # empty — but the recursive rm is still a safety net for any future change
@@ -24,11 +30,15 @@ rm -f /shared/ready /shared/fingerprint.hex
 # relies on the SAME pinned fingerprint surviving across the recreate
 # so the post-disconnect reconnect succeeds.
 if [ ! -f /shared/cert.pem ]; then
+    log "generating self-signed cert"
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout /shared/key.pem \
         -out /shared/cert.pem \
         -days 1 \
         -subj "/CN=rimap-test-dovecot" >/dev/null 2>&1
+    log "cert generated"
+else
+    log "reusing cached cert"
 fi
 # Place the cert where dovecot.conf expects it. Copy (not symlink) so a
 # change in shared-volume semantics doesn't break dovecot's open().
@@ -64,13 +74,17 @@ for fixture in /fixtures/*.eml; do
     cp "$fixture" "/var/mail/rimap-test/Maildir/new/${i}.fixture"
 done
 
+log "seeding maildir + fixtures (${i:-0} eml files copied)"
+
 chown -R 1000:1000 /var/mail/rimap-test
 chmod -R u+rwX /var/mail/rimap-test
 
+log "starting dovecot in foreground"
 # Start dovecot in the background so we can wait for it to bind port 993
 # before publishing the readiness signals.
 dovecot -F &
 dovecot_pid=$!
+log "dovecot pid=$dovecot_pid, waiting for LISTEN on 993"
 
 # Wait for dovecot to enter LISTEN state on TCP port 993 (hex 03E1).
 # Parse /proc/net/tcp and /proc/net/tcp6 directly — no extra tools needed.
@@ -96,10 +110,12 @@ if [ $i -ge 240 ]; then
     exit 1
 fi
 
+log "dovecot bound 993, publishing ready marker"
 # Now publish the fingerprint and ready marker — the host harness polls
 # for fingerprint.hex and only proceeds once it can read it.
 printf '%s\n' "$fingerprint" >/shared/fingerprint.hex
 touch /shared/ready
+log "ready"
 
 # Hand off: wait on dovecot, propagating its exit code.
 wait "$dovecot_pid"
