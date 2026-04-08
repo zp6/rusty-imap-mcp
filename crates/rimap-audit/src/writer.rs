@@ -168,6 +168,24 @@ impl AuditWriter {
         Ok(seq)
     }
 
+    /// Build an `auth` record from `payload`, allocate a seq, and write it.
+    /// Stamps the record with the writer's stable `process_id` and
+    /// `Timestamp::now()`. Returns the allocated `seq` on success.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_auth(&self, payload: crate::record::Auth) -> Result<crate::ids::Seq, AuditError> {
+        let seq = self.allocate_seq()?;
+        let record = crate::record::AuditRecord {
+            seq,
+            ts: crate::ids::Timestamp::now(),
+            process_id: self.process_id,
+            payload: crate::record::Payload::Auth(payload),
+        };
+        self.write_record(&record)?;
+        Ok(seq)
+    }
+
     /// Serialize `record` as one JSONL line, append it to the active file,
     /// flush the buffer, and fsync on `process_*` / `auth` / `config` kinds.
     ///
@@ -602,5 +620,82 @@ mod tests {
         .unwrap();
         assert_eq!(writer.allocate_seq().unwrap(), crate::ids::Seq(42));
         assert_eq!(writer.allocate_seq().unwrap(), crate::ids::Seq(43));
+    }
+
+    #[test]
+    fn log_auth_writes_one_record_with_allocated_seq() {
+        use crate::record::{Auth, AuthResult};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let seq = writer
+            .log_auth(Auth {
+                result: AuthResult::Success,
+                host: "127.0.0.1".to_string(),
+                port: 993,
+                username: "alice@example.test".to_string(),
+                tls_fingerprint_sha256: Some("ab".repeat(32)),
+                fingerprint_match: Some(true),
+                error_code: None,
+            })
+            .unwrap();
+
+        assert_eq!(seq, crate::ids::Seq::FIRST);
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let line = contents.lines().next().unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["kind"], "auth");
+        assert_eq!(v["seq"], 1);
+        assert_eq!(v["result"], "success");
+        assert_eq!(v["host"], "127.0.0.1");
+        assert_eq!(v["fingerprint_match"], true);
+    }
+
+    #[test]
+    fn log_auth_uses_writer_process_id_for_every_record() {
+        use crate::record::{Auth, AuthResult};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+        let pid = writer.process_id();
+
+        let make = || Auth {
+            result: AuthResult::Failure,
+            host: "h".into(),
+            port: 1,
+            username: "u".into(),
+            tls_fingerprint_sha256: None,
+            fingerprint_match: None,
+            error_code: Some("ERR_TLS".into()),
+        };
+        writer.log_auth(make()).unwrap();
+        writer.log_auth(make()).unwrap();
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["process_id"], pid.to_string());
+        assert_eq!(lines[1]["process_id"], pid.to_string());
+        assert_eq!(lines[0]["seq"], 1);
+        assert_eq!(lines[1]["seq"], 2);
     }
 }
