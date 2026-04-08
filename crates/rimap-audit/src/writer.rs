@@ -140,8 +140,24 @@ impl AuditWriter {
     /// Allocate the next monotonic `Seq` value. Locks the inner mutex
     /// briefly; never crosses an `.await`.
     ///
+    /// ## Ordering contract
+    ///
+    /// `allocate_seq` and `write_record` each acquire the inner lock
+    /// independently. Two concurrent `log_auth` / `log_process_start`
+    /// callers can therefore produce a file where physical line order
+    /// disagrees with `seq` order (allocation races with the write).
+    ///
+    /// Readers of the audit log MUST sort by the `seq` field rather
+    /// than relying on line order. `read_trailing_state` and the Sprint 3
+    /// consumers (`Connection::ensure_connected`, `rimap-server::audit_init`)
+    /// are all single-writer through a serializing outer mutex, so the
+    /// inversion does not occur in practice today. The contract is
+    /// documented here so a future multi-writer call site cannot silently
+    /// break downstream readers.
+    ///
     /// # Errors
     /// Returns `AuditError::Write` if the internal mutex is poisoned.
+    #[must_use = "the seq value should be stored in the audit record"]
     pub fn allocate_seq(&self) -> Result<crate::ids::Seq, AuditError> {
         let mut guard = self.inner.lock().map_err(|_| AuditError::Write {
             path: self.path.clone(),
