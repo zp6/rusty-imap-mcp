@@ -69,6 +69,7 @@ impl core::fmt::Display for ErrorCode {
 /// specific errors (`AuthzError`, `ConfigError`, `rimap_imap::Error`,
 /// `AuditError`, …) which map into this via `From` impls.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum RimapError {
     /// Authorization, posture, rate limit, or breaker failure.
     #[error("{code}: {message}")]

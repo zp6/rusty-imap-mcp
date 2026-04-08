@@ -6,6 +6,7 @@ use thiserror::Error;
 /// Errors produced by `rimap-imap`. Each variant maps to a stable
 /// `ErrorCode` via `From<Error> for RimapError`.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum Error {
     /// TLS leaf-cert fingerprint did not match the configured pin.
     #[error("ERR_TLS: fingerprint mismatch (observed={observed}, expected={expected})")]
@@ -72,6 +73,7 @@ pub enum Error {
 
 /// Specific authentication failure mode for `Error::Auth`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AuthFailure {
     /// LOGIN command rejected by the server.
     LoginRejected,

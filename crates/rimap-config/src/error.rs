@@ -9,6 +9,7 @@ use thiserror::Error;
 
 /// Error produced by config loading, parsing, validation, or credential resolution.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum ConfigError {
     /// The config file could not be read from disk.
     #[error("failed to read config file `{path}`: {source}")]
