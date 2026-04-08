@@ -6,9 +6,10 @@
 //! composer runs the full sequence and returns the output string
 //! alongside any [`SecurityWarning`]s emitted during filtering.
 //!
-//! This module has no I/O, no allocations beyond its output string, and
-//! knows nothing about MIME or email structure. It is the single
-//! chokepoint through which every untrusted string in the crate passes.
+//! This module has no I/O; intermediate allocations are bounded by
+//! input length × a small constant. It knows nothing about MIME or
+//! email structure, and it is the single chokepoint through which
+//! every untrusted string in the crate passes.
 
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
@@ -62,7 +63,7 @@ pub fn normalize_nfkc(input: &str) -> String {
 }
 
 /// Filter disallowed codepoints from `input`, returning the filtered
-/// string alongside the set of warning codes produced by the scan.
+/// string alongside per-class strip counts.
 ///
 /// The strip set covers:
 /// - Zero-width formatting codepoints ([`ZERO_WIDTH`])
@@ -70,10 +71,9 @@ pub fn normalize_nfkc(input: &str) -> String {
 /// - C0 controls (U+0000..U+001F) except `\t` (U+0009) and `\n` (U+000A)
 /// - C1 controls (U+0080..U+009F)
 ///
-/// Each warning code is emitted at most once per call, regardless of
-/// how many codepoints of that class were stripped. The returned
-/// counts (in the `detail` string of the warning, populated by
-/// [`sanitize`]) record the total.
+/// This function does not emit [`SecurityWarning`]s directly; the
+/// [`sanitize`] composer converts the counts in [`FilterResult`] into
+/// warnings (at most one per strip class per call).
 #[must_use]
 pub fn filter_codepoints(input: &str) -> FilterResult {
     let mut out = String::with_capacity(input.len());
@@ -179,7 +179,15 @@ pub fn sanitize(
     location: &str,
 ) -> (String, Vec<SecurityWarning>) {
     let decoded = decode(bytes, charset_label);
-    let normalized = normalize_nfkc(&decoded);
+    // Pre-cap before NFKC so pathological expansion (CJK compatibility
+    // decompositions, ligatures) has a bounded work factor. 4x covers
+    // realistic expansion for well-formed text while preventing memory
+    // amplification DoS on inputs crafted to expand dramatically under
+    // NFKC. The final per-part cap at the end of the pipeline is
+    // unchanged.
+    let pre_cap_budget = max_bytes.saturating_mul(4);
+    let pre_capped = truncate_graphemes(&decoded, pre_cap_budget);
+    let normalized = normalize_nfkc(&pre_capped);
     let line_normalized = normalize_line_endings(&normalized);
     let filter_result = filter_codepoints(&line_normalized);
     let truncated = truncate_graphemes(&filter_result.text, max_bytes);

@@ -15,8 +15,9 @@ use crate::output::{
 };
 use crate::unicode;
 
-/// Maximum raw message size accepted. Bodies over this are truncated
-/// and `ParseBodyTruncated` is emitted.
+/// Maximum raw message size accepted. Messages larger than this are
+/// rejected with [`ContentError::LimitExceeded`] with `kind = "message_bytes"`
+/// before any parsing work is performed.
 pub const MAX_MESSAGE_BYTES: usize = 25 * 1024 * 1024;
 
 /// Maximum per-text-part size after sanitization.
@@ -43,6 +44,12 @@ pub const MAX_HEADER_COUNT: usize = 256;
 /// byte stream, and [`ContentError::LimitExceeded`] if any hard limit
 /// (MIME depth, part count, header count) is exceeded.
 pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
+    if raw.len() > MAX_MESSAGE_BYTES {
+        return Err(ContentError::LimitExceeded {
+            kind: "message_bytes",
+            limit: MAX_MESSAGE_BYTES,
+        });
+    }
     let original_size_bytes = raw.len() as u64;
     let mut warnings: Vec<SecurityWarning> = Vec::new();
     let scrubbed = scrub_header_smuggling(raw, &mut warnings);
@@ -1120,6 +1127,18 @@ mod tests {
         let raw = b"From: a@example\r\n\r\nbody";
         let content = parse_message(raw).unwrap();
         assert!(content.meta.mailing_list.is_none());
+    }
+
+    #[test]
+    fn parse_rejects_oversize_message() {
+        let mut raw = Vec::from(&b"From: a@example\r\n\r\n"[..]);
+        raw.resize(MAX_MESSAGE_BYTES + 1, b'x');
+        let err = parse_message(&raw).unwrap_err();
+        let ContentError::LimitExceeded { kind, limit } = err else {
+            unreachable!("expected LimitExceeded message_bytes, got {err:?}");
+        };
+        assert_eq!(kind, "message_bytes");
+        assert_eq!(limit, MAX_MESSAGE_BYTES);
     }
 
     #[test]
