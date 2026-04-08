@@ -16,33 +16,55 @@ default:
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Pick install hints based on host OS. On Linux we prefer language-native
-    # package managers (cargo, pipx, go) since distro packages lag or are missing.
+    # Pick install hints based on host OS and (on Linux) distro family. We emit
+    # a single concrete command per tool so the user can copy/paste it directly.
     os="$(uname -s)"
+    flavor="unknown"
+    if [ "$os" = "Darwin" ]; then
+        flavor="mac"
+    elif [ "$os" = "Linux" ] && [ -r /etc/os-release ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        for id in ${ID:-} ${ID_LIKE:-}; do
+            case "$id" in
+                fedora|rhel|centos)            flavor="fedora"; break ;;
+                debian|ubuntu)                 flavor="debian"; break ;;
+                arch)                          flavor="arch";   break ;;
+                opensuse*|suse|sles)           flavor="suse";   break ;;
+            esac
+        done
+    fi
     hint() {
-        local tool="$1" mac="$2" linux="$3"
-        case "$os" in
-            Darwin) echo "$mac" ;;
-            Linux)  echo "$linux" ;;
-            *)      echo "$mac (unknown OS: $os)" ;;
+        # hint <mac> <fedora> <debian> <arch> <suse> <fallback>
+        case "$flavor" in
+            mac)    echo "$1" ;;
+            fedora) echo "$2" ;;
+            debian) echo "$3" ;;
+            arch)   echo "$4" ;;
+            suse)   echo "$5" ;;
+            *)      echo "$6" ;;
         esac
     }
     missing=()
     need() {
-        local tool="$1"
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            missing+=("$tool ($2)")
+        if ! command -v "$1" >/dev/null 2>&1; then
+            missing+=("$1 ($2)")
         fi
     }
-    need rustup       "install from https://rustup.rs"
-    need cargo        "bundled with rustup"
-    need just         "$(hint just         'brew install just'         'cargo install --locked just')"
-    need prek         "$(hint prek         'brew install prek'         'cargo install --locked prek')"
-    need shellcheck   "$(hint shellcheck   'brew install shellcheck'   'apt install shellcheck | dnf install ShellCheck | pacman -S shellcheck')"
-    need shfmt        "$(hint shfmt        'brew install shfmt'        'go install mvdan.cc/sh/v3/cmd/shfmt@latest | apt install shfmt')"
-    need actionlint   "$(hint actionlint   'brew install actionlint'   'go install github.com/rhysd/actionlint/cmd/actionlint@latest')"
-    need zizmor       "$(hint zizmor       'brew install zizmor'       'cargo install --locked zizmor | pipx install zizmor')"
-    need typos        "cargo install --locked typos-cli"
+    CARGO_JUST='cargo install --locked just'
+    CARGO_PREK='cargo install --locked prek'
+    CARGO_ZIZMOR='cargo install --locked zizmor'
+    GO_SHFMT='go install mvdan.cc/sh/v3/cmd/shfmt@latest'
+    GO_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
+    need rustup     "install from https://rustup.rs"
+    need cargo      "bundled with rustup"
+    need just       "$(hint 'brew install just'       'sudo dnf install just'       'sudo apt install just'       'sudo pacman -S just'       'sudo zypper install just'       "$CARGO_JUST")"
+    need prek       "$(hint 'brew install prek'       "$CARGO_PREK"                 "$CARGO_PREK"                 "$CARGO_PREK"              "$CARGO_PREK"                    "$CARGO_PREK")"
+    need shellcheck "$(hint 'brew install shellcheck' 'sudo dnf install ShellCheck' 'sudo apt install shellcheck' 'sudo pacman -S shellcheck' 'sudo zypper install ShellCheck' 'install shellcheck via your package manager')"
+    need shfmt      "$(hint 'brew install shfmt'      'sudo dnf install shfmt'      'sudo apt install shfmt'      'sudo pacman -S shfmt'     'sudo zypper install shfmt'      "$GO_SHFMT")"
+    need actionlint "$(hint 'brew install actionlint' "$GO_ACTIONLINT"              "$GO_ACTIONLINT"              "$GO_ACTIONLINT"           "$GO_ACTIONLINT"                 "$GO_ACTIONLINT")"
+    need zizmor     "$(hint 'brew install zizmor'     "$CARGO_ZIZMOR"               "$CARGO_ZIZMOR"               "$CARGO_ZIZMOR"            "$CARGO_ZIZMOR"                  "$CARGO_ZIZMOR")"
+    need typos      "cargo install --locked typos-cli"
     if [ "${#missing[@]}" -ne 0 ]; then
         echo "Missing required tools:"
         printf '  - %s\n' "${missing[@]}"
