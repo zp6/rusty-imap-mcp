@@ -585,4 +585,41 @@ mod tests {
         assert!(content.meta.subject.is_none());
         assert_eq!(content.meta.original_size_bytes, raw.len() as u64);
     }
+
+    #[test]
+    fn parse_idn_u_label_address_passes_through_with_no_warnings() {
+        // Raw UTF-8 U-label IDN (Russian "example.rf"). Sprint 4a has no
+        // homograph / mixed-script detection — that's reserved for
+        // Sprint 4b. This test pins the baseline: an IDN address parses
+        // successfully, NFKC-normalizes idempotently, and emits zero
+        // security warnings. When Sprint 4b adds lookalike detection,
+        // this fixture should still pass because the domain is a
+        // legitimate single-script IDN, not a homograph attack.
+        let raw = "From: Тест <user@\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}>\r\n\
+                   Subject: IDN baseline\r\n\
+                   \r\n\
+                   body"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(content.meta.from.is_some());
+        let from = content.meta.from.as_deref().unwrap();
+        assert!(from.contains("\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}"));
+        assert!(content.security_warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_idn_a_label_address_passes_through_byte_for_byte() {
+        // Punycode A-label form of the same domain. Pure ASCII, so
+        // NFKC is a no-op and the codepoint filter strips nothing.
+        // Pins baseline for when Sprint 4b adds idna decoding — the
+        // A-label should still pass through zero warnings here.
+        let raw = b"From: Test <user@xn--e1afmkfd.xn--p1ai>\r\n\
+                    Subject: IDN A-label baseline\r\n\
+                    \r\n\
+                    body";
+        let content = parse_message(raw).unwrap();
+        let from = content.meta.from.as_deref().unwrap();
+        assert!(from.contains("xn--e1afmkfd.xn--p1ai"));
+        assert!(content.security_warnings.is_empty());
+    }
 }
