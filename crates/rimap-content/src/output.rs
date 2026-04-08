@@ -148,6 +148,10 @@ pub enum WarningCode {
     /// Header count exceeded `MAX_HEADER_COUNT`. Emitted alongside a
     /// terminal `ContentError::LimitExceeded`.
     ParseHeaderCountExceeded,
+    /// An attachment filename contained path separators, parent
+    /// references, reserved Windows names, or other unsafe characters
+    /// and was rewritten to a safe form.
+    ParseAttachmentFilenameRewritten,
 }
 
 #[cfg(test)]
@@ -169,6 +173,13 @@ mod tests {
         let code = WarningCode::UnicodeZeroWidthStripped;
         let json = serde_json::to_string(&code).unwrap();
         assert_eq!(json, "\"unicode_zero_width_stripped\"");
+    }
+
+    #[test]
+    fn parse_attachment_filename_rewritten_label() {
+        let code = WarningCode::ParseAttachmentFilenameRewritten;
+        let json = serde_json::to_string(&code).unwrap();
+        assert_eq!(json, "\"parse_attachment_filename_rewritten\"");
     }
 
     #[test]

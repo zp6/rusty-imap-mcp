@@ -578,14 +578,22 @@ fn build_attachment_meta(
     }
 
     let filename = part.attachment_name().map(|name| {
-        let (text, mut ws) = unicode::sanitize(
+        let (unicode_clean, mut ws) = unicode::sanitize(
             name.as_bytes(),
             Some("utf-8"),
             MAX_HEADER_BYTES,
             &format!("attachment[{idx}]:filename"),
         );
         warnings.append(&mut ws);
-        text
+        let (safe, rewritten) = sanitize_filename(&unicode_clean, idx);
+        if rewritten {
+            warnings.push(SecurityWarning {
+                code: WarningCode::ParseAttachmentFilenameRewritten,
+                detail: Some(format!("original={unicode_clean:?}")),
+                location: Some(format!("attachment[{idx}]:filename")),
+            });
+        }
+        safe
     });
 
     let content_id = part.content_id().map(|id| {
@@ -756,6 +764,74 @@ fn sanitize_header_value(
         unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
     warnings.append(&mut new_warnings);
     Some(text)
+}
+
+/// Sanitize an attachment filename into a safe form. Returns
+/// `(sanitized, rewritten)` where `rewritten` is `true` if any
+/// normalization step changed the input.
+///
+/// Rules:
+/// - Split on `/` or `\`, collapse `..` components to `_`, rejoin with `_`.
+/// - Drop any NUL bytes.
+/// - Trim leading and trailing `.` and ASCII whitespace.
+/// - Prefix reserved Windows names (`CON`, `PRN`, `AUX`, `NUL`,
+///   `COM0..9`, `LPT0..9`, case-insensitive) with `_`.
+/// - Truncate to 255 bytes at a grapheme-cluster boundary.
+/// - If the result is empty, fall back to `attachment_{idx}`.
+fn sanitize_filename(name: &str, idx: usize) -> (String, bool) {
+    let original = name;
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in name.split(['/', '\\']) {
+        parts.push(if segment == ".." { "_" } else { segment });
+    }
+    let joined = parts.join("_");
+    let no_nul: String = joined.chars().filter(|&c| c != '\0').collect();
+    let trimmed = no_nul
+        .trim_start_matches(|c: char| c == '.' || c.is_ascii_whitespace())
+        .trim_end_matches(|c: char| c == '.' || c.is_ascii_whitespace())
+        .to_string();
+    let lowered = trimmed.to_ascii_lowercase();
+    let reserved_stem = lowered.split('.').next().unwrap_or("");
+    let reserved = matches!(
+        reserved_stem,
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com0"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt0"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    );
+    let prefixed = if reserved {
+        format!("_{trimmed}")
+    } else {
+        trimmed
+    };
+    let capped = crate::unicode::truncate_graphemes(&prefixed, 255);
+    let final_name = if capped.is_empty() {
+        format!("attachment_{idx}")
+    } else {
+        capped
+    };
+    let rewritten = final_name != original;
+    (final_name, rewritten)
 }
 
 #[cfg(test)]
@@ -1172,5 +1248,49 @@ mod tests {
             kind == "mime_depth" || kind == "mime_parts",
             "expected mime_depth or mime_parts, got {kind}"
         );
+    }
+
+    #[test]
+    fn sanitize_filename_strips_path_separators() {
+        let (out, rewritten) = sanitize_filename("../../etc/passwd", 0);
+        assert!(!out.contains('/'));
+        assert!(!out.contains(".."));
+        assert!(rewritten);
+    }
+
+    #[test]
+    fn sanitize_filename_strips_backslash_traversal() {
+        let (out, rewritten) = sanitize_filename("..\\..\\Windows\\System32\\evil.dll", 0);
+        assert!(!out.contains('\\'));
+        assert!(!out.contains(".."));
+        assert!(rewritten);
+    }
+
+    #[test]
+    fn sanitize_filename_prefixes_reserved_windows_names() {
+        let (out, rewritten) = sanitize_filename("CON.txt", 0);
+        assert_eq!(out, "_CON.txt");
+        assert!(rewritten);
+    }
+
+    #[test]
+    fn sanitize_filename_trims_trailing_dots_and_spaces() {
+        let (out, rewritten) = sanitize_filename("report.pdf. . ", 0);
+        assert_eq!(out, "report.pdf");
+        assert!(rewritten);
+    }
+
+    #[test]
+    fn sanitize_filename_empty_fallback() {
+        let (out, rewritten) = sanitize_filename("...", 7);
+        assert_eq!(out, "attachment_7");
+        assert!(rewritten);
+    }
+
+    #[test]
+    fn sanitize_filename_clean_passes_through() {
+        let (out, rewritten) = sanitize_filename("invoice-2026-04.pdf", 0);
+        assert_eq!(out, "invoice-2026-04.pdf");
+        assert!(!rewritten);
     }
 }

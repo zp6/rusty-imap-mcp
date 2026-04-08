@@ -1,0 +1,11 @@
+{
+  "description": "An attachment filename containing path traversal is rewritten to a safe form and parse_attachment_filename_rewritten is emitted.",
+  "expect": "ok",
+  "must_contain": ["see attached"],
+  "must_not_contain": ["/etc/passwd", "../"],
+  "warning_codes": ["parse_attachment_filename_rewritten"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 1
+  }
+}

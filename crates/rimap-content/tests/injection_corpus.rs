@@ -110,6 +110,7 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::ParseMimeDepthExceeded => "parse_mime_depth_exceeded",
         WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
         WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
+        WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
         _ => "unknown",
     }
 }

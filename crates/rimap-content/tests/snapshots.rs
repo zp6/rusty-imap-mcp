@@ -100,3 +100,8 @@ fn snapshot_mailing_list() {
 fn snapshot_multilingual_negative() {
     snapshot_one("multilingual-negative");
 }
+
+#[test]
+fn snapshot_attachment_path_traversal() {
+    snapshot_one("attachment-path-traversal");
+}
