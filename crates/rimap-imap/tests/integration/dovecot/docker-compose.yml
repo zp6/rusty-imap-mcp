@@ -8,7 +8,10 @@ services:
     image: dovecot/dovecot:2.3.21
     container_name: ${COMPOSE_PROJECT_NAME:-rimap-it}-dovecot
     ports:
-      - "0:993"
+      # Loopback-only. Short form "0:993" would bind 0.0.0.0 and expose the
+      # test dovecot (with its known-default password) to the LAN while
+      # cargo test is running.
+      - "127.0.0.1:0:993"
     volumes:
       - ./dovecot.conf:/etc/dovecot/dovecot.conf:ro
       - ./users:/etc/dovecot/users:ro

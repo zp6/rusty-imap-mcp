@@ -211,10 +211,26 @@ pub enum BodyStructure {
 /// SEARCH query — either a structured builder or a raw passthrough.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SearchQuery {
-    /// Typed query built via `StructuredQuery`.
+    /// Typed query built via `StructuredQuery`. This is the path all
+    /// untrusted input (agent prompts, MCP tool arguments, HTTP requests)
+    /// MUST take — `StructuredQuery`'s field builders apply the necessary
+    /// RFC 3501 quoting and reject CR/LF/NUL bytes.
     Structured(StructuredQuery),
-    /// Raw IMAP SEARCH key string. The audit/dispatch layer (Sprint 5) decides
-    /// whether to log it verbatim or redacted.
+    /// Raw IMAP SEARCH key string, forwarded verbatim to `UID SEARCH`
+    /// without further validation.
+    ///
+    /// # Safety boundary
+    ///
+    /// Callers are entirely responsible for RFC 3501 compliance. This
+    /// variant bypasses async-imap's `validate_str` — embedded CR, LF, or
+    /// NUL bytes will terminate the tagged command line and inject a
+    /// follow-on command.
+    ///
+    /// Untrusted input (anything reachable from an agent prompt or an
+    /// external API) MUST NOT be routed through this variant. Use
+    /// [`SearchQuery::Structured`] instead. This escape hatch exists for
+    /// integration tests and internal tooling where the caller controls
+    /// the key.
     Raw(String),
 }
 
