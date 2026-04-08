@@ -22,10 +22,19 @@ fn boot(pin: PinChoice) -> Option<ConnectedHarness> {
     }
 }
 
+#[expect(clippy::panic, reason = "test failure path")]
 fn read_audit_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
     let s = std::fs::read_to_string(path).unwrap_or_default();
     s.lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
+        .enumerate()
+        .map(|(idx, l)| {
+            serde_json::from_str(l).unwrap_or_else(|e| {
+                panic!(
+                    "audit line {} failed to parse as JSON: {e}\nline: {l}",
+                    idx + 1
+                )
+            })
+        })
         .collect()
 }
 
