@@ -10,7 +10,7 @@ expression: value
         "content_type": "message/rfc822",
         "filename": null,
         "is_inline": false,
-        "size_bytes": 0
+        "size_bytes": 188
       }
     ],
     "body_truncated": false,

@@ -10,7 +10,7 @@ expression: value
         "content_type": "application/octet-stream",
         "filename": "______etc_passwd",
         "is_inline": false,
-        "size_bytes": 3
+        "size_bytes": 146
       }
     ],
     "body_truncated": false,

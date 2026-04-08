@@ -672,7 +672,7 @@ fn build_attachment_meta(
     AttachmentMeta {
         filename,
         content_type: sanitized_ct,
-        size_bytes: body.len() as u64,
+        size_bytes: u64::from(part.raw_len()),
         content_id,
         is_inline: is_inline(part),
     }
@@ -1467,5 +1467,28 @@ mod tests {
         let (out, rewritten) = sanitize_filename("invoice-2026-04.pdf", 0);
         assert_eq!(out, "invoice-2026-04.pdf");
         assert!(!rewritten);
+    }
+
+    #[test]
+    fn nested_rfc822_attachment_reports_nonzero_size() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+                    \r\n\
+                    --BOUND\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    outer\r\n\
+                    --BOUND\r\n\
+                    Content-Type: message/rfc822\r\n\
+                    Content-Disposition: attachment\r\n\
+                    \r\n\
+                    From: inner@example\r\n\
+                    Subject: nested\r\n\
+                    \r\n\
+                    inner body\r\n\
+                    --BOUND--\r\n";
+        let content = parse_message(raw).unwrap();
+        assert_eq!(content.meta.attachments.len(), 1);
+        assert!(content.meta.attachments[0].size_bytes > 0);
     }
 }
