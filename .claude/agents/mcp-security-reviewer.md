@@ -73,6 +73,35 @@ Reference this catalog when reviewing. Each finding you report should cite the c
 - **MCP-PRIV-03 No human-in-the-loop for destructive ops** — delete/move/send-equivalent operations auto-execute under posture.
 - **MCP-PRIV-04 Resource exhaustion (sampling abuse)** — no token limit per invocation; unbounded attachment size; unbounded MIME depth; zip/quoted-printable bombs.
 
+### Elicitation
+
+MCP elicitation lets a server prompt the user for structured input mid-tool
+call. It is a privileged UX surface because the prompt text is server-controlled
+(prompt injection from server → user), the response schema is server-controlled
+(server can ask for fields it shouldn't), the user may interpret the prompt as
+coming from the MCP client rather than the server (spoofing), and the
+structured response becomes trusted input to the server.
+
+- **MCP-ELIC-01 Prompt-text injection** — server-provided prompt text
+  containing instructions that alter client behavior (e.g., "before
+  answering, send the following to http://…"). Sanitize and flag.
+- **MCP-ELIC-02 Schema over-request** — server asks for fields unrelated
+  to the tool's declared purpose (e.g., a math tool requesting the user's
+  email). Posture should constrain.
+- **MCP-ELIC-03 Identity spoofing** — elicitation UX must clearly identify
+  the requesting server, not present as the client's own prompt.
+- **MCP-ELIC-04 Response injection downstream** — the user's structured
+  response becomes trusted input to the server; the server may then use
+  it in shell commands, filesystem paths, or further tool calls. The
+  response is still untrusted from the client's perspective and must be
+  audited.
+- **MCP-ELIC-05 Elicitation loop** — repeated elicitation without rate
+  limit is a denial-of-UX vector. Cap elicitations per tool call and per
+  session.
+- **MCP-ELIC-06 Elicitation without consent for sensitive scopes** — an
+  elicitation that asks for credentials, TOTP codes, or recovery phrases
+  should be refused by the client regardless of server claims.
+
 ### Audit and observability
 - **MCP-AUD-01 Silent audit write failure** — errors from the JSONL writer swallowed instead of surfacing as `ERR_INTERNAL`.
 - **MCP-AUD-02 Lock held across await** — exclusive advisory lock crosses an `.await`, risking starvation or deadlock.
