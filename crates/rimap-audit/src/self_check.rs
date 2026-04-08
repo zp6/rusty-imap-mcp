@@ -159,7 +159,13 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
     })
 }
 
-/// Returns the current inode of `path`. Returns `0` on non-Unix platforms.
+/// Returns the current inode of `path`. On Unix, this is the POSIX `ino`
+/// from `stat`. On Windows, this is the NTFS file reference number from
+/// `MetadataExt::file_index`, which is stable across re-opens of the same
+/// file. `ReFS`, `FAT32`, and some network filesystems do not provide a
+/// stable file index — `file_index` returns `None` and this function
+/// returns `0`, which the tamper-signal logic interprets as "unknown, do
+/// not flag". Returns `0` on platforms that are neither Unix nor Windows.
 ///
 /// # Errors
 /// I/O error reading metadata.
@@ -178,7 +184,18 @@ fn inode_of(meta: &std::fs::Metadata) -> u64 {
     meta.ino()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn inode_of(meta: &std::fs::Metadata) -> u64 {
+    use std::os::windows::fs::MetadataExt;
+    // file_index is the NTFS file reference number — stable across
+    // re-opens of the same file. Returns Option<u64>; None on
+    // filesystems that don't support file indices (ReFS, FAT32, some
+    // network filesystems). Treat None as 0 = "unknown", which the
+    // tamper-signal logic interprets as "do not flag".
+    meta.file_index().unwrap_or(0)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn inode_of(_meta: &std::fs::Metadata) -> u64 {
     0
 }

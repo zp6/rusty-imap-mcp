@@ -5,11 +5,12 @@
 //! run re-opens the file (a fresh inode), calls `read_trailing_state`, and
 //! verifies the comparison would flag a mismatch.
 //!
-//! On Windows the inode concept does not apply; `current_inode` returns `0`
-//! and this test is compiled out.
+//! On Unix, this is a real inode from `stat`. On Windows, this is the NTFS
+//! file reference number. On filesystems that don't support stable file
+//! indices (`ReFS`, `FAT32`, network drives), `current_inode` returns `0`
+//! and the inode comparison will not trigger the tamper signal.
 
 #![expect(clippy::unwrap_used, reason = "tests")]
-#![cfg(unix)]
 
 use std::io::Write;
 
