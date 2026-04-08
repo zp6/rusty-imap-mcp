@@ -162,8 +162,27 @@ impl Connection {
         match &outcome {
             Ok(_) => self.emit_auth(auth_success(&ctx)).await?,
             Err(err) => {
-                self.emit_auth(auth_failure(&ctx, error_code_for(err)))
-                    .await?;
+                // Deliberate: log but do NOT propagate emit_auth failures on
+                // the error branch. The ORIGINAL outcome (Error::Auth,
+                // Error::TlsHandshake, Error::Connect, ...) is what the
+                // caller and monitoring need to see. Replacing it with
+                // Error::Audit would mask brute-force signals from
+                // whatever observed ERR_AUTH before. Audit-write failures
+                // on this path are still visible via tracing; operators
+                // running fail_open=false will additionally see the
+                // suppressed_failures counter in process_end once #8
+                // lands.
+                if let Err(audit_err) = self
+                    .emit_auth(auth_failure(&ctx, error_code_for(err)))
+                    .await
+                {
+                    tracing::error!(
+                        original_error = %err,
+                        audit_error = %audit_err,
+                        "audit write failed during auth-failure emission; \
+                         preserving original error for observability",
+                    );
+                }
             }
         }
         outcome
@@ -282,27 +301,46 @@ impl Connection {
 
     /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside
     /// `spawn_blocking` so the `std::sync::Mutex` inside `AuditWriter` is
-    /// never held across an `.await` boundary. Audit failures are mapped
-    /// to `Error::Audit` (not `Error::Connect`) so observability can tell
-    /// audit-storage failures from network failures.
+    /// never held across an `.await` boundary.
+    ///
+    /// ## Cancellation behavior
+    ///
+    /// If the caller future is cancelled at the `.await` below, the
+    /// `JoinHandle` is dropped but the `spawn_blocking` task runs to
+    /// completion — `tokio` does not kill blocking tasks on handle drop.
+    /// The audit record IS written in that case, but the `Result` is
+    /// lost: the caller sees neither a success nor an error. This is the
+    /// least-bad outcome (audit integrity preserved, caller just gets a
+    /// cancellation). Callers that MUST know whether the write succeeded
+    /// should not drop this future.
+    ///
+    /// ## Error message sanitization
+    ///
+    /// The `Error::Audit { message }` uses the short error code
+    /// (`audit_err.code()`) rather than the full `Display`, because
+    /// `AuditError::Write` / `Fsync` / `Rotate` include the audit file
+    /// path, which is operator-configured filesystem layout and should
+    /// not propagate into MCP tool responses or client-visible error
+    /// chains. The full error is still preserved in the `source` field
+    /// for observability and log inspection.
     async fn emit_auth(&self, record: Auth) -> Result<(), Error> {
         let audit = self.inner.audit.clone();
         let join_result = tokio::task::spawn_blocking(move || audit.log_auth(record)).await;
         match join_result {
-            Err(join_err) => {
-                let message = format!("audit join error: {join_err}");
-                Err(Error::Audit {
-                    op: "emit_auth",
-                    message,
-                    source: Box::new(join_err),
-                })
-            }
+            Err(join_err) => Err(Error::Audit {
+                op: "emit_auth",
+                message: "tokio join error during audit write".to_string(),
+                source: Box::new(join_err),
+            }),
             Ok(Err(audit_err)) => {
                 tracing::error!(
                     error = %audit_err,
                     "audit log_auth failed; converting to Error::Audit",
                 );
-                let message = audit_err.to_string();
+                // Sanitized message: use only the stable error code, not
+                // the Display (which may include the audit file path).
+                // The full error is preserved in source.
+                let message = format!("emit_auth: {}", audit_err.code());
                 Err(Error::Audit {
                     op: "emit_auth",
                     message,
