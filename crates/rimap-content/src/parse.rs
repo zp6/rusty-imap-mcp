@@ -6,7 +6,7 @@
 //! routes every extracted string through [`crate::unicode::sanitize`]
 //! so downstream consumers see only Unicode-clean text.
 
-use mail_parser::{Address, HeaderValue, Message, MessageParser};
+use mail_parser::{Address, HeaderValue, Message, MessageParser, PartType};
 use time::OffsetDateTime;
 
 use crate::error::ContentError;
@@ -54,11 +54,16 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
 
     enforce_header_count(&message, &mut warnings)?;
 
-    let meta = extract_meta(&message, original_size_bytes, &mut warnings);
+    let mut meta = extract_meta(&message, original_size_bytes, &mut warnings);
+    let bodies = extract_bodies(&message, &mut warnings)?;
+    meta.body_truncated = bodies.body_truncated;
 
     Ok(Content {
         meta,
-        untrusted: Untrusted::default(),
+        untrusted: Untrusted {
+            body_text: bodies.primary_text,
+            alternate_parts: bodies.alternates,
+        },
         security_warnings: warnings,
     })
 }
@@ -217,6 +222,135 @@ fn convert_datetime(dt: &mail_parser::DateTime) -> Option<OffsetDateTime> {
         return None;
     }
     OffsetDateTime::from_unix_timestamp(dt.to_timestamp()).ok()
+}
+
+/// Result of walking a message's text bodies: the primary text body,
+/// any alternate text parts, and whether any part was truncated.
+#[derive(Debug)]
+struct BodyExtraction {
+    primary_text: String,
+    alternates: Vec<String>,
+    body_truncated: bool,
+}
+
+/// Walk `message.text_body`, enforce MIME limits, and sanitize each
+/// part into a `BodyExtraction`. Emits `ParseBodyTruncated` on any
+/// part whose raw byte length exceeds `MAX_BODY_BYTES`; terminal
+/// `LimitExceeded` errors for part count or depth overflow.
+fn extract_bodies(
+    message: &Message<'_>,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Result<BodyExtraction, ContentError> {
+    let part_count = message.parts.len();
+    if part_count > MAX_MIME_PARTS {
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseMimePartCountExceeded,
+            detail: Some(format!("count={part_count} limit={MAX_MIME_PARTS}")),
+            location: Some("mime".to_string()),
+        });
+        return Err(ContentError::LimitExceeded {
+            kind: "mime_parts",
+            limit: MAX_MIME_PARTS,
+        });
+    }
+
+    check_mime_depth(message, warnings)?;
+
+    let mut primary_text: Option<String> = None;
+    let mut alternates: Vec<String> = Vec::new();
+    let mut body_truncated = false;
+
+    for (idx, &part_id) in message.text_body.iter().enumerate() {
+        let Some(part) = message.parts.get(part_id as usize) else {
+            continue;
+        };
+        if matches!(part.body, PartType::Message(_)) {
+            continue;
+        }
+        let raw_bytes = match &part.body {
+            PartType::Text(s) | PartType::Html(s) => s.as_bytes(),
+            _ => continue,
+        };
+        if raw_bytes.len() > MAX_BODY_BYTES {
+            body_truncated = true;
+            warnings.push(SecurityWarning {
+                code: WarningCode::ParseBodyTruncated,
+                detail: Some(format!(
+                    "original={} limit={}",
+                    raw_bytes.len(),
+                    MAX_BODY_BYTES
+                )),
+                location: Some(format!("body:text[{idx}]")),
+            });
+        }
+        let location = format!("body:text[{idx}]");
+        let charset = part_charset(part);
+        let (text, mut new_warnings) =
+            unicode::sanitize(raw_bytes, charset.as_deref(), MAX_BODY_BYTES, &location);
+        warnings.append(&mut new_warnings);
+
+        if primary_text.is_none() {
+            primary_text = Some(text);
+        } else {
+            alternates.push(text);
+        }
+    }
+
+    Ok(BodyExtraction {
+        primary_text: primary_text.unwrap_or_default(),
+        alternates,
+        body_truncated,
+    })
+}
+
+/// Read the `charset` attribute off a part's Content-Type header.
+fn part_charset(part: &mail_parser::MessagePart<'_>) -> Option<String> {
+    use mail_parser::MimeHeaders as _;
+    part.content_type()
+        .and_then(|ct| ct.attribute("charset"))
+        .map(str::to_string)
+}
+
+/// Enforce [`MAX_MIME_DEPTH`] by walking the part tree from part 0.
+fn check_mime_depth(
+    message: &Message<'_>,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Result<(), ContentError> {
+    let depth = compute_max_depth(message);
+    if depth > MAX_MIME_DEPTH {
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseMimeDepthExceeded,
+            detail: Some(format!("depth={depth} limit={MAX_MIME_DEPTH}")),
+            location: Some("mime".to_string()),
+        });
+        return Err(ContentError::LimitExceeded {
+            kind: "mime_depth",
+            limit: MAX_MIME_DEPTH,
+        });
+    }
+    Ok(())
+}
+
+/// Walk the MIME tree from part 0 and return the maximum depth.
+fn compute_max_depth(message: &Message<'_>) -> usize {
+    depth_recursive(message, 0, 1)
+}
+
+/// Recursive helper used by [`compute_max_depth`]; visits `part_id`
+/// at level `current` and returns the deepest level reachable.
+fn depth_recursive(message: &Message<'_>, part_id: usize, current: usize) -> usize {
+    let Some(part) = message.parts.get(part_id) else {
+        return current;
+    };
+    match &part.body {
+        PartType::Multipart(child_ids) => child_ids
+            .iter()
+            .map(|&child_id| depth_recursive(message, child_id as usize, current + 1))
+            .max()
+            .unwrap_or(current),
+        PartType::Message(_) => current + 1,
+        _ => current,
+    }
 }
 
 /// Scan the header block for raw CRLF inside RFC 2047 encoded-words.
@@ -621,5 +755,55 @@ mod tests {
         let from = content.meta.from.as_deref().unwrap();
         assert!(from.contains("xn--e1afmkfd.xn--p1ai"));
         assert!(content.security_warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_extracts_text_plain_body() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: text/plain; charset=utf-8\r\n\
+                    \r\n\
+                    hello world";
+        let content = parse_message(raw).unwrap();
+        assert_eq!(content.untrusted.body_text, "hello world");
+        assert!(content.untrusted.alternate_parts.is_empty());
+        assert!(!content.meta.body_truncated);
+    }
+
+    #[test]
+    fn parse_multipart_alternative_picks_text_plain_first() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: multipart/alternative; boundary=\"BOUND\"\r\n\
+                    \r\n\
+                    --BOUND\r\n\
+                    Content-Type: text/plain; charset=utf-8\r\n\
+                    \r\n\
+                    plain version\r\n\
+                    --BOUND\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <p>html version</p>\r\n\
+                    --BOUND--\r\n";
+        let content = parse_message(raw).unwrap();
+        assert_eq!(content.untrusted.body_text, "plain version");
+        assert!(!content.untrusted.body_text.contains("<p>"));
+    }
+
+    #[test]
+    fn parse_oversized_body_emits_truncation_warning() {
+        let mut raw = Vec::from(
+            &b"From: a@example\r\n\
+               Content-Type: text/plain; charset=utf-8\r\n\
+               \r\n"[..],
+        );
+        raw.extend(std::iter::repeat_n(b'x', MAX_BODY_BYTES + 1024));
+        let content = parse_message(&raw).unwrap();
+        assert!(content.meta.body_truncated);
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::ParseBodyTruncated)
+        );
+        assert!(content.untrusted.body_text.len() <= MAX_BODY_BYTES);
     }
 }
