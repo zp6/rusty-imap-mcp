@@ -76,7 +76,7 @@ impl DovecotHarness {
         }
 
         let started = Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(60);
         let result = loop {
             if started.elapsed() > timeout {
                 break Err(HarnessError::Timeout);
@@ -85,7 +85,19 @@ impl DovecotHarness {
                 read_fingerprint(&project),
                 read_port(&project, &compose_dir),
             ) {
-                break Ok((fp, p));
+                // Fingerprint + host-side port binding are available, but
+                // dovecot inside the container may not be listening yet.
+                // Probe the TCP port directly before handing the harness to
+                // the test. Without this, fast callers hit "tls handshake eof"
+                // on amd64-under-emulation hosts.
+                if std::net::TcpStream::connect_timeout(
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], p)),
+                    Duration::from_millis(500),
+                )
+                .is_ok()
+                {
+                    break Ok((fp, p));
+                }
             }
             std::thread::sleep(Duration::from_millis(500));
         };
