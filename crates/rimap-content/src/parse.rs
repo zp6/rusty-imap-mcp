@@ -6,11 +6,13 @@
 //! routes every extracted string through [`crate::unicode::sanitize`]
 //! so downstream consumers see only Unicode-clean text.
 
-use mail_parser::{Address, HeaderValue, Message, MessageParser, PartType};
+use mail_parser::{Address, HeaderValue, Message, MessageParser, MimeHeaders as _, PartType};
 use time::OffsetDateTime;
 
 use crate::error::ContentError;
-use crate::output::{Content, ContentMeta, SecurityWarning, Untrusted, WarningCode};
+use crate::output::{
+    AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
+};
 use crate::unicode;
 
 /// Maximum raw message size accepted. Bodies over this are truncated
@@ -101,6 +103,8 @@ fn extract_meta(
     let in_reply_to =
         header_value_first_text(message.in_reply_to(), "header:in_reply_to", warnings);
     let references = header_value_all_text(message.references(), "header:references", warnings);
+    let mailing_list = extract_mailing_list(message, warnings);
+    let attachments = extract_attachments(message, warnings);
 
     ContentMeta {
         from,
@@ -111,8 +115,8 @@ fn extract_meta(
         message_id,
         in_reply_to,
         references,
-        mailing_list: None,
-        attachments: Vec::new(),
+        mailing_list,
+        attachments,
         original_size_bytes,
         body_truncated: false,
     }
@@ -305,7 +309,6 @@ fn extract_bodies(
 
 /// Read the `charset` attribute off a part's Content-Type header.
 fn part_charset(part: &mail_parser::MessagePart<'_>) -> Option<String> {
-    use mail_parser::MimeHeaders as _;
     part.content_type()
         .and_then(|ct| ct.attribute("charset"))
         .map(str::to_string)
@@ -525,6 +528,227 @@ fn split_header_lines(headers: &[u8]) -> Vec<&[u8]> {
 
 fn memchr_lf(bytes: &[u8]) -> Option<usize> {
     bytes.iter().position(|&b| b == b'\n')
+}
+
+/// Walk `message.attachments` and build an `AttachmentMeta` for each,
+/// emitting `ParseMimeTypeMismatch` when magic-byte sniffing disagrees
+/// with the declared Content-Type.
+fn extract_attachments(
+    message: &Message<'_>,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Vec<AttachmentMeta> {
+    let mut out = Vec::with_capacity(message.attachments.len());
+    for (idx, part_id) in message.attachments.iter().enumerate() {
+        let Some(part) = message.parts.get(*part_id as usize) else {
+            continue;
+        };
+        out.push(build_attachment_meta(part, idx, warnings));
+    }
+    out
+}
+
+/// Construct a single `AttachmentMeta` from a part, performing magic-byte
+/// sniffing and sanitizing all extracted strings.
+fn build_attachment_meta(
+    part: &mail_parser::MessagePart<'_>,
+    idx: usize,
+    warnings: &mut Vec<SecurityWarning>,
+) -> AttachmentMeta {
+    let declared_ct = match part.content_type() {
+        Some(ct) => content_type_string(ct),
+        None => "application/octet-stream".to_string(),
+    };
+
+    let body = part_bytes(part);
+    if let Some(sniffed_ct) = sniff_content_type(body)
+        && !content_types_compatible(&declared_ct, sniffed_ct)
+    {
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseMimeTypeMismatch,
+            detail: Some(format!("declared={declared_ct} sniffed={sniffed_ct}")),
+            location: Some(format!("attachment[{idx}]")),
+        });
+    }
+
+    let filename = part.attachment_name().map(|name| {
+        let (text, mut ws) = unicode::sanitize(
+            name.as_bytes(),
+            Some("utf-8"),
+            MAX_HEADER_BYTES,
+            &format!("attachment[{idx}]:filename"),
+        );
+        warnings.append(&mut ws);
+        text
+    });
+
+    let content_id = part.content_id().map(|id| {
+        let (text, mut ws) = unicode::sanitize(
+            id.as_bytes(),
+            Some("utf-8"),
+            MAX_HEADER_BYTES,
+            &format!("attachment[{idx}]:content_id"),
+        );
+        warnings.append(&mut ws);
+        text
+    });
+
+    let (sanitized_ct, mut ct_ws) = unicode::sanitize(
+        declared_ct.as_bytes(),
+        Some("utf-8"),
+        MAX_HEADER_BYTES,
+        &format!("attachment[{idx}]:content_type"),
+    );
+    warnings.append(&mut ct_ws);
+
+    AttachmentMeta {
+        filename,
+        content_type: sanitized_ct,
+        size_bytes: body.len() as u64,
+        content_id,
+        is_inline: is_inline(part),
+    }
+}
+
+/// Return the decoded byte payload of a part, or an empty slice for
+/// container parts (nested message / multipart).
+fn part_bytes<'a>(part: &'a mail_parser::MessagePart<'_>) -> &'a [u8] {
+    match &part.body {
+        PartType::Text(s) | PartType::Html(s) => s.as_bytes(),
+        PartType::Binary(b) | PartType::InlineBinary(b) => b.as_ref(),
+        PartType::Message(_) | PartType::Multipart(_) => &[],
+    }
+}
+
+/// `true` if the part is an inline attachment, using either the
+/// `PartType::InlineBinary` variant or an explicit `Content-Disposition:
+/// inline` header.
+fn is_inline(part: &mail_parser::MessagePart<'_>) -> bool {
+    if matches!(part.body, PartType::InlineBinary(_)) {
+        return true;
+    }
+    match part.content_disposition() {
+        Some(cd) => cd.is_inline(),
+        None => false,
+    }
+}
+
+/// Render a `ContentType` as a `"type/subtype"` string, falling back to
+/// just the type when the subtype is absent.
+fn content_type_string(ct: &mail_parser::ContentType<'_>) -> String {
+    match ct.subtype() {
+        Some(sub) => format!("{}/{}", ct.ctype(), sub),
+        None => ct.ctype().to_string(),
+    }
+}
+
+/// Small magic-byte sniff table covering the file types most often
+/// used in phishing attachments. Returns the canonical media type
+/// string on a match, or `None` if no signature matches.
+fn sniff_content_type(body: &[u8]) -> Option<&'static str> {
+    if body.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Some("image/png");
+    }
+    if body.starts_with(b"\xff\xd8\xff") {
+        return Some("image/jpeg");
+    }
+    if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
+        return Some("image/gif");
+    }
+    if body.starts_with(b"%PDF-") {
+        return Some("application/pdf");
+    }
+    if body.starts_with(b"PK\x03\x04") || body.starts_with(b"PK\x05\x06") {
+        return Some("application/zip");
+    }
+    if body.starts_with(b"MZ") {
+        return Some("application/x-msdownload");
+    }
+    None
+}
+
+/// Return `true` when the declared Content-Type is compatible with a
+/// magic-byte sniff result. Compatibility is intentionally conservative:
+/// exact match, an `application/octet-stream` declaration, or a ZIP-based
+/// office format all count.
+fn content_types_compatible(declared: &str, sniffed: &str) -> bool {
+    let declared_lower = declared.to_ascii_lowercase();
+    let declared_trim = declared_lower
+        .split(';')
+        .next()
+        .unwrap_or(&declared_lower)
+        .trim();
+    if declared_trim == sniffed {
+        return true;
+    }
+    if declared_trim == "application/octet-stream" {
+        return true;
+    }
+    // ZIP-based formats: docx/xlsx/pptx/odt/jar all sniff as zip.
+    if sniffed == "application/zip"
+        && (declared_trim.contains("openxmlformats")
+            || declared_trim.contains("opendocument")
+            || declared_trim == "application/java-archive"
+            || declared_trim == "application/epub+zip")
+    {
+        return true;
+    }
+    false
+}
+
+/// Extract `List-ID` / `List-Unsubscribe` / `List-Post` into a
+/// `MailingListInfo`, returning `None` when none of the headers are
+/// present.
+fn extract_mailing_list(
+    message: &Message<'_>,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Option<MailingListInfo> {
+    let list_id = sanitize_header_value(message.list_id(), "header:list_id", warnings);
+    let list_unsubscribe = sanitize_header_value(
+        message.list_unsubscribe(),
+        "header:list_unsubscribe",
+        warnings,
+    );
+    let list_post = sanitize_header_value(message.list_post(), "header:list_post", warnings);
+
+    if list_id.is_none() && list_unsubscribe.is_none() && list_post.is_none() {
+        return None;
+    }
+    Some(MailingListInfo {
+        list_id,
+        list_unsubscribe,
+        list_post,
+    })
+}
+
+/// Coerce a `HeaderValue` to a sanitized string. Handles `Text`,
+/// `TextList`, and `Address` variants — mail-parser parses `List-*`
+/// headers as addresses, so we flatten them back to a display string.
+fn sanitize_header_value(
+    value: &HeaderValue<'_>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Option<String> {
+    let raw = match value {
+        HeaderValue::Text(s) => s.as_ref().to_string(),
+        HeaderValue::TextList(list) => list
+            .iter()
+            .map(std::convert::AsRef::as_ref)
+            .collect::<Vec<_>>()
+            .join(", "),
+        HeaderValue::Address(address) => address
+            .iter()
+            .map(format_addr)
+            .collect::<Vec<_>>()
+            .join(", "),
+        _ => return None,
+    };
+    if raw.is_empty() {
+        return None;
+    }
+    let (text, mut new_warnings) =
+        unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
+    warnings.append(&mut new_warnings);
+    Some(text)
 }
 
 #[cfg(test)]
@@ -805,5 +1029,129 @@ mod tests {
                 .any(|w| w.code == WarningCode::ParseBodyTruncated)
         );
         assert!(content.untrusted.body_text.len() <= MAX_BODY_BYTES);
+    }
+
+    #[test]
+    fn parse_extracts_attachment_metadata() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+                    \r\n\
+                    --BOUND\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    hello\r\n\
+                    --BOUND\r\n\
+                    Content-Type: image/png\r\n\
+                    Content-Disposition: attachment; filename=\"pic.png\"\r\n\
+                    Content-Transfer-Encoding: base64\r\n\
+                    \r\n\
+                    iVBORw0KGgo=\r\n\
+                    --BOUND--\r\n";
+        let content = parse_message(raw).unwrap();
+        assert_eq!(content.meta.attachments.len(), 1);
+        let att = &content.meta.attachments[0];
+        assert_eq!(att.filename.as_deref(), Some("pic.png"));
+        assert_eq!(att.content_type, "image/png");
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::ParseMimeTypeMismatch)
+        );
+    }
+
+    #[test]
+    fn parse_detects_mime_type_spoofing() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+                    \r\n\
+                    --BOUND\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    hello\r\n\
+                    --BOUND\r\n\
+                    Content-Type: image/png\r\n\
+                    Content-Disposition: attachment; filename=\"fake.png\"\r\n\
+                    Content-Transfer-Encoding: base64\r\n\
+                    \r\n\
+                    TVqQAAMAAAA=\r\n\
+                    --BOUND--\r\n";
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::ParseMimeTypeMismatch)
+        );
+    }
+
+    #[test]
+    fn parse_extracts_mailing_list_headers() {
+        let raw = b"From: announce@example\r\n\
+                    List-ID: <dev.example.com>\r\n\
+                    List-Unsubscribe: <mailto:unsub@example>\r\n\
+                    List-Post: <mailto:dev@example>\r\n\
+                    \r\n\
+                    body";
+        let content = parse_message(raw).unwrap();
+        let ml = content.meta.mailing_list.unwrap();
+        assert!(
+            ml.list_id
+                .as_deref()
+                .unwrap_or("")
+                .contains("dev.example.com")
+        );
+        assert!(
+            ml.list_unsubscribe
+                .as_deref()
+                .unwrap_or("")
+                .contains("unsub@example")
+        );
+        assert!(
+            ml.list_post
+                .as_deref()
+                .unwrap_or("")
+                .contains("dev@example")
+        );
+    }
+
+    #[test]
+    fn parse_no_mailing_list_when_headers_absent() {
+        let raw = b"From: a@example\r\n\r\nbody";
+        let content = parse_message(raw).unwrap();
+        assert!(content.meta.mailing_list.is_none());
+    }
+
+    #[test]
+    fn parse_rejects_mime_depth_bomb() {
+        // Build 12 properly nested multipart containers. Each level's
+        // boundary opens a child whose own Content-Type declares the
+        // next level's boundary.
+        use std::fmt::Write as _;
+        let depth = 12;
+        let mut raw = String::from("From: a@example\r\n");
+        raw.push_str("Content-Type: multipart/mixed; boundary=\"B0\"\r\n\r\n");
+        for i in 0..depth - 1 {
+            write!(raw, "--B{i}\r\n").unwrap();
+            write!(
+                raw,
+                "Content-Type: multipart/mixed; boundary=\"B{}\"\r\n\r\n",
+                i + 1
+            )
+            .unwrap();
+        }
+        write!(raw, "--B{}\r\n", depth - 1).unwrap();
+        raw.push_str("Content-Type: text/plain\r\n\r\ninner\r\n");
+        for i in (0..depth).rev() {
+            write!(raw, "--B{i}--\r\n").unwrap();
+        }
+        let err = parse_message(raw.as_bytes()).unwrap_err();
+        let ContentError::LimitExceeded { kind, .. } = err else {
+            unreachable!("expected LimitExceeded, got {err:?}");
+        };
+        assert!(
+            kind == "mime_depth" || kind == "mime_parts",
+            "expected mime_depth or mime_parts, got {kind}"
+        );
     }
 }
