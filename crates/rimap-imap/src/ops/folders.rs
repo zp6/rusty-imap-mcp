@@ -94,9 +94,12 @@ fn build_status_items(items: StatusItems) -> String {
     format!("({})", parts.join(" "))
 }
 
-fn map_err(err: async_imap::error::Error) -> Error {
-    // Detect connection-lost-style errors and surface them as ConnectionLost
-    // so the caller can drop the session and lazy-reconnect on the next op.
+/// Classify an async-imap error into our Error taxonomy.
+///
+/// Detects connection-lost-style errors (reset, closed, EOF, broken pipe)
+/// and surfaces them as `ConnectionLost` so the caller can drop the session
+/// and lazy-reconnect on the next op. Other errors become `Protocol`.
+pub(super) fn map_err(err: async_imap::error::Error) -> Error {
     let msg = err.to_string().to_lowercase();
     let looks_lost = msg.contains("connection")
         && (msg.contains("reset")

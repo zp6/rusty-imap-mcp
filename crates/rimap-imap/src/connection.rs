@@ -373,6 +373,58 @@ impl Connection {
         }
         result
     }
+
+    /// `SEARCH` against `folder`. Returns matching UIDs.
+    ///
+    /// # Errors
+    /// Propagates timeout, connection-lost, or protocol errors from the
+    /// underlying `ops::search::search` call.
+    pub async fn search(
+        &self,
+        folder: &str,
+        query: crate::types::SearchQuery,
+    ) -> Result<Vec<crate::types::Uid>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("search", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::search::search(session, folder, query).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// `FETCH` for the given UIDs with the requested items. Does NOT include
+    /// `BODY[]` — see `fetch_body` (Task 13) for full message retrieval.
+    ///
+    /// # Errors
+    /// Propagates timeout, connection-lost, or protocol errors from the
+    /// underlying `ops::fetch::fetch` call.
+    pub async fn fetch(
+        &self,
+        folder: &str,
+        uids: &[crate::types::Uid],
+        spec: crate::types::FetchSpec,
+    ) -> Result<Vec<crate::types::FetchedMessage>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("fetch", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::fetch::fetch(session, folder, uids, spec).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
 }
 
 /// Drain the unsolicited-response channel and return `true` if any
