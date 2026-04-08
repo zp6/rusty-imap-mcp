@@ -7,6 +7,7 @@
 
 pub mod error;
 pub mod output;
+pub mod unicode;
 
 pub use error::ContentError;
 pub use output::{
