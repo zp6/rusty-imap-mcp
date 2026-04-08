@@ -116,4 +116,25 @@ mod tests {
         assert_eq!(rec.fingerprint_match, None);
         assert!(rec.tls_fingerprint_sha256.is_some());
     }
+
+    #[test]
+    fn pinned_with_no_observation_yields_no_fingerprint() {
+        // The handshake aborted before the verifier ran (e.g., TCP RST
+        // mid-TLS), so we have a pin but never captured a fingerprint.
+        // The audit record must carry no fingerprint hex and no match
+        // verdict — recording stale data here would mislead operators.
+        let pin = fp(b"good");
+        let ctx = AuthContext {
+            host: "h",
+            port: 993,
+            username: "u",
+            pinned: Some(pin),
+            observed: None,
+        };
+        let rec = auth_failure(&ctx, "ERR_NETWORK");
+        assert_eq!(rec.result, AuthResult::Failure);
+        assert_eq!(rec.tls_fingerprint_sha256, None);
+        assert_eq!(rec.fingerprint_match, None);
+        assert_eq!(rec.error_code.as_deref(), Some("ERR_NETWORK"));
+    }
 }

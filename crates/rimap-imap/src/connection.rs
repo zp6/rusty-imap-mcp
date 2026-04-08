@@ -142,14 +142,12 @@ impl Connection {
         let raw_outcome = self.connect_with_bundle(&bundle).await;
         let outcome = match raw_outcome {
             Ok(session) => Ok(session),
-            Err(Error::TlsHandshake(_)) => {
+            Err(Error::TlsHandshake(inner)) => {
                 match (cfg.pinned_fingerprint, bundle.last_observed.get().copied()) {
                     (Some(expected), Some(observed)) if expected != observed => {
                         Err(Error::Tls { observed, expected })
                     }
-                    (Some(_) | None, _) => Err(Error::TlsHandshake(
-                        tokio_rustls::rustls::Error::General("tls handshake failed".into()),
-                    )),
+                    (Some(_) | None, _) => Err(Error::TlsHandshake(inner)),
                 }
             }
             Err(other) => Err(other),
@@ -263,10 +261,15 @@ impl Connection {
             });
         }
 
-        // Resolve the password from the credential store.
+        // Resolve the password from the credential store. A missing
+        // credential is an authentication failure, not a network failure —
+        // map it to ERR_AUTH so retry logic and operator messages stay
+        // accurate.
         let cfg = &self.inner.cfg;
         let password = resolve_credential(&*self.inner.credentials, &cfg.username, &cfg.host)
-            .map_err(|e| Error::Connect(std::io::Error::other(format!("credential: {e}"))))?;
+            .map_err(|e| Error::Auth {
+                reason: AuthFailure::CredentialUnavailable(e.to_string()),
+            })?;
 
         // Attempt LOGIN. On NO response the server rejected the credentials.
         match client.login(&cfg.username, &password).await {

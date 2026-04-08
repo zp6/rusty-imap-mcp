@@ -60,6 +60,11 @@ pub enum AuthFailure {
     },
     /// Server sent `BYE` as its greeting.
     ServerRejected,
+    /// The credential store had no entry for this `<user>@<host>` and the
+    /// `RUSTY_IMAP_MCP_PASSWORD` env var fallback was empty or absent.
+    /// The inner string is the operator-actionable reason from
+    /// `rimap_config::credential::resolve_credential`.
+    CredentialUnavailable(String),
 }
 
 impl std::fmt::Display for AuthFailure {
@@ -68,6 +73,7 @@ impl std::fmt::Display for AuthFailure {
             Self::LoginRejected => f.write_str("LOGIN rejected"),
             Self::CapabilityMissing { needed } => write!(f, "missing capability `{needed}`"),
             Self::ServerRejected => f.write_str("server BYE greeting"),
+            Self::CredentialUnavailable(reason) => write!(f, "credential unavailable: {reason}"),
         }
     }
 }

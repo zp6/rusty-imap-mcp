@@ -4,7 +4,7 @@
 
 #![deny(missing_docs)]
 
-pub mod auth;
+pub(crate) mod auth;
 pub mod connection;
 pub mod error;
 pub mod ops;
