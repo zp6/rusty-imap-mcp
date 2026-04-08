@@ -1592,9 +1592,15 @@ pub enum RimapError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     },
-    /// Audit log failure. Carries the original `AuditError` via the source chain.
-    #[error("ERR_INTERNAL: audit log failure")]
+    /// Audit log failure. Carries both the stable code (open-time errors
+    /// map to `ErrorCode::Config`, runtime errors to `ErrorCode::Internal`)
+    /// and the original `AuditError` via the source chain. The Display
+    /// form includes the source's message so operators see the audit
+    /// path and underlying I/O error.
+    #[error("{code}: {source}")]
     Audit {
+        /// Stable error code — `Config` for open-time, `Internal` for runtime.
+        code: ErrorCode,
         /// The original audit error.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync + 'static>,
@@ -1612,71 +1618,76 @@ impl RimapError {
     #[must_use]
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Authz { code, .. } | Self::Imap { code, .. } => *code,
-            Self::Audit { .. } | Self::Internal(_) => ErrorCode::Internal,
+            Self::Authz { code, .. }
+            | Self::Imap { code, .. }
+            | Self::Audit { code, .. } => *code,
             Self::Config(_) => ErrorCode::Config,
+            Self::Internal(_) => ErrorCode::Internal,
         }
     }
 }
 ```
 
-> Using `Box<dyn Error>` for the audit source avoids a `rimap-core → rimap-audit` cycle. The actual `From<AuditError> for RimapError` impl lives in `rimap-audit` (the crate that owns `AuditError`) so it can name the type concretely.
+> `RimapError::Audit` carries its own `code` field so the existing Open/ParentDir/Locked → `ErrorCode::Config` distinction is preserved end-to-end. The `#[error("{code}: {source}")]` interpolation drives Display (and includes the original path via the source's Display); the `#[source]` attribute exposes the boxed error to `Error::source()`. Using `Box<dyn Error>` avoids a `rimap-core → rimap-audit` cycle.
 
-- [ ] **Step 2: Add `From<AuditError> for RimapError` in rimap-audit**
+- [ ] **Step 2: Replace the existing `From<AuditError> for RimapError` impl in rimap-audit**
 
-Edit `crates/rimap-audit/src/error.rs`. At the bottom, add:
+`crates/rimap-audit/src/error.rs` already has a `From<AuditError> for RimapError` impl (from Sprint 2) that returns `Config(String)` / `Internal(String)` without the source chain. Replace it with this source-preserving version that honors the same code distinction via the existing `AuditError::code()` accessor:
 
 ```rust
 impl From<AuditError> for rimap_core::RimapError {
     fn from(err: AuditError) -> Self {
+        let code = err.code();
         rimap_core::RimapError::Audit {
+            code,
             source: Box::new(err),
         }
     }
 }
 ```
 
-This requires `rimap-audit` to depend on `rimap-core`. Check:
+`rimap-audit` already depends on `rimap-core` (don't re-add it).
 
-```bash
-grep -n "rimap-core" crates/rimap-audit/Cargo.toml
-```
+- [ ] **Step 3: Update the existing round-trip test**
 
-If absent, add under `[dependencies]`:
-
-```toml
-rimap-core = { path = "../rimap-core", version = "0.0.0" }
-```
-
-- [ ] **Step 3: Verify `From<AuditError>` preserves the source chain**
-
-Add a test to `crates/rimap-audit/src/error.rs` (or its test module):
+The Sprint 2 test `rimap_error_conversion_preserves_code` in `crates/rimap-audit/src/error.rs` only asserts `rimap.code() == ErrorCode::Config`. Strengthen it to also verify Display includes the path AND the source chain is preserved:
 
 ```rust
-#[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests")]
-mod conversion_tests {
-    use std::error::Error;
+#[test]
+fn rimap_error_conversion_preserves_code_and_source() {
+    use std::error::Error as _;
 
-    use rimap_core::{ErrorCode, RimapError};
+    let err = AuditError::Locked {
+        path: PathBuf::from("/tmp/a.jsonl"),
+    };
+    let rimap: rimap_core::RimapError = err.into();
 
-    use crate::AuditError;
+    // Open-time errors still carry ERR_CONFIG.
+    assert_eq!(rimap.code(), ErrorCode::Config);
 
-    #[test]
-    fn from_audit_error_preserves_source_chain() {
-        let err = AuditError::Locked {
-            path: std::path::PathBuf::from("/tmp/audit.jsonl"),
-        };
-        let rimap_err: RimapError = err.into();
-        assert_eq!(rimap_err.code(), ErrorCode::Internal);
-        let source = rimap_err.source().expect("source should be present");
-        assert!(
-            source.to_string().contains("locked") || source.to_string().contains("audit"),
-            "expected AuditError::Locked Display in source chain, got {source}"
-        );
-    }
+    // Display form must include the code AND the original path.
+    let display = rimap.to_string();
+    assert!(display.contains("ERR_CONFIG"), "got: {display}");
+    assert!(display.contains("/tmp/a.jsonl"), "got: {display}");
+
+    // Source chain preserved.
+    let source = rimap.source().expect("source chain must be preserved");
+    assert!(
+        source.to_string().contains("/tmp/a.jsonl"),
+        "source should be the AuditError with path, got: {source}",
+    );
+
+    // Runtime error still maps to ERR_INTERNAL.
+    let err = AuditError::Write {
+        path: PathBuf::from("/tmp/a.jsonl"),
+        source: std::io::Error::from(std::io::ErrorKind::BrokenPipe),
+    };
+    let rimap: rimap_core::RimapError = err.into();
+    assert_eq!(rimap.code(), ErrorCode::Internal);
 }
 ```
+
+The test module's existing `#[cfg(test)] mod tests` block needs `#[expect(clippy::unwrap_used, reason = "tests")]` added at the module level because the new test uses `.expect()`. The three other tests in the module (`open_time_errors_map_to_config`, `runtime_errors_map_to_internal`, `locked_message_names_the_path`) are unaffected and should stay unchanged.
 
 - [ ] **Step 4: Write rimap-imap `types.rs`**
 
@@ -1690,7 +1701,7 @@ use std::num::NonZeroU32;
 
 /// IMAP UID. Always non-zero per RFC 3501 §2.3.1.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Uid(pub NonZeroU32);
+pub struct Uid(NonZeroU32);
 
 impl Uid {
     /// Construct from a raw integer. Returns `None` for `0`.
@@ -1708,7 +1719,21 @@ impl Uid {
 
 /// Opaque RFC 5322 `Message-ID` header value, as raw bytes (no decoding).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MessageId(pub Vec<u8>);
+pub struct MessageId(Vec<u8>);
+
+impl MessageId {
+    /// Construct from raw bytes.
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(bytes)
+    }
+
+    /// Underlying raw bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
 
 /// IMAP `LIST` response entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1958,7 +1983,7 @@ pub enum Error {
     #[error("ERR_TLS: handshake failed")]
     TlsHandshake(#[source] tokio_rustls::rustls::Error),
     /// TCP connect failed.
-    #[error("ERR_NETWORK: connect failed")]
+    #[error("connect failed")]
     Connect(#[source] std::io::Error),
     /// `tokio::time::timeout` fired around an IMAP command.
     #[error("ERR_TIMEOUT: {op} exceeded deadline")]
