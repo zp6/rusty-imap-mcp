@@ -46,3 +46,7 @@ serde_json = { workspace = true }
 [[test]]
 name = "dovecot"
 path = "tests/integration/dovecot.rs"
+
+[[test]]
+name = "proton"
+path = "tests/integration/proton.rs"

@@ -2,6 +2,8 @@
 //! Drop guard. Each test run gets a unique compose project name so parallel
 //! tests don't collide.
 
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
