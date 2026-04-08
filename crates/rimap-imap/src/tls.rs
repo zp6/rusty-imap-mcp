@@ -11,6 +11,7 @@
 use std::sync::{Arc, OnceLock};
 
 use rimap_core::TlsFingerprint;
+use tokio_rustls::rustls::DistinguishedName;
 use tokio_rustls::rustls::client::danger::{
     HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
 };
@@ -129,6 +130,10 @@ impl ServerCertVerifier for CapturingVerifier {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.inner.supported_verify_schemes()
+    }
+
+    fn root_hint_subjects(&self) -> Option<&[DistinguishedName]> {
+        self.inner.root_hint_subjects()
     }
 }
 

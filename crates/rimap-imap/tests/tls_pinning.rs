@@ -25,7 +25,7 @@ fn unpinned_mode_builds_a_client_config_with_webpki_roots() {
 }
 
 #[test]
-fn fingerprint_eq_uses_constant_time_path() {
+fn fingerprint_equality_holds_for_same_input() {
     let a = TlsFingerprint::from_cert_der(b"alpha");
     let b = TlsFingerprint::from_cert_der(b"alpha");
     let c = TlsFingerprint::from_cert_der(b"beta");
