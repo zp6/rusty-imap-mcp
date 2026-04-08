@@ -53,6 +53,9 @@ fn structured_to_key(q: &StructuredQuery) -> String {
         None => {}
     }
     if q.has_attachment {
+        // Heuristic: scan the message body for the literal Content-Disposition
+        // header. False negatives for unusual capitalization or nested MIME
+        // structures are accepted — see StructuredQuery::has_attachment doc.
         parts.push("BODY \"Content-Disposition: attachment\"".to_string());
     }
     if parts.is_empty() {
@@ -76,20 +79,19 @@ fn quote(s: &str) -> String {
 
 fn format_imap_date(d: ::time::Date) -> String {
     // IMAP SEARCH dates use "DD-Mon-YYYY" with English month abbreviations.
-    let month = match u8::from(d.month()) {
-        1 => "Jan",
-        2 => "Feb",
-        3 => "Mar",
-        4 => "Apr",
-        5 => "May",
-        6 => "Jun",
-        7 => "Jul",
-        8 => "Aug",
-        9 => "Sep",
-        10 => "Oct",
-        11 => "Nov",
-        12 => "Dec",
-        _ => unreachable!("time::Date month is 1..=12"),
+    let month = match d.month() {
+        ::time::Month::January => "Jan",
+        ::time::Month::February => "Feb",
+        ::time::Month::March => "Mar",
+        ::time::Month::April => "Apr",
+        ::time::Month::May => "May",
+        ::time::Month::June => "Jun",
+        ::time::Month::July => "Jul",
+        ::time::Month::August => "Aug",
+        ::time::Month::September => "Sep",
+        ::time::Month::October => "Oct",
+        ::time::Month::November => "Nov",
+        ::time::Month::December => "Dec",
     };
     let mut out = String::with_capacity(11);
     let _ = write!(out, "{:02}-{}-{}", d.day(), month, d.year());
@@ -145,5 +147,19 @@ mod tests {
     fn format_imap_date_uses_dd_mon_yyyy() {
         let d = ::time::Date::from_calendar_date(2026, ::time::Month::April, 7).unwrap();
         assert_eq!(format_imap_date(d), "07-Apr-2026");
+    }
+
+    #[test]
+    fn structured_to_key_combines_multiple_criteria() {
+        let q = StructuredQuery {
+            from: Some("alice@example.com".to_string()),
+            since: Some(::time::Date::from_calendar_date(2026, ::time::Month::January, 1).unwrap()),
+            seen: Some(false),
+            ..StructuredQuery::default()
+        };
+        assert_eq!(
+            structured_to_key(&q),
+            r#"FROM "alice@example.com" SINCE 01-Jan-2026 UNSEEN"#
+        );
     }
 }

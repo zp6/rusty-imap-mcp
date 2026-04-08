@@ -21,6 +21,9 @@ pub(crate) async fn fetch(
     if uids.is_empty() {
         return Ok(Vec::new());
     }
+    // TODO(T15): compress to range syntax (e.g., "1:5,7,9:12") to stay
+    // under Dovecot's ~8KB command-line limit when fetching large UID
+    // sets. Plain comma-joined lists exceed the cap around ~2000 UIDs.
     let uid_set = uids
         .iter()
         .map(|u| u.get().to_string())
@@ -149,14 +152,6 @@ fn convert_bs_inner(bs: &async_imap::imap_proto::BodyStructure<'_>) -> crate::ty
             other,
             lines: _,
             extension: _,
-        }
-        | ImapProtoBodyStructure::Message {
-            common,
-            other,
-            envelope: _,
-            body: _,
-            lines: _,
-            extension: _,
         } => {
             let mime_type = common.ty.ty.to_string();
             let mime_subtype = common.ty.subtype.to_string();
@@ -189,6 +184,13 @@ fn convert_bs_inner(bs: &async_imap::imap_proto::BodyStructure<'_>) -> crate::ty
                 size,
             }
         }
+        ImapProtoBodyStructure::Message { common, body, .. } => {
+            let mime_subtype = common.ty.subtype.to_string();
+            crate::types::BodyStructure::Message {
+                mime_subtype,
+                body: Box::new(convert_bs_inner(body)),
+            }
+        }
     }
 }
 
@@ -205,5 +207,100 @@ fn convert_flag(f: &async_imap::types::Flag<'_>) -> crate::types::Flag {
         AsyncImapFlag::Recent => crate::types::Flag::Recent,
         AsyncImapFlag::MayCreate => crate::types::Flag::Keyword("\\*".to_string()),
         AsyncImapFlag::Custom(s) => crate::types::Flag::Keyword(s.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::convert_bs_inner;
+    use async_imap::imap_proto::{
+        BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
+        ContentEncoding, ContentType,
+    };
+    use std::borrow::Cow;
+
+    #[test]
+    #[expect(clippy::panic, reason = "test")]
+    fn convert_bs_inner_preserves_message_variant_with_nested_body() {
+        // Construct an inner Basic text/plain part
+        let inner_bs = ImapProtoBodyStructure::Basic {
+            common: BodyContentCommon {
+                ty: ContentType {
+                    ty: Cow::Borrowed("text"),
+                    subtype: Cow::Borrowed("plain"),
+                    params: None,
+                },
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            other: BodyContentSinglePart {
+                id: None,
+                md5: None,
+                description: None,
+                transfer_encoding: ContentEncoding::SevenBit,
+                octets: 42,
+            },
+            extension: None,
+        };
+
+        // Construct a Message body with the Basic part inside
+        let msg_bs = ImapProtoBodyStructure::Message {
+            common: BodyContentCommon {
+                ty: ContentType {
+                    ty: Cow::Borrowed("message"),
+                    subtype: Cow::Borrowed("rfc822"),
+                    params: None,
+                },
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            other: BodyContentSinglePart {
+                id: None,
+                md5: None,
+                description: None,
+                transfer_encoding: ContentEncoding::SevenBit,
+                octets: 1024,
+            },
+            envelope: async_imap::imap_proto::Envelope {
+                date: None,
+                subject: None,
+                from: None,
+                sender: None,
+                reply_to: None,
+                to: None,
+                cc: None,
+                bcc: None,
+                in_reply_to: None,
+                message_id: None,
+            },
+            body: Box::new(inner_bs),
+            lines: 10,
+            extension: None,
+        };
+
+        let result = convert_bs_inner(&msg_bs);
+
+        // Verify the Message variant is preserved and the nested body is intact
+        match result {
+            crate::types::BodyStructure::Message { mime_subtype, body } => {
+                assert_eq!(mime_subtype, "rfc822");
+                match body.as_ref() {
+                    crate::types::BodyStructure::Single {
+                        mime_type,
+                        mime_subtype: inner_subtype,
+                        size,
+                        ..
+                    } => {
+                        assert_eq!(mime_type, "text");
+                        assert_eq!(inner_subtype, "plain");
+                        assert_eq!(*size, 42);
+                    }
+                    other => panic!("expected inner Single variant, got {other:?}"),
+                }
+            }
+            other => panic!("expected Message variant, got {other:?}"),
+        }
     }
 }

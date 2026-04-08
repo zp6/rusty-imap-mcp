@@ -197,6 +197,15 @@ pub enum BodyStructure {
         /// Constituent parts.
         parts: Vec<BodyStructure>,
     },
+    /// A `message/rfc822` (or similar `message/*`) body containing a fully
+    /// nested embedded message. The nested `body` is the BODYSTRUCTURE of
+    /// the embedded message; walk it like any other tree.
+    Message {
+        /// MIME subtype (typically `"rfc822"`).
+        mime_subtype: String,
+        /// The embedded message's body structure.
+        body: Box<BodyStructure>,
+    },
 }
 
 /// SEARCH query — either a structured builder or a raw passthrough.
