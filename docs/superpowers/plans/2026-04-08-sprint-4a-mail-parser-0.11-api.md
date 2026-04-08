@@ -81,7 +81,7 @@ pub struct Message<'x> {
 }
 ```
 
-`MessagePartId` is a type alias for `usize` (index into `parts`). `parts` is the flat list of all MIME parts; the three `*_body` / `attachments` vecs are index lists selecting the subset of interest.
+`MessagePartId` is a type alias for **`u32`** (index into `parts`) in mail-parser 0.11.2 — the earlier docs said `usize` but `cargo doc` on the installed version confirms `u32`. Cast to `usize` at the indexing site: `message.parts.get(part_id as usize)`.
 
 ## `Address` enum
 
@@ -543,7 +543,7 @@ fn extract_bodies(
     // parts mail-parser identifies as body (excluding attachments
     // and nested message/rfc822 bodies).
     for (idx, &part_id) in message.text_body.iter().enumerate() {
-        let Some(part) = message.parts.get(part_id) else {
+        let Some(part) = message.parts.get(part_id as usize) else {
             continue;
         };
         // Skip nested rfc822 — their text is another message's body.
@@ -620,7 +620,7 @@ fn depth_recursive(message: &Message<'_>, part_id: usize, current: usize) -> usi
     match &part.body {
         PartType::Multipart(child_ids) => child_ids
             .iter()
-            .map(|&child_id| depth_recursive(message, child_id, current + 1))
+            .map(|&child_id| depth_recursive(message, child_id as usize, current + 1))
             .max()
             .unwrap_or(current),
         PartType::Message(nested) => {
@@ -642,7 +642,7 @@ struct BodyExtraction {
 }
 ```
 
-Note: `MessagePartId` is a type alias for `usize` in 0.11, so `message.text_body: Vec<MessagePartId>` is indexable directly into `message.parts`.
+Note: `MessagePartId` is `u32` in 0.11.2. `message.text_body: Vec<MessagePartId>` requires an `as usize` cast when indexing into `message.parts`. The code sample above has been updated.
 
 ### Task 8 — attachments, magic-byte sniff, mailing list against 0.11
 
@@ -655,7 +655,7 @@ fn extract_attachments(
 ) -> Vec<crate::output::AttachmentMeta> {
     let mut out = Vec::new();
     for (idx, part_id) in message.attachments.iter().enumerate() {
-        let Some(part) = message.parts.get(*part_id) else {
+        let Some(part) = message.parts.get(*part_id as usize) else {
             continue;
         };
         let declared_ct = part
@@ -779,6 +779,15 @@ fn sanitize_header_value(
         HeaderValue::TextList(list) => list
             .iter()
             .map(|s| s.as_ref())
+            .collect::<Vec<_>>()
+            .join(", "),
+        // IMPORTANT: mail-parser 0.11 routes `List-ID`, `List-Unsubscribe`,
+        // `List-Post`, etc. through `parse_address()`, so they come back as
+        // `HeaderValue::Address` — NOT `Text`. Flatten the address(es)
+        // through the same `format_addr` path used for From/To/Cc.
+        HeaderValue::Address(address) => address
+            .iter()
+            .map(format_addr)
             .collect::<Vec<_>>()
             .join(", "),
         HeaderValue::Empty => return None,
