@@ -334,6 +334,51 @@ mod tests {
     }
 
     #[test]
+    fn dangling_encoded_word_at_last_header_is_dropped() {
+        // Originating `=?` is the last logical header — the `Missing`
+        // branch must still mark it even though there are no later
+        // headers to search for `?=`.
+        let raw = b"From: a\r\nSubject: =?utf-8?B?dangling\r\n\r\nbody";
+        let mut warnings = Vec::new();
+        let out = scrub_header_smuggling(raw, &mut warnings);
+        let out_str = std::str::from_utf8(&out).unwrap();
+        assert!(out_str.contains("From: a"));
+        assert!(!out_str.contains("Subject:"));
+        assert!(out_str.contains("body"));
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, WarningCode::ParseHeaderSmugglingBlocked);
+    }
+
+    #[test]
+    fn legal_then_smuggled_encoded_word_in_same_header_drops_span() {
+        // First `=?...?=` is a legal SameHeader match; the second `=?`
+        // on the same header opens a smuggling span into later headers.
+        // The detector's `scan_from` cursor must advance past the legal
+        // token and still catch the second opener. The originating
+        // header is dropped together with the span through `?=`.
+        let raw = b"From: a\r\nSubject: =?utf-8?B?aGVsbG8=?= =?utf-8?B?x\r\nBcc: y@e\r\n?=\r\nTo: b\r\n\r\nbody";
+        let mut warnings = Vec::new();
+        let out = scrub_header_smuggling(raw, &mut warnings);
+        let out_str = std::str::from_utf8(&out).unwrap();
+        assert!(out_str.contains("From: a"));
+        assert!(out_str.contains("To: b"));
+        assert!(!out_str.contains("Subject:"));
+        assert!(!out_str.contains("Bcc:"));
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].code, WarningCode::ParseHeaderSmugglingBlocked);
+    }
+
+    #[test]
+    fn multiple_legal_encoded_words_in_one_header_are_not_flagged() {
+        // Two legal SameHeader encoded-words in a single header line.
+        // The `scan_from` cursor must advance past the first `?=` so the
+        // second opener is detected and resolved correctly.
+        let logical: Vec<&[u8]> = vec![b"Subject: =?utf-8?B?aA==?= =?utf-8?B?Yg==?=\r\n"];
+        let mask = detect_smuggling_spans(&logical);
+        assert_eq!(mask, vec![false]);
+    }
+
+    #[test]
     fn parse_message_stub_returns_empty_content() {
         let raw = b"From: a\r\n\r\nhello";
         let content = parse_message(raw).unwrap();
