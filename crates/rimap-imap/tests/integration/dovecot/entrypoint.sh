@@ -2,12 +2,17 @@
 set -eu
 
 # Generate a self-signed cert at container start so each test run gets a
-# fresh fingerprint.
-openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout /etc/dovecot/key.pem \
-    -out /etc/dovecot/cert.pem \
-    -days 1 \
-    -subj "/CN=rimap-test-dovecot" >/dev/null 2>&1
+# fresh fingerprint. Skip if a cert already exists — `docker compose
+# restart` (used by case_11 to break the client TCP) re-runs the
+# entrypoint, and the test relies on the SAME pinned fingerprint surviving
+# across the restart so the post-disconnect reconnect succeeds.
+if [ ! -f /etc/dovecot/cert.pem ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout /etc/dovecot/key.pem \
+        -out /etc/dovecot/cert.pem \
+        -days 1 \
+        -subj "/CN=rimap-test-dovecot" >/dev/null 2>&1
+fi
 
 # Compute the SHA-256 fingerprint of the leaf cert (DER form, lowercase
 # hex, no separators). We write it out AFTER dovecot is actually listening

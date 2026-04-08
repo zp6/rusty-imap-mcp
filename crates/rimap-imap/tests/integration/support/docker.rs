@@ -173,6 +173,54 @@ impl DovecotHarness {
         cmd.output()
             .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))
     }
+
+    /// Restart the dovecot container, killing every in-flight TCP session
+    /// the test client may have cached. Used by `case_11` to deterministically
+    /// trigger the half-open recovery path.
+    ///
+    /// `pkill -9 imap` from inside the container is not a reliable
+    /// substitute: dovecot's master process auto-respawns the worker
+    /// before the client's next command lands, so the cached session
+    /// transparently survives. A full container restart sends SIGTERM
+    /// to dovecot's master and tears down all worker fds with no respawn.
+    /// The same self-signed cert survives the restart (entrypoint.sh
+    /// guards generation behind a file-existence check), so the pinned
+    /// fingerprint is unchanged and the post-disconnect reconnect works.
+    pub fn restart(&self) -> Result<(), HarnessError> {
+        let status = Command::new("docker")
+            .arg("compose")
+            .arg("-p")
+            .arg(&self.project)
+            .arg("restart")
+            .arg("--timeout")
+            .arg("1")
+            .arg("dovecot")
+            .current_dir(&self.compose_dir)
+            .status()
+            .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
+        if !status.success() {
+            return Err(HarnessError::DockerCommandFailed(format!(
+                "compose restart exit {status}"
+            )));
+        }
+        // Wait for dovecot to be accepting on the same host port again.
+        let started = Instant::now();
+        let timeout = Duration::from_secs(60);
+        loop {
+            if started.elapsed() > timeout {
+                return Err(HarnessError::Timeout);
+            }
+            if std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
+                Duration::from_millis(500),
+            )
+            .is_ok()
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
 }
 
 impl Drop for DovecotHarness {

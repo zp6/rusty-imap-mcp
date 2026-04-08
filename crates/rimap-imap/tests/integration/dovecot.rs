@@ -279,8 +279,12 @@ async fn case_11_tcp_half_open_recovery() {
     // Establish.
     let _ = h.connection.list_folders("*").await.unwrap();
 
-    // Kill imap process inside the container.
-    let _ = h.harness.exec(&["pkill", "-9", "imap"]);
+    // Force the server-side TCP to die. `pkill -9 imap` is racy because
+    // dovecot's master respawns the worker before the next client command
+    // lands; a full container restart deterministically tears down every
+    // worker fd. The cert is preserved across the restart so the pinned
+    // reconnect below uses the same fingerprint.
+    h.harness.restart().expect("dovecot restart");
 
     // Next op should fail with ConnectionLost (or Protocol that maps to it).
     let result = h.connection.list_folders("*").await;
