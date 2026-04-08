@@ -53,7 +53,6 @@ fn runtime_available() -> bool {
 pub enum HarnessError {
     DockerUnavailable,
     DockerCommandFailed(String),
-    Timeout,
     FingerprintReadFailed(String),
     PortReadFailed(String),
 }
@@ -65,7 +64,6 @@ impl std::fmt::Display for HarnessError {
                 f.write_str("no container runtime (docker or podman) is available")
             }
             Self::DockerCommandFailed(s) => write!(f, "{} command failed: {s}", runtime()),
-            Self::Timeout => f.write_str("timed out waiting for dovecot ready"),
             Self::FingerprintReadFailed(s) => write!(f, "fingerprint read failed: {s}"),
             Self::PortReadFailed(s) => write!(f, "port read failed: {s}"),
         }

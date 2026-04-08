@@ -1,5 +1,6 @@
-//! Dovecot-in-Docker integration suite for rimap-imap. CI runs Docker;
-//! local devs without Docker get the skip path automatically.
+//! Dovecot-in-container integration suite for rimap-imap. Runs against
+//! docker or podman (autodetected, override with `RIMAP_CONTAINER_TOOL`).
+//! Local devs without either runtime get the skip path automatically.
 
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::expect_used, reason = "tests")]
@@ -10,7 +11,7 @@ use std::time::Duration;
 
 use rimap_imap::error::{AuthFailure, Error};
 use rimap_imap::{Connection, ConnectionConfig};
-use support::docker::{ConnectedHarness, DovecotHarness, HarnessError, PinChoice};
+use support::container::{ConnectedHarness, DovecotHarness, HarnessError, PinChoice};
 
 fn boot(pin: PinChoice) -> Option<ConnectedHarness> {
     match ConnectedHarness::new(pin) {
@@ -252,7 +253,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         command_timeout: Duration::from_secs(10),
         max_fetch_body_bytes: 10,
     };
-    let creds: Arc<dyn CredentialStore> = Arc::new(support::docker::StaticCreds(
+    let creds: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
         DovecotHarness::password().to_string(),
     ));
     let conn = Connection::new(cfg, h.audit.clone(), creds);

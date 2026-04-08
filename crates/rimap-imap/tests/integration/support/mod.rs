@@ -1,4 +1,4 @@
-//! Test support: Dovecot Docker harness, fixture loaders.
+//! Test support: Dovecot container harness (docker or podman), fixture loaders.
 
-pub mod docker;
+pub mod container;
 pub mod fixtures;
