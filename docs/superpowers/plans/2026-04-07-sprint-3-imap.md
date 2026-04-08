@@ -1162,30 +1162,38 @@ use sha2::{Digest, Sha256};
 /// # Errors
 /// Propagates any `AuditError` from the trailing-state read, open, inode
 /// fetch, or `process_start` write.
+///
+/// `config_file_path` is the path to the TOML config file the user loaded
+/// (NOT the audit log path). `ValidatedConfig` does not carry its own
+/// source path, so callers must thread it through explicitly. The
+/// `process_start` record hashes this file's contents — getting this
+/// wrong means every startup record names and hashes the audit log
+/// instead of the config.
 pub fn init_audit_writer(
     cfg: &ValidatedConfig,
+    config_file_path: &Path,
 ) -> Result<AuditWriter, AuditError> {
-    let path = &cfg.config.audit.path;
-    let trailing = read_trailing_state(path)?;
+    let audit_path = &cfg.config.audit.path;
+    let trailing = read_trailing_state(audit_path)?;
     let initial_seq = trailing
         .last_seq
         .map(Seq::next)
         .unwrap_or(Seq::FIRST);
 
     let writer = AuditWriter::open(&AuditOptions {
-        path: path.clone(),
+        path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
         initial_seq,
     })?;
 
-    let current = current_inode(path)?;
-    let config_hash = compute_config_hash(path);
+    let current = current_inode(audit_path)?;
+    let config_hash = compute_config_hash(config_file_path);
 
     writer.log_process_start(ProcessStartInputs {
         version: env!("CARGO_PKG_VERSION").to_string(),
         git_commit: String::new(),
         posture: cfg.config.security.posture.to_string(),
-        config_path: path.clone(),
+        config_path: config_file_path.to_path_buf(),
         config_hash_sha256: config_hash,
         trailing,
         current_inode: current,
@@ -1209,10 +1217,10 @@ fn compute_config_hash(path: &Path) -> String {
 In `crates/rimap-server/src/main.rs` (or `lib.rs` if main delegates), find the existing `AuditWriter::open(...)` call and replace it with:
 
 ```rust
-let audit = crate::audit_init::init_audit_writer(&validated_config)?;
+let audit = crate::audit_init::init_audit_writer(&validated_config, &config_file_path)?;
 ```
 
-Where `validated_config` is the `ValidatedConfig` produced earlier in the boot sequence. Adjust the variable name to match what's already there.
+Where `validated_config` is the `ValidatedConfig` produced earlier in the boot sequence, and `config_file_path` is the `PathBuf`/`&Path` pointing at the TOML file the user loaded (the argument you passed to `rimap_config::load(...)` or equivalent). Adjust the variable names to match what's already there. **Do NOT pass `cfg.config.audit.path` as the second argument** — that's the audit log, not the config file, and the whole point of the two-argument signature is to keep them distinct.
 
 Add `pub mod audit_init;` near the top of `main.rs` or `lib.rs` (wherever modules are declared).
 
@@ -1235,7 +1243,7 @@ hex = { workspace = true }
 grep -rn "audit_merge\|audit merge" crates/rimap-server/tests/
 ```
 
-Find the test that asserts on the JSONL contents. Add an assertion that the first line is a `process_start` record:
+Find the test that asserts on the JSONL contents. Add assertions that the first line is a `process_start` record AND that it records the config file (not the audit log):
 
 ```rust
 // Existing assertion may parse the file as JSONL; insert this near the top:
@@ -1243,6 +1251,20 @@ let first_line = contents.lines().next().expect("at least one record");
 let first: serde_json::Value = serde_json::from_str(first_line).unwrap();
 assert_eq!(first["kind"], "process_start");
 assert_eq!(first["seq"], 1);
+
+// Regression guard: config_path must be the TOML file, not the audit log.
+assert_eq!(
+    first["config_path"].as_str().unwrap(),
+    config_path.to_str().unwrap(),
+);
+
+// And config_hash_sha256 must hash the config file contents.
+use sha2::{Digest, Sha256};
+let config_bytes = std::fs::read(&config_path).unwrap();
+let mut hasher = Sha256::new();
+hasher.update(&config_bytes);
+let expected_hash = hex::encode(hasher.finalize());
+assert_eq!(first["config_hash_sha256"].as_str().unwrap(), expected_hash);
 ```
 
 If the test currently runs `audit merge` against a file that the test itself populated via `write_record`, the assertion above will fail because `process_start` was never written. In that case, change the test setup to use `init_audit_writer` (or `log_process_start` directly) instead of synthesizing records.
