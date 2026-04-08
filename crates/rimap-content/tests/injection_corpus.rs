@@ -106,6 +106,7 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::UnicodeC0C1Stripped => "unicode_c0_c1_stripped",
         WarningCode::ParseHeaderSmugglingBlocked => "parse_header_smuggling_blocked",
         WarningCode::ParseMimeTypeMismatch => "parse_mime_type_mismatch",
+        WarningCode::ParseAttachmentPolyglot => "parse_attachment_polyglot",
         WarningCode::ParseBodyTruncated => "parse_body_truncated",
         WarningCode::ParseMimeDepthExceeded => "parse_mime_depth_exceeded",
         WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",

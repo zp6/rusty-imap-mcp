@@ -604,14 +604,31 @@ fn build_attachment_meta(
     };
 
     let body = part_bytes(part);
-    if let Some(sniffed_ct) = sniff_content_type(body)
-        && !content_types_compatible(&declared_ct, sniffed_ct)
-    {
+    let sniffed = sniff_content_types(body);
+    if sniffed.len() > 1 {
         warnings.push(SecurityWarning {
-            code: WarningCode::ParseMimeTypeMismatch,
-            detail: Some(format!("declared={declared_ct} sniffed={sniffed_ct}")),
+            code: WarningCode::ParseAttachmentPolyglot,
+            detail: Some(format!(
+                "declared={declared_ct} sniffed={}",
+                sniffed.join(",")
+            )),
             location: Some(format!("attachment[{idx}]")),
         });
+    }
+    if !sniffed.is_empty() {
+        let mismatch = !sniffed
+            .iter()
+            .any(|s| content_types_compatible(&declared_ct, s));
+        if mismatch {
+            warnings.push(SecurityWarning {
+                code: WarningCode::ParseMimeTypeMismatch,
+                detail: Some(format!(
+                    "declared={declared_ct} sniffed={}",
+                    sniffed.join(",")
+                )),
+                location: Some(format!("attachment[{idx}]")),
+            });
+        }
     }
 
     let filename = part.attachment_name().map(|name| {
@@ -693,56 +710,57 @@ fn content_type_string(ct: &mail_parser::ContentType<'_>) -> String {
     }
 }
 
-/// Small magic-byte sniff table covering the file types most often
-/// used in phishing attachments. Returns the canonical media type
-/// string on a match, or `None` if no signature matches.
-fn sniff_content_type(body: &[u8]) -> Option<&'static str> {
-    if body.starts_with(b"\x89PNG\r\n\x1a\n") {
-        return Some("image/png");
+/// Sniff the content type of `body` from its leading magic bytes.
+/// Returns the list of ALL matching signatures — a single match is
+/// normal, multiple matches indicate a polyglot file.
+fn sniff_content_types(body: &[u8]) -> Vec<&'static str> {
+    let signatures: &[(&[u8], &'static str)] = &[
+        (b"\x89PNG\r\n\x1a\n", "image/png"),
+        (b"\xff\xd8\xff", "image/jpeg"),
+        (b"GIF87a", "image/gif"),
+        (b"GIF89a", "image/gif"),
+        (b"%PDF", "application/pdf"),
+        (b"PK\x03\x04", "application/zip"),
+        (b"MZ", "application/x-msdownload"),
+        (b"\x7fELF", "application/x-elf"),
+        (b"\xcf\xfa\xed\xfe", "application/x-mach-binary"),
+        (b"\xfe\xed\xfa\xce", "application/x-mach-binary"),
+        (b"\xfe\xed\xfa\xcf", "application/x-mach-binary"),
+        (b"\xca\xfe\xba\xbe", "application/x-mach-binary"),
+        (b"7z\xbc\xaf\x27\x1c", "application/x-7z-compressed"),
+        (b"Rar!\x1a\x07\x00", "application/vnd.rar"),
+        (b"Rar!\x1a\x07\x01\x00", "application/vnd.rar"),
+        (
+            b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+            "application/x-ole-storage",
+        ),
+    ];
+    let mut matches: Vec<&'static str> = Vec::new();
+    for (sig, label) in signatures {
+        if body.starts_with(sig) && !matches.contains(label) {
+            matches.push(label);
+        }
     }
-    if body.starts_with(b"\xff\xd8\xff") {
-        return Some("image/jpeg");
-    }
-    if body.starts_with(b"GIF87a") || body.starts_with(b"GIF89a") {
-        return Some("image/gif");
-    }
-    if body.starts_with(b"%PDF-") {
-        return Some("application/pdf");
-    }
-    if body.starts_with(b"PK\x03\x04") || body.starts_with(b"PK\x05\x06") {
-        return Some("application/zip");
-    }
-    if body.starts_with(b"MZ") {
-        return Some("application/x-msdownload");
-    }
-    None
+    matches
 }
 
-/// Return `true` when the declared Content-Type is compatible with a
-/// magic-byte sniff result. Compatibility is intentionally conservative:
-/// exact match, an `application/octet-stream` declaration, or a ZIP-based
-/// office format all count.
+/// Return `true` if the declared content type is compatible with a
+/// sniffed type. Exact (case-insensitive) matches are compatible.
+/// `OpenXML` / `OpenDocument` declarations are compatible with a sniffed
+/// `application/zip` (both are ZIP-based office formats).
+///
+/// `application/octet-stream` is NOT treated as a universal wildcard —
+/// caller logic in `build_attachment_meta` decides whether an empty
+/// sniff result makes `application/octet-stream` acceptable.
 fn content_types_compatible(declared: &str, sniffed: &str) -> bool {
-    let declared_lower = declared.to_ascii_lowercase();
-    let declared_trim = declared_lower
-        .split(';')
-        .next()
-        .unwrap_or(&declared_lower)
-        .trim();
-    if declared_trim == sniffed {
+    if declared.eq_ignore_ascii_case(sniffed) {
         return true;
     }
-    if declared_trim == "application/octet-stream" {
-        return true;
-    }
-    // ZIP-based formats: docx/xlsx/pptx/odt/jar all sniff as zip.
-    if sniffed == "application/zip"
-        && (declared_trim.contains("openxmlformats")
-            || declared_trim.contains("opendocument")
-            || declared_trim == "application/java-archive"
-            || declared_trim == "application/epub+zip")
-    {
-        return true;
+    if sniffed == "application/zip" {
+        let dl = declared.to_ascii_lowercase();
+        if dl.contains("openxmlformats") || dl.contains("opendocument") {
+            return true;
+        }
     }
     false
 }
@@ -1254,6 +1272,75 @@ mod tests {
                 .iter()
                 .any(|w| w.code == WarningCode::ParseMimeTypeMismatch)
         );
+    }
+
+    #[test]
+    fn sniff_detects_elf() {
+        assert_eq!(
+            sniff_content_types(b"\x7fELFblah"),
+            vec!["application/x-elf"]
+        );
+    }
+
+    #[test]
+    fn sniff_detects_macho_64bit_le() {
+        assert_eq!(
+            sniff_content_types(b"\xcf\xfa\xed\xfeblah"),
+            vec!["application/x-mach-binary"]
+        );
+    }
+
+    #[test]
+    fn sniff_detects_macho_fat_binary() {
+        assert_eq!(
+            sniff_content_types(b"\xca\xfe\xba\xbeblah"),
+            vec!["application/x-mach-binary"]
+        );
+    }
+
+    #[test]
+    fn sniff_detects_7z() {
+        assert_eq!(
+            sniff_content_types(b"7z\xbc\xaf\x27\x1cblah"),
+            vec!["application/x-7z-compressed"]
+        );
+    }
+
+    #[test]
+    fn sniff_detects_ole2() {
+        assert_eq!(
+            sniff_content_types(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1blah"),
+            vec!["application/x-ole-storage"]
+        );
+    }
+
+    #[test]
+    fn sniff_empty_for_unknown() {
+        assert!(sniff_content_types(b"random text").is_empty());
+    }
+
+    #[test]
+    fn content_types_octet_stream_no_longer_wildcard() {
+        // application/octet-stream is no longer compatible with a specific
+        // sniffed type — the caller handles the "sniff empty" case separately.
+        assert!(!content_types_compatible(
+            "application/octet-stream",
+            "application/x-msdownload"
+        ));
+    }
+
+    #[test]
+    fn content_types_openxml_still_compatible_with_zip() {
+        assert!(content_types_compatible(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/zip",
+        ));
+    }
+
+    #[test]
+    fn content_types_exact_match() {
+        assert!(content_types_compatible("image/png", "image/png"));
+        assert!(content_types_compatible("IMAGE/PNG", "image/png"));
     }
 
     #[test]

@@ -137,6 +137,10 @@ pub enum WarningCode {
     /// An attachment's declared content type did not match the magic
     /// bytes of its body.
     ParseMimeTypeMismatch,
+    /// An attachment matched multiple magic-byte signatures (polyglot
+    /// file). This frequently indicates a deliberate attempt to bypass
+    /// content-type sniffing by encoding one file type as another.
+    ParseAttachmentPolyglot,
     /// The message body exceeded `MAX_BODY_BYTES` and was truncated.
     ParseBodyTruncated,
     /// MIME nesting depth exceeded `MAX_MIME_DEPTH`. Emitted alongside
@@ -185,6 +189,13 @@ mod tests {
         let code = WarningCode::HtmlBodyUnsanitized;
         let json = serde_json::to_string(&code).unwrap();
         assert_eq!(json, "\"html_body_unsanitized\"");
+    }
+
+    #[test]
+    fn parse_attachment_polyglot_label() {
+        let code = WarningCode::ParseAttachmentPolyglot;
+        let json = serde_json::to_string(&code).unwrap();
+        assert_eq!(json, "\"parse_attachment_polyglot\"");
     }
 
     #[test]
