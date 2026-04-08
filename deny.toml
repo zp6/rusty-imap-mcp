@@ -28,6 +28,11 @@ allow = [
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
+    # webpki-roots >= 0.26.10 re-licensed from MPL-2.0 to CDLA-Permissive-2.0
+    # (Community Data License Agreement). It's a legitimate permissive license
+    # published by the Linux Foundation. Accepted here because the alternative
+    # is pinning to stale root certs.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.93
 
@@ -42,6 +47,18 @@ skip = [
     # while 0.16 comes in via `indexmap` (transitive of `toml`). Both are
     # stable upstream choices we cannot influence without forking.
     { name = "hashbrown", version = "0.14" },
+
+    # The four entries below all trace to `async-imap 0.11.2` — the only
+    # maintained pure-Rust async IMAP client. Its direct deps include
+    # `stop-token 0.7` (last released 2022, unmaintained but harmless) which
+    # pulls the 1.x line of the `async` runtime primitives, while async-imap
+    # itself uses the 2.x line. `thiserror 1` is also a direct, non-optional
+    # pin from async-imap. None can be resolved with `cargo update`; forking
+    # async-imap is not warranted. Revisit when async-imap modernizes.
+    { name = "async-channel", version = "1" },
+    { name = "event-listener", version = "2" },
+    { name = "thiserror", version = "1" },
+    { name = "thiserror-impl", version = "1" },
 ]
 # Multiple `windows-sys` major lines coexist because each transitive
 # consumer (`directories`, `keyring`/`dbus-secret-service`, `rpassword`,
