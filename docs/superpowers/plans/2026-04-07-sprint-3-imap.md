@@ -1323,13 +1323,48 @@ Edit `Cargo.toml`. Add these alongside existing deps (a separate `# IMAP / TLS` 
 
 ```toml
 # IMAP / TLS (Sprint 3)
-async-imap = "0.10"
-tokio-rustls = "0.26"
+async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 webpki-roots = "0.26"
 ```
 
-> The `default-features = false` + explicit feature set on `rustls` keeps the dep surface tight (no `aws-lc-rs`, no `dangerous_configuration` until task 9 enables it on the verifier). `ring` is the default crypto provider; switching to `aws-lc-rs` is a separate decision.
+> `default-features = false` + explicit feature sets keep the dep surface tight:
+> - `async-imap` drops its default `runtime-async-std` in favor of `runtime-tokio` — this removes the unmaintained `async-std 1.x` chain (RUSTSEC-2025-0052).
+> - `tokio-rustls` drops its default `aws-lc-rs` backend in favor of `ring`, keeping us on one crypto provider and dodging an extra `getrandom` major via the `aws-lc-sys` build edge.
+> - `rustls` uses `ring` (no `aws-lc-rs`, no `dangerous_configuration` — task 9 enables the latter on the verifier only).
+>
+> **Upstream conflicts to expect:** `async-imap 0.11.2` depends on `stop-token 0.7` (unmaintained since 2022, pulls `async-channel/event-listener 1.x/2.x` while async-imap itself uses the 2.x/5.x lines) AND pins `thiserror ^1.0.9` directly. Neither is fixable with `cargo update`. `webpki-roots 0.26.10+` re-licensed from `MPL-2.0` to `CDLA-Permissive-2.0`. These require one license addition and four skip entries in `deny.toml` — see the new Step 1b below.
+
+- [ ] **Step 1b: Update `deny.toml` for the async-imap and webpki-roots constraints**
+
+Commit this BEFORE the scaffold commit so `cargo deny check` passes on the scaffold commit. Under `[licenses] allow = [...]`, add:
+
+```toml
+    # webpki-roots >= 0.26.10 re-licensed from MPL-2.0 to CDLA-Permissive-2.0
+    # (Community Data License Agreement). It's a legitimate permissive license
+    # published by the Linux Foundation. Accepted here because the alternative
+    # is pinning to stale root certs.
+    "CDLA-Permissive-2.0",
+```
+
+Under `[bans] skip = [...]`, append after the existing `hashbrown` entry:
+
+```toml
+    # The four entries below all trace to `async-imap 0.11.2` — the only
+    # maintained pure-Rust async IMAP client. Its direct deps include
+    # `stop-token 0.7` (last released 2022, unmaintained but harmless) which
+    # pulls the 1.x line of the `async` runtime primitives, while async-imap
+    # itself uses the 2.x line. `thiserror 1` is also a direct, non-optional
+    # pin from async-imap. None can be resolved with `cargo update`; forking
+    # async-imap is not warranted. Revisit when async-imap modernizes.
+    { name = "async-channel", version = "1" },
+    { name = "event-listener", version = "2" },
+    { name = "thiserror", version = "1" },
+    { name = "thiserror-impl", version = "1" },
+```
+
+Verify `cargo deny check` is clean on this commit alone (before scaffolding), then commit `deny.toml` on its own with a message like `chore(deny): allow CDLA-Permissive-2.0 and async-imap transitive duplicates`.
 
 - [ ] **Step 2: Populate `crates/rimap-imap/Cargo.toml`**
 
