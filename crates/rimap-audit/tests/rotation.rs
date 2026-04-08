@@ -34,6 +34,7 @@ fn writes_survive_multiple_rotations() {
     let writer = AuditWriter::open(&AuditOptions {
         path: path.clone(),
         rotate_bytes: 300,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
     for seq in 1..=N {
@@ -70,6 +71,7 @@ fn lock_persists_across_rotations() {
     let writer = AuditWriter::open(&AuditOptions {
         path: path.clone(),
         rotate_bytes: 300,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap();
     for seq in 1_u64..=10 {
@@ -79,6 +81,7 @@ fn lock_persists_across_rotations() {
     let err = AuditWriter::open(&AuditOptions {
         path: path.clone(),
         rotate_bytes: 0,
+        initial_seq: rimap_audit::Seq::FIRST,
     })
     .unwrap_err();
     match err {

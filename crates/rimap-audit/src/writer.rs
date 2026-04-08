@@ -27,6 +27,10 @@ pub struct AuditOptions {
     pub path: PathBuf,
     /// Rotate when the file exceeds this many bytes. `0` disables rotation.
     pub rotate_bytes: u64,
+    /// First `Seq` value this writer will allocate. Callers compute this from
+    /// `read_trailing_state(path).last_seq.map(Seq::next).unwrap_or(Seq::FIRST)`
+    /// before calling `open`.
+    pub initial_seq: crate::ids::Seq,
 }
 
 /// Append-only JSONL writer. Construct via [`AuditWriter::open`]. Cheaply
@@ -36,6 +40,7 @@ pub struct AuditOptions {
 pub struct AuditWriter {
     path: PathBuf,
     rotate_bytes: u64,
+    process_id: crate::ids::ProcessId,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -44,6 +49,8 @@ pub(crate) struct Inner {
     pub(crate) buf: BufWriter<File>,
     /// Total bytes written to the active file (used by rotation).
     pub(crate) bytes_written: u64,
+    /// Next `Seq` value to hand out via `allocate_seq`.
+    pub(crate) next_seq: crate::ids::Seq,
 }
 
 impl AuditWriter {
@@ -102,9 +109,11 @@ impl AuditWriter {
         Ok(Self {
             path: opts.path.clone(),
             rotate_bytes: opts.rotate_bytes,
+            process_id: crate::ids::ProcessId::new_now(),
             inner: Arc::new(Mutex::new(Inner {
                 buf: BufWriter::new(file),
                 bytes_written,
+                next_seq: opts.initial_seq,
             })),
         })
     }
@@ -119,6 +128,28 @@ impl AuditWriter {
     #[must_use]
     pub fn rotate_bytes(&self) -> u64 {
         self.rotate_bytes
+    }
+
+    /// The process ID this writer was opened with. Stable for the lifetime
+    /// of the writer.
+    #[must_use]
+    pub fn process_id(&self) -> crate::ids::ProcessId {
+        self.process_id
+    }
+
+    /// Allocate the next monotonic `Seq` value. Locks the inner mutex
+    /// briefly; never crosses an `.await`.
+    ///
+    /// # Errors
+    /// Returns `AuditError::Write` if the internal mutex is poisoned.
+    pub fn allocate_seq(&self) -> Result<crate::ids::Seq, AuditError> {
+        let mut guard = self.inner.lock().map_err(|_| AuditError::Write {
+            path: self.path.clone(),
+            source: std::io::Error::other("audit mutex poisoned"),
+        })?;
+        let seq = guard.next_seq;
+        guard.next_seq = seq.next();
+        Ok(seq)
     }
 
     /// Serialize `record` as one JSONL line, append it to the active file,
@@ -274,6 +305,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
         assert_eq!(writer.path(), path);
@@ -287,11 +319,13 @@ mod tests {
         let _first = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
         let err = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
         match err {
@@ -308,6 +342,7 @@ mod tests {
             let _first = AuditWriter::open(&AuditOptions {
                 path: path.clone(),
                 rotate_bytes: 0,
+                initial_seq: crate::ids::Seq::FIRST,
             })
             .unwrap();
         }
@@ -315,6 +350,7 @@ mod tests {
         let _second = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
     }
@@ -326,6 +362,7 @@ mod tests {
         let _writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
         assert!(path.exists());
@@ -342,6 +379,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -375,6 +413,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -406,6 +445,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 200,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -472,6 +512,7 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 200,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -491,11 +532,59 @@ mod tests {
         let err = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
         match err {
             AuditError::Locked { .. } => {}
             other => panic!("expected Locked after rotation, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn writer_holds_a_stable_process_id() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+        let pid_a = writer.process_id();
+        let pid_b = writer.process_id();
+        assert_eq!(pid_a, pid_b);
+    }
+
+    #[test]
+    fn writer_allocates_sequential_seqs() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+        let s1 = writer.allocate_seq().unwrap();
+        let s2 = writer.allocate_seq().unwrap();
+        let s3 = writer.allocate_seq().unwrap();
+        assert_eq!(s1, crate::ids::Seq::FIRST);
+        assert_eq!(s2, crate::ids::Seq(2));
+        assert_eq!(s3, crate::ids::Seq(3));
+    }
+
+    #[test]
+    fn writer_resumes_seq_from_initial_seq_option() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 0,
+            initial_seq: crate::ids::Seq(42),
+        })
+        .unwrap();
+        assert_eq!(writer.allocate_seq().unwrap(), crate::ids::Seq(42));
+        assert_eq!(writer.allocate_seq().unwrap(), crate::ids::Seq(43));
     }
 }
