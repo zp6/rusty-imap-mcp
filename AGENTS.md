@@ -229,10 +229,21 @@ assume "audit log = `0600`" and not realize the merged dump isn't.
 
 Recommended patterns:
 
+**Important:** `umask` only affects subsequent file creations in the SAME
+shell invocation. If you run `umask 077` on one line and the `rusty-imap-mcp
+audit merge` command on the next line, that works in an interactive shell
+session — but in a script that spawns a new subshell per command, the umask
+will not apply to the redirect. The `&&` form below chains the umask and
+the redirect into a single invocation and is safe in both interactive shells
+and scripts. The `install` form below is safer still because it sets the
+mode atomically on the destination without depending on the shell's umask.
+
 ```bash
-# 1. Set a tight umask before the redirect:
+# 1. Set a tight umask and run the redirect in the same shell command.
+#    The && is load-bearing: it ensures both actions share a umask scope.
 umask 077 && rusty-imap-mcp audit merge … > dump.jsonl
 
-# 2. Or pipe through `install` for an atomic mode-set:
+# 2. Preferred in scripts: pipe through `install` for an atomic mode-set.
+#    This does not depend on umask at all.
 rusty-imap-mcp audit merge … | install -m 0600 /dev/stdin /target/dump.jsonl
 ```
