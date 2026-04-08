@@ -80,12 +80,20 @@ subtle = "2"
 strum = { version = "0.26", features = ["derive"] }
 rand = "0.8"
 
+# Content pipeline (Sprint 4a)
+mail-parser = "0.11"
+encoding_rs = "0.8"
+unicode-normalization = "0.1"
+unicode-segmentation = "1.13"
+unicode-properties = "0.1"
+
 # Dev dependencies shared across crates
 assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.14"
 proptest = "1.6"
 temp-env = "0.3"
+insta = { version = "1.47", features = ["json"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
