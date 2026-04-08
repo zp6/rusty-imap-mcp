@@ -25,3 +25,4 @@ unicode-segmentation = { workspace = true }
 [dev-dependencies]
 proptest = { workspace = true }
 insta = { workspace = true }
+tempfile = { workspace = true }

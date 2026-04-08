@@ -165,6 +165,10 @@ test-integration:
 test-injection:
     cargo nextest run -p rimap-content --locked --test injection_corpus
 
+# Bulk regression runner for the external EPVME malicious-email dataset.
+test-epvme *args:
+    ./scripts/test-epvme.sh {{args}}
+
 # Supply-chain audit.
 deny:
     cargo deny check
