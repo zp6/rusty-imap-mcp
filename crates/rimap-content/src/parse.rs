@@ -23,6 +23,12 @@ pub const MAX_MESSAGE_BYTES: usize = 25 * 1024 * 1024;
 /// Maximum per-text-part size after sanitization.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
+/// Maximum total sanitized body bytes across `body_text` +
+/// `alternate_parts`. Enforced in addition to the per-part
+/// [`MAX_BODY_BYTES`] cap to prevent a multipart message from
+/// producing a `Content` too large for the MCP stdio transport.
+pub const MAX_TOTAL_BODY_BYTES: usize = 4 * 1024 * 1024;
+
 /// Maximum per-header-value size after sanitization.
 pub const MAX_HEADER_BYTES: usize = 8 * 1024;
 
@@ -270,6 +276,7 @@ fn extract_bodies(
     let mut primary_text: Option<String> = None;
     let mut alternates: Vec<String> = Vec::new();
     let mut body_truncated = false;
+    let mut total_bytes: usize = 0;
 
     for (idx, &part_id) in message.text_body.iter().enumerate() {
         let Some(part) = message.parts.get(part_id as usize) else {
@@ -308,10 +315,22 @@ fn extract_bodies(
             unicode::sanitize(raw_bytes, charset.as_deref(), MAX_BODY_BYTES, &location);
         warnings.append(&mut new_warnings);
 
+        total_bytes = total_bytes.saturating_add(text.len());
+
         if primary_text.is_none() {
             primary_text = Some(text);
         } else {
             alternates.push(text);
+        }
+
+        if total_bytes >= MAX_TOTAL_BODY_BYTES {
+            body_truncated = true;
+            warnings.push(SecurityWarning {
+                code: WarningCode::ParseBodyTruncated,
+                detail: Some(format!("total={total_bytes} limit={MAX_TOTAL_BODY_BYTES}")),
+                location: Some("body:aggregate".to_string()),
+            });
+            break;
         }
     }
 
@@ -1136,6 +1155,41 @@ mod tests {
                 .any(|w| w.code == WarningCode::ParseBodyTruncated)
         );
         assert!(content.untrusted.body_text.len() <= MAX_BODY_BYTES);
+    }
+
+    #[test]
+    fn parse_enforces_aggregate_body_cap() {
+        let mut raw = String::from(
+            "From: a@example\r\n\
+             Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+             \r\n",
+        );
+        let part = "a".repeat(512 * 1024);
+        for _ in 0..10 {
+            raw.push_str("--BOUND\r\nContent-Type: text/plain\r\n\r\n");
+            raw.push_str(&part);
+            raw.push_str("\r\n");
+        }
+        raw.push_str("--BOUND--\r\n");
+        let content = parse_message(raw.as_bytes()).unwrap();
+        let total = content.untrusted.body_text.len()
+            + content
+                .untrusted
+                .alternate_parts
+                .iter()
+                .map(String::len)
+                .sum::<usize>();
+        assert!(
+            total <= MAX_TOTAL_BODY_BYTES,
+            "total={total} cap={MAX_TOTAL_BODY_BYTES}"
+        );
+        assert!(content.meta.body_truncated);
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.location.as_deref() == Some("body:aggregate"))
+        );
     }
 
     #[test]
