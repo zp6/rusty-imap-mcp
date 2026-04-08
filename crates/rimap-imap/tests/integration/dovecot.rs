@@ -22,10 +22,19 @@ fn boot(pin: PinChoice) -> Option<ConnectedHarness> {
     }
 }
 
+#[expect(clippy::panic, reason = "test failure path")]
 fn read_audit_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
     let s = std::fs::read_to_string(path).unwrap_or_default();
     s.lines()
-        .filter_map(|l| serde_json::from_str(l).ok())
+        .enumerate()
+        .map(|(idx, l)| {
+            serde_json::from_str(l).unwrap_or_else(|e| {
+                panic!(
+                    "audit line {} failed to parse as JSON: {e}\nline: {l}",
+                    idx + 1
+                )
+            })
+        })
         .collect()
 }
 
@@ -126,6 +135,9 @@ async fn case_04_login_rejected_emits_audit() {
         max_fetch_body_bytes: 5_242_880,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(WrongPass);
+    // Reuse h.audit so the rejected-auth record lands in the same file
+    // the audit assertions below read from. Opening a fresh AuditWriter
+    // here would emit the record to a different file and break the test.
     let conn = Connection::new(cfg, h.audit.clone(), creds);
 
     let result = conn.list_folders("*").await;
@@ -256,6 +268,9 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
     let creds: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
         DovecotHarness::password().to_string(),
     ));
+    // Reuse h.audit so the size-limit / connection-loss records land in
+    // the file the audit assertions below read from. The override here
+    // is `max_fetch_body_bytes`, not the audit writer.
     let conn = Connection::new(cfg, h.audit.clone(), creds);
 
     let q = SearchQuery::Structured(StructuredQuery {

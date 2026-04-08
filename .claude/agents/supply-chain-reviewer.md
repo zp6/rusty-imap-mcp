@@ -126,6 +126,24 @@ Cite category IDs in findings (e.g., `[SC-BUILD-02]`).
 11. **Typosquat pass.** For each added top-level dep, check edit distance against the top 1000 crates (`crates.io` has a listing; `exa`/`ripgrep` make this a local check). Manually verify unfamiliar names.
 12. **Reporting.** If the change is a version bump rather than a new dep, focus on: new build scripts? new `unsafe`? new transitive deps? advisory status? maintainer change?
 
+## Test-code considerations
+
+Test code is code. The same lint should apply.
+
+- Real credentials in test fixtures, even "fake" ones that happen to
+  validate against the production validator.
+- `unwrap()` / `expect()` that hides a panic reachable from a real test
+  with different inputs (proptest, fuzz).
+- Hard-coded localhost addresses or fixed ports that succeed in CI but
+  fail under test isolation.
+- Test code that disables a defense (e.g., `danger_accept_invalid_certs(true)`
+  in a test that is not specifically about TLS verification).
+- Test fixtures under `tests/` with permissive permissions (`0644` on a
+  file that contains a credential or a private key fragment).
+- Dev-dependencies that creep into the normal dep graph via cargo
+  feature unification (e.g. `dev-dependency = { features = ["foo"] }`
+  enables `foo` in the production dep too).
+
 ## Red flags to grep for
 
 ```

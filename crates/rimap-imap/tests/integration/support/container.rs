@@ -115,11 +115,16 @@ impl DovecotHarness {
             return Err(HarnessError::DockerUnavailable);
         }
 
-        let project = format!("rimap-it-{}", uuid_like());
         let compose_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("integration")
             .join("dovecot");
+
+        // Best-effort cleanup of stale projects from prior runs killed
+        // by SIGKILL / power loss. Drop doesn't fire on either.
+        prune_stale_projects(&compose_dir);
+
+        let project = format!("rimap-it-{}", uuid_like());
 
         // Pre-allocate a free host port on 127.0.0.1 so that case_11's
         // force-recreate can reuse it. Docker's `0:993` dynamic allocation
@@ -359,6 +364,67 @@ fn compose_down(project: &str, compose_dir: &std::path::Path) {
         .status();
 }
 
+/// Best-effort cleanup of leaked `rimap-it-*` compose projects from previous
+/// runs that died via SIGKILL or power loss (Drop doesn't fire on either).
+/// Skips projects younger than `STALE_PROJECT_AGE` to avoid disturbing
+/// in-flight parallel runs. All errors are silent — this is opportunistic.
+fn prune_stale_projects(compose_dir: &std::path::Path) {
+    let output = match Command::new(runtime())
+        .arg("compose")
+        .arg("ls")
+        .arg("--all")
+        .arg("--format")
+        .arg("json")
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return,
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let projects: Vec<serde_json::Value> = match serde_json::from_str(&stdout) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let now = std::time::SystemTime::now();
+    for project in projects {
+        let Some(name) = project.get("Name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !name.starts_with("rimap-it-") {
+            continue;
+        }
+        // Parse the embedded nanosecond timestamp from the project name.
+        // Project names look like "rimap-it-<hex-nanos>" where the suffix is
+        // hex-encoded `SystemTime::now().duration_since(UNIX_EPOCH).as_nanos()`.
+        let suffix = &name["rimap-it-".len()..];
+        let Ok(nanos) = u128::from_str_radix(suffix, 16) else {
+            continue;
+        };
+        // Convert the nanos value to a SystemTime. u128 -> Duration requires
+        // splitting into seconds + sub-nanos because Duration::from_nanos
+        // only accepts u64.
+        let secs = u64::try_from(nanos / 1_000_000_000).unwrap_or(u64::MAX);
+        let sub_nanos = u32::try_from(nanos % 1_000_000_000).unwrap_or(0);
+        let created = std::time::UNIX_EPOCH + std::time::Duration::new(secs, sub_nanos);
+        let age = now.duration_since(created).unwrap_or_default();
+        if age < STALE_PROJECT_AGE {
+            continue;
+        }
+        // Stale enough to prune. Errors are silent.
+        let _ = Command::new(runtime())
+            .arg("compose")
+            .arg("-p")
+            .arg(name)
+            .arg("down")
+            .arg("-v")
+            .arg("--remove-orphans")
+            .current_dir(compose_dir)
+            .status();
+    }
+}
+
 fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
     let out = Command::new(runtime())
         .arg("exec")
@@ -386,6 +452,12 @@ fn pick_free_port() -> Result<u16, HarnessError> {
         .map_err(|e| HarnessError::PortReadFailed(format!("local_addr: {e}")))?;
     Ok(addr.port())
 }
+
+/// Maximum age of a `rimap-it-*` compose project before it is considered
+/// stale and pruned at the start of a new test session. Projects younger
+/// than this are left alone so parallel test runs do not stomp on each
+/// other.
+const STALE_PROJECT_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -435,6 +507,8 @@ impl ConnectedHarness {
         let audit = AuditWriter::open(&AuditOptions {
             path: audit_path,
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: Seq::FIRST,
         })
         .expect("audit open");

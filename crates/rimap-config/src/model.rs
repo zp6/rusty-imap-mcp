@@ -193,7 +193,12 @@ pub struct AuditConfig {
     /// Rotate when the file reaches this many bytes.
     #[serde(default = "default_rotate_bytes")]
     pub rotate_bytes: u64,
-    /// Number of rotated files to keep.
+    /// Number of rotated files to keep on disk after a rotation. This is
+    /// a COUNT-based cap only. Under low write volumes a single rotated
+    /// file may represent months of audit history, so operators who need
+    /// a time-based retention floor should ALSO configure external log
+    /// rotation or wait for the in-crate time-based retention tracked
+    /// in issue #44 (LOCAL-PRI-01). Default: 5.
     #[serde(default = "default_rotate_keep")]
     pub rotate_keep: u32,
     /// Provenance ring buffer window in seconds.
@@ -202,6 +207,15 @@ pub struct AuditConfig {
     /// If true, continue on audit write failure (insecure; default false).
     #[serde(default)]
     pub fail_open: bool,
+    /// Optional containment base for `audit.path`. When set, the
+    /// audit path must canonicalize to a path under this base, or
+    /// config validation fails. When `None`, the default is
+    /// `$XDG_STATE_HOME/rusty-imap-mcp/` (or platform equivalent via
+    /// `directories::ProjectDirs::data_local_dir`). Set to
+    /// `allowed_base_dir = "/"` to opt out of containment entirely
+    /// (NOT recommended).
+    #[serde(default)]
+    pub allowed_base_dir: Option<PathBuf>,
 }
 
 fn default_rotate_bytes() -> u64 {

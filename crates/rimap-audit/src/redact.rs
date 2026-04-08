@@ -22,7 +22,13 @@ use sha2::{Digest, Sha256};
 /// Per-field policy for the redaction pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldPolicy {
-    /// Copy the field's JSON value into the record unchanged.
+    /// Copy the field's JSON value into the record unchanged. This policy
+    /// assumes the value has already passed the `rimap-content` mailbox-name
+    /// validator (no bare CR/LF, no NUL, no other ASCII control chars). The
+    /// invariant matters for downstream consumers of the audit JSONL who
+    /// pretty-print or grep the file: smuggled control bytes would surface
+    /// as confusing output, and a permissive JSONL re-parser could
+    /// re-introduce the bytes into a downstream sink.
     Verbatim,
     /// Replace string values with `"<redacted:N>"`. Non-string values are
     /// replaced with `"<redacted:?>"`.
@@ -205,6 +211,16 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
             "list_folders",
             &[("password", Forbidden), ("token", Forbidden)],
         ),
+        // SEARCH criteria policy: from/to/subject/body use `RedactString`,
+        // not `SaltedHash`. The Sprint 2 review brief recommended SaltedHash
+        // so incident responders could answer "did this LLM session search
+        // for the same string twice?" — but that adds within-process
+        // correlation surface for low-entropy queries (e.g. `{"from":"alice@x"}`)
+        // and offers little forensic value beyond what `arguments_hash_sha256`
+        // already provides at the record level. RedactString is the more
+        // conservative choice (less leakage, no correlation by design) and
+        // still records the byte length for unusual-payload detection.
+        // Decision recorded in #22.
         RedactionSchema::new(
             "search",
             &[
@@ -221,6 +237,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
                 ("token", Forbidden),
             ],
         ),
+        // SEE search schema above for the RedactString rationale (#22).
         RedactionSchema::new(
             "search.advanced_query",
             &[

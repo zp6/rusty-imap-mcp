@@ -14,6 +14,7 @@
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fs4::fs_std::FileExt;
@@ -27,6 +28,17 @@ pub struct AuditOptions {
     pub path: PathBuf,
     /// Rotate when the file exceeds this many bytes. `0` disables rotation.
     pub rotate_bytes: u64,
+    /// Number of rotated sibling files to keep on disk after a rotation.
+    /// `0` means "keep none — delete every rotated sibling immediately
+    /// after rotation". The default at the config layer is 5.
+    pub rotate_keep: u32,
+    /// If `true`, write/flush/fsync failures inside `write_record` are
+    /// logged via `tracing::error!` and converted to `Ok(())` so the
+    /// surrounding tool call still succeeds. The default is `false`
+    /// (a write failure fails the tool call). Operators who explicitly
+    /// accept losing audit records on storage failures opt in via this
+    /// flag — see the audit security model docs for the trade-off.
+    pub fail_open: bool,
     /// First `Seq` value this writer will allocate. Callers compute this from
     /// `read_trailing_state(path).last_seq.map(Seq::next).unwrap_or(Seq::FIRST)`
     /// before calling `open`.
@@ -40,7 +52,10 @@ pub struct AuditOptions {
 pub struct AuditWriter {
     path: PathBuf,
     rotate_bytes: u64,
+    rotate_keep: u32,
+    fail_open: bool,
     process_id: crate::ids::ProcessId,
+    suppressed_failures: Arc<AtomicU64>,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -109,7 +124,10 @@ impl AuditWriter {
         Ok(Self {
             path: opts.path.clone(),
             rotate_bytes: opts.rotate_bytes,
+            rotate_keep: opts.rotate_keep,
+            fail_open: opts.fail_open,
             process_id: crate::ids::ProcessId::new_now(),
+            suppressed_failures: Arc::new(AtomicU64::new(0)),
             inner: Arc::new(Mutex::new(Inner {
                 buf: BufWriter::new(file),
                 bytes_written,
@@ -189,11 +207,55 @@ impl AuditWriter {
     /// Serialize `record` as one JSONL line, append it to the active file,
     /// flush the buffer, and fsync on `process_*` / `auth` / `config` kinds.
     ///
+    /// If `fail_open` is `true`, write/flush/fsync failures are logged via
+    /// `tracing::error!` and converted to `Ok(())`. Serialization errors are
+    /// programmer errors and never suppressed regardless of `fail_open`.
+    /// Suppressed failures are counted via [`Self::suppressed_failures`].
+    ///
+    /// # Blocking
+    ///
+    /// This function performs synchronous filesystem I/O: at minimum a
+    /// `write_all` + `flush` + (conditionally) `fsync`, and on rotation
+    /// additionally `rename`, `open`, `try_lock_exclusive`, `read_dir`,
+    /// `symlink_metadata`, and `remove_file`. Callers in an async context
+    /// MUST invoke this inside `tokio::task::spawn_blocking` to avoid
+    /// stalling the runtime executor. The existing production call sites
+    /// (`Connection::emit_auth` and future tool-audit emitters) route
+    /// through `spawn_blocking` for this reason. (RUST-ASYNC-04)
+    ///
     /// # Errors
-    /// - [`AuditError::Serialize`] on JSON failure.
-    /// - [`AuditError::Write`] on I/O failure during `write_all` / `flush`.
-    /// - [`AuditError::Fsync`] on `fsync` failure.
+    /// - [`AuditError::Serialize`] on JSON failure (never suppressed).
+    /// - [`AuditError::Write`] / [`AuditError::Fsync`] / [`AuditError::Rotate`]
+    ///   when `fail_open == false`.
     pub fn write_record(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
+        match self.write_record_inner(record) {
+            Ok(()) => Ok(()),
+            Err(AuditError::Serialize(e)) => {
+                // Serialization failures are programmer errors, not storage
+                // failures. Never suppressed regardless of fail_open.
+                Err(AuditError::Serialize(e))
+            }
+            Err(err) if self.fail_open => {
+                // Emit only the stable error code, not the full Display
+                // chain which would duplicate the audit path (already in
+                // the explicit `path` field below) and any filesystem
+                // layout contained in an underlying io::Error. Operators
+                // who want the full Display can enable TRACE-level
+                // logging where `write_record_inner` records it.
+                // (LOCAL-ERR-05)
+                tracing::error!(
+                    path = %self.path.display(),
+                    error_code = %err.code(),
+                    "audit write failed; fail_open=true so suppressing and continuing",
+                );
+                self.suppressed_failures.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn write_record_inner(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
         let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
         bytes.push(b'\n');
 
@@ -206,7 +268,7 @@ impl AuditWriter {
         // This prevents two clones of AuditWriter from both observing "needs
         // rotation" and racing on the rename.
         if self.rotate_bytes > 0 && guard.bytes_written >= self.rotate_bytes {
-            let (new_buf, new_len) = crate::rotation::rotate_file(&self.path)?;
+            let (new_buf, new_len) = crate::rotation::rotate_file(&self.path, self.rotate_keep)?;
             guard.buf = new_buf;
             guard.bytes_written = new_len;
             tracing::info!(path = %self.path.display(), "audit file rotated");
@@ -226,6 +288,25 @@ impl AuditWriter {
         }
 
         Ok(())
+    }
+
+    /// Number of write/flush/fsync failures suppressed by `fail_open = true`
+    /// since this writer was opened. Accumulated via `Relaxed` atomic
+    /// increments inside `write_record`.
+    ///
+    /// ## Not yet wired into `process_end`
+    ///
+    /// The intent is for the shutdown `process_end` record to read this
+    /// counter and persist it as `audit_write_failures_suppressed` so
+    /// operators running `fail_open = true` can see how many records
+    /// were dropped in the process's lifetime. That wiring depends on
+    /// the audit lifecycle glue (`process_start`/`process_end` emission)
+    /// tracked in issue #8 and is not yet in place. Today this accessor
+    /// is available for ad-hoc inspection and tests; the persistent
+    /// audit trail will follow when #8 lands.
+    #[must_use]
+    pub fn suppressed_failures(&self) -> u64 {
+        self.suppressed_failures.load(Ordering::Relaxed)
     }
 
     /// Total bytes written through this writer since `open` (including bytes
@@ -402,6 +483,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -416,12 +499,16 @@ mod tests {
         let _first = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
         let err = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
@@ -439,6 +526,8 @@ mod tests {
             let _first = AuditWriter::open(&AuditOptions {
                 path: path.clone(),
                 rotate_bytes: 0,
+                rotate_keep: 0,
+                fail_open: false,
                 initial_seq: crate::ids::Seq::FIRST,
             })
             .unwrap();
@@ -447,6 +536,8 @@ mod tests {
         let _second = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -459,6 +550,8 @@ mod tests {
         let _writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -476,6 +569,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -510,6 +605,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -542,6 +639,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 200,
+            rotate_keep: 5,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -609,6 +708,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 200,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -629,6 +730,8 @@ mod tests {
         let err = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap_err();
@@ -645,6 +748,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path,
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -660,6 +765,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path,
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -678,6 +785,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path,
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq(42),
         })
         .unwrap();
@@ -694,6 +803,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -732,6 +843,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -772,6 +885,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();
@@ -813,6 +928,8 @@ mod tests {
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
             rotate_bytes: 0,
+            rotate_keep: 0,
+            fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
         .unwrap();

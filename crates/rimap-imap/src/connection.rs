@@ -130,7 +130,7 @@ impl Connection {
     /// `Auth` audit record on every termination path.
     async fn connect_inner(&self) -> Result<ImapSession, Error> {
         let cfg = &self.inner.cfg;
-        let bundle = build_tls_config(cfg.pinned_fingerprint);
+        let bundle = build_tls_config(cfg.pinned_fingerprint)?;
 
         // Run the connect flow. If it failed with a TLS handshake error AND
         // we have a pinned fingerprint, enrich the error into Error::Tls
@@ -162,8 +162,27 @@ impl Connection {
         match &outcome {
             Ok(_) => self.emit_auth(auth_success(&ctx)).await?,
             Err(err) => {
-                self.emit_auth(auth_failure(&ctx, error_code_for(err)))
-                    .await?;
+                // Deliberate: log but do NOT propagate emit_auth failures on
+                // the error branch. The ORIGINAL outcome (Error::Auth,
+                // Error::TlsHandshake, Error::Connect, ...) is what the
+                // caller and monitoring need to see. Replacing it with
+                // Error::Audit would mask brute-force signals from
+                // whatever observed ERR_AUTH before. Audit-write failures
+                // on this path are still visible via tracing; operators
+                // running fail_open=false will additionally see the
+                // suppressed_failures counter in process_end once #8
+                // lands.
+                if let Err(audit_err) = self
+                    .emit_auth(auth_failure(&ctx, error_code_for(err)))
+                    .await
+                {
+                    tracing::error!(
+                        original_error = %err,
+                        audit_error = %audit_err,
+                        "audit write failed during auth-failure emission; \
+                         preserving original error for observability",
+                    );
+                }
             }
         }
         outcome
@@ -283,21 +302,53 @@ impl Connection {
     /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside
     /// `spawn_blocking` so the `std::sync::Mutex` inside `AuditWriter` is
     /// never held across an `.await` boundary.
+    ///
+    /// ## Cancellation behavior
+    ///
+    /// If the caller future is cancelled at the `.await` below, the
+    /// `JoinHandle` is dropped but the `spawn_blocking` task runs to
+    /// completion — `tokio` does not kill blocking tasks on handle drop.
+    /// The audit record IS written in that case, but the `Result` is
+    /// lost: the caller sees neither a success nor an error. This is the
+    /// least-bad outcome (audit integrity preserved, caller just gets a
+    /// cancellation). Callers that MUST know whether the write succeeded
+    /// should not drop this future.
+    ///
+    /// ## Error message sanitization
+    ///
+    /// The `Error::Audit { message }` uses the short error code
+    /// (`audit_err.code()`) rather than the full `Display`, because
+    /// `AuditError::Write` / `Fsync` / `Rotate` include the audit file
+    /// path, which is operator-configured filesystem layout and should
+    /// not propagate into MCP tool responses or client-visible error
+    /// chains. The full error is still preserved in the `source` field
+    /// for observability and log inspection.
     async fn emit_auth(&self, record: Auth) -> Result<(), Error> {
         let audit = self.inner.audit.clone();
-        tokio::task::spawn_blocking(move || audit.log_auth(record))
-            .await
-            .map_err(|join_err| {
-                Error::Connect(std::io::Error::other(format!(
-                    "audit join error: {join_err}"
-                )))
-            })?
-            .map_err(|audit_err| {
-                Error::Connect(std::io::Error::other(format!(
-                    "audit write error: {audit_err}"
-                )))
-            })?;
-        Ok(())
+        let join_result = tokio::task::spawn_blocking(move || audit.log_auth(record)).await;
+        match join_result {
+            Err(join_err) => Err(Error::Audit {
+                op: "emit_auth",
+                message: "tokio join error during audit write".to_string(),
+                source: Box::new(join_err),
+            }),
+            Ok(Err(audit_err)) => {
+                tracing::error!(
+                    error = %audit_err,
+                    "audit log_auth failed; converting to Error::Audit",
+                );
+                // Sanitized message: use only the stable error code, not
+                // the Display (which may include the audit file path).
+                // The full error is preserved in source.
+                let message = format!("emit_auth: {}", audit_err.code());
+                Err(Error::Audit {
+                    op: "emit_auth",
+                    message,
+                    source: Box::new(audit_err),
+                })
+            }
+            Ok(Ok(_seq)) => Ok(()),
+        }
     }
 
     /// `LIST` against `pattern` (e.g. `"*"`, `"INBOX/*"`).
@@ -478,7 +529,8 @@ impl Connection {
                 | Error::Timeout { .. }
                 | Error::Auth { .. }
                 | Error::Protocol(_)
-                | Error::InvalidInput { .. },
+                | Error::InvalidInput { .. }
+                | Error::Audit { .. },
             )
             | Ok(_) => false,
         };
@@ -529,5 +581,6 @@ fn error_code_for(err: &Error) -> &'static str {
         Error::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
         Error::Protocol(_) => "ERR_IMAP_PROTOCOL",
         Error::InvalidInput { .. } => "ERR_INVALID_INPUT",
+        Error::Audit { .. } => "ERR_AUDIT",
     }
 }

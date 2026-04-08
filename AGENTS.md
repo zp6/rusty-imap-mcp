@@ -217,3 +217,33 @@ Some changes deserve extra scrutiny. When touching:
   code is self-documenting, then comment WHY if it's non-obvious.
 - Do not restructure unrelated code "while you're there."
 - Do not claim a task is complete before `just ci` is green locally.
+
+## Operator notes
+
+### Operator notes — `audit merge`
+
+`audit merge` re-emits records to stdout. When the output is redirected to a
+file, the new file is created with the shell's current umask, which on most
+systems is `0022` and produces a world-readable `0644` dump. Operators may
+assume "audit log = `0600`" and not realize the merged dump isn't.
+
+Recommended patterns:
+
+**Important:** `umask` only affects subsequent file creations in the SAME
+shell invocation. If you run `umask 077` on one line and the `rusty-imap-mcp
+audit merge` command on the next line, that works in an interactive shell
+session — but in a script that spawns a new subshell per command, the umask
+will not apply to the redirect. The `&&` form below chains the umask and
+the redirect into a single invocation and is safe in both interactive shells
+and scripts. The `install` form below is safer still because it sets the
+mode atomically on the destination without depending on the shell's umask.
+
+```bash
+# 1. Set a tight umask and run the redirect in the same shell command.
+#    The && is load-bearing: it ensures both actions share a umask scope.
+umask 077 && rusty-imap-mcp audit merge … > dump.jsonl
+
+# 2. Preferred in scripts: pipe through `install` for an atomic mode-set.
+#    This does not depend on umask at all.
+rusty-imap-mcp audit merge … | install -m 0600 /dev/stdin /target/dump.jsonl
+```

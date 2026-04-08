@@ -24,6 +24,8 @@ pub fn init_audit_writer(
     let writer = AuditWriter::open(&AuditOptions {
         path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
+        rotate_keep: cfg.config.audit.rotate_keep,
+        fail_open: cfg.config.audit.fail_open,
         initial_seq,
     })?;
 
@@ -76,8 +78,10 @@ posture = "readonly"
 
 [audit]
 path = "{}"
+allowed_base_dir = "{}"
 "#,
-            audit.display()
+            audit.display(),
+            dir.path().display()
         );
         std::fs::write(&config_path, body).unwrap();
         config_path
@@ -138,6 +142,8 @@ path = "{}"
             let writer = AuditWriter::open(&AuditOptions {
                 path: audit_path.clone(),
                 rotate_bytes: 0,
+                rotate_keep: 0,
+                fail_open: false,
                 initial_seq: Seq::FIRST,
             })
             .unwrap();

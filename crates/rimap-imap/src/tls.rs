@@ -7,6 +7,17 @@
 //! `OnceLock` regardless of whether the handshake succeeds. After the
 //! `tokio_rustls::TlsConnector::connect` call returns, `Connection` reads
 //! the slot and uses it to populate the `Auth` audit record.
+//!
+//! ## Protocol version admission
+//!
+//! `build_tls_config` calls `with_safe_default_protocol_versions()`, which
+//! admits both TLS 1.2 and TLS 1.3. This is deliberate: real-world IMAP
+//! servers — Dovecot, Gmail, Proton Bridge, and most legacy deployments —
+//! still require TLS 1.2 compatibility. Forcing TLS-1.3-only via
+//! `with_protocol_versions(&[&rustls::version::TLS13])` would break the
+//! Sprint 3 Dovecot integration suite and most production IMAP targets.
+//! The modern rustls ring provider is safe with TLS 1.2 (no RC4, no CBC
+//! without ETM, no weak ciphers). (MAIL-TLS-06)
 
 use std::sync::{Arc, OnceLock};
 
@@ -150,9 +161,19 @@ pub struct TlsConfigBundle {
 }
 
 /// Build a `TlsConfigBundle`. If `pinned.is_some()`, uses `PinningVerifier`
-/// (skips chain validation). Otherwise uses webpki-roots with `CapturingVerifier`.
-#[must_use]
-pub fn build_tls_config(pinned: Option<TlsFingerprint>) -> TlsConfigBundle {
+/// (skips chain validation). Otherwise uses webpki-roots with
+/// `CapturingVerifier`.
+///
+/// # Errors
+/// - `Error::TlsHandshake` if rustls cannot construct a `ClientConfig` with
+///   the workspace's safe default protocol versions (would only fire if a
+///   future ring provider drops every cipher suite or kx group).
+/// - `Error::TlsHandshake` if `WebPkiServerVerifier::builder.build()` fails
+///   (would only fire if `webpki_roots::TLS_SERVER_ROOTS` is somehow empty,
+///   e.g. a corrupt webpki-roots release).
+pub fn build_tls_config(
+    pinned: Option<TlsFingerprint>,
+) -> Result<TlsConfigBundle, crate::error::Error> {
     let last_observed = Arc::new(OnceLock::new());
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
 
@@ -164,7 +185,7 @@ pub fn build_tls_config(pinned: Option<TlsFingerprint>) -> TlsConfigBundle {
         });
         ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .unwrap_or_else(|_| unreachable!("default protocol versions are valid"))
+            .map_err(crate::error::Error::TlsHandshake)?
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth()
@@ -177,21 +198,33 @@ pub fn build_tls_config(pinned: Option<TlsFingerprint>) -> TlsConfigBundle {
                 Arc::clone(&provider),
             )
             .build()
-            .unwrap_or_else(|_| unreachable!("webpki-roots produces a valid builder"));
+            // VerifierBuilderError has variants including `NoRootAnchors`
+            // (unreachable because we extended from webpki_roots which
+            // ships ~150 trust anchors) and `InvalidCrl(...)` (unreachable
+            // because webpki-roots 1.0 ships only static trust anchors,
+            // no CRLs — so `InvalidCrl` cannot fire from this builder).
+            // Both failure paths are therefore extremely unlikely; we
+            // still propagate them as TlsHandshake errors rather than
+            // panicking. (MAIL-TLS-03)
+            .map_err(|e| {
+                crate::error::Error::TlsHandshake(tokio_rustls::rustls::Error::General(format!(
+                    "WebPkiServerVerifier builder failed: {e}"
+                )))
+            })?;
         let capturing = Arc::new(CapturingVerifier {
             inner: inner_verifier,
             last_observed: Arc::clone(&last_observed),
         });
         ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .unwrap_or_else(|_| unreachable!("default protocol versions are valid"))
+            .map_err(crate::error::Error::TlsHandshake)?
             .dangerous()
             .with_custom_certificate_verifier(capturing)
             .with_no_client_auth()
     };
 
-    TlsConfigBundle {
+    Ok(TlsConfigBundle {
         config: Arc::new(config),
         last_observed,
-    }
+    })
 }

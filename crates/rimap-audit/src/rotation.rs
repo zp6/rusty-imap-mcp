@@ -56,13 +56,17 @@ fn unique_rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
     base
 }
 
-/// Perform the rename + new-file dance. Returns the freshly-locked `File`
-/// for the new active path (with an empty `BufWriter` wrapping it).
+/// Perform the rename + new-file dance, then prune rotated siblings down to
+/// `keep` newest. Returns the freshly-locked `File` for the new active path
+/// (with an empty `BufWriter` wrapping it).
+///
+/// Pruning failures are logged via `tracing::warn!` and never propagated as
+/// errors — a stale rotated file is not a write failure.
 ///
 /// # Errors
 /// Any I/O error during `rename`, `open`, or `try_lock_exclusive` surfaces as
 /// [`AuditError::Rotate`] with a descriptive `reason`.
-pub fn rotate_file(active: &Path) -> Result<(BufWriter<File>, u64), AuditError> {
+pub fn rotate_file(active: &Path, keep: u32) -> Result<(BufWriter<File>, u64), AuditError> {
     let dst = unique_rotated_path(active, OffsetDateTime::now_utc());
     std::fs::rename(active, &dst).map_err(|source| AuditError::Rotate {
         path: active.to_path_buf(),
@@ -100,18 +104,97 @@ pub fn rotate_file(active: &Path) -> Result<(BufWriter<File>, u64), AuditError> 
         }
     }
 
+    // Prune old rotated siblings best-effort. Failures here are logged
+    // but never propagated — a stale file is not a write failure.
+    prune_rotated_siblings(active, keep);
+
     Ok((BufWriter::new(new_file), 0))
+}
+
+/// Enumerate sibling files matching `<active_filename>.*`, sort by mtime
+/// descending, and delete all but the `keep` newest. `keep == 0` deletes
+/// every rotated sibling.
+fn prune_rotated_siblings(active: &Path, keep: u32) {
+    let parent = match active.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => return,
+    };
+    let Some(active_name) = active.file_name().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let prefix = format!("{active_name}.");
+
+    let entries = match std::fs::read_dir(parent) {
+        Ok(it) => it,
+        Err(err) => {
+            tracing::warn!(
+                parent = %parent.display(),
+                error = %err,
+                "audit rotate: read_dir failed during prune",
+            );
+            return;
+        }
+    };
+
+    let mut siblings: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !name_str.starts_with(&prefix) {
+            continue;
+        }
+        let path = entry.path();
+        if path == active {
+            continue;
+        }
+        // Use symlink_metadata so that symlinks themselves are inspected
+        // (not their targets). Skip anything that is not a regular file —
+        // directories, symlinks, FIFOs, sockets, device nodes. A planted
+        // symlink named "audit.jsonl.evil" whose target's mtime ranks it
+        // above a real rotated file could otherwise cause us to delete
+        // the real audit file. (LOCAL-FS-05)
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            tracing::warn!(
+                path = %path.display(),
+                "audit rotate: skipping non-regular sibling during prune",
+            );
+            continue;
+        }
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        siblings.push((mtime, path));
+    }
+
+    // Sort newest-first.
+    siblings.sort_by(|a, b| b.0.cmp(&a.0));
+
+    let keep_usize = usize::try_from(keep).unwrap_or(usize::MAX);
+    for (_, path) in siblings.into_iter().skip(keep_usize) {
+        if let Err(err) = std::fs::remove_file(&path) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "audit rotate: failed to delete stale rotated sibling",
+            );
+        }
+    }
 }
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use std::path::Path;
+    use std::thread::sleep;
+    use std::time::Duration;
 
     use tempfile::TempDir;
     use time::macros::datetime;
 
-    use crate::rotation::{rotated_path, unique_rotated_path};
+    use crate::rotation::{rotate_file, rotated_path, unique_rotated_path};
 
     #[test]
     fn rotated_path_appends_utc_stamp() {
@@ -147,5 +230,104 @@ mod tests {
             p2.file_name().unwrap().to_string_lossy(),
             "audit.jsonl.2026-04-07T14-22-01.234Z-2",
         );
+    }
+
+    #[test]
+    fn rotate_file_prunes_to_keep_newest_siblings() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+
+        std::fs::write(&active, b"first\n").unwrap();
+
+        for _ in 0..7 {
+            std::fs::write(&active, b"x\n").unwrap();
+            let (_buf, _len) = rotate_file(&active, 3).unwrap();
+            sleep(Duration::from_millis(2));
+        }
+
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("audit.jsonl"))
+            })
+            .collect();
+        let rotated = entries
+            .iter()
+            .filter(|e| e.file_name() != std::ffi::OsStr::new("audit.jsonl"))
+            .count();
+        assert_eq!(rotated, 3, "expected exactly 3 rotated siblings");
+        assert!(active.exists(), "active file still present");
+    }
+
+    #[test]
+    fn rotate_file_with_keep_zero_deletes_all_siblings() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+        std::fs::write(&active, b"x\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 0).unwrap();
+
+        let rotated = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("audit.jsonl."))
+            })
+            .count();
+        assert_eq!(rotated, 0, "keep=0 should leave no rotated siblings");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rotate_file_skips_symlinked_siblings_during_prune() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+
+        // Create a real rotated sibling that should be kept.
+        std::fs::write(&active, b"x\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 5).unwrap();
+
+        // Plant a symlink whose name matches the rotated-sibling prefix.
+        // Its target is an arbitrary file (here, /etc/hostname — any
+        // readable file will do). The mtime of the target is likely
+        // newer than the rotated file's mtime on CI hosts, which would
+        // cause the old pruner to rank the symlink above the real file.
+        let symlink_path = dir.path().join("audit.jsonl.evil");
+        std::os::unix::fs::symlink("/etc/hostname", &symlink_path).unwrap();
+
+        // Trigger another rotation with keep=1. The pruner should:
+        //   - keep the most recent real rotated file
+        //   - skip the symlink entirely (not delete it and not rank it)
+        std::fs::write(&active, b"y\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 1).unwrap();
+
+        // The symlink must still exist — we never touched it.
+        assert!(
+            std::fs::symlink_metadata(&symlink_path).is_ok(),
+            "planted symlink was deleted by prune"
+        );
+
+        // And exactly 1 real rotated sibling must remain (keep=1).
+        let real_rotated = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("audit.jsonl.") || name == "audit.jsonl" {
+                    return false;
+                }
+                // Exclude the symlink itself; only count real files.
+                let Ok(meta) = std::fs::symlink_metadata(e.path()) else {
+                    return false;
+                };
+                meta.file_type().is_file()
+            })
+            .count();
+        assert_eq!(real_rotated, 1, "expected exactly 1 real rotated sibling");
     }
 }
