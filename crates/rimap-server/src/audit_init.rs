@@ -13,25 +13,28 @@ use sha2::{Digest, Sha256};
 /// # Errors
 /// Propagates any `AuditError` from the trailing-state read, open, inode
 /// fetch, or `process_start` write.
-pub fn init_audit_writer(cfg: &ValidatedConfig) -> Result<AuditWriter, AuditError> {
-    let path = &cfg.config.audit.path;
-    let trailing = rimap_audit::read_trailing_state(path)?;
+pub fn init_audit_writer(
+    cfg: &ValidatedConfig,
+    config_file_path: &Path,
+) -> Result<AuditWriter, AuditError> {
+    let audit_path = &cfg.config.audit.path;
+    let trailing = rimap_audit::read_trailing_state(audit_path)?;
     let initial_seq = trailing.last_seq.map_or(Seq::FIRST, Seq::next);
 
     let writer = AuditWriter::open(&AuditOptions {
-        path: path.clone(),
+        path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
         initial_seq,
     })?;
 
-    let current = rimap_audit::current_inode(path)?;
-    let config_hash = compute_config_hash(path);
+    let current = rimap_audit::current_inode(audit_path)?;
+    let config_hash = compute_config_hash(config_file_path);
 
     writer.log_process_start(ProcessStartInputs {
         version: env!("CARGO_PKG_VERSION").to_string(),
         git_commit: String::new(),
         posture: cfg.config.security.posture.to_string(),
-        config_path: path.clone(),
+        config_path: config_file_path.to_path_buf(),
         config_hash_sha256: config_hash,
         trailing,
         current_inode: current,
@@ -82,6 +85,8 @@ path = "{}"
 
     #[test]
     fn process_start_emitted_as_first_record() {
+        use sha2::{Digest, Sha256};
+
         let dir = TempDir::new().unwrap();
         let config_path = write_config(&dir);
 
@@ -91,7 +96,7 @@ path = "{}"
         // Scope the writer so the file lock is released before reading.
         let audit_path = validated.config.audit.path.clone();
         {
-            init_audit_writer(&validated).unwrap();
+            init_audit_writer(&validated, &config_path).unwrap();
         }
         let contents = std::fs::read_to_string(&audit_path).unwrap();
         let first_line = contents.lines().next().unwrap();
@@ -100,6 +105,19 @@ path = "{}"
         assert_eq!(first["kind"], "process_start");
         assert_eq!(first["seq"], 1);
         assert_eq!(first["posture"], "readonly");
+
+        // config_path in the record must be the TOML file, not the audit log.
+        assert_eq!(
+            first["config_path"].as_str().unwrap(),
+            config_path.to_str().unwrap()
+        );
+
+        // config_hash_sha256 must be the hash of the config file contents.
+        let config_bytes = std::fs::read(&config_path).unwrap();
+        let mut hasher = Sha256::new();
+        hasher.update(&config_bytes);
+        let expected_hash = hex::encode(hasher.finalize());
+        assert_eq!(first["config_hash_sha256"].as_str().unwrap(), expected_hash);
     }
 
     #[test]
@@ -139,7 +157,7 @@ path = "{}"
 
         // init_audit_writer should resume from seq 2.
         {
-            init_audit_writer(&validated).unwrap();
+            init_audit_writer(&validated, &config_path).unwrap();
         }
 
         let contents = std::fs::read_to_string(&audit_path).unwrap();

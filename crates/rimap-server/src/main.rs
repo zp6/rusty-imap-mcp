@@ -89,7 +89,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let raw = load_from_path(&config_path)
         .with_context(|| format!("loading config {}", config_path.display()))?;
     let validated = validate(raw).context("validating config")?;
-    let _audit = audit_init::init_audit_writer(&validated).with_context(|| {
+    let _audit = audit_init::init_audit_writer(&validated, &config_path).with_context(|| {
         format!(
             "opening audit log at {}",
             validated.config.audit.path.display()

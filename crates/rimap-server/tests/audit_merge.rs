@@ -8,8 +8,8 @@ use std::collections::BTreeSet;
 
 use assert_cmd::Command;
 use rimap_audit::{
-    AuditOptions, AuditRecord, AuditWriter, Payload, ProcessEnd, ProcessEndReason, ProcessId, Seq,
-    Timestamp,
+    AuditOptions, AuditRecord, AuditWriter, Payload, ProcessEnd, ProcessEndReason, ProcessId,
+    ProcessStartInputs, Seq, Timestamp, current_inode, read_trailing_state,
 };
 use tempfile::TempDir;
 
@@ -29,6 +29,8 @@ fn record(seq: u64, pid: ProcessId) -> AuditRecord {
 fn audit_merge_round_trips_synthetic_log() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("audit.jsonl");
+    let config_path = dir.path().join("config.toml");
+    std::fs::write(&config_path, b"# synthetic config for test").unwrap();
 
     {
         let writer = AuditWriter::open(&AuditOptions {
@@ -37,8 +39,23 @@ fn audit_merge_round_trips_synthetic_log() {
             initial_seq: Seq::FIRST,
         })
         .unwrap();
+        // Seq 1: process_start record, as required by the audit format.
+        let trailing = read_trailing_state(&path).unwrap();
+        let inode = current_inode(&path).unwrap();
+        writer
+            .log_process_start(ProcessStartInputs {
+                version: "0.0.0-test".to_string(),
+                git_commit: String::new(),
+                posture: "readonly".to_string(),
+                config_path: config_path.clone(),
+                config_hash_sha256: String::new(),
+                trailing,
+                current_inode: inode,
+            })
+            .unwrap();
+        // Seqs 2–8: synthetic process_end records.
         let pid = ProcessId::new_now();
-        for seq in 1_u64..=7 {
+        for seq in 2_u64..=8 {
             writer.write_record(&record(seq, pid)).unwrap();
         }
         // Drop releases the lock so the subcommand can take a shared lock.
@@ -57,12 +74,15 @@ fn audit_merge_round_trips_synthetic_log() {
         String::from_utf8_lossy(&out.stderr),
     );
     let stdout = String::from_utf8(out.stdout).unwrap();
-    let seqs: BTreeSet<u64> = stdout
+    let lines: Vec<serde_json::Value> = stdout
         .lines()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
-        .map(|v| v["seq"].as_u64().unwrap())
+        .map(|l| serde_json::from_str(l).unwrap())
         .collect();
-    assert_eq!(seqs, (1_u64..=7).collect::<BTreeSet<_>>());
+    // First record must be process_start with seq 1.
+    assert_eq!(lines[0]["kind"], "process_start");
+    assert_eq!(lines[0]["seq"], 1);
+    let seqs: BTreeSet<u64> = lines.iter().map(|v| v["seq"].as_u64().unwrap()).collect();
+    assert_eq!(seqs, (1_u64..=8).collect::<BTreeSet<_>>());
 }
 
 #[test]
