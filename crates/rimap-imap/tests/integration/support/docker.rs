@@ -42,11 +42,32 @@ pub struct DovecotHarness {
 
 impl DovecotHarness {
     /// Start a fresh Dovecot container. Returns `Err(DockerUnavailable)`
-    /// if Docker is missing AND `RIMAP_REQUIRE_DOCKER` is unset; returns
-    /// the underlying error if `RIMAP_REQUIRE_DOCKER=1`.
+    /// and skips the test silently in any of these cases (unless
+    /// `RIMAP_REQUIRE_DOCKER=1` is set, in which case each becomes a
+    /// hard error):
+    ///
+    /// - Docker is not installed.
+    /// - The host architecture is not `x86_64`. The pinned
+    ///   `dovecot/dovecot:2.3.21` image is amd64-only, and running it
+    ///   under Rosetta/QEMU emulation crashes dovecot's worker processes
+    ///   at startup with `mmap_anonymous_rw mmap failed` before anything
+    ///   can bind port 993. See the comment in `docker-compose.yml` for
+    ///   the full context and why a 2.4 bump isn't viable in Sprint 3.
     pub fn try_start() -> Result<Self, HarnessError> {
+        let require_docker = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
+
+        if std::env::consts::ARCH != "x86_64" {
+            if require_docker {
+                return Err(HarnessError::DockerCommandFailed(format!(
+                    "host arch {} cannot run amd64 dovecot image but RIMAP_REQUIRE_DOCKER=1",
+                    std::env::consts::ARCH
+                )));
+            }
+            return Err(HarnessError::DockerUnavailable);
+        }
+
         if !docker_available() {
-            if std::env::var("RIMAP_REQUIRE_DOCKER").is_ok() {
+            if require_docker {
                 return Err(HarnessError::DockerCommandFailed(
                     "docker missing but RIMAP_REQUIRE_DOCKER=1".into(),
                 ));
