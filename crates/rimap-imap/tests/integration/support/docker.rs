@@ -212,14 +212,15 @@ impl DovecotHarness {
     }
 
     /// Run an arbitrary command inside the running dovecot container.
+    /// Goes through `<runtime> exec` directly against the pinned container
+    /// name rather than `compose exec`, for the same reason the readiness
+    /// probe does: podman-compose's exec is unreliable under parallel load.
     pub fn exec(&self, args: &[&str]) -> Result<std::process::Output, HarnessError> {
         let mut cmd = Command::new(runtime());
-        cmd.arg("compose").arg("-p").arg(&self.project);
-        cmd.arg("exec").arg("-T").arg("dovecot");
+        cmd.arg("exec").arg(container_name(&self.project));
         for a in args {
             cmd.arg(a);
         }
-        cmd.current_dir(&self.compose_dir);
         cmd.output()
             .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))
     }
@@ -274,7 +275,7 @@ impl DovecotHarness {
                     self.port
                 )));
             }
-            if probe_ready_marker(&self.project, &self.compose_dir)
+            if probe_ready_marker(&self.project)
                 && std::net::TcpStream::connect_timeout(
                     &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
                     Duration::from_millis(500),
@@ -317,18 +318,26 @@ fn dump_logs(project: &str, compose_dir: &std::path::Path) -> String {
     }
 }
 
-fn probe_ready_marker(project: &str, compose_dir: &std::path::Path) -> bool {
+/// The compose file pins `container_name: ${COMPOSE_PROJECT_NAME}-dovecot`,
+/// so we can talk to the container directly via `<runtime> exec` and skip
+/// `compose exec` entirely. podman-compose's `compose exec -T` has been
+/// observed to return success without actually executing the command
+/// against the service container when multiple compose projects are
+/// running in parallel (nextest spawns 11 at once), which wedged the
+/// readiness polling until the 60s harness timeout even though dovecot
+/// was up and ready. `<runtime> exec` hits the container name directly
+/// and has no such failure mode.
+fn container_name(project: &str) -> String {
+    format!("{project}-dovecot")
+}
+
+fn probe_ready_marker(project: &str) -> bool {
     Command::new(runtime())
-        .arg("compose")
-        .arg("-p")
-        .arg(project)
         .arg("exec")
-        .arg("-T")
-        .arg("dovecot")
+        .arg(container_name(project))
         .arg("test")
         .arg("-f")
         .arg("/shared/ready")
-        .current_dir(compose_dir)
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
@@ -354,12 +363,8 @@ fn compose_down(project: &str, compose_dir: &std::path::Path) {
 
 fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
     let out = Command::new(runtime())
-        .arg("compose")
-        .arg("-p")
-        .arg(project)
         .arg("exec")
-        .arg("-T")
-        .arg("dovecot")
+        .arg(container_name(project))
         .arg("cat")
         .arg("/shared/fingerprint.hex")
         .output()
