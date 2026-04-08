@@ -11,3 +11,6 @@ pub mod ops;
 pub mod time;
 pub mod tls;
 pub mod types;
+
+pub use crate::connection::{Connection, ConnectionConfig};
+pub use crate::error::{AuthFailure, Error};

@@ -1376,6 +1376,7 @@ dependencies = [
 name = "rimap-imap"
 version = "0.0.0"
 dependencies = [
+ "async-channel 2.5.0",
  "async-imap",
  "rimap-audit",
  "rimap-config",
