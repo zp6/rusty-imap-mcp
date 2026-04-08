@@ -81,12 +81,19 @@ impl DovecotHarness {
             .join("integration")
             .join("dovecot");
 
+        // Pre-allocate a free host port on 127.0.0.1 so that case_11's
+        // force-recreate can reuse it. Docker's `0:993` dynamic allocation
+        // picks a new port per container creation, which would strand the
+        // cached client Connection after a recreate.
+        let host_port = pick_free_port()?;
+
         let status = Command::new("docker")
             .arg("compose")
             .arg("-p")
             .arg(&project)
             .arg("up")
             .arg("-d")
+            .env("RIMAP_DOVECOT_HOST_PORT", host_port.to_string())
             .current_dir(&compose_dir)
             .status()
             .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
@@ -102,22 +109,17 @@ impl DovecotHarness {
             if started.elapsed() > timeout {
                 break Err(HarnessError::Timeout);
             }
-            if let (Ok(fp), Ok(p)) = (
-                read_fingerprint(&project),
-                read_port(&project, &compose_dir),
-            ) {
-                // Fingerprint + host-side port binding are available, but
-                // dovecot inside the container may not be listening yet.
-                // Probe the TCP port directly before handing the harness to
-                // the test. Without this, fast callers hit "tls handshake eof"
-                // on amd64-under-emulation hosts.
+            if let Ok(fp) = read_fingerprint(&project) {
+                // Fingerprint is in place, but dovecot inside the container
+                // may not be listening yet. Probe the TCP port directly
+                // before handing the harness to the test.
                 if std::net::TcpStream::connect_timeout(
-                    &std::net::SocketAddr::from(([127, 0, 0, 1], p)),
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], host_port)),
                     Duration::from_millis(500),
                 )
                 .is_ok()
                 {
-                    break Ok((fp, p));
+                    break Ok((fp, host_port));
                 }
             }
             std::thread::sleep(Duration::from_millis(500));
@@ -174,52 +176,38 @@ impl DovecotHarness {
             .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))
     }
 
-    /// Stop and start the dovecot container, killing every in-flight TCP
+    /// Recreate the dovecot container, killing every in-flight TCP
     /// session the test client may have cached. Used by `case_11` to
     /// deterministically trigger the half-open recovery path.
     ///
-    /// `pkill -9 imap` from inside the container is not a reliable
-    /// substitute: dovecot's master process auto-respawns the worker
-    /// before the client's next command lands, so the cached session
-    /// transparently survives. A container stop+start sends SIGTERM
-    /// (with a 5s grace period so dovecot can cleanly release its
-    /// runtime state) to dovecot's master and tears down every worker
-    /// fd with no respawn. The same self-signed cert survives the cycle
-    /// (`entrypoint.sh` guards generation behind a file-existence
-    /// check), so the pinned fingerprint is unchanged and the
+    /// Previous attempts used `pkill -9 imap` (too racy — master
+    /// respawns) and `docker compose stop + start` (dovecot's imap-login
+    /// failed to come back online inside the recycled container on CI).
+    /// `docker compose up -d --force-recreate` destroys the container
+    /// and rebuilds it cleanly, which sidesteps both bugs. The cert is
+    /// persisted on the `shared` named volume (which is not touched by
+    /// recreate) so the pinned fingerprint is unchanged and the
     /// post-disconnect reconnect works.
     ///
     /// On failure, dumps the last container logs into the error message
     /// so CI runners can diagnose entrypoint regressions.
     pub fn restart(&self) -> Result<(), HarnessError> {
-        let stop_status = Command::new("docker")
+        let status = Command::new("docker")
             .arg("compose")
             .arg("-p")
             .arg(&self.project)
-            .arg("stop")
-            .arg("-t")
-            .arg("5")
+            .arg("up")
+            .arg("-d")
+            .arg("--force-recreate")
+            .arg("--no-deps")
             .arg("dovecot")
+            .env("RIMAP_DOVECOT_HOST_PORT", self.port.to_string())
             .current_dir(&self.compose_dir)
             .status()
-            .map_err(|e| HarnessError::DockerCommandFailed(format!("stop: {e}")))?;
-        if !stop_status.success() {
+            .map_err(|e| HarnessError::DockerCommandFailed(format!("recreate: {e}")))?;
+        if !status.success() {
             return Err(HarnessError::DockerCommandFailed(format!(
-                "compose stop exit {stop_status}"
-            )));
-        }
-        let start_status = Command::new("docker")
-            .arg("compose")
-            .arg("-p")
-            .arg(&self.project)
-            .arg("start")
-            .arg("dovecot")
-            .current_dir(&self.compose_dir)
-            .status()
-            .map_err(|e| HarnessError::DockerCommandFailed(format!("start: {e}")))?;
-        if !start_status.success() {
-            return Err(HarnessError::DockerCommandFailed(format!(
-                "compose start exit {start_status}"
+                "compose up --force-recreate exit {status}"
             )));
         }
         // Wait for dovecot to be accepting on the same host port again.
@@ -305,25 +293,17 @@ fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
     TlsFingerprint::from_hex(&s).map_err(|e| HarnessError::FingerprintReadFailed(e.to_string()))
 }
 
-fn read_port(project: &str, compose_dir: &std::path::Path) -> Result<u16, HarnessError> {
-    let out = Command::new("docker")
-        .arg("compose")
-        .arg("-p")
-        .arg(project)
-        .arg("port")
-        .arg("dovecot")
-        .arg("993")
-        .current_dir(compose_dir)
-        .output()
-        .map_err(|e| HarnessError::PortReadFailed(e.to_string()))?;
-    if !out.status.success() {
-        return Err(HarnessError::PortReadFailed("not yet bound".into()));
-    }
-    let s = String::from_utf8_lossy(&out.stdout);
-    let port_str = s.trim().rsplit(':').next().unwrap_or("");
-    port_str
-        .parse::<u16>()
-        .map_err(|e| HarnessError::PortReadFailed(e.to_string()))
+/// Bind to `127.0.0.1:0`, read the kernel-assigned port, and drop the
+/// listener. Technically racy (another process could claim the same port
+/// in the gap before docker binds it) but acceptable for integration
+/// tests — the port is passed immediately to `docker compose up`.
+fn pick_free_port() -> Result<u16, HarnessError> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| HarnessError::PortReadFailed(format!("bind: {e}")))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| HarnessError::PortReadFailed(format!("local_addr: {e}")))?;
+    Ok(addr.port())
 }
 
 fn uuid_like() -> String {

@@ -8,10 +8,14 @@ services:
     image: dovecot/dovecot:2.3.21
     container_name: ${COMPOSE_PROJECT_NAME:-rimap-it}-dovecot
     ports:
-      # Loopback-only. Short form "0:993" would bind 0.0.0.0 and expose the
-      # test dovecot (with its known-default password) to the LAN while
-      # cargo test is running.
-      - "127.0.0.1:0:993"
+      # Loopback-only. The host port is pre-allocated by the Rust harness
+      # (DovecotHarness picks a free port via a localhost bind+drop) and
+      # passed in via RIMAP_DOVECOT_HOST_PORT so that `compose up
+      # --force-recreate` (used by case_11 to break the client TCP)
+      # preserves the SAME host port across the recreate. Without the
+      # fixed port, recreate would get a fresh random port and the
+      # client's pinned Connection could not reconnect.
+      - "127.0.0.1:${RIMAP_DOVECOT_HOST_PORT}:993"
     volumes:
       - ./dovecot.conf:/etc/dovecot/dovecot.conf:ro
       - ./users:/etc/dovecot/users:ro

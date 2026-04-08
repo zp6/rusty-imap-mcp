@@ -1,25 +1,31 @@
 #!/bin/sh
 set -eu
 
-# Clean up any stale state from a previous run. docker compose stop/start
-# (used by case_11's server-restart path) sends SIGTERM and eventually
-# SIGKILL, which can leave dovecot's runtime socket dir and pid files in
-# a half-open state that blocks the next startup.
+# Clean up any stale dovecot runtime state. When case_11 recreates the
+# container via `docker compose up -d --force-recreate`, this dir starts
+# empty — but the recursive rm is still a safety net for any future change
+# that moves to a stop/start flow where the container fs persists.
 rm -rf /var/run/dovecot 2>/dev/null || true
 mkdir -p /var/run/dovecot
 
-# Generate a self-signed cert at container start so each test run gets a
-# fresh fingerprint. Skip if a cert already exists — case_11 uses
-# docker compose stop/start to break the client TCP, which re-runs this
-# entrypoint, and the test relies on the SAME pinned fingerprint surviving
-# across the restart so the post-disconnect reconnect succeeds.
-if [ ! -f /etc/dovecot/cert.pem ]; then
+# Generate the self-signed cert ON THE SHARED VOLUME (not in the
+# container's own filesystem) so it survives container recreation.
+# case_11 uses `docker compose up -d --force-recreate dovecot` to
+# deterministically break cached client TCP sessions, and the test
+# relies on the SAME pinned fingerprint surviving across the recreate
+# so the post-disconnect reconnect succeeds.
+if [ ! -f /shared/cert.pem ]; then
     openssl req -x509 -newkey rsa:2048 -nodes \
-        -keyout /etc/dovecot/key.pem \
-        -out /etc/dovecot/cert.pem \
+        -keyout /shared/key.pem \
+        -out /shared/cert.pem \
         -days 1 \
         -subj "/CN=rimap-test-dovecot" >/dev/null 2>&1
 fi
+# Place the cert where dovecot.conf expects it. Copy (not symlink) so a
+# change in shared-volume semantics doesn't break dovecot's open().
+cp /shared/cert.pem /etc/dovecot/cert.pem
+cp /shared/key.pem /etc/dovecot/key.pem
+chmod 0600 /etc/dovecot/key.pem
 
 # Compute the SHA-256 fingerprint of the leaf cert (DER form, lowercase
 # hex, no separators). We write it out AFTER dovecot is actually listening
