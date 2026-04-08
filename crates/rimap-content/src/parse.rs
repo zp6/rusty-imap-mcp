@@ -6,8 +6,12 @@
 //! routes every extracted string through [`crate::unicode::sanitize`]
 //! so downstream consumers see only Unicode-clean text.
 
+use mail_parser::{Address, HeaderValue, Message, MessageParser};
+use time::OffsetDateTime;
+
 use crate::error::ContentError;
 use crate::output::{Content, ContentMeta, SecurityWarning, Untrusted, WarningCode};
+use crate::unicode;
 
 /// Maximum raw message size accepted. Bodies over this are truncated
 /// and `ParseBodyTruncated` is emitted.
@@ -37,19 +41,182 @@ pub const MAX_HEADER_COUNT: usize = 256;
 /// byte stream, and [`ContentError::LimitExceeded`] if any hard limit
 /// (MIME depth, part count, header count) is exceeded.
 pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
+    let original_size_bytes = raw.len() as u64;
     let mut warnings: Vec<SecurityWarning> = Vec::new();
     let scrubbed = scrub_header_smuggling(raw, &mut warnings);
-    let _ = scrubbed; // Mail-parser walk lands in Task 6.
 
-    // Placeholder return until Task 6 wires mail-parser.
+    let message =
+        MessageParser::default()
+            .parse(&scrubbed)
+            .ok_or_else(|| ContentError::Malformed {
+                reason: "mail-parser rejected byte stream".to_string(),
+            })?;
+
+    enforce_header_count(&message, &mut warnings)?;
+
+    let meta = extract_meta(&message, original_size_bytes, &mut warnings);
+
     Ok(Content {
-        meta: ContentMeta {
-            original_size_bytes: raw.len() as u64,
-            ..ContentMeta::default()
-        },
+        meta,
         untrusted: Untrusted::default(),
         security_warnings: warnings,
     })
+}
+
+fn enforce_header_count(
+    message: &Message<'_>,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Result<(), ContentError> {
+    let header_count = message.headers().len();
+    if header_count > MAX_HEADER_COUNT {
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseHeaderCountExceeded,
+            detail: Some(format!("count={header_count} limit={MAX_HEADER_COUNT}")),
+            location: Some("headers".to_string()),
+        });
+        return Err(ContentError::LimitExceeded {
+            kind: "header_count",
+            limit: MAX_HEADER_COUNT,
+        });
+    }
+    Ok(())
+}
+
+fn extract_meta(
+    message: &Message<'_>,
+    original_size_bytes: u64,
+    warnings: &mut Vec<SecurityWarning>,
+) -> ContentMeta {
+    let from = first_address_string(message.from(), "header:from", warnings);
+    let to = address_strings(message.to(), "header:to", warnings);
+    let cc = address_strings(message.cc(), "header:cc", warnings);
+    let subject = sanitize_opt_str(message.subject(), "header:subject", warnings);
+    let date = message.date().and_then(convert_datetime);
+    let message_id = sanitize_opt_str(message.message_id(), "header:message_id", warnings);
+    let in_reply_to =
+        header_value_first_text(message.in_reply_to(), "header:in_reply_to", warnings);
+    let references = header_value_all_text(message.references(), "header:references", warnings);
+
+    ContentMeta {
+        from,
+        to,
+        cc,
+        subject,
+        date,
+        message_id,
+        in_reply_to,
+        references,
+        mailing_list: None,
+        attachments: Vec::new(),
+        original_size_bytes,
+        body_truncated: false,
+    }
+}
+
+/// Sanitize an optional header string, appending any warnings.
+fn sanitize_opt_str(
+    value: Option<&str>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Option<String> {
+    let value = value?;
+    let (text, mut new_warnings) =
+        unicode::sanitize(value.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
+    warnings.append(&mut new_warnings);
+    Some(text)
+}
+
+/// Flatten an `Address` (list or group) into a sequence of display
+/// strings and sanitize each one.
+fn address_strings(
+    address: Option<&Address<'_>>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Vec<String> {
+    let Some(address) = address else {
+        return Vec::new();
+    };
+    address
+        .iter()
+        .map(format_addr)
+        .map(|raw| {
+            let (text, mut new_warnings) =
+                unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
+            warnings.append(&mut new_warnings);
+            text
+        })
+        .collect()
+}
+
+/// Sanitize the first address in an `Address` value (if any).
+fn first_address_string(
+    address: Option<&Address<'_>>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Option<String> {
+    let raw = format_addr(address?.first()?);
+    let (text, mut new_warnings) =
+        unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
+    warnings.append(&mut new_warnings);
+    Some(text)
+}
+
+/// Render a single `Addr` as `"Name <email@host>"` or just
+/// `"email@host"` if the display name is absent or empty.
+fn format_addr(addr: &mail_parser::Addr<'_>) -> String {
+    let email = addr.address.as_deref().unwrap_or("");
+    match addr.name.as_deref() {
+        Some(name) if !name.is_empty() => format!("{name} <{email}>"),
+        _ => email.to_string(),
+    }
+}
+
+/// Extract the first textual value from a `HeaderValue`, sanitize it,
+/// and return `None` if the header is `Empty` or non-textual.
+fn header_value_first_text(
+    value: &HeaderValue<'_>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Option<String> {
+    let raw = match value {
+        HeaderValue::Text(s) => s.as_ref().to_string(),
+        HeaderValue::TextList(list) => list.first()?.as_ref().to_string(),
+        _ => return None,
+    };
+    let (text, mut new_warnings) =
+        unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
+    warnings.append(&mut new_warnings);
+    Some(text)
+}
+
+/// Extract every textual value from a `HeaderValue` and sanitize each.
+fn header_value_all_text(
+    value: &HeaderValue<'_>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Vec<String> {
+    let raws: Vec<String> = match value {
+        HeaderValue::Text(s) => vec![s.as_ref().to_string()],
+        HeaderValue::TextList(list) => list.iter().map(|s| s.as_ref().to_string()).collect(),
+        _ => return Vec::new(),
+    };
+    raws.into_iter()
+        .map(|raw| {
+            let (text, mut new_warnings) =
+                unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
+            warnings.append(&mut new_warnings);
+            text
+        })
+        .collect()
+}
+
+/// Convert a `mail_parser::DateTime` into a UTC `OffsetDateTime`,
+/// returning `None` for invalid or out-of-range values.
+fn convert_datetime(dt: &mail_parser::DateTime) -> Option<OffsetDateTime> {
+    if !dt.is_valid() {
+        return None;
+    }
+    OffsetDateTime::from_unix_timestamp(dt.to_timestamp()).ok()
 }
 
 /// Scan the header block for raw CRLF inside RFC 2047 encoded-words.
@@ -379,11 +546,43 @@ mod tests {
     }
 
     #[test]
-    fn parse_message_stub_returns_empty_content() {
-        let raw = b"From: a\r\n\r\nhello";
+    fn parse_extracts_from_to_subject() {
+        let raw = b"From: Alice <alice@example.com>\r\n\
+                    To: Bob <bob@example.com>\r\n\
+                    Subject: Test message\r\n\
+                    Date: Tue, 8 Apr 2026 12:00:00 +0000\r\n\
+                    \r\n\
+                    body text";
         let content = parse_message(raw).unwrap();
-        assert_eq!(content.meta.original_size_bytes, raw.len() as u64);
-        assert!(content.untrusted.body_text.is_empty());
+        assert_eq!(
+            content.meta.from.as_deref(),
+            Some("Alice <alice@example.com>")
+        );
+        assert_eq!(content.meta.to, vec!["Bob <bob@example.com>".to_string()]);
+        assert_eq!(content.meta.subject.as_deref(), Some("Test message"));
+        assert!(content.meta.date.is_some());
         assert!(content.security_warnings.is_empty());
+    }
+
+    #[test]
+    fn parse_sanitizes_subject_zero_width() {
+        let raw = "From: a@example\r\nSubject: he\u{200B}llo\r\n\r\nbody".as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert_eq!(content.meta.subject.as_deref(), Some("hello"));
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::UnicodeZeroWidthStripped)
+        );
+    }
+
+    #[test]
+    fn parse_missing_headers_yields_none() {
+        let raw = b"\r\nbody only";
+        let content = parse_message(raw).unwrap();
+        assert!(content.meta.from.is_none());
+        assert!(content.meta.subject.is_none());
+        assert_eq!(content.meta.original_size_bytes, raw.len() as u64);
     }
 }
