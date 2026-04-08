@@ -149,10 +149,23 @@ fn prune_rotated_siblings(active: &Path, keep: u32) {
         if path == active {
             continue;
         }
-        let mtime = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        // Use symlink_metadata so that symlinks themselves are inspected
+        // (not their targets). Skip anything that is not a regular file —
+        // directories, symlinks, FIFOs, sockets, device nodes. A planted
+        // symlink named "audit.jsonl.evil" whose target's mtime ranks it
+        // above a real rotated file could otherwise cause us to delete
+        // the real audit file. (LOCAL-FS-05)
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_file() {
+            tracing::warn!(
+                path = %path.display(),
+                "audit rotate: skipping non-regular sibling during prune",
+            );
+            continue;
+        }
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         siblings.push((mtime, path));
     }
 
@@ -266,5 +279,55 @@ mod tests {
             })
             .count();
         assert_eq!(rotated, 0, "keep=0 should leave no rotated siblings");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rotate_file_skips_symlinked_siblings_during_prune() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+
+        // Create a real rotated sibling that should be kept.
+        std::fs::write(&active, b"x\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 5).unwrap();
+
+        // Plant a symlink whose name matches the rotated-sibling prefix.
+        // Its target is an arbitrary file (here, /etc/hostname — any
+        // readable file will do). The mtime of the target is likely
+        // newer than the rotated file's mtime on CI hosts, which would
+        // cause the old pruner to rank the symlink above the real file.
+        let symlink_path = dir.path().join("audit.jsonl.evil");
+        std::os::unix::fs::symlink("/etc/hostname", &symlink_path).unwrap();
+
+        // Trigger another rotation with keep=1. The pruner should:
+        //   - keep the most recent real rotated file
+        //   - skip the symlink entirely (not delete it and not rank it)
+        std::fs::write(&active, b"y\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 1).unwrap();
+
+        // The symlink must still exist — we never touched it.
+        assert!(
+            std::fs::symlink_metadata(&symlink_path).is_ok(),
+            "planted symlink was deleted by prune"
+        );
+
+        // And exactly 1 real rotated sibling must remain (keep=1).
+        let real_rotated = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if !name.starts_with("audit.jsonl.") || name == "audit.jsonl" {
+                    return false;
+                }
+                // Exclude the symlink itself; only count real files.
+                let Ok(meta) = std::fs::symlink_metadata(e.path()) else {
+                    return false;
+                };
+                meta.file_type().is_file()
+            })
+            .count();
+        assert_eq!(real_rotated, 1, "expected exactly 1 real rotated sibling");
     }
 }
