@@ -1,5 +1,12 @@
 //! MIME parsing, Unicode-safe sanitization, and look-alike detection for rusty-imap-mcp.
 //!
-//! This crate is a placeholder during Sprint 0. Real functionality lands in later sprints.
+//! Sprint 4a delivers the parse + unicode + output foundation. HTML
+//! sanitization and look-alike detection are reserved for Sprint 4b.
 
 #![deny(missing_docs)]
+
+pub mod output;
+
+pub use output::{
+    AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
+};
