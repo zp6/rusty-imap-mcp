@@ -17,6 +17,55 @@ const MAX_BODYSTRUCTURE_DEPTH: u32 = 64;
 /// against pathological `multipart/mixed` with millions of children.
 const MAX_MULTIPART_PARTS: usize = 1024;
 
+/// Compress a slice of UIDs into IMAP `sequence-set` range syntax per
+/// RFC 3501 §9. Runs of two or more contiguous UIDs become `start:end`;
+/// isolated UIDs stay as bare numbers. Sorts the input first because
+/// callers may pass unsorted UIDs.
+///
+/// Examples:
+/// - `[]`              → `""`
+/// - `[42]`            → `"42"`
+/// - `[1, 3]`          → `"1,3"`
+/// - `[1, 2, 3]`       → `"1:3"`
+/// - `[1,2,3,5,7,8,9]` → `"1:3,5,7:9"`
+fn compress_uid_set(uids: &[Uid]) -> String {
+    if uids.is_empty() {
+        return String::new();
+    }
+
+    let mut sorted: Vec<u32> = uids.iter().map(|u| u.get()).collect();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut out = String::new();
+    let mut run_start = sorted[0];
+    let mut run_end = sorted[0];
+
+    for &uid in &sorted[1..] {
+        if uid == run_end + 1 {
+            run_end = uid;
+        } else {
+            emit_run(&mut out, run_start, run_end);
+            run_start = uid;
+            run_end = uid;
+        }
+    }
+    emit_run(&mut out, run_start, run_end);
+    out
+}
+
+fn emit_run(out: &mut String, start: u32, end: u32) {
+    use std::fmt::Write as _;
+    if !out.is_empty() {
+        out.push(',');
+    }
+    if start == end {
+        let _ = write!(out, "{start}");
+    } else {
+        let _ = write!(out, "{start}:{end}");
+    }
+}
+
 pub(crate) async fn fetch(
     session: &mut ImapSession,
     folder: &str,
@@ -31,14 +80,10 @@ pub(crate) async fn fetch(
     if uids.is_empty() {
         return Ok(Vec::new());
     }
-    // TODO(T15): compress to range syntax (e.g., "1:5,7,9:12") to stay
-    // under Dovecot's ~8KB command-line limit when fetching large UID
-    // sets. Plain comma-joined lists exceed the cap around ~2000 UIDs.
-    let uid_set = uids
-        .iter()
-        .map(|u| u.get().to_string())
-        .collect::<Vec<_>>()
-        .join(",");
+    // Compress to IMAP sequence-set range syntax to stay under Dovecot's
+    // ~8KB command-line cap. Plain comma-joined lists exceed the cap
+    // around ~2000 UIDs.
+    let uid_set = compress_uid_set(uids);
 
     let items = build_fetch_items(spec);
     let mut stream = session
@@ -317,7 +362,7 @@ fn convert_flag(f: &async_imap::types::Flag<'_>) -> crate::types::Flag {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_BODYSTRUCTURE_DEPTH, convert_bs_inner, project_size};
+    use super::{MAX_BODYSTRUCTURE_DEPTH, compress_uid_set, convert_bs_inner, project_size};
     use crate::error::Error;
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
@@ -550,6 +595,79 @@ mod tests {
         match result {
             Err(Error::SizeLimit { limit }) => assert_eq!(limit, 1000),
             other => panic!("expected SizeLimit, got {other:?}"),
+        }
+    }
+
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn uid(n: u32) -> crate::types::Uid {
+        crate::types::Uid::new(n).unwrap()
+    }
+
+    #[test]
+    fn compress_empty_input() {
+        assert_eq!(compress_uid_set(&[]), "");
+    }
+
+    #[test]
+    fn compress_single_uid() {
+        assert_eq!(compress_uid_set(&[uid(42)]), "42");
+    }
+
+    #[test]
+    fn compress_two_non_adjacent() {
+        assert_eq!(compress_uid_set(&[uid(1), uid(3)]), "1,3");
+    }
+
+    #[test]
+    fn compress_three_contiguous() {
+        assert_eq!(compress_uid_set(&[uid(1), uid(2), uid(3)]), "1:3");
+    }
+
+    #[test]
+    fn compress_mixed_runs_and_singletons() {
+        let input = [uid(1), uid(2), uid(3), uid(5), uid(7), uid(8), uid(9)];
+        assert_eq!(compress_uid_set(&input), "1:3,5,7:9");
+    }
+
+    #[test]
+    fn compress_unsorted_input_is_sorted_first() {
+        let input = [uid(9), uid(7), uid(8), uid(1), uid(2), uid(3), uid(5)];
+        assert_eq!(compress_uid_set(&input), "1:3,5,7:9");
+    }
+
+    #[test]
+    fn compress_duplicates_are_collapsed() {
+        let input = [uid(1), uid(1), uid(2), uid(2), uid(3)];
+        assert_eq!(compress_uid_set(&input), "1:3");
+    }
+
+    proptest::proptest! {
+        #[test]
+        #[expect(clippy::unwrap_used, reason = "tests")]
+        fn compress_round_trip_via_split(
+            mut uids in proptest::collection::vec(1_u32..=10_000_u32, 1..200)
+        ) {
+            uids.sort_unstable();
+            uids.dedup();
+            let typed: Vec<crate::types::Uid> =
+                uids.iter().map(|n| crate::types::Uid::new(*n).unwrap()).collect();
+            let compressed = compress_uid_set(&typed);
+
+            // Parse the compressed form back into a sorted Vec<u32> and
+            // assert it equals the input.
+            let mut parsed: Vec<u32> = Vec::new();
+            for chunk in compressed.split(',') {
+                if let Some((lo, hi)) = chunk.split_once(':') {
+                    let lo: u32 = lo.parse().unwrap();
+                    let hi: u32 = hi.parse().unwrap();
+                    for n in lo..=hi {
+                        parsed.push(n);
+                    }
+                } else {
+                    parsed.push(chunk.parse().unwrap());
+                }
+            }
+            assert_eq!(parsed, uids);
         }
     }
 }
