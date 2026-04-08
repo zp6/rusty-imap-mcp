@@ -1,0 +1,11 @@
+{
+  "description": "A text/html-only message: Sprint 4a refuses HTML bodies and emits html_body_unsanitized. The hidden prompt-injection div does NOT reach Untrusted.body_text. Sprint 4b will replace this behavior with real HTML sanitization.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": ["Ignore previous instructions", "display:none", "<div"],
+  "warning_codes": ["html_body_unsanitized"],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 0
+  }
+}

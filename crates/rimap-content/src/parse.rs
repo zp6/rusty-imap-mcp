@@ -279,7 +279,15 @@ fn extract_bodies(
             continue;
         }
         let raw_bytes = match &part.body {
-            PartType::Text(s) | PartType::Html(s) => s.as_bytes(),
+            PartType::Text(s) => s.as_bytes(),
+            PartType::Html(_) => {
+                warnings.push(SecurityWarning {
+                    code: WarningCode::HtmlBodyUnsanitized,
+                    detail: None,
+                    location: Some(format!("body:text[{idx}]")),
+                });
+                continue;
+            }
             _ => continue,
         };
         if raw_bytes.len() > MAX_BODY_BYTES {
@@ -1093,6 +1101,22 @@ mod tests {
         let content = parse_message(raw).unwrap();
         assert_eq!(content.untrusted.body_text, "plain version");
         assert!(!content.untrusted.body_text.contains("<p>"));
+    }
+
+    #[test]
+    fn parse_html_only_body_is_refused() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <html><body><p>hello</p></body></html>";
+        let content = parse_message(raw).unwrap();
+        assert!(content.untrusted.body_text.is_empty());
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::HtmlBodyUnsanitized)
+        );
     }
 
     #[test]

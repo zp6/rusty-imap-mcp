@@ -105,3 +105,8 @@ fn snapshot_multilingual_negative() {
 fn snapshot_attachment_path_traversal() {
     snapshot_one("attachment-path-traversal");
 }
+
+#[test]
+fn snapshot_html_only_hidden_instructions() {
+    snapshot_one("html-only-hidden-instructions");
+}

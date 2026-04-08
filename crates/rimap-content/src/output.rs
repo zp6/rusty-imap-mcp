@@ -152,6 +152,11 @@ pub enum WarningCode {
     /// references, reserved Windows names, or other unsafe characters
     /// and was rewritten to a safe form.
     ParseAttachmentFilenameRewritten,
+    /// A `text/html` body part was encountered but not sanitized.
+    /// Sprint 4a refuses HTML bodies; Sprint 4b will add an HTML
+    /// sanitization pipeline and replace this warning with granular
+    /// hidden-content / link-mismatch detection.
+    HtmlBodyUnsanitized,
 }
 
 #[cfg(test)]
@@ -173,6 +178,13 @@ mod tests {
         let code = WarningCode::UnicodeZeroWidthStripped;
         let json = serde_json::to_string(&code).unwrap();
         assert_eq!(json, "\"unicode_zero_width_stripped\"");
+    }
+
+    #[test]
+    fn html_body_unsanitized_label() {
+        let code = WarningCode::HtmlBodyUnsanitized;
+        let json = serde_json::to_string(&code).unwrap();
+        assert_eq!(json, "\"html_body_unsanitized\"");
     }
 
     #[test]
