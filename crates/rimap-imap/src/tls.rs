@@ -150,9 +150,19 @@ pub struct TlsConfigBundle {
 }
 
 /// Build a `TlsConfigBundle`. If `pinned.is_some()`, uses `PinningVerifier`
-/// (skips chain validation). Otherwise uses webpki-roots with `CapturingVerifier`.
-#[must_use]
-pub fn build_tls_config(pinned: Option<TlsFingerprint>) -> TlsConfigBundle {
+/// (skips chain validation). Otherwise uses webpki-roots with
+/// `CapturingVerifier`.
+///
+/// # Errors
+/// - `Error::TlsHandshake` if rustls cannot construct a `ClientConfig` with
+///   the workspace's safe default protocol versions (would only fire if a
+///   future ring provider drops every cipher suite or kx group).
+/// - `Error::TlsHandshake` if `WebPkiServerVerifier::builder.build()` fails
+///   (would only fire if `webpki_roots::TLS_SERVER_ROOTS` is somehow empty,
+///   e.g. a corrupt webpki-roots release).
+pub fn build_tls_config(
+    pinned: Option<TlsFingerprint>,
+) -> Result<TlsConfigBundle, crate::error::Error> {
     let last_observed = Arc::new(OnceLock::new());
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
 
@@ -164,7 +174,7 @@ pub fn build_tls_config(pinned: Option<TlsFingerprint>) -> TlsConfigBundle {
         });
         ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .unwrap_or_else(|_| unreachable!("default protocol versions are valid"))
+            .map_err(crate::error::Error::TlsHandshake)?
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth()
@@ -177,21 +187,25 @@ pub fn build_tls_config(pinned: Option<TlsFingerprint>) -> TlsConfigBundle {
                 Arc::clone(&provider),
             )
             .build()
-            .unwrap_or_else(|_| unreachable!("webpki-roots produces a valid builder"));
+            .map_err(|e| {
+                crate::error::Error::TlsHandshake(tokio_rustls::rustls::Error::General(format!(
+                    "WebPkiServerVerifier builder failed: {e}"
+                )))
+            })?;
         let capturing = Arc::new(CapturingVerifier {
             inner: inner_verifier,
             last_observed: Arc::clone(&last_observed),
         });
         ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .unwrap_or_else(|_| unreachable!("default protocol versions are valid"))
+            .map_err(crate::error::Error::TlsHandshake)?
             .dangerous()
             .with_custom_certificate_verifier(capturing)
             .with_no_client_auth()
     };
 
-    TlsConfigBundle {
+    Ok(TlsConfigBundle {
         config: Arc::new(config),
         last_observed,
-    }
+    })
 }

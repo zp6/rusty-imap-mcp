@@ -130,7 +130,7 @@ impl Connection {
     /// `Auth` audit record on every termination path.
     async fn connect_inner(&self) -> Result<ImapSession, Error> {
         let cfg = &self.inner.cfg;
-        let bundle = build_tls_config(cfg.pinned_fingerprint);
+        let bundle = build_tls_config(cfg.pinned_fingerprint)?;
 
         // Run the connect flow. If it failed with a TLS handshake error AND
         // we have a pinned fingerprint, enrich the error into Error::Tls
