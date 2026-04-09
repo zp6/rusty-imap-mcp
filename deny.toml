@@ -68,6 +68,48 @@ skip-tree = [
     { name = "windows-sys", version = "0.48" },
     { name = "windows-sys", version = "0.52" },
     { name = "windows-sys", version = "0.59" },
+
+    # Sprint 4b: the html5ever ecosystem is mid-split. `scraper 0.26` (our
+    # HTML parser) has migrated to html5ever 0.39 / markup5ever 0.39 /
+    # web_atoms 0.2 / string_cache 0.9 / tendril 0.5, while `ammonia 4.1`
+    # (our sanitizer) still pins html5ever 0.35 and the matching older
+    # markup5ever/web_atoms/string_cache/tendril line. Both are the latest
+    # releases on crates.io (checked 2026-04-08). We cannot unify without
+    # forking ammonia or scraper. Skip the older subtrees rooted at
+    # html5ever 0.35 and cssparser 0.35 so cargo-deny accepts the duplicate
+    # versions of markup5ever, web_atoms, string_cache, string_cache_codegen,
+    # and tendril that they drag in.
+    #
+    # SECURITY NOTE (dual tokenizer). scraper 0.26 uses html5ever 0.39;
+    # ammonia 4.1 uses html5ever 0.35. The same HTML body is parsed twice
+    # in Sprint 4b's html pipeline — once by scraper for inspection
+    # (hidden-element detection, anchor href extraction) and once by
+    # ammonia for sanitization. Any divergence between the two html5ever
+    # versions' tokenization rules is a potential sanitizer-bypass vector:
+    # an attacker could craft input that parses one way in scraper's
+    # detectors and a different way in ammonia's output. The Sprint 4b
+    # pipeline runs BOTH engines on the same raw input by design:
+    # scraper inspects the unsanitized DOM to count hidden elements,
+    # strip-warnings, and href-mismatches (stages 4-6 in the plan), and
+    # ammonia produces the sanitized body_html rendering (stage 7).
+    # Neither engine's output is fed into the other -- they are parallel
+    # views of the same bytes. Divergence between the two html5ever
+    # versions therefore manifests as: scraper sees a script that
+    # ammonia did not, or vice versa; one engine resolves an anchor
+    # differently than the other; an attribute parses differently.
+    # Task 17's adversarial corpus MUST include at least one fixture
+    # exercising tokenizer divergence between html5ever 0.35 and 0.39
+    # so the divergence surface is observable in tests, not implicit.
+    # Task 10 must NOT reorder the pipeline to "sanitize first" --
+    # doing so would hollow out every HtmlHiddenContentStripped /
+    # HtmlScriptStripped / HtmlStyleStripped / HtmlRemoteImageStripped /
+    # HtmlLinkTextHrefMismatch warning by running detection against
+    # the already-clean output. Remove both skip-tree entries below
+    # when ammonia publishes a release that bumps to html5ever 0.39+ /
+    # cssparser 0.36+; track https://github.com/rust-ammonia/ammonia for
+    # the upstream bump.
+    { name = "html5ever", version = "0.35" },
+    { name = "cssparser", version = "0.35" },
 ]
 
 [sources]
