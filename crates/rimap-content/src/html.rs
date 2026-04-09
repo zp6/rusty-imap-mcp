@@ -20,7 +20,7 @@
     )
 )]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use ammonia::Builder;
@@ -137,13 +137,17 @@ static AMMONIA_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(build_ammonia
 /// `<img>` attributes to `{alt, width, height}`, dropping `src`,
 /// `srcset`, and other remote-fetching surfaces. Ammonia's defaults
 /// already strip `<script>`, `<style>`, and event handler attributes.
+///
+/// Uses `rm_tag_attributes` + `add_tag_attributes` rather than
+/// `tag_attributes` so the defaults for unrelated tags (notably
+/// `<a href>`, which Task 11 needs to enumerate post-sanitize)
+/// remain in place.
 fn build_ammonia_builder() -> Builder<'static> {
     let mut builder = Builder::default();
     let schemes: HashSet<&'static str> = ["http", "https", "mailto", "tel"].into_iter().collect();
     builder.url_schemes(schemes);
-    let mut tag_attrs: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
-    tag_attrs.insert("img", ["alt", "width", "height"].into_iter().collect());
-    builder.tag_attributes(tag_attrs);
+    builder.rm_tag_attributes("img", &["src", "srcset"]);
+    builder.add_tag_attributes("img", &["alt", "width", "height"]);
     builder
 }
 
@@ -596,13 +600,28 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
     let (body_text, mut text_warnings) = extract_text(&document, &hidden_indices);
     warnings.append(&mut text_warnings);
     let body_html = sanitize_body(&document, &decoded, &mut warnings);
-    // anchor_hrefs filled in Task 11.
+    let anchor_hrefs = collect_anchor_hrefs(&body_html);
     Ok(HtmlResult {
         body_text,
         body_html,
-        anchor_hrefs: Vec::new(),
+        anchor_hrefs,
         warnings,
     })
+}
+
+/// Stage 8: re-parse the ammonia-sanitized `body_html` and collect every
+/// surviving `<a href>` value in document order. Consumed by
+/// `lookalike::audit` (Sprint 4b Task 15).
+///
+/// The re-parse is intentional: ammonia's output is the canonical
+/// "what the recipient might click", and we want anchor hrefs that
+/// reflect post-sanitization reality (so e.g. `javascript:` URLs
+/// stripped in Task 10's allowlist do not appear here).
+fn collect_anchor_hrefs(sanitized_html: &str) -> Vec<String> {
+    let doc = Html::parse_document(sanitized_html);
+    doc.select(&SEL_ANCHOR)
+        .filter_map(|a| a.value().attr("href").map(str::to_string))
+        .collect()
 }
 
 /// Stage 7: count pre-sanitize remote-content elements on the
@@ -1070,6 +1089,39 @@ mod tests {
         let input = br#"<html><body><a href="javascript:alert(1)">click</a></body></html>"#;
         let result = process(input, None).expect("ok");
         assert!(!result.body_html.contains("javascript:"));
+    }
+
+    #[test]
+    fn anchor_hrefs_are_collected_from_sanitized_html() {
+        let input = br#"<html><body>
+            <a href="https://legit.example/login">ok</a>
+            <a href="https://other.example/page">other</a>
+            <a href="mailto:foo@example.com">email</a>
+            <a href="javascript:alert(1)">bad</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        // javascript: URL was stripped by ammonia in Task 10, so only 3
+        // survive in the sanitized HTML.
+        assert_eq!(result.anchor_hrefs.len(), 3);
+        assert!(
+            result
+                .anchor_hrefs
+                .iter()
+                .any(|h| h.contains("legit.example"))
+        );
+        assert!(
+            result
+                .anchor_hrefs
+                .iter()
+                .any(|h| h.contains("other.example"))
+        );
+        assert!(result.anchor_hrefs.iter().any(|h| h.starts_with("mailto:")));
+        assert!(
+            !result
+                .anchor_hrefs
+                .iter()
+                .any(|h| h.contains("javascript:"))
+        );
     }
 
     #[test]
