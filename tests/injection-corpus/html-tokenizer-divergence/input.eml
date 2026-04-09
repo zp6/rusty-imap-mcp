@@ -1,0 +1,7 @@
+From: sender@example.com
+To: victim@example.com
+Subject: Policy update
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Notice: please review the policy update.</p><SCRIPT type="text/javascript">alert('xss');document.cookie='leak=1'</SCRIPT><!-- <script>alert("in-comment")</script> --></body></html>

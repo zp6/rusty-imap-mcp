@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Block println!/dbg!/todo! from non-test Rust source. Clippy also catches
 # these, but this hook fails faster and gives a clearer error. Test files and
-# benches are exempt because debug output there is legitimate.
+# benches are exempt because debug output there is legitimate. Cargo build
+# scripts (build.rs) are also exempt: println! is the standard channel for
+# emitting cargo: directives and eprintln! is the standard diagnostic stream.
 set -euo pipefail
 
 files=()
@@ -9,7 +11,8 @@ while IFS= read -r f; do
     files+=("$f")
 done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' |
     grep -vE '(^|/)tests?/' |
-    grep -vE '(^|/)benches/' ||
+    grep -vE '(^|/)benches/' |
+    grep -vE '(^|/)build\.rs$' ||
     true)
 
 if [ "${#files[@]}" -eq 0 ]; then

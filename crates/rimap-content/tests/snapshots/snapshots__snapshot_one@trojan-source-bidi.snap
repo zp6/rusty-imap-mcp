@@ -31,6 +31,7 @@ expression: value
   ],
   "untrusted": {
     "alternate_parts": [],
+    "body_html": null,
     "body_text": "Look at this file: safeevil.txt\n"
   }
 }

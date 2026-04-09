@@ -10,6 +10,8 @@ use mail_parser::{Address, HeaderValue, Message, MessageParser, MimeHeaders as _
 use time::OffsetDateTime;
 
 use crate::error::ContentError;
+use crate::html;
+use crate::lookalike;
 use crate::output::{
     AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
 };
@@ -72,15 +74,26 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
     let mut meta = extract_meta(&message, original_size_bytes, &mut warnings);
     let bodies = extract_bodies(&message, &mut warnings)?;
     meta.body_truncated = bodies.body_truncated;
+    let html_anchor_hrefs = bodies.anchor_hrefs;
 
-    Ok(Content {
+    let mut content = Content {
         meta,
         untrusted: Untrusted {
             body_text: bodies.primary_text,
+            body_html: bodies.body_html,
             alternate_parts: bodies.alternates,
         },
         security_warnings: warnings,
-    })
+    };
+
+    let lookalike_warnings = lookalike::audit(&lookalike::LookalikeInput {
+        meta: &content.meta,
+        body_text: &content.untrusted.body_text,
+        anchor_hrefs: &html_anchor_hrefs,
+    });
+    content.security_warnings.extend(lookalike_warnings);
+
+    Ok(content)
 }
 
 fn enforce_header_count(
@@ -160,8 +173,9 @@ fn address_strings(
     };
     address
         .iter()
-        .map(format_addr)
-        .map(|raw| {
+        .map(|addr| {
+            audit_addr_domain_bidi(addr, location, warnings);
+            let raw = format_addr(addr);
             let (text, mut new_warnings) =
                 unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
             warnings.append(&mut new_warnings);
@@ -176,7 +190,9 @@ fn first_address_string(
     location: &str,
     warnings: &mut Vec<SecurityWarning>,
 ) -> Option<String> {
-    let raw = format_addr(address?.first()?);
+    let addr = address?.first()?;
+    audit_addr_domain_bidi(addr, location, warnings);
+    let raw = format_addr(addr);
     let (text, mut new_warnings) =
         unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
     warnings.append(&mut new_warnings);
@@ -242,11 +258,15 @@ fn convert_datetime(dt: &mail_parser::DateTime) -> Option<OffsetDateTime> {
 }
 
 /// Result of walking a message's text bodies: the primary text body,
-/// any alternate text parts, and whether any part was truncated.
+/// any alternate text parts, an optional sanitized HTML rendering, the
+/// anchor hrefs that survived sanitization, and whether any part was
+/// truncated.
 #[derive(Debug)]
 struct BodyExtraction {
     primary_text: String,
     alternates: Vec<String>,
+    body_html: Option<String>,
+    anchor_hrefs: Vec<String>,
     body_truncated: bool,
 }
 
@@ -273,10 +293,13 @@ fn extract_bodies(
 
     check_mime_depth(message, warnings)?;
 
-    let mut primary_text: Option<String> = None;
-    let mut alternates: Vec<String> = Vec::new();
-    let mut body_truncated = false;
-    let mut total_bytes: usize = 0;
+    // Determine the part id of the first HTML body so only one HTML
+    // part per message flows through `html::process`. mail-parser 0.11
+    // exposes html bodies via `message.html_body: Vec<MessagePartId>`
+    // (MessagePartId = u32).
+    let primary_html_part_id: Option<usize> = message.html_body.first().map(|id| *id as usize);
+
+    let mut state = BodyWalkState::default();
 
     for (idx, &part_id) in message.text_body.iter().enumerate() {
         let Some(part) = message.parts.get(part_id as usize) else {
@@ -285,49 +308,28 @@ fn extract_bodies(
         if matches!(part.body, PartType::Message(_)) {
             continue;
         }
-        let raw_bytes = match &part.body {
-            PartType::Text(s) => s.as_bytes(),
-            PartType::Html(_) => {
-                warnings.push(SecurityWarning {
-                    code: WarningCode::HtmlBodyUnsanitized,
-                    detail: None,
-                    location: Some(format!("body:text[{idx}]")),
-                });
-                continue;
+        match &part.body {
+            PartType::Text(s) => {
+                let raw_bytes = s.as_bytes();
+                process_text_part(part, raw_bytes, idx, &mut state, warnings);
+            }
+            PartType::Html(cow) => {
+                let is_primary = primary_html_part_id == Some(part_id as usize);
+                if !is_primary {
+                    continue;
+                }
+                process_html_part(part, cow.as_bytes(), &mut state, warnings)?;
             }
             _ => continue,
-        };
-        if raw_bytes.len() > MAX_BODY_BYTES {
-            body_truncated = true;
+        }
+        if state.total_bytes >= MAX_TOTAL_BODY_BYTES {
+            state.body_truncated = true;
             warnings.push(SecurityWarning {
                 code: WarningCode::ParseBodyTruncated,
                 detail: Some(format!(
-                    "original={} limit={}",
-                    raw_bytes.len(),
-                    MAX_BODY_BYTES
+                    "total={} limit={MAX_TOTAL_BODY_BYTES}",
+                    state.total_bytes
                 )),
-                location: Some(format!("body:text[{idx}]")),
-            });
-        }
-        let location = format!("body:text[{idx}]");
-        let charset = part_charset(part);
-        let (text, mut new_warnings) =
-            unicode::sanitize(raw_bytes, charset.as_deref(), MAX_BODY_BYTES, &location);
-        warnings.append(&mut new_warnings);
-
-        total_bytes = total_bytes.saturating_add(text.len());
-
-        if primary_text.is_none() {
-            primary_text = Some(text);
-        } else {
-            alternates.push(text);
-        }
-
-        if total_bytes >= MAX_TOTAL_BODY_BYTES {
-            body_truncated = true;
-            warnings.push(SecurityWarning {
-                code: WarningCode::ParseBodyTruncated,
-                detail: Some(format!("total={total_bytes} limit={MAX_TOTAL_BODY_BYTES}")),
                 location: Some("body:aggregate".to_string()),
             });
             break;
@@ -335,10 +337,105 @@ fn extract_bodies(
     }
 
     Ok(BodyExtraction {
-        primary_text: primary_text.unwrap_or_default(),
-        alternates,
-        body_truncated,
+        primary_text: state.primary_text.unwrap_or_default(),
+        alternates: state.alternates,
+        body_html: state.body_html,
+        anchor_hrefs: state.anchor_hrefs,
+        body_truncated: state.body_truncated,
     })
+}
+
+/// Mutable accumulator threaded through `extract_bodies` and its
+/// per-part helpers. Keeps the main loop body small enough to stay
+/// inside the workspace function-length and complexity limits.
+#[derive(Debug, Default)]
+struct BodyWalkState {
+    primary_text: Option<String>,
+    alternates: Vec<String>,
+    body_html: Option<String>,
+    anchor_hrefs: Vec<String>,
+    body_truncated: bool,
+    total_bytes: usize,
+}
+
+/// Decode and sanitize a single `text/plain` part, updating `state`
+/// and pushing any new warnings (including `ParseBodyTruncated` when
+/// the raw part exceeds [`MAX_BODY_BYTES`]).
+fn process_text_part(
+    part: &mail_parser::MessagePart<'_>,
+    raw_bytes: &[u8],
+    idx: usize,
+    state: &mut BodyWalkState,
+    warnings: &mut Vec<SecurityWarning>,
+) {
+    if raw_bytes.len() > MAX_BODY_BYTES {
+        state.body_truncated = true;
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseBodyTruncated,
+            detail: Some(format!(
+                "original={} limit={}",
+                raw_bytes.len(),
+                MAX_BODY_BYTES
+            )),
+            location: Some(format!("body:text[{idx}]")),
+        });
+    }
+    let location = format!("body:text[{idx}]");
+    let charset = part_charset(part);
+    let (text, mut new_warnings) =
+        unicode::sanitize(raw_bytes, charset.as_deref(), MAX_BODY_BYTES, &location);
+    warnings.append(&mut new_warnings);
+    state.total_bytes = state.total_bytes.saturating_add(text.len());
+    if state.primary_text.is_none() {
+        state.primary_text = Some(text);
+    } else {
+        state.alternates.push(text);
+    }
+}
+
+/// Run the primary `text/html` part through [`crate::html::process`].
+///
+/// On success: merges the produced warnings into `warnings`, places
+/// the extracted plain text at the primary text slot if empty (else
+/// pushes to alternates), and stores the sanitized html and anchor
+/// hrefs on `state`.
+///
+/// On `ContentError::LimitExceeded`: emits a `ParseBodyTruncated`
+/// warning at `body:html` and continues. Other errors propagate.
+fn process_html_part(
+    part: &mail_parser::MessagePart<'_>,
+    raw_bytes: &[u8],
+    state: &mut BodyWalkState,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Result<(), ContentError> {
+    let charset = part_charset(part);
+    match html::process(raw_bytes, charset.as_deref()) {
+        Ok(result) => {
+            warnings.extend(result.warnings);
+            state.total_bytes = state.total_bytes.saturating_add(result.body_text.len());
+            if state.primary_text.is_none() {
+                state.primary_text = Some(result.body_text);
+            } else {
+                state.alternates.push(result.body_text);
+            }
+            state.body_html = Some(result.body_html);
+            state.anchor_hrefs = result.anchor_hrefs;
+            Ok(())
+        }
+        Err(ContentError::LimitExceeded { kind, limit }) => {
+            state.body_truncated = true;
+            warnings.push(SecurityWarning {
+                code: WarningCode::ParseBodyTruncated,
+                detail: Some(format!(
+                    "original={} limit={limit} kind={kind}",
+                    raw_bytes.len()
+                )),
+                location: Some("body:html".to_string()),
+            });
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Read the `charset` attribute off a part's Content-Type header.
@@ -628,6 +725,13 @@ fn build_attachment_meta(
     }
 
     let filename = part.attachment_name().map(|name| {
+        if contains_bidi_override(name) {
+            warnings.push(SecurityWarning {
+                code: WarningCode::LookalikeFilenameExtensionSpoof,
+                detail: Some(format!("raw={name:?},contains_bidi_override=true")),
+                location: Some(format!("attachment[{idx}]:filename")),
+            });
+        }
         let (unicode_clean, mut ws) = unicode::sanitize(
             name.as_bytes(),
             Some("utf-8"),
@@ -803,7 +907,10 @@ fn sanitize_header_value(
             .join(", "),
         HeaderValue::Address(address) => address
             .iter()
-            .map(format_addr)
+            .map(|addr| {
+                audit_addr_domain_bidi(addr, location, warnings);
+                format_addr(addr)
+            })
             .collect::<Vec<_>>()
             .join(", "),
         _ => return None,
@@ -883,6 +990,75 @@ fn sanitize_filename(name: &str, idx: usize) -> (String, bool) {
     };
     let rewritten = final_name != original;
     (final_name, rewritten)
+}
+
+/// Return true if `s` contains any Unicode bidi-override codepoint.
+/// These characters never appear in legitimate filenames or domains;
+/// their presence is a strong adversarial signal.
+fn contains_bidi_override(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(
+            c,
+            '\u{202A}'
+                | '\u{202B}'
+                | '\u{202C}'
+                | '\u{202D}'
+                | '\u{202E}'
+                | '\u{2066}'
+                | '\u{2067}'
+                | '\u{2068}'
+                | '\u{2069}'
+        )
+    })
+}
+
+/// Return the substring after the last `.` in `filename`, if any.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retained for future visible/declared extension comparison"
+    )
+)]
+fn last_extension(filename: &str) -> Option<&str> {
+    filename.rsplit_once('.').map(|(_, ext)| ext)
+}
+
+/// If `raw_domain` contains any bidi-override codepoint, emit a
+/// `LookalikeHomographDomain` warning with `reason=bidi_pre_strip`.
+/// Detection must occur BEFORE `unicode::sanitize` strips the bidi
+/// chars; afterwards no signal remains.
+fn audit_domain_bidi_prestrip(
+    raw_domain: &str,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) {
+    if !contains_bidi_override(raw_domain) {
+        return;
+    }
+    let ascii = idna::domain_to_ascii(raw_domain.trim()).unwrap_or_else(|_| "invalid".to_string());
+    warnings.push(SecurityWarning {
+        code: WarningCode::LookalikeHomographDomain,
+        detail: Some(format!("domain={ascii},reason=bidi_pre_strip")),
+        location: Some(location.to_string()),
+    });
+}
+
+/// Extract the domain from a `mail_parser::Addr` and run the
+/// pre-strip bidi audit. No-op when the address is missing or has no
+/// `@` separator.
+fn audit_addr_domain_bidi(
+    addr: &mail_parser::Addr<'_>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) {
+    let Some(email) = addr.address.as_deref() else {
+        return;
+    };
+    let Some((_local, domain)) = email.rsplit_once('@') else {
+        return;
+    };
+    audit_domain_bidi_prestrip(domain, location, warnings);
 }
 
 #[cfg(test)]
@@ -1088,14 +1264,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_idn_u_label_address_passes_through_with_no_warnings() {
-        // Raw UTF-8 U-label IDN (Russian "example.rf"). Sprint 4a has no
-        // homograph / mixed-script detection — that's reserved for
-        // Sprint 4b. This test pins the baseline: an IDN address parses
-        // successfully, NFKC-normalizes idempotently, and emits zero
-        // security warnings. When Sprint 4b adds lookalike detection,
-        // this fixture should still pass because the domain is a
-        // legitimate single-script IDN, not a homograph attack.
+    fn parse_idn_u_label_address_emits_only_idn_informational() {
+        // Raw UTF-8 U-label IDN (Russian "example.rf"). Sprint 4b's
+        // lookalike pass classifies any IDN through `idna::domain_to_ascii`,
+        // so a legitimate single-script Cyrillic domain produces an
+        // informational `LookalikeIdnPunycode` warning but MUST NOT
+        // produce a `LookalikeMixedScript` warning — pure Cyrillic is
+        // single-script.
         let raw = "From: Тест <user@\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}>\r\n\
                    Subject: IDN baseline\r\n\
                    \r\n\
@@ -1105,15 +1280,31 @@ mod tests {
         assert!(content.meta.from.is_some());
         let from = content.meta.from.as_deref().unwrap();
         assert!(from.contains("\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}"));
-        assert!(content.security_warnings.is_empty());
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeMixedScript),
+            "single-script Cyrillic IDN must not flag mixed-script, got {:?}",
+            content.security_warnings
+        );
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeIdnPunycode),
+            "expected informational LookalikeIdnPunycode, got {:?}",
+            content.security_warnings
+        );
     }
 
     #[test]
-    fn parse_idn_a_label_address_passes_through_byte_for_byte() {
-        // Punycode A-label form of the same domain. Pure ASCII, so
-        // NFKC is a no-op and the codepoint filter strips nothing.
-        // Pins baseline for when Sprint 4b adds idna decoding — the
-        // A-label should still pass through zero warnings here.
+    fn parse_idn_a_label_address_emits_only_idn_informational() {
+        // Punycode A-label form of the same Cyrillic domain. Pure ASCII
+        // input, so NFKC and the codepoint filter pass it through; the
+        // lookalike pass decodes the `xn--` labels and emits the same
+        // informational `LookalikeIdnPunycode` warning, with no
+        // mixed-script signal.
         let raw = b"From: Test <user@xn--e1afmkfd.xn--p1ai>\r\n\
                     Subject: IDN A-label baseline\r\n\
                     \r\n\
@@ -1121,7 +1312,22 @@ mod tests {
         let content = parse_message(raw).unwrap();
         let from = content.meta.from.as_deref().unwrap();
         assert!(from.contains("xn--e1afmkfd.xn--p1ai"));
-        assert!(content.security_warnings.is_empty());
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeMixedScript),
+            "punycode A-label of Cyrillic IDN must not flag mixed-script, got {:?}",
+            content.security_warnings
+        );
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeIdnPunycode),
+            "expected informational LookalikeIdnPunycode, got {:?}",
+            content.security_warnings
+        );
     }
 
     #[test]
@@ -1156,19 +1362,36 @@ mod tests {
     }
 
     #[test]
-    fn parse_html_only_body_is_refused() {
+    fn content_html_only_populates_body_html_and_body_text() {
         let raw = b"From: a@example\r\n\
                     Content-Type: text/html; charset=utf-8\r\n\
                     \r\n\
-                    <html><body><p>hello</p></body></html>";
+                    <html><body><p>visible text</p></body></html>\r\n";
         let content = parse_message(raw).unwrap();
-        assert!(content.untrusted.body_text.is_empty());
+        assert_eq!(content.untrusted.body_text, "visible text");
+        assert!(content.untrusted.body_html.is_some());
+        let body_html = content.untrusted.body_html.as_deref().unwrap();
+        assert!(body_html.contains("<p>"));
+        assert!(body_html.contains("visible text"));
+    }
+
+    #[test]
+    fn content_html_only_with_hidden_content_emits_warning() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <html><body><p>ok</p>\
+                    <div style=\"display:none\">hidden</div></body></html>\r\n";
+        let content = parse_message(raw).unwrap();
         assert!(
             content
                 .security_warnings
                 .iter()
-                .any(|w| w.code == WarningCode::HtmlBodyUnsanitized)
+                .any(|w| matches!(w.code, WarningCode::HtmlHiddenContentStripped)),
+            "expected HtmlHiddenContentStripped warning, got {:?}",
+            content.security_warnings
         );
+        assert!(!content.untrusted.body_text.contains("hidden"));
     }
 
     #[test]
@@ -1472,6 +1695,97 @@ mod tests {
         let (out, rewritten) = sanitize_filename("invoice-2026-04.pdf", 0);
         assert_eq!(out, "invoice-2026-04.pdf");
         assert!(!rewritten);
+    }
+
+    #[test]
+    fn lookalike_homograph_anchor_fires_via_parse_message() {
+        // HTML body with an anchor whose href domain mixes Latin with a
+        // Cyrillic 'а' (U+0430). `parse_message` must invoke
+        // `lookalike::audit` and surface a `LookalikeMixedScript`
+        // warning located at `html:anchor_href`.
+        let raw = "From: a@example\r\n\
+                   Content-Type: text/html; charset=utf-8\r\n\
+                   \r\n\
+                   <html><body><a href=\"https://p\u{0430}ypal.com/login\">click</a></body></html>\r\n"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeMixedScript
+                    && w.location.as_deref() == Some("html:anchor_href")
+            }),
+            "expected LookalikeMixedScript at html:anchor_href, got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn contains_bidi_override_detects_rlo() {
+        assert!(contains_bidi_override("invoice\u{202E}gpj.exe"));
+        assert!(!contains_bidi_override("invoice.pdf"));
+    }
+
+    #[test]
+    fn last_extension_returns_after_final_dot() {
+        assert_eq!(last_extension("file.tar.gz"), Some("gz"));
+        assert_eq!(last_extension("noext"), None);
+        assert_eq!(last_extension(".hidden"), Some("hidden"));
+    }
+
+    #[test]
+    fn attachment_with_rlo_bidi_extension_emits_lookalike_warning() {
+        // Filename "resume_CV<RLO>gpj.exe" — visually renders as
+        // "resume_CVexe.jpg" after right-to-left override is applied.
+        let raw = "From: a@example\r\n\
+                   Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+                   \r\n\
+                   --BOUND\r\n\
+                   Content-Type: text/plain\r\n\
+                   \r\n\
+                   hello\r\n\
+                   --BOUND\r\n\
+                   Content-Type: application/octet-stream\r\n\
+                   Content-Disposition: attachment; filename=\"resume_CV\u{202E}gpj.exe\"\r\n\
+                   Content-Transfer-Encoding: base64\r\n\
+                   \r\n\
+                   AAAA\r\n\
+                   --BOUND--\r\n"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeFilenameExtensionSpoof
+                    && w.location.as_deref() == Some("attachment[0]:filename")
+            }),
+            "expected LookalikeFilenameExtensionSpoof at attachment[0]:filename, got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn from_header_with_bidi_domain_emits_homograph_warning() {
+        // RLO codepoint embedded in the From: header domain. Detection
+        // must fire BEFORE the unicode sanitize pass strips the bidi
+        // char, so it lives in `audit_addr_domain_bidi` at the raw-Addr
+        // boundary.
+        let raw = "From: Bob <bob@exa\u{202E}mple.com>\r\n\
+                   Subject: hi\r\n\
+                   \r\n\
+                   body"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeHomographDomain
+                    && w.location.as_deref() == Some("header:from")
+                    && w.detail
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("reason=bidi_pre_strip")
+            }),
+            "expected LookalikeHomographDomain bidi_pre_strip at header:from, got {:?}",
+            content.security_warnings
+        );
     }
 
     #[test]

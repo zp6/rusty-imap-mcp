@@ -1,0 +1,34 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "info@xn--mnchen-3ya.de",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 260,
+    "references": [],
+    "subject": "Begruessung",
+    "to": [
+      "empfaenger@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "lookalike_idn_punycode",
+      "detail": "domain=xn--mnchen-3ya.de,ulabel=münchen.de",
+      "location": "header:from"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": null,
+    "body_text": "Guten Tag,\n\nvielen Dank fuer Ihre Anfrage. Wir melden uns in Kuerze.\n\nMit freundlichen Gruessen\nStadtverwaltung\n"
+  }
+}

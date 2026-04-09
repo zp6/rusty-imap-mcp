@@ -1,0 +1,13 @@
+{
+  "description": "Multipart message with an attachment whose filename embeds a U+202E RLO override to disguise an .exe as a .jpg. Task 16's bidi-prestrip path emits lookalike_filename_extension_spoof.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": [],
+  "warning_codes": [
+    "lookalike_filename_extension_spoof"
+  ],
+  "forbidden_warning_codes": [],
+  "meta": {
+    "attachment_count": 1
+  }
+}

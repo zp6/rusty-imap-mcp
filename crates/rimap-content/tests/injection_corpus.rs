@@ -112,7 +112,15 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
         WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
         WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
-        WarningCode::HtmlBodyUnsanitized => "html_body_unsanitized",
+        WarningCode::HtmlHiddenContentStripped => "html_hidden_content_stripped",
+        WarningCode::HtmlLinkTextHrefMismatch => "html_link_text_href_mismatch",
+        WarningCode::HtmlScriptStripped => "html_script_stripped",
+        WarningCode::HtmlStyleStripped => "html_style_stripped",
+        WarningCode::HtmlRemoteImageStripped => "html_remote_image_stripped",
+        WarningCode::LookalikeMixedScript => "lookalike_mixed_script",
+        WarningCode::LookalikeHomographDomain => "lookalike_homograph_domain",
+        WarningCode::LookalikeIdnPunycode => "lookalike_idn_punycode",
+        WarningCode::LookalikeFilenameExtensionSpoof => "lookalike_filename_extension_spoof",
         // Required because WarningCode is #[non_exhaustive] (exhaustive
         // match is not allowed outside the defining crate). Any future
         // variant reaching this arm is a test-harness gap and should

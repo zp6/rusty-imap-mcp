@@ -1,0 +1,13 @@
+{
+  "description": "From header and anchor href both use a Cyrillic 'а' in place of Latin 'a' in 'paypal.com'. Fires lookalike_mixed_script (header + href). idna folds the domain to xn-- form so lookalike_idn_punycode also fires.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": [],
+  "warning_codes": [
+    "lookalike_mixed_script",
+    "lookalike_idn_punycode"
+  ],
+  "forbidden_warning_codes": [
+    "lookalike_homograph_domain"
+  ]
+}

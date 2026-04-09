@@ -26,6 +26,7 @@ expression: value
   "security_warnings": [],
   "untrusted": {
     "alternate_parts": [],
+    "body_html": null,
     "body_text": "Version 1.2.3 is out.\n"
   }
 }

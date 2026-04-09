@@ -1,0 +1,34 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "sender@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 264,
+    "references": [],
+    "subject": "Statement ready",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "html_link_text_href_mismatch",
+      "detail": "text_domain=example.com,href_domain=attacker.example",
+      "location": "html:anchor"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": "<p>Your statement is ready.</p><p><a href=\"https://attacker.example/phish\" rel=\"noopener noreferrer\">bank.example.com</a></p>\n",
+    "body_text": "Your statement is ready. bank.example.com"
+  }
+}

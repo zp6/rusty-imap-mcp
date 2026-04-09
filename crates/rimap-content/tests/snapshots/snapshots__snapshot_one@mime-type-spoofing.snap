@@ -34,6 +34,7 @@ expression: value
   ],
   "untrusted": {
     "alternate_parts": [],
+    "body_html": null,
     "body_text": "see attached"
   }
 }

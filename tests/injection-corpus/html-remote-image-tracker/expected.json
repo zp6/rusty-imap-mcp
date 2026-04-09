@@ -1,0 +1,12 @@
+{
+  "description": "1x1 remote tracking pixel. ammonia preserves the <img> with src stripped, but scraper sees the pre-sanitize <img src> and emits html_remote_image_stripped.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": [
+    "tracker.example"
+  ],
+  "warning_codes": [
+    "html_remote_image_stripped"
+  ],
+  "forbidden_warning_codes": []
+}
