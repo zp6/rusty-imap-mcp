@@ -192,3 +192,14 @@ similar_names = "allow"
 lto = "thin"
 codegen-units = 1
 strip = "debuginfo"
+
+# Optimize third-party dependencies in debug/test builds. Sprint 4b Task 18
+# adds three proptest properties at 10_000 cases each that drive ammonia +
+# scraper through the full parse_message pipeline; without this, the html
+# properties take ~10 minutes in an unoptimized build. Crates we own still
+# compile with full debuginfo and no optimization.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test.package."*"]
+opt-level = 3
