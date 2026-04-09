@@ -20,7 +20,7 @@
     )
 )]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use ammonia::Builder;
@@ -133,11 +133,32 @@ static AMMONIA_BUILDER: LazyLock<Builder<'static>> = LazyLock::new(build_ammonia
 
 /// Build the ammonia `Builder` used for Sprint 4b html sanitization.
 ///
-/// Restricts URL schemes, strips `<img>` remote sources while preserving
-/// `alt`/`width`/`height`. See the design spec §4.6 for the rationale.
+/// Restricts URL schemes to `{http, https, mailto, tel}` and locks
+/// `<img>` attributes to `{alt, width, height}`, dropping `src`,
+/// `srcset`, and other remote-fetching surfaces. Ammonia's defaults
+/// already strip `<script>`, `<style>`, and event handler attributes.
 fn build_ammonia_builder() -> Builder<'static> {
-    // Implementation lands in Task 10. Return default for now.
-    Builder::default()
+    let mut builder = Builder::default();
+    let schemes: HashSet<&'static str> = ["http", "https", "mailto", "tel"].into_iter().collect();
+    builder.url_schemes(schemes);
+    let mut tag_attrs: HashMap<&'static str, HashSet<&'static str>> = HashMap::new();
+    tag_attrs.insert("img", ["alt", "width", "height"].into_iter().collect());
+    builder.tag_attributes(tag_attrs);
+    builder
+}
+
+/// Count elements in `document` matching `selector`.
+fn count_matching(document: &Html, selector: &Selector) -> usize {
+    document.select(selector).count()
+}
+
+/// Count `<img>` elements in `document` whose `src` attribute is
+/// present and non-empty after trimming.
+fn count_img_with_src(document: &Html) -> usize {
+    document
+        .select(&SEL_IMG)
+        .filter(|el| el.value().attr("src").is_some_and(|s| !s.trim().is_empty()))
+        .count()
 }
 
 /// Parse a single `style="..."` attribute value into lowercased
@@ -574,13 +595,54 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
     let hidden_indices: HashSet<ElementIndex> = hidden_hits.iter().map(|(idx, _)| *idx).collect();
     let (body_text, mut text_warnings) = extract_text(&document, &hidden_indices);
     warnings.append(&mut text_warnings);
-    // Stubs filled in Tasks 10–11.
+    let body_html = sanitize_body(&document, &decoded, &mut warnings);
+    // anchor_hrefs filled in Task 11.
     Ok(HtmlResult {
         body_text,
-        body_html: String::new(),
+        body_html,
         anchor_hrefs: Vec::new(),
         warnings,
     })
+}
+
+/// Stage 7: count pre-sanitize remote-content elements on the
+/// scraper-parsed `document`, run `ammonia::clean` on `decoded`, and
+/// emit `HtmlScriptStripped` / `HtmlStyleStripped` /
+/// `HtmlRemoteImageStripped` warnings when the pre-sanitize count is
+/// non-zero. Returns the sanitized HTML string.
+///
+/// The counting deliberately runs against the same `Html` value used
+/// by all earlier detection stages (html5ever 0.39 via scraper), not
+/// against ammonia's internal parse (html5ever 0.35). This means a
+/// crafted divergence between the two tokenizers is observable as a
+/// warning-count vs. `body_html` mismatch — see the Task 17 corpus.
+fn sanitize_body(document: &Html, decoded: &str, warnings: &mut Vec<SecurityWarning>) -> String {
+    let script_count = count_matching(document, &SEL_SCRIPT);
+    let style_count = count_matching(document, &SEL_STYLE);
+    let remote_img_count = count_img_with_src(document);
+    let body_html = AMMONIA_BUILDER.clean(decoded).to_string();
+    if script_count > 0 {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlScriptStripped,
+            detail: Some(format!("count={script_count}")),
+            location: Some("body:html".to_string()),
+        });
+    }
+    if style_count > 0 {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlStyleStripped,
+            detail: Some(format!("count={style_count}")),
+            location: Some("body:html".to_string()),
+        });
+    }
+    if remote_img_count > 0 {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlRemoteImageStripped,
+            detail: Some(format!("count={remote_img_count}")),
+            location: Some("body:html".to_string()),
+        });
+    }
+    body_html
 }
 
 #[cfg(test)]
@@ -605,6 +667,7 @@ mod tests {
     fn process_empty_input_returns_empty_result() {
         let result = process(b"", None).expect("empty input is valid");
         assert!(result.body_text.is_empty());
+        // ammonia returns an empty string for empty input.
         assert!(result.body_html.is_empty());
         assert!(result.anchor_hrefs.is_empty());
         assert!(result.warnings.is_empty());
@@ -616,7 +679,7 @@ mod tests {
             <body><p>hello</p></body></html>";
         let result = process(html, Some("utf-8")).expect("valid html parses");
         assert_eq!(result.body_text, "hello");
-        assert!(result.body_html.is_empty());
+        assert!(result.body_html.contains("<p>hello</p>"));
         assert!(result.anchor_hrefs.is_empty());
         assert!(result.warnings.is_empty());
     }
@@ -947,6 +1010,66 @@ mod tests {
         assert!(result.body_text.contains("after"));
         assert!(!result.body_text.contains("nested hidden"));
         assert!(!result.body_text.contains("still hidden"));
+    }
+
+    #[test]
+    fn sanitize_produces_body_html_with_safe_tags() {
+        let input = b"<html><body><p>hello <strong>world</strong></p></body></html>";
+        let result = process(input, None).expect("ok");
+        assert!(result.body_html.contains("<p>"));
+        assert!(result.body_html.contains("<strong>"));
+        assert!(result.body_html.contains("hello"));
+    }
+
+    #[test]
+    fn sanitize_strips_script_and_warns() {
+        let input = br"<html><body><p>ok</p><script>evil()</script></body></html>";
+        let result = process(input, None).expect("ok");
+        assert!(!result.body_html.contains("<script"));
+        assert!(!result.body_html.contains("evil()"));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlScriptStripped))
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_style_and_warns() {
+        let input = br"<html><body><style>.x{color:red}</style><p>ok</p></body></html>";
+        let result = process(input, None).expect("ok");
+        assert!(!result.body_html.contains("<style"));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlStyleStripped))
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_img_src_preserves_alt_and_warns() {
+        let input = br#"<html><body>
+            <img src="https://tracker.example/px.gif" alt="invoice attached" width="1" height="1">
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(!result.body_html.contains("tracker.example"));
+        assert!(!result.body_html.contains("src="));
+        assert!(result.body_html.contains("alt=\"invoice attached\""));
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlRemoteImageStripped))
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_javascript_url_from_anchor() {
+        let input = br#"<html><body><a href="javascript:alert(1)">click</a></body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(!result.body_html.contains("javascript:"));
     }
 
     #[test]
