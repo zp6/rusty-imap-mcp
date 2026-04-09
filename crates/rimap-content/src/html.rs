@@ -20,6 +20,7 @@
     )
 )]
 
+use std::collections::HashSet;
 use std::sync::LazyLock;
 
 use ammonia::Builder;
@@ -382,6 +383,126 @@ fn detect_hidden(document: &Html) -> (Vec<(ElementIndex, HiddenMethod)>, usize) 
     (hits, overflow)
 }
 
+/// Extract plain text from the document, skipping hidden elements
+/// and non-content tags (`<script>`, `<style>`, `<noscript>`,
+/// `<template>`, `<head>`, `<title>`).
+///
+/// `hidden_indices` is the set of element indices produced by
+/// [`detect_hidden`]; it is consulted during a pre-order recursion
+/// over `<body>`'s descendants. The recursion increments a shared
+/// counter once per element child encountered, matching the
+/// enumeration order of `select(&SEL_BODY_ALL)` so the two index
+/// spaces stay aligned.
+///
+/// The collected buffer is whitespace-normalized via
+/// [`normalize_whitespace`] and then routed through
+/// [`crate::unicode::sanitize`] to share the unicode pipeline used by
+/// the rest of `rimap-content`. Any warnings produced by the
+/// sanitizer are returned alongside the text so the caller can merge
+/// them into the [`HtmlResult`] warnings list.
+fn extract_text(
+    document: &Html,
+    hidden_indices: &HashSet<ElementIndex>,
+) -> (String, Vec<SecurityWarning>) {
+    let mut buf = String::new();
+    let body_selector = compile_selector("body");
+    if let Some(body_el) = document.select(&body_selector).next() {
+        let mut counter: usize = 0;
+        for child in body_el.children() {
+            if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                walk_element(child_el, hidden_indices, &mut buf, &mut counter);
+            } else if let Some(text) = child.value().as_text() {
+                push_text(&mut buf, text);
+            }
+        }
+    }
+    let normalized = normalize_whitespace(&buf);
+    crate::unicode::sanitize(
+        normalized.as_bytes(),
+        Some("utf-8"),
+        MAX_HTML_BYTES,
+        "body:html",
+    )
+}
+
+/// Recursive helper for [`extract_text`].
+///
+/// Visits `el` (already counted by the caller against
+/// `hidden_indices`), short-circuiting on non-content tags, then
+/// walks its children: element children recurse via this function,
+/// text children are appended to `out`. Each element child increments
+/// `counter` exactly once before its hidden-skip check, mirroring the
+/// pre-order enumeration in [`detect_hidden`].
+fn collect_visible_text(
+    el: scraper::ElementRef<'_>,
+    hidden_indices: &HashSet<ElementIndex>,
+    out: &mut String,
+    counter: &mut usize,
+) {
+    let tag = el.value().name();
+    if matches!(
+        tag,
+        "script" | "style" | "noscript" | "template" | "head" | "title"
+    ) {
+        return;
+    }
+    for child in el.children() {
+        if let Some(child_el) = scraper::ElementRef::wrap(child) {
+            walk_element(child_el, hidden_indices, out, counter);
+        } else if let Some(text) = child.value().as_text() {
+            push_text(out, text);
+        }
+    }
+}
+
+/// Increment the counter for `child_el`, skip if hidden, otherwise
+/// recurse via [`collect_visible_text`]. Extracted so the body-root
+/// loop and the recursive walker share identical counting semantics.
+fn walk_element(
+    child_el: scraper::ElementRef<'_>,
+    hidden_indices: &HashSet<ElementIndex>,
+    out: &mut String,
+    counter: &mut usize,
+) {
+    let my_idx = *counter;
+    *counter += 1;
+    if hidden_indices.contains(&my_idx) {
+        return;
+    }
+    collect_visible_text(child_el, hidden_indices, out, counter);
+}
+
+/// Append a text node's contents to `out`, inserting a separating
+/// space when the buffer is non-empty and does not already end in
+/// whitespace. Internal whitespace is left intact for
+/// [`normalize_whitespace`] to collapse.
+fn push_text(out: &mut String, text: &str) {
+    if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+        out.push(' ');
+    }
+    out.push_str(text);
+}
+
+/// Collapse runs of ASCII/Unicode whitespace in `s` to single spaces
+/// and trim leading/trailing whitespace.
+fn normalize_whitespace(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_space = false;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    let trimmed = out.trim_end();
+    trimmed.to_string()
+}
+
 /// Process a raw HTML body into sanitized text + html + warnings.
 ///
 /// # Arguments
@@ -450,13 +571,12 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
             location: Some("html:anchor".to_string()),
         });
     }
-    // `hidden_hits` will be consumed by Task 9 (text extraction) to skip
-    // hidden subtrees. Bind it locally so the value survives the stub
-    // return below without leaking through the public result type.
-    let _ = hidden_hits;
-    // Stubs filled in Tasks 9–11.
+    let hidden_indices: HashSet<ElementIndex> = hidden_hits.iter().map(|(idx, _)| *idx).collect();
+    let (body_text, mut text_warnings) = extract_text(&document, &hidden_indices);
+    warnings.append(&mut text_warnings);
+    // Stubs filled in Tasks 10–11.
     Ok(HtmlResult {
-        body_text: String::new(),
+        body_text,
         body_html: String::new(),
         anchor_hrefs: Vec::new(),
         warnings,
@@ -495,7 +615,7 @@ mod tests {
         let html = b"<!DOCTYPE html><html><head><title>Hi</title></head>\
             <body><p>hello</p></body></html>";
         let result = process(html, Some("utf-8")).expect("valid html parses");
-        assert!(result.body_text.is_empty());
+        assert_eq!(result.body_text, "hello");
         assert!(result.body_html.is_empty());
         assert!(result.anchor_hrefs.is_empty());
         assert!(result.warnings.is_empty());
@@ -507,7 +627,8 @@ mod tests {
         // erroring; verify the pipeline tolerates it.
         let html = b"<html><body><p>oops<div><span>still here";
         let result = process(html, None).expect("malformed html still parses");
-        assert!(result.body_text.is_empty());
+        assert!(result.body_text.contains("oops"));
+        assert!(result.body_text.contains("still here"));
         assert!(result.warnings.is_empty());
     }
 
@@ -728,6 +849,104 @@ mod tests {
                 .iter()
                 .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch))
         );
+    }
+
+    #[test]
+    fn extract_text_returns_visible_body_text() {
+        let input = br#"<html>
+            <head><title>should be skipped</title></head>
+            <body>
+                <p>visible paragraph</p>
+                <script>alert(1)</script>
+                <style>.x{color:red}</style>
+                <div style="display:none">hidden secret</div>
+                <p>second paragraph</p>
+            </body>
+        </html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            result.body_text.contains("visible paragraph"),
+            "got {:?}",
+            result.body_text
+        );
+        assert!(
+            result.body_text.contains("second paragraph"),
+            "got {:?}",
+            result.body_text
+        );
+        assert!(!result.body_text.contains("alert(1)"));
+        assert!(!result.body_text.contains("should be skipped"));
+        assert!(
+            !result.body_text.contains("hidden secret"),
+            "hidden leaked: {:?}",
+            result.body_text
+        );
+        assert!(!result.body_text.contains(".x{color:red}"));
+    }
+
+    #[test]
+    fn extract_text_normalizes_whitespace() {
+        let input = b"<html><body><p>hello    world</p>   <p>line\t\ttwo</p></body></html>";
+        let result = process(input, None).expect("ok");
+        assert!(!result.body_text.contains("    "));
+        assert!(!result.body_text.contains("\t\t"));
+        assert!(result.body_text.contains("hello world"));
+        assert!(result.body_text.contains("line two"));
+    }
+
+    #[test]
+    fn extract_text_empty_body_returns_empty_string() {
+        let input = b"<html><head><title>t</title></head><body></body></html>";
+        let result = process(input, None).expect("ok");
+        assert!(result.body_text.is_empty(), "got {:?}", result.body_text);
+    }
+
+    #[test]
+    fn extract_text_index_alignment_skips_only_hidden_elements() {
+        // Three sibling spans, the middle one hidden via display:none.
+        // Visible siblings on either side must survive; the hidden one
+        // and its text must not. This pins the index alignment between
+        // detect_hidden's SEL_BODY_ALL enumeration and extract_text's
+        // pre-order recursion.
+        let input = br#"<html><body>
+            <span>alpha</span>
+            <span style="display:none">SECRET</span>
+            <span>omega</span>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            result.body_text.contains("alpha"),
+            "got {:?}",
+            result.body_text
+        );
+        assert!(
+            result.body_text.contains("omega"),
+            "got {:?}",
+            result.body_text
+        );
+        assert!(
+            !result.body_text.contains("SECRET"),
+            "hidden text leaked, alignment broken: {:?}",
+            result.body_text
+        );
+    }
+
+    #[test]
+    fn extract_text_index_alignment_handles_nested_hidden() {
+        // Hidden element with a visible-text descendant: the entire
+        // hidden subtree must be omitted. A later visible sibling at a
+        // larger index confirms the counter advanced past the skipped
+        // descendants in lock-step with detect_hidden.
+        let input = br#"<html><body>
+            <p>before</p>
+            <div style="display:none"><span>nested hidden</span><em>still hidden</em></div>
+            <p>after</p>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(result.body_text.contains("before"));
+        assert!(result.body_text.contains("after"));
+        assert!(!result.body_text.contains("nested hidden"));
+        assert!(!result.body_text.contains("still hidden"));
     }
 
     #[test]
