@@ -1,0 +1,34 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "sender@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 257,
+    "references": [],
+    "subject": "Account update",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "html_script_stripped",
+      "detail": "count=1",
+      "location": "body:html"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": "<p>Account update.</p>\n",
+    "body_text": "Account update."
+  }
+}

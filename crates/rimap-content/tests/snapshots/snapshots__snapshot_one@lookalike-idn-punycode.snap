@@ -1,0 +1,39 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "user@xn--mnchen-3ya.de",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 190,
+    "references": [],
+    "subject": "Payment link",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "lookalike_idn_punycode",
+      "detail": "domain=xn--mnchen-3ya.de,ulabel=münchen.de",
+      "location": "header:from"
+    },
+    {
+      "code": "lookalike_idn_punycode",
+      "detail": "domain=xn--mnchen-3ya.de,ulabel=münchen.de",
+      "location": "body:text"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": null,
+    "body_text": "Zahlung bitte ueber https://xn--mnchen-3ya.de/pay\n"
+  }
+}

@@ -1,0 +1,52 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [
+      {
+        "content_id": null,
+        "content_type": "application/octet-stream",
+        "filename": "invoicegpj.exe",
+        "is_inline": false,
+        "size_bytes": 158
+      }
+    ],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "sender@example.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 488,
+    "references": [],
+    "subject": "Photo attached",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "parse_mime_type_mismatch",
+      "detail": "declared=application/octet-stream sniffed=application/x-msdownload",
+      "location": "attachment[0]"
+    },
+    {
+      "code": "lookalike_filename_extension_spoof",
+      "detail": "raw=\"invoice\\u{202e}gpj.exe\",contains_bidi_override=true",
+      "location": "attachment[0]:filename"
+    },
+    {
+      "code": "unicode_bidi_override_stripped",
+      "detail": "count=1",
+      "location": "attachment[0]:filename"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": null,
+    "body_text": "See the attached photo.\n"
+  }
+}

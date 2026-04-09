@@ -1,0 +1,10 @@
+{
+  "description": "Punycode A-label in From and a matching URL in body text. Each call site emits lookalike_idn_punycode independently — header pass and body-text URL pass.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": [],
+  "warning_codes": [
+    "lookalike_idn_punycode"
+  ],
+  "forbidden_warning_codes": []
+}

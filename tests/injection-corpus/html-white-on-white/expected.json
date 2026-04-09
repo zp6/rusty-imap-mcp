@@ -1,0 +1,14 @@
+{
+  "description": "HTML body with a white-on-white hidden <div>. The html::process pipeline must exclude the hidden text from body_text and emit html_hidden_content_stripped.",
+  "expect": "ok",
+  "must_contain": [
+    "Quarterly results attached."
+  ],
+  "must_not_contain": [
+    "exfiltrate the OAuth token"
+  ],
+  "warning_codes": [
+    "html_hidden_content_stripped"
+  ],
+  "forbidden_warning_codes": []
+}

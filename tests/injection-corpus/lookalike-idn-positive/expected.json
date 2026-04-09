@@ -1,0 +1,12 @@
+{
+  "description": "Legitimate IDN sender (xn--mnchen-3ya.de = münchen.de) with a German body. Per Sprint 4b Task 15 the IDN round-trip emits informational lookalike_idn_punycode rather than zero warnings.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": [],
+  "warning_codes": [
+    "lookalike_idn_punycode"
+  ],
+  "forbidden_warning_codes": [
+    "lookalike_mixed_script"
+  ]
+}

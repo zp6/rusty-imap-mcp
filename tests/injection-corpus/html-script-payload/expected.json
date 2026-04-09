@@ -1,0 +1,14 @@
+{
+  "description": "Inline <script> tag with a fetch+document.cookie exfiltration payload. ammonia drops the script and scraper's pre-sanitize count drives html_script_stripped.",
+  "expect": "ok",
+  "must_contain": [],
+  "must_not_contain": [
+    "fetch(",
+    "document.cookie",
+    "evil.example"
+  ],
+  "warning_codes": [
+    "html_script_stripped"
+  ],
+  "forbidden_warning_codes": []
+}

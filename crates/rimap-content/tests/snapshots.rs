@@ -110,3 +110,53 @@ fn snapshot_attachment_path_traversal() {
 fn snapshot_html_only_hidden_instructions() {
     snapshot_one("html-only-hidden-instructions");
 }
+
+#[test]
+fn snapshot_html_white_on_white() {
+    snapshot_one("html-white-on-white");
+}
+
+#[test]
+fn snapshot_html_display_none() {
+    snapshot_one("html-display-none");
+}
+
+#[test]
+fn snapshot_html_text_href_mismatch() {
+    snapshot_one("html-text-href-mismatch");
+}
+
+#[test]
+fn snapshot_html_remote_image_tracker() {
+    snapshot_one("html-remote-image-tracker");
+}
+
+#[test]
+fn snapshot_html_script_payload() {
+    snapshot_one("html-script-payload");
+}
+
+#[test]
+fn snapshot_lookalike_homograph_paypal() {
+    snapshot_one("lookalike-homograph-paypal");
+}
+
+#[test]
+fn snapshot_lookalike_idn_positive() {
+    snapshot_one("lookalike-idn-positive");
+}
+
+#[test]
+fn snapshot_lookalike_idn_punycode() {
+    snapshot_one("lookalike-idn-punycode");
+}
+
+#[test]
+fn snapshot_lookalike_filename_rlo_bidi() {
+    snapshot_one("lookalike-filename-rlo-bidi");
+}
+
+#[test]
+fn snapshot_html_tokenizer_divergence() {
+    snapshot_one("html-tokenizer-divergence");
+}

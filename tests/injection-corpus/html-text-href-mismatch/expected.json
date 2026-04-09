@@ -1,0 +1,12 @@
+{
+  "description": "Anchor whose visible text claims bank.example.com but whose href targets attacker.example. Exercises the html_link_text_href_mismatch detector.",
+  "expect": "ok",
+  "must_contain": [
+    "statement is ready"
+  ],
+  "must_not_contain": [],
+  "warning_codes": [
+    "html_link_text_href_mismatch"
+  ],
+  "forbidden_warning_codes": []
+}
