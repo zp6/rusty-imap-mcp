@@ -15,7 +15,7 @@ use linkify::{LinkFinder, LinkKind};
 use unicode_script::{Script, UnicodeScript};
 
 use crate::confusables::CONFUSABLES;
-use crate::output::{AttachmentMeta, ContentMeta, SecurityWarning, WarningCode};
+use crate::output::{ContentMeta, SecurityWarning, WarningCode};
 
 /// Input bundle for [`audit`]. Built by `parse::parse_message` after
 /// body extraction completes.
@@ -27,12 +27,6 @@ pub(crate) struct LookalikeInput<'a> {
     pub body_text: &'a str,
     /// Anchor hrefs collected from the sanitized HTML body.
     pub anchor_hrefs: &'a [String],
-    /// Attachment metadata, used for filename audits.
-    #[expect(
-        dead_code,
-        reason = "consumed by filename bidi audit in Sprint 4b Task 16"
-    )]
-    pub attachments: &'a [AttachmentMeta],
 }
 
 /// Maximum `body_text` bytes scanned for URL tokens via linkify.
@@ -358,12 +352,10 @@ mod tests {
         body_text: &str,
         anchor_hrefs: &[String],
     ) -> Vec<SecurityWarning> {
-        let attachments: Vec<AttachmentMeta> = Vec::new();
         audit(&LookalikeInput {
             meta,
             body_text,
             anchor_hrefs,
-            attachments: &attachments,
         })
     }
 

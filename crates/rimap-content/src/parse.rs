@@ -90,7 +90,6 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
         meta: &content.meta,
         body_text: &content.untrusted.body_text,
         anchor_hrefs: &html_anchor_hrefs,
-        attachments: &content.meta.attachments,
     });
     content.security_warnings.extend(lookalike_warnings);
 
@@ -174,8 +173,9 @@ fn address_strings(
     };
     address
         .iter()
-        .map(format_addr)
-        .map(|raw| {
+        .map(|addr| {
+            audit_addr_domain_bidi(addr, location, warnings);
+            let raw = format_addr(addr);
             let (text, mut new_warnings) =
                 unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
             warnings.append(&mut new_warnings);
@@ -190,7 +190,9 @@ fn first_address_string(
     location: &str,
     warnings: &mut Vec<SecurityWarning>,
 ) -> Option<String> {
-    let raw = format_addr(address?.first()?);
+    let addr = address?.first()?;
+    audit_addr_domain_bidi(addr, location, warnings);
+    let raw = format_addr(addr);
     let (text, mut new_warnings) =
         unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
     warnings.append(&mut new_warnings);
@@ -723,6 +725,13 @@ fn build_attachment_meta(
     }
 
     let filename = part.attachment_name().map(|name| {
+        if contains_bidi_override(name) {
+            warnings.push(SecurityWarning {
+                code: WarningCode::LookalikeFilenameExtensionSpoof,
+                detail: Some(format!("raw={name:?},contains_bidi_override=true")),
+                location: Some(format!("attachment[{idx}]:filename")),
+            });
+        }
         let (unicode_clean, mut ws) = unicode::sanitize(
             name.as_bytes(),
             Some("utf-8"),
@@ -898,7 +907,10 @@ fn sanitize_header_value(
             .join(", "),
         HeaderValue::Address(address) => address
             .iter()
-            .map(format_addr)
+            .map(|addr| {
+                audit_addr_domain_bidi(addr, location, warnings);
+                format_addr(addr)
+            })
             .collect::<Vec<_>>()
             .join(", "),
         _ => return None,
@@ -978,6 +990,75 @@ fn sanitize_filename(name: &str, idx: usize) -> (String, bool) {
     };
     let rewritten = final_name != original;
     (final_name, rewritten)
+}
+
+/// Return true if `s` contains any Unicode bidi-override codepoint.
+/// These characters never appear in legitimate filenames or domains;
+/// their presence is a strong adversarial signal.
+fn contains_bidi_override(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(
+            c,
+            '\u{202A}'
+                | '\u{202B}'
+                | '\u{202C}'
+                | '\u{202D}'
+                | '\u{202E}'
+                | '\u{2066}'
+                | '\u{2067}'
+                | '\u{2068}'
+                | '\u{2069}'
+        )
+    })
+}
+
+/// Return the substring after the last `.` in `filename`, if any.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "retained for future visible/declared extension comparison"
+    )
+)]
+fn last_extension(filename: &str) -> Option<&str> {
+    filename.rsplit_once('.').map(|(_, ext)| ext)
+}
+
+/// If `raw_domain` contains any bidi-override codepoint, emit a
+/// `LookalikeHomographDomain` warning with `reason=bidi_pre_strip`.
+/// Detection must occur BEFORE `unicode::sanitize` strips the bidi
+/// chars; afterwards no signal remains.
+fn audit_domain_bidi_prestrip(
+    raw_domain: &str,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) {
+    if !contains_bidi_override(raw_domain) {
+        return;
+    }
+    let ascii = idna::domain_to_ascii(raw_domain.trim()).unwrap_or_else(|_| "invalid".to_string());
+    warnings.push(SecurityWarning {
+        code: WarningCode::LookalikeHomographDomain,
+        detail: Some(format!("domain={ascii},reason=bidi_pre_strip")),
+        location: Some(location.to_string()),
+    });
+}
+
+/// Extract the domain from a `mail_parser::Addr` and run the
+/// pre-strip bidi audit. No-op when the address is missing or has no
+/// `@` separator.
+fn audit_addr_domain_bidi(
+    addr: &mail_parser::Addr<'_>,
+    location: &str,
+    warnings: &mut Vec<SecurityWarning>,
+) {
+    let Some(email) = addr.address.as_deref() else {
+        return;
+    };
+    let Some((_local, domain)) = email.rsplit_once('@') else {
+        return;
+    };
+    audit_domain_bidi_prestrip(domain, location, warnings);
 }
 
 #[cfg(test)]
@@ -1634,6 +1715,75 @@ mod tests {
                     && w.location.as_deref() == Some("html:anchor_href")
             }),
             "expected LookalikeMixedScript at html:anchor_href, got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn contains_bidi_override_detects_rlo() {
+        assert!(contains_bidi_override("invoice\u{202E}gpj.exe"));
+        assert!(!contains_bidi_override("invoice.pdf"));
+    }
+
+    #[test]
+    fn last_extension_returns_after_final_dot() {
+        assert_eq!(last_extension("file.tar.gz"), Some("gz"));
+        assert_eq!(last_extension("noext"), None);
+        assert_eq!(last_extension(".hidden"), Some("hidden"));
+    }
+
+    #[test]
+    fn attachment_with_rlo_bidi_extension_emits_lookalike_warning() {
+        // Filename "resume_CV<RLO>gpj.exe" — visually renders as
+        // "resume_CVexe.jpg" after right-to-left override is applied.
+        let raw = "From: a@example\r\n\
+                   Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+                   \r\n\
+                   --BOUND\r\n\
+                   Content-Type: text/plain\r\n\
+                   \r\n\
+                   hello\r\n\
+                   --BOUND\r\n\
+                   Content-Type: application/octet-stream\r\n\
+                   Content-Disposition: attachment; filename=\"resume_CV\u{202E}gpj.exe\"\r\n\
+                   Content-Transfer-Encoding: base64\r\n\
+                   \r\n\
+                   AAAA\r\n\
+                   --BOUND--\r\n"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeFilenameExtensionSpoof
+                    && w.location.as_deref() == Some("attachment[0]:filename")
+            }),
+            "expected LookalikeFilenameExtensionSpoof at attachment[0]:filename, got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn from_header_with_bidi_domain_emits_homograph_warning() {
+        // RLO codepoint embedded in the From: header domain. Detection
+        // must fire BEFORE the unicode sanitize pass strips the bidi
+        // char, so it lives in `audit_addr_domain_bidi` at the raw-Addr
+        // boundary.
+        let raw = "From: Bob <bob@exa\u{202E}mple.com>\r\n\
+                   Subject: hi\r\n\
+                   \r\n\
+                   body"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeHomographDomain
+                    && w.location.as_deref() == Some("header:from")
+                    && w.detail
+                        .as_deref()
+                        .unwrap_or("")
+                        .contains("reason=bidi_pre_strip")
+            }),
+            "expected LookalikeHomographDomain bidi_pre_strip at header:from, got {:?}",
             content.security_warnings
         );
     }
