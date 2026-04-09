@@ -23,7 +23,7 @@
 use std::sync::LazyLock;
 
 use ammonia::Builder;
-use scraper::Selector;
+use scraper::{Html, Selector};
 
 use crate::error::ContentError;
 use crate::output::SecurityWarning;
@@ -60,6 +60,50 @@ pub(crate) const MAX_MISMATCH_HITS: usize = 32;
 /// HTML body exceeds [`MAX_HTML_BYTES`].
 pub(crate) const HTML_BODY_LIMIT_KIND: &str = "html_body";
 
+/// Stable identifier for an element we've decided is hidden. Used by
+/// `extract_text` (Task 9) to skip hidden subtrees.
+///
+/// `scraper` does not give us a stable `ElementRef` across re-parses,
+/// so we identify hidden elements by their position in a pre-order
+/// walk of the document tree (a `usize` index). This is sufficient for
+/// a single processing pass.
+pub(crate) type ElementIndex = usize;
+
+/// Categorization of how an element was hidden from a recipient.
+///
+/// Each variant corresponds to a distinct CSS pattern that effectively
+/// removes content from rendering, used by hidden-content detection in
+/// [`detect_hidden`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HiddenMethod {
+    /// `display: none` — element omitted from layout entirely.
+    DisplayNone,
+    /// `visibility: hidden` — element occupies space but is invisible.
+    VisibilityHidden,
+    /// `opacity: 0` — element is fully transparent.
+    OpacityZero,
+    /// Absolute or fixed positioning placing the element far off-screen.
+    OffScreen,
+    /// `font-size: 0` — text collapses to zero rendered size.
+    ZeroFont,
+    /// `color` and `background-color` strings are byte-identical.
+    ColorMatch,
+}
+
+impl HiddenMethod {
+    /// Stable identifier used in `SecurityWarning::detail` strings.
+    pub(crate) fn as_detail(self) -> &'static str {
+        match self {
+            HiddenMethod::DisplayNone => "display_none",
+            HiddenMethod::VisibilityHidden => "visibility_hidden",
+            HiddenMethod::OpacityZero => "opacity_0",
+            HiddenMethod::OffScreen => "offscreen",
+            HiddenMethod::ZeroFont => "zero_font",
+            HiddenMethod::ColorMatch => "color_match",
+        }
+    }
+}
+
 /// Compile a const CSS selector string. The `expect` is unreachable for
 /// const selector inputs and is exercised at first use of each
 /// `LazyLock` so the lint expectation is fulfilled.
@@ -95,6 +139,160 @@ fn build_ammonia_builder() -> Builder<'static> {
     Builder::default()
 }
 
+/// Parse a single `style="..."` attribute value into lowercased
+/// `(property, value)` pairs.
+///
+/// Very permissive: declarations are split on `;`, then each
+/// declaration is split on its first `:`. Empty properties or values
+/// are dropped. The intent is "does this style contain X", not full
+/// CSS conformance.
+fn parse_inline_style(style: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for decl in style.split(';') {
+        let Some((prop, val)) = decl.split_once(':') else {
+            continue;
+        };
+        let prop = prop.trim().to_ascii_lowercase();
+        let val = val.trim().to_ascii_lowercase();
+        if prop.is_empty() || val.is_empty() {
+            continue;
+        }
+        pairs.push((prop, val));
+    }
+    pairs
+}
+
+/// Parse a CSS length like `-9999px` into a pixel count.
+///
+/// Returns `None` for non-pixel units (em, rem, %, etc.) — they are
+/// treated as non-offscreen by design (inline-style-only scope).
+fn parse_px(val: &str) -> Option<f64> {
+    let stripped = val.strip_suffix("px").unwrap_or(val);
+    stripped.trim().parse::<f64>().ok()
+}
+
+/// Return `true` when an `opacity` value parses to (approximately) zero.
+fn opacity_is_zero(val: &str) -> bool {
+    let stripped = val.trim_end_matches('%').trim();
+    stripped
+        .parse::<f64>()
+        .ok()
+        .is_some_and(|n| n <= f64::EPSILON)
+}
+
+/// Return `true` when a `font-size` value parses to (approximately) zero.
+fn font_size_is_zero(val: &str) -> bool {
+    let digits: String = val
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    digits
+        .parse::<f64>()
+        .ok()
+        .is_some_and(|n| n <= f64::EPSILON)
+}
+
+/// Accumulator for off-screen / color-match detection across an inline
+/// style declaration list.
+#[derive(Default)]
+struct StyleHints {
+    position: Option<String>,
+    left_px: Option<f64>,
+    top_px: Option<f64>,
+    color: Option<String>,
+    bg_color: Option<String>,
+}
+
+impl StyleHints {
+    fn record(&mut self, prop: &str, val: &str) {
+        match prop {
+            "position" => self.position = Some(val.to_string()),
+            "left" => self.left_px = parse_px(val),
+            "top" => self.top_px = parse_px(val),
+            "color" => self.color = Some(val.to_string()),
+            "background-color" => self.bg_color = Some(val.to_string()),
+            _ => {}
+        }
+    }
+
+    fn is_offscreen(&self) -> bool {
+        let positioned = matches!(self.position.as_deref(), Some("absolute" | "fixed"));
+        if !positioned {
+            return false;
+        }
+        let off_left = self.left_px.is_some_and(|v| v <= -1000.0);
+        let off_top = self.top_px.is_some_and(|v| v <= -1000.0);
+        off_left || off_top
+    }
+
+    fn is_color_match(&self) -> bool {
+        matches!(
+            (self.color.as_ref(), self.bg_color.as_ref()),
+            (Some(c), Some(bg)) if c == bg
+        )
+    }
+}
+
+/// Check a single declaration for an immediate hidden-method match.
+///
+/// Returns `Some` only for self-contained patterns (display, visibility,
+/// opacity, font-size). Multi-property patterns (off-screen, color
+/// match) accumulate via [`StyleHints`] and are resolved by the caller.
+fn classify_single_declaration(prop: &str, val: &str) -> Option<HiddenMethod> {
+    match prop {
+        "display" if val == "none" => Some(HiddenMethod::DisplayNone),
+        "visibility" if val == "hidden" => Some(HiddenMethod::VisibilityHidden),
+        "opacity" if opacity_is_zero(val) => Some(HiddenMethod::OpacityZero),
+        "font-size" if font_size_is_zero(val) => Some(HiddenMethod::ZeroFont),
+        _ => None,
+    }
+}
+
+/// Classify an inline `style` string into a [`HiddenMethod`], if any.
+fn classify_inline_style(style: &str) -> Option<HiddenMethod> {
+    let pairs = parse_inline_style(style);
+    let mut hints = StyleHints::default();
+    for (prop, val) in &pairs {
+        if let Some(method) = classify_single_declaration(prop, val) {
+            return Some(method);
+        }
+        hints.record(prop, val);
+    }
+    if hints.is_offscreen() {
+        return Some(HiddenMethod::OffScreen);
+    }
+    if hints.is_color_match() {
+        return Some(HiddenMethod::ColorMatch);
+    }
+    None
+}
+
+/// Walk the document and collect hidden-element hits plus their
+/// tree-order indices (so text extraction can skip them later).
+///
+/// Returns `(hits, overflow)`. `hits` contains at most
+/// [`MAX_HIDDEN_HITS`] entries; `overflow` is the count of additional
+/// hidden elements detected past the cap so the caller can emit a
+/// summary warning.
+fn detect_hidden(document: &Html) -> (Vec<(ElementIndex, HiddenMethod)>, usize) {
+    let mut hits = Vec::new();
+    let mut overflow: usize = 0;
+    for (idx, element) in document.select(&SEL_BODY_ALL).enumerate() {
+        let Some(style) = element.value().attr("style") else {
+            continue;
+        };
+        let Some(method) = classify_inline_style(style) else {
+            continue;
+        };
+        if hits.len() < MAX_HIDDEN_HITS {
+            hits.push((idx, method));
+        } else {
+            overflow += 1;
+        }
+    }
+    (hits, overflow)
+}
+
 /// Process a raw HTML body into sanitized text + html + warnings.
 ///
 /// # Arguments
@@ -128,16 +326,33 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
         });
     }
     let decoded = crate::unicode::decode(raw, charset);
-    let document = scraper::Html::parse_document(&decoded);
-    // Task 7 will pass `document` to detect_hidden; until then keep the
-    // parse result alive so the parse path is exercised at runtime.
-    let _ = document;
-    // Stubs filled in Tasks 7–11.
+    let document = Html::parse_document(&decoded);
+    let (hidden_hits, hidden_overflow) = detect_hidden(&document);
+    let mut warnings: Vec<SecurityWarning> = Vec::new();
+    for (_idx, method) in &hidden_hits {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlHiddenContentStripped,
+            detail: Some(format!("method={}", method.as_detail())),
+            location: Some("body:html".to_string()),
+        });
+    }
+    if hidden_overflow > 0 {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlHiddenContentStripped,
+            detail: Some(format!("method=mixed,additional_hits={hidden_overflow}")),
+            location: Some("body:html".to_string()),
+        });
+    }
+    // `hidden_hits` will be consumed by Task 9 (text extraction) to skip
+    // hidden subtrees. Bind it locally so the value survives the stub
+    // return below without leaking through the public result type.
+    let _ = hidden_hits;
+    // Stubs filled in Tasks 9–11.
     Ok(HtmlResult {
         body_text: String::new(),
         body_html: String::new(),
         anchor_hrefs: Vec::new(),
-        warnings: Vec::new(),
+        warnings,
     })
 }
 
@@ -205,6 +420,137 @@ mod tests {
             MAX_HIDDEN_HITS,
             MAX_MISMATCH_HITS,
         );
+    }
+
+    #[test]
+    fn classify_display_none() {
+        assert_eq!(
+            classify_inline_style("display: none"),
+            Some(HiddenMethod::DisplayNone)
+        );
+        assert_eq!(
+            classify_inline_style("DISPLAY:NONE;color:red"),
+            Some(HiddenMethod::DisplayNone)
+        );
+    }
+
+    #[test]
+    fn classify_visibility_hidden() {
+        assert_eq!(
+            classify_inline_style("visibility: hidden"),
+            Some(HiddenMethod::VisibilityHidden)
+        );
+    }
+
+    #[test]
+    fn classify_opacity_zero() {
+        assert_eq!(
+            classify_inline_style("opacity: 0"),
+            Some(HiddenMethod::OpacityZero)
+        );
+        assert_eq!(
+            classify_inline_style("opacity: 0.0"),
+            Some(HiddenMethod::OpacityZero)
+        );
+    }
+
+    #[test]
+    fn classify_font_size_zero() {
+        assert_eq!(
+            classify_inline_style("font-size: 0"),
+            Some(HiddenMethod::ZeroFont)
+        );
+        assert_eq!(
+            classify_inline_style("font-size: 0px"),
+            Some(HiddenMethod::ZeroFont)
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_absolute() {
+        assert_eq!(
+            classify_inline_style("position: absolute; left: -9999px"),
+            Some(HiddenMethod::OffScreen)
+        );
+        assert_eq!(
+            classify_inline_style("position: fixed; top: -5000px"),
+            Some(HiddenMethod::OffScreen)
+        );
+    }
+
+    #[test]
+    fn classify_color_match() {
+        assert_eq!(
+            classify_inline_style("color: #ffffff; background-color: #ffffff"),
+            Some(HiddenMethod::ColorMatch)
+        );
+        assert_eq!(
+            classify_inline_style("color: white; background-color: white"),
+            Some(HiddenMethod::ColorMatch)
+        );
+    }
+
+    #[test]
+    fn classify_visible_styles_return_none() {
+        assert_eq!(classify_inline_style("color: red"), None);
+        assert_eq!(classify_inline_style("font-weight: bold"), None);
+        assert_eq!(
+            classify_inline_style("position: absolute; left: 10px"),
+            None
+        );
+        assert_eq!(classify_inline_style("opacity: 0.5"), None);
+    }
+
+    #[test]
+    fn process_detects_display_none_in_body() {
+        let input = br#"<html><body>
+            <p>visible</p>
+            <div style="display: none">HIDDEN SECRET</div>
+        </body></html>"#;
+        let result = process(input, None).expect("process should succeed");
+        let hit = result
+            .warnings
+            .iter()
+            .find(|w| {
+                matches!(
+                    w.code,
+                    crate::output::WarningCode::HtmlHiddenContentStripped
+                )
+            })
+            .expect("expected HtmlHiddenContentStripped warning");
+        assert_eq!(hit.detail.as_deref(), Some("method=display_none"));
+        assert_eq!(hit.location.as_deref(), Some("body:html"));
+    }
+
+    #[test]
+    fn process_hidden_hit_cap_summarizes_overflow() {
+        use std::fmt::Write as _;
+        let mut body = String::from("<html><body>");
+        for i in 0..(MAX_HIDDEN_HITS + 5) {
+            write!(body, r#"<span style="display: none">hidden {i}</span>"#)
+                .expect("write to String never fails");
+        }
+        body.push_str("</body></html>");
+        let result = process(body.as_bytes(), None).expect("process should succeed");
+        let hidden_warnings: Vec<_> = result
+            .warnings
+            .iter()
+            .filter(|w| {
+                matches!(
+                    w.code,
+                    crate::output::WarningCode::HtmlHiddenContentStripped
+                )
+            })
+            .collect();
+        assert_eq!(hidden_warnings.len(), MAX_HIDDEN_HITS + 1);
+        let overflow = hidden_warnings
+            .last()
+            .expect("at least one warning")
+            .detail
+            .as_deref()
+            .expect("overflow warning has detail");
+        assert!(overflow.contains("additional_hits=5"), "got {overflow}");
+        assert!(overflow.contains("method=mixed"), "got {overflow}");
     }
 
     #[test]
