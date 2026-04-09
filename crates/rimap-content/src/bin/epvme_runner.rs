@@ -374,7 +374,6 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
         WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
         WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
-        WarningCode::HtmlBodyUnsanitized => "html_body_unsanitized",
         _ => unknown_warning_code_label(code),
     }
 }

@@ -156,11 +156,47 @@ pub enum WarningCode {
     /// references, reserved Windows names, or other unsafe characters
     /// and was rewritten to a safe form.
     ParseAttachmentFilenameRewritten,
-    /// A `text/html` body part was encountered but not sanitized.
-    /// Sprint 4a refuses HTML bodies; Sprint 4b will add an HTML
-    /// sanitization pipeline and replace this warning with granular
-    /// hidden-content / link-mismatch detection.
-    HtmlBodyUnsanitized,
+    /// HTML content contained hidden elements (e.g. `display:none`,
+    /// `visibility:hidden`, `opacity:0`, off-screen positioning,
+    /// zero font size, or background-color-matching text). Stripped
+    /// from the extracted `body_text`. Detail format:
+    /// `method=<display_none|visibility_hidden|opacity_0|offscreen|zero_font|color_match>`
+    /// optionally followed by `,count=N` when summarized.
+    HtmlHiddenContentStripped,
+    /// An HTML anchor's visible text contained a URL-looking token
+    /// whose registrable domain differs from the anchor's `href`
+    /// registrable domain. Detail format:
+    /// `text_domain=<ascii>,href_domain=<ascii>`.
+    HtmlLinkTextHrefMismatch,
+    /// One or more `<script>` elements were removed during HTML
+    /// sanitization. Detail format: `count=N`.
+    HtmlScriptStripped,
+    /// One or more `<style>` elements were removed during HTML
+    /// sanitization. Detail format: `count=N`.
+    HtmlStyleStripped,
+    /// One or more `<img>` elements had their `src`/`srcset`
+    /// attributes removed during HTML sanitization to prevent
+    /// remote tracking-pixel loads. Detail format: `count=N`.
+    HtmlRemoteImageStripped,
+    /// A domain label contained characters from multiple Unicode
+    /// scripts outside the TR39 Highly Restrictive profile. Detail
+    /// format: `domain=<punycode>,scripts=<S1+S2>`.
+    LookalikeMixedScript,
+    /// A domain's TR39 skeleton matched a different domain's
+    /// skeleton, indicating a homograph attack, OR bidi-override
+    /// characters were stripped from the domain before processing.
+    /// Detail format: `domain=<punycode>,skeleton_match=<other_punycode>`
+    /// or `domain=<punycode>,reason=bidi_pre_strip`.
+    LookalikeHomographDomain,
+    /// A domain was processed in punycode form (xn--) and the
+    /// Unicode U-label form is reported for informational use.
+    /// Detail format: `domain=<punycode>,ulabel=<unicode>`.
+    LookalikeIdnPunycode,
+    /// A filename's visible extension differs from its extension
+    /// after bidi-override stripping, indicating an RLO-bidi
+    /// extension spoof. Detail format:
+    /// `visible=<after_strip>,declared=<original>`.
+    LookalikeFilenameExtensionSpoof,
 }
 
 /// Severity classification for [`WarningCode`] variants. Sprint 5
@@ -200,8 +236,16 @@ impl WarningCode {
             | WarningCode::ParseMimePartCountExceeded
             | WarningCode::ParseHeaderCountExceeded
             | WarningCode::ParseAttachmentFilenameRewritten
-            | WarningCode::HtmlBodyUnsanitized => WarningSeverity::Adversarial,
-            WarningCode::ParseBodyTruncated => WarningSeverity::Informational,
+            | WarningCode::HtmlHiddenContentStripped
+            | WarningCode::HtmlLinkTextHrefMismatch
+            | WarningCode::HtmlScriptStripped
+            | WarningCode::LookalikeMixedScript
+            | WarningCode::LookalikeHomographDomain
+            | WarningCode::LookalikeFilenameExtensionSpoof => WarningSeverity::Adversarial,
+            WarningCode::ParseBodyTruncated
+            | WarningCode::HtmlStyleStripped
+            | WarningCode::HtmlRemoteImageStripped
+            | WarningCode::LookalikeIdnPunycode => WarningSeverity::Informational,
         }
     }
 }
@@ -225,13 +269,6 @@ mod tests {
         let code = WarningCode::UnicodeZeroWidthStripped;
         let json = serde_json::to_string(&code).unwrap();
         assert_eq!(json, "\"unicode_zero_width_stripped\"");
-    }
-
-    #[test]
-    fn html_body_unsanitized_label() {
-        let code = WarningCode::HtmlBodyUnsanitized;
-        let json = serde_json::to_string(&code).unwrap();
-        assert_eq!(json, "\"html_body_unsanitized\"");
     }
 
     #[test]
@@ -276,10 +313,6 @@ mod tests {
             WarningSeverity::Adversarial
         );
         assert_eq!(
-            WarningCode::HtmlBodyUnsanitized.severity(),
-            WarningSeverity::Adversarial
-        );
-        assert_eq!(
             WarningCode::ParseAttachmentFilenameRewritten.severity(),
             WarningSeverity::Adversarial
         );
@@ -287,6 +320,76 @@ mod tests {
             WarningCode::ParseAttachmentPolyglot.severity(),
             WarningSeverity::Adversarial
         );
+        assert_eq!(
+            WarningCode::HtmlHiddenContentStripped.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::HtmlLinkTextHrefMismatch.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::HtmlScriptStripped.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::HtmlStyleStripped.severity(),
+            WarningSeverity::Informational
+        );
+        assert_eq!(
+            WarningCode::HtmlRemoteImageStripped.severity(),
+            WarningSeverity::Informational
+        );
+        assert_eq!(
+            WarningCode::LookalikeMixedScript.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::LookalikeHomographDomain.severity(),
+            WarningSeverity::Adversarial
+        );
+        assert_eq!(
+            WarningCode::LookalikeIdnPunycode.severity(),
+            WarningSeverity::Informational
+        );
+        assert_eq!(
+            WarningCode::LookalikeFilenameExtensionSpoof.severity(),
+            WarningSeverity::Adversarial
+        );
+    }
+
+    #[test]
+    fn new_warning_variants_serialize_snake_case() {
+        let cases = [
+            (
+                WarningCode::HtmlHiddenContentStripped,
+                "html_hidden_content_stripped",
+            ),
+            (
+                WarningCode::HtmlLinkTextHrefMismatch,
+                "html_link_text_href_mismatch",
+            ),
+            (WarningCode::HtmlScriptStripped, "html_script_stripped"),
+            (WarningCode::HtmlStyleStripped, "html_style_stripped"),
+            (
+                WarningCode::HtmlRemoteImageStripped,
+                "html_remote_image_stripped",
+            ),
+            (WarningCode::LookalikeMixedScript, "lookalike_mixed_script"),
+            (
+                WarningCode::LookalikeHomographDomain,
+                "lookalike_homograph_domain",
+            ),
+            (WarningCode::LookalikeIdnPunycode, "lookalike_idn_punycode"),
+            (
+                WarningCode::LookalikeFilenameExtensionSpoof,
+                "lookalike_filename_extension_spoof",
+            ),
+        ];
+        for (code, expected) in cases {
+            let json = serde_json::to_string(&code).unwrap();
+            assert_eq!(json, format!("\"{expected}\""));
+        }
     }
 
     #[test]

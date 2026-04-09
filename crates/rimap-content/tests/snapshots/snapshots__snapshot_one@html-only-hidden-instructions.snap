@@ -20,13 +20,7 @@ expression: value
       "victim@example.com"
     ]
   },
-  "security_warnings": [
-    {
-      "code": "html_body_unsanitized",
-      "detail": null,
-      "location": "body:text[0]"
-    }
-  ],
+  "security_warnings": [],
   "untrusted": {
     "alternate_parts": [],
     "body_text": ""

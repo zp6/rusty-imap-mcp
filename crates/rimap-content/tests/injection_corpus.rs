@@ -112,7 +112,6 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
         WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
         WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
-        WarningCode::HtmlBodyUnsanitized => "html_body_unsanitized",
         // Required because WarningCode is #[non_exhaustive] (exhaustive
         // match is not allowed outside the defining crate). Any future
         // variant reaching this arm is a test-harness gap and should
