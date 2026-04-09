@@ -11,6 +11,7 @@ use time::OffsetDateTime;
 
 use crate::error::ContentError;
 use crate::html;
+use crate::lookalike;
 use crate::output::{
     AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
 };
@@ -73,16 +74,9 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
     let mut meta = extract_meta(&message, original_size_bytes, &mut warnings);
     let bodies = extract_bodies(&message, &mut warnings)?;
     meta.body_truncated = bodies.body_truncated;
-    // Sprint 4b Task 15 will pass `html_anchor_hrefs` into
-    // `lookalike::audit`; the binding is preserved here so the data
-    // pipeline is in place.
-    #[expect(
-        clippy::no_effect_underscore_binding,
-        reason = "consumed by lookalike::audit in Sprint 4b Task 15"
-    )]
-    let _html_anchor_hrefs = bodies.anchor_hrefs;
+    let html_anchor_hrefs = bodies.anchor_hrefs;
 
-    Ok(Content {
+    let mut content = Content {
         meta,
         untrusted: Untrusted {
             body_text: bodies.primary_text,
@@ -90,7 +84,17 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
             alternate_parts: bodies.alternates,
         },
         security_warnings: warnings,
-    })
+    };
+
+    let lookalike_warnings = lookalike::audit(&lookalike::LookalikeInput {
+        meta: &content.meta,
+        body_text: &content.untrusted.body_text,
+        anchor_hrefs: &html_anchor_hrefs,
+        attachments: &content.meta.attachments,
+    });
+    content.security_warnings.extend(lookalike_warnings);
+
+    Ok(content)
 }
 
 fn enforce_header_count(
@@ -1179,14 +1183,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_idn_u_label_address_passes_through_with_no_warnings() {
-        // Raw UTF-8 U-label IDN (Russian "example.rf"). Sprint 4a has no
-        // homograph / mixed-script detection — that's reserved for
-        // Sprint 4b. This test pins the baseline: an IDN address parses
-        // successfully, NFKC-normalizes idempotently, and emits zero
-        // security warnings. When Sprint 4b adds lookalike detection,
-        // this fixture should still pass because the domain is a
-        // legitimate single-script IDN, not a homograph attack.
+    fn parse_idn_u_label_address_emits_only_idn_informational() {
+        // Raw UTF-8 U-label IDN (Russian "example.rf"). Sprint 4b's
+        // lookalike pass classifies any IDN through `idna::domain_to_ascii`,
+        // so a legitimate single-script Cyrillic domain produces an
+        // informational `LookalikeIdnPunycode` warning but MUST NOT
+        // produce a `LookalikeMixedScript` warning — pure Cyrillic is
+        // single-script.
         let raw = "From: Тест <user@\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}>\r\n\
                    Subject: IDN baseline\r\n\
                    \r\n\
@@ -1196,15 +1199,31 @@ mod tests {
         assert!(content.meta.from.is_some());
         let from = content.meta.from.as_deref().unwrap();
         assert!(from.contains("\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.\u{0440}\u{0444}"));
-        assert!(content.security_warnings.is_empty());
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeMixedScript),
+            "single-script Cyrillic IDN must not flag mixed-script, got {:?}",
+            content.security_warnings
+        );
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeIdnPunycode),
+            "expected informational LookalikeIdnPunycode, got {:?}",
+            content.security_warnings
+        );
     }
 
     #[test]
-    fn parse_idn_a_label_address_passes_through_byte_for_byte() {
-        // Punycode A-label form of the same domain. Pure ASCII, so
-        // NFKC is a no-op and the codepoint filter strips nothing.
-        // Pins baseline for when Sprint 4b adds idna decoding — the
-        // A-label should still pass through zero warnings here.
+    fn parse_idn_a_label_address_emits_only_idn_informational() {
+        // Punycode A-label form of the same Cyrillic domain. Pure ASCII
+        // input, so NFKC and the codepoint filter pass it through; the
+        // lookalike pass decodes the `xn--` labels and emits the same
+        // informational `LookalikeIdnPunycode` warning, with no
+        // mixed-script signal.
         let raw = b"From: Test <user@xn--e1afmkfd.xn--p1ai>\r\n\
                     Subject: IDN A-label baseline\r\n\
                     \r\n\
@@ -1212,7 +1231,22 @@ mod tests {
         let content = parse_message(raw).unwrap();
         let from = content.meta.from.as_deref().unwrap();
         assert!(from.contains("xn--e1afmkfd.xn--p1ai"));
-        assert!(content.security_warnings.is_empty());
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeMixedScript),
+            "punycode A-label of Cyrillic IDN must not flag mixed-script, got {:?}",
+            content.security_warnings
+        );
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeIdnPunycode),
+            "expected informational LookalikeIdnPunycode, got {:?}",
+            content.security_warnings
+        );
     }
 
     #[test]
@@ -1580,6 +1614,28 @@ mod tests {
         let (out, rewritten) = sanitize_filename("invoice-2026-04.pdf", 0);
         assert_eq!(out, "invoice-2026-04.pdf");
         assert!(!rewritten);
+    }
+
+    #[test]
+    fn lookalike_homograph_anchor_fires_via_parse_message() {
+        // HTML body with an anchor whose href domain mixes Latin with a
+        // Cyrillic 'а' (U+0430). `parse_message` must invoke
+        // `lookalike::audit` and surface a `LookalikeMixedScript`
+        // warning located at `html:anchor_href`.
+        let raw = "From: a@example\r\n\
+                   Content-Type: text/html; charset=utf-8\r\n\
+                   \r\n\
+                   <html><body><a href=\"https://p\u{0430}ypal.com/login\">click</a></body></html>\r\n"
+            .as_bytes();
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeMixedScript
+                    && w.location.as_deref() == Some("html:anchor_href")
+            }),
+            "expected LookalikeMixedScript at html:anchor_href, got {:?}",
+            content.security_warnings
+        );
     }
 
     #[test]

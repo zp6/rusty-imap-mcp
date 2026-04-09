@@ -7,18 +7,6 @@
 //! compiled confusables map in the workspace.
 //!
 //! The single public (crate-visible) entrypoint is [`audit`].
-//!
-//! Until Task 15 wires `audit` into `parse::parse_message`, `audit` and
-//! its `LookalikeInput` parameter are only constructed from the in-module
-//! unit tests, so non-test builds suppress dead-code warnings module-wide.
-
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by parse::parse_message in Sprint 4b Task 15"
-    )
-)]
 
 use std::collections::HashSet;
 
@@ -62,6 +50,13 @@ struct DomainClassification {
     /// True if any label mixes scripts outside TR39 Highly Restrictive.
     mixed_script: bool,
     /// TR39 confusable skeleton of the unicode form.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "consumed by homograph comparison in Sprint 4b Task 16"
+        )
+    )]
     skeleton: String,
 }
 
