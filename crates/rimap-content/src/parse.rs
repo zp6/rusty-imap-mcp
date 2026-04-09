@@ -10,6 +10,7 @@ use mail_parser::{Address, HeaderValue, Message, MessageParser, MimeHeaders as _
 use time::OffsetDateTime;
 
 use crate::error::ContentError;
+use crate::html;
 use crate::output::{
     AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
 };
@@ -72,12 +73,20 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
     let mut meta = extract_meta(&message, original_size_bytes, &mut warnings);
     let bodies = extract_bodies(&message, &mut warnings)?;
     meta.body_truncated = bodies.body_truncated;
+    // Sprint 4b Task 15 will pass `html_anchor_hrefs` into
+    // `lookalike::audit`; the binding is preserved here so the data
+    // pipeline is in place.
+    #[expect(
+        clippy::no_effect_underscore_binding,
+        reason = "consumed by lookalike::audit in Sprint 4b Task 15"
+    )]
+    let _html_anchor_hrefs = bodies.anchor_hrefs;
 
     Ok(Content {
         meta,
         untrusted: Untrusted {
             body_text: bodies.primary_text,
-            body_html: None,
+            body_html: bodies.body_html,
             alternate_parts: bodies.alternates,
         },
         security_warnings: warnings,
@@ -243,11 +252,15 @@ fn convert_datetime(dt: &mail_parser::DateTime) -> Option<OffsetDateTime> {
 }
 
 /// Result of walking a message's text bodies: the primary text body,
-/// any alternate text parts, and whether any part was truncated.
+/// any alternate text parts, an optional sanitized HTML rendering, the
+/// anchor hrefs that survived sanitization, and whether any part was
+/// truncated.
 #[derive(Debug)]
 struct BodyExtraction {
     primary_text: String,
     alternates: Vec<String>,
+    body_html: Option<String>,
+    anchor_hrefs: Vec<String>,
     body_truncated: bool,
 }
 
@@ -274,10 +287,13 @@ fn extract_bodies(
 
     check_mime_depth(message, warnings)?;
 
-    let mut primary_text: Option<String> = None;
-    let mut alternates: Vec<String> = Vec::new();
-    let mut body_truncated = false;
-    let mut total_bytes: usize = 0;
+    // Determine the part id of the first HTML body so only one HTML
+    // part per message flows through `html::process`. mail-parser 0.11
+    // exposes html bodies via `message.html_body: Vec<MessagePartId>`
+    // (MessagePartId = u32).
+    let primary_html_part_id: Option<usize> = message.html_body.first().map(|id| *id as usize);
+
+    let mut state = BodyWalkState::default();
 
     for (idx, &part_id) in message.text_body.iter().enumerate() {
         let Some(part) = message.parts.get(part_id as usize) else {
@@ -286,45 +302,28 @@ fn extract_bodies(
         if matches!(part.body, PartType::Message(_)) {
             continue;
         }
-        let raw_bytes = match &part.body {
-            PartType::Text(s) => s.as_bytes(),
-            PartType::Html(_) => {
-                // Sprint 4b Task 12 wires html::process here. Temporary: skip.
-                continue;
+        match &part.body {
+            PartType::Text(s) => {
+                let raw_bytes = s.as_bytes();
+                process_text_part(part, raw_bytes, idx, &mut state, warnings);
+            }
+            PartType::Html(cow) => {
+                let is_primary = primary_html_part_id == Some(part_id as usize);
+                if !is_primary {
+                    continue;
+                }
+                process_html_part(part, cow.as_bytes(), &mut state, warnings)?;
             }
             _ => continue,
-        };
-        if raw_bytes.len() > MAX_BODY_BYTES {
-            body_truncated = true;
+        }
+        if state.total_bytes >= MAX_TOTAL_BODY_BYTES {
+            state.body_truncated = true;
             warnings.push(SecurityWarning {
                 code: WarningCode::ParseBodyTruncated,
                 detail: Some(format!(
-                    "original={} limit={}",
-                    raw_bytes.len(),
-                    MAX_BODY_BYTES
+                    "total={} limit={MAX_TOTAL_BODY_BYTES}",
+                    state.total_bytes
                 )),
-                location: Some(format!("body:text[{idx}]")),
-            });
-        }
-        let location = format!("body:text[{idx}]");
-        let charset = part_charset(part);
-        let (text, mut new_warnings) =
-            unicode::sanitize(raw_bytes, charset.as_deref(), MAX_BODY_BYTES, &location);
-        warnings.append(&mut new_warnings);
-
-        total_bytes = total_bytes.saturating_add(text.len());
-
-        if primary_text.is_none() {
-            primary_text = Some(text);
-        } else {
-            alternates.push(text);
-        }
-
-        if total_bytes >= MAX_TOTAL_BODY_BYTES {
-            body_truncated = true;
-            warnings.push(SecurityWarning {
-                code: WarningCode::ParseBodyTruncated,
-                detail: Some(format!("total={total_bytes} limit={MAX_TOTAL_BODY_BYTES}")),
                 location: Some("body:aggregate".to_string()),
             });
             break;
@@ -332,10 +331,105 @@ fn extract_bodies(
     }
 
     Ok(BodyExtraction {
-        primary_text: primary_text.unwrap_or_default(),
-        alternates,
-        body_truncated,
+        primary_text: state.primary_text.unwrap_or_default(),
+        alternates: state.alternates,
+        body_html: state.body_html,
+        anchor_hrefs: state.anchor_hrefs,
+        body_truncated: state.body_truncated,
     })
+}
+
+/// Mutable accumulator threaded through `extract_bodies` and its
+/// per-part helpers. Keeps the main loop body small enough to stay
+/// inside the workspace function-length and complexity limits.
+#[derive(Debug, Default)]
+struct BodyWalkState {
+    primary_text: Option<String>,
+    alternates: Vec<String>,
+    body_html: Option<String>,
+    anchor_hrefs: Vec<String>,
+    body_truncated: bool,
+    total_bytes: usize,
+}
+
+/// Decode and sanitize a single `text/plain` part, updating `state`
+/// and pushing any new warnings (including `ParseBodyTruncated` when
+/// the raw part exceeds [`MAX_BODY_BYTES`]).
+fn process_text_part(
+    part: &mail_parser::MessagePart<'_>,
+    raw_bytes: &[u8],
+    idx: usize,
+    state: &mut BodyWalkState,
+    warnings: &mut Vec<SecurityWarning>,
+) {
+    if raw_bytes.len() > MAX_BODY_BYTES {
+        state.body_truncated = true;
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseBodyTruncated,
+            detail: Some(format!(
+                "original={} limit={}",
+                raw_bytes.len(),
+                MAX_BODY_BYTES
+            )),
+            location: Some(format!("body:text[{idx}]")),
+        });
+    }
+    let location = format!("body:text[{idx}]");
+    let charset = part_charset(part);
+    let (text, mut new_warnings) =
+        unicode::sanitize(raw_bytes, charset.as_deref(), MAX_BODY_BYTES, &location);
+    warnings.append(&mut new_warnings);
+    state.total_bytes = state.total_bytes.saturating_add(text.len());
+    if state.primary_text.is_none() {
+        state.primary_text = Some(text);
+    } else {
+        state.alternates.push(text);
+    }
+}
+
+/// Run the primary `text/html` part through [`crate::html::process`].
+///
+/// On success: merges the produced warnings into `warnings`, places
+/// the extracted plain text at the primary text slot if empty (else
+/// pushes to alternates), and stores the sanitized html and anchor
+/// hrefs on `state`.
+///
+/// On `ContentError::LimitExceeded`: emits a `ParseBodyTruncated`
+/// warning at `body:html` and continues. Other errors propagate.
+fn process_html_part(
+    part: &mail_parser::MessagePart<'_>,
+    raw_bytes: &[u8],
+    state: &mut BodyWalkState,
+    warnings: &mut Vec<SecurityWarning>,
+) -> Result<(), ContentError> {
+    let charset = part_charset(part);
+    match html::process(raw_bytes, charset.as_deref()) {
+        Ok(result) => {
+            warnings.extend(result.warnings);
+            state.total_bytes = state.total_bytes.saturating_add(result.body_text.len());
+            if state.primary_text.is_none() {
+                state.primary_text = Some(result.body_text);
+            } else {
+                state.alternates.push(result.body_text);
+            }
+            state.body_html = Some(result.body_html);
+            state.anchor_hrefs = result.anchor_hrefs;
+            Ok(())
+        }
+        Err(ContentError::LimitExceeded { kind, limit }) => {
+            state.body_truncated = true;
+            warnings.push(SecurityWarning {
+                code: WarningCode::ParseBodyTruncated,
+                detail: Some(format!(
+                    "original={} limit={limit} kind={kind}",
+                    raw_bytes.len()
+                )),
+                location: Some("body:html".to_string()),
+            });
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 /// Read the `charset` attribute off a part's Content-Type header.
@@ -1152,11 +1246,37 @@ mod tests {
         assert!(!content.untrusted.body_text.contains("<p>"));
     }
 
-    // TODO sprint-4b-task-12: replace with html::process wiring test
     #[test]
-    #[ignore = "sprint-4b-task-12: replaced with html::process integration test"]
-    fn content_html_only_emits_unsanitized_warning() {
-        // body retained for task 12 reference
+    fn content_html_only_populates_body_html_and_body_text() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <html><body><p>visible text</p></body></html>\r\n";
+        let content = parse_message(raw).unwrap();
+        assert_eq!(content.untrusted.body_text, "visible text");
+        assert!(content.untrusted.body_html.is_some());
+        let body_html = content.untrusted.body_html.as_deref().unwrap();
+        assert!(body_html.contains("<p>"));
+        assert!(body_html.contains("visible text"));
+    }
+
+    #[test]
+    fn content_html_only_with_hidden_content_emits_warning() {
+        let raw = b"From: a@example\r\n\
+                    Content-Type: text/html; charset=utf-8\r\n\
+                    \r\n\
+                    <html><body><p>ok</p>\
+                    <div style=\"display:none\">hidden</div></body></html>\r\n";
+        let content = parse_message(raw).unwrap();
+        assert!(
+            content
+                .security_warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::HtmlHiddenContentStripped)),
+            "expected HtmlHiddenContentStripped warning, got {:?}",
+            content.security_warnings
+        );
+        assert!(!content.untrusted.body_text.contains("hidden"));
     }
 
     #[test]

@@ -1,9 +1,9 @@
 {
-  "description": "A text/html-only message. Sprint 4b Task 3 temporarily no-ops HTML bodies (no warning emitted); Task 12 wires html::process and will restore proper warning_codes for this fixture.",
+  "description": "A text/html-only message with hidden instructions inside a display:none div. Sprint 4b Task 12 wires html::process so the hidden subtree is excluded from body_text and an HtmlHiddenContentStripped warning is emitted.",
   "expect": "ok",
-  "must_contain": [],
-  "must_not_contain": ["Ignore previous instructions", "display:none", "<div"],
-  "warning_codes": [],
+  "must_contain": ["Please review the attached document"],
+  "must_not_contain": ["Ignore previous instructions", "display:none"],
+  "warning_codes": ["html_hidden_content_stripped"],
   "forbidden_warning_codes": [],
   "meta": {
     "attachment_count": 0

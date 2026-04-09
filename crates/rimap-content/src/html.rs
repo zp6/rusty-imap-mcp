@@ -7,18 +7,6 @@
 //! in the workspace.
 //!
 //! The single public (crate-visible) entrypoint is [`process`].
-//!
-//! Until Task 12 wires `process` into `parse::extract_bodies`, the
-//! module's items are only exercised by the in-module unit tests, so
-//! non-test builds suppress dead-code warnings module-wide.
-
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "consumed by parse::extract_bodies in Sprint 4b Task 12"
-    )
-)]
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
