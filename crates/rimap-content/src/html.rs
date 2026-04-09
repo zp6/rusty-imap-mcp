@@ -799,6 +799,49 @@ mod tests {
         assert_eq!(classify_inline_style("opacity: 0.5"), None);
     }
 
+    /// Negative cases for [`classify_single_declaration`] guards.
+    ///
+    /// These assertions kill mutants that weaken the `val == "none"`,
+    /// `val == "hidden"`, and `font_size_is_zero(val)` match guards to
+    /// `true`: with the guard removed, any value for `display`,
+    /// `visibility`, or `font-size` would classify as hidden, so a
+    /// non-matching value that still uses the property must return
+    /// `None`.
+    #[test]
+    fn classify_single_declaration_visible_values_return_none() {
+        assert_eq!(classify_single_declaration("display", "block"), None);
+        assert_eq!(classify_single_declaration("display", "inline"), None);
+        assert_eq!(classify_single_declaration("visibility", "visible"), None);
+        assert_eq!(classify_single_declaration("visibility", "collapse"), None);
+        assert_eq!(classify_single_declaration("font-size", "14px"), None);
+        assert_eq!(classify_single_declaration("font-size", "1em"), None);
+        assert_eq!(classify_single_declaration("opacity", "1"), None);
+        assert_eq!(classify_single_declaration("color", "red"), None);
+    }
+
+    /// Positive cases for [`classify_single_declaration`] that pin the
+    /// variant produced by each matching guard. These kill mutants that
+    /// swap `DisplayNone`/`VisibilityHidden`/`OpacityZero`/`ZeroFont`.
+    #[test]
+    fn classify_single_declaration_variant_per_property() {
+        assert_eq!(
+            classify_single_declaration("display", "none"),
+            Some(HiddenMethod::DisplayNone)
+        );
+        assert_eq!(
+            classify_single_declaration("visibility", "hidden"),
+            Some(HiddenMethod::VisibilityHidden)
+        );
+        assert_eq!(
+            classify_single_declaration("opacity", "0"),
+            Some(HiddenMethod::OpacityZero)
+        );
+        assert_eq!(
+            classify_single_declaration("font-size", "0"),
+            Some(HiddenMethod::ZeroFont)
+        );
+    }
+
     #[test]
     fn process_detects_display_none_in_body() {
         let input = br#"<html><body>
@@ -903,6 +946,41 @@ mod tests {
                 .iter()
                 .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch)),
             "should not fire when anchor text has no URL token"
+        );
+    }
+
+    /// Unit coverage for [`extract_registrable_domain`]'s scheme-skip
+    /// short-circuits. Each non-web scheme must independently return
+    /// `None`; this kills mutants that convert any of the chained `||`
+    /// checks into `&&`.
+    #[test]
+    fn extract_registrable_domain_skips_non_web_schemes() {
+        assert_eq!(extract_registrable_domain("mailto:foo@example.com"), None);
+        assert_eq!(extract_registrable_domain("tel:+15551234567"), None);
+        assert_eq!(extract_registrable_domain("javascript:alert(1)"), None);
+        assert_eq!(extract_registrable_domain("data:text/html,foo"), None);
+        assert_eq!(extract_registrable_domain(""), None);
+        assert_eq!(extract_registrable_domain("   "), None);
+        assert_eq!(extract_registrable_domain("relative/path"), None);
+        assert_eq!(extract_registrable_domain("singlelabel"), None);
+    }
+
+    /// Pins the positive behaviour of [`extract_registrable_domain`] so
+    /// that mutants flipping boundary comparisons or dropping scheme
+    /// parsing are caught.
+    #[test]
+    fn extract_registrable_domain_returns_psl_root() {
+        assert_eq!(
+            extract_registrable_domain("https://www.example.com/path?q=1"),
+            Some("example.com".into())
+        );
+        assert_eq!(
+            extract_registrable_domain("http://sub.example.co.uk"),
+            Some("example.co.uk".into())
+        );
+        assert_eq!(
+            extract_registrable_domain("https://example.com:8443/"),
+            Some("example.com".into())
         );
     }
 

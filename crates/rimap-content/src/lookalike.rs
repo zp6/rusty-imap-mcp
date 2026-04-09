@@ -343,6 +343,24 @@ mod tests {
         assert!(!a.is_empty());
     }
 
+    /// Pins absolute skeleton outputs so a mutant that replaces
+    /// [`compute_skeleton`] with a constant (e.g. `"xyzzy"`) can no
+    /// longer survive on equality-of-two-calls assertions alone.
+    #[test]
+    fn skeleton_maps_known_confusables_to_expected_ascii() {
+        // Cyrillic 'а' (U+0430) → Latin 'a' (U+0061); keep the ASCII dot.
+        assert_eq!(compute_skeleton("\u{0430}"), "a");
+        // Latin 'm' maps to "rn" under TR39 skeleton.
+        let m = compute_skeleton("m");
+        assert_eq!(m, "rn");
+        // TR39 skeleton maps digit '1' to Latin 'l' (both are visually
+        // similar lowercase glyphs).
+        assert_eq!(compute_skeleton("1"), "l");
+        // Different inputs must produce different skeletons (would fail
+        // under a constant-return mutant).
+        assert_ne!(compute_skeleton("abc"), compute_skeleton("xyz"));
+    }
+
     fn empty_meta() -> ContentMeta {
         ContentMeta::default()
     }

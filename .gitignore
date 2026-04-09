@@ -1,4 +1,6 @@
 /target
+/mutants.out/
+/mutants.out.old/
 **/*.rs.bk
 *.pdb
 .DS_Store
