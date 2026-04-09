@@ -1,0 +1,14 @@
+# NOTICE
+
+This project vendors third-party data files under `crates/rimap-content/data/`.
+
+## confusables.txt
+
+File: `crates/rimap-content/data/confusables.txt`
+Source: https://www.unicode.org/Public/security/16.0.0/confusables.txt
+Version: Unicode 16.0.0 (2024-09)
+License: Unicode-DFS-2016 (Unicode License v3)
+Purpose: TR39 skeleton generation for the rimap-content::lookalike module.
+
+Copyright (c) 1991-2024 Unicode, Inc. All rights reserved.
+Distributed under the Terms of Use in https://www.unicode.org/copyright.html.

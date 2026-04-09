@@ -12,11 +12,13 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        exclude: ^tests/injection-corpus/
+        exclude: ^(tests/injection-corpus/|crates/rimap-content/data/confusables\.txt$)
       - id: end-of-file-fixer
         # Email fixtures are byte-exact; auto-appending a final newline
-        # (or stripping a trailing CRLF pair) corrupts them.
-        exclude: ^tests/injection-corpus/
+        # (or stripping a trailing CRLF pair) corrupts them. The vendored
+        # Unicode 16 confusables.txt is byte-identical to the upstream
+        # file and must not be mangled.
+        exclude: ^(tests/injection-corpus/|crates/rimap-content/data/confusables\.txt$)
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
@@ -24,8 +26,9 @@ repos:
         args: ["--maxkb=500"]
         # The oversized-body adversarial fixture intentionally exceeds
         # MAX_BODY_BYTES (1 MiB) to exercise the truncation warning,
-        # and its insta snapshot captures the same ~1 MiB body.
-        exclude: ^(tests/injection-corpus/|crates/rimap-content/tests/snapshots/)
+        # and its insta snapshot captures the same ~1 MiB body. The
+        # vendored Unicode 16 confusables.txt is ~700 KB.
+        exclude: ^(tests/injection-corpus/|crates/rimap-content/tests/snapshots/|crates/rimap-content/data/confusables\.txt$)
       - id: mixed-line-ending
         args: ["--fix=lf"]
         # RFC 5322 email messages require CRLF line endings; the
