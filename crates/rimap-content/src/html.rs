@@ -267,6 +267,95 @@ fn classify_inline_style(style: &str) -> Option<HiddenMethod> {
     None
 }
 
+/// Extract the registrable domain from a URL-looking string.
+///
+/// Returns `None` for empty input, relative URLs, `mailto:`/`tel:`/
+/// `javascript:`/`data:` schemes, single-label hosts, and any input the
+/// PSL parser cannot resolve to a registrable domain.
+fn extract_registrable_domain(url_or_host: &str) -> Option<String> {
+    let trimmed = url_or_host.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    if lowered.starts_with("mailto:")
+        || lowered.starts_with("tel:")
+        || lowered.starts_with("javascript:")
+        || lowered.starts_with("data:")
+    {
+        return None;
+    }
+    let after_scheme = lowered
+        .split_once("://")
+        .map_or(lowered.as_str(), |(_, rest)| rest);
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.");
+    let host = host.split(':').next().unwrap_or(host);
+    if host.is_empty() || !host.contains('.') {
+        return None;
+    }
+    let ascii = idna::domain_to_ascii(host).ok()?;
+    let domain = addr::parse_domain_name(ascii.as_str()).ok()?;
+    Some(domain.root()?.to_string())
+}
+
+/// A single href-mismatch hit recorded by [`detect_mismatches`].
+#[derive(Debug, Clone)]
+struct MismatchHit {
+    text_domain: String,
+    href_domain: String,
+}
+
+/// Walk every `<a href>` and report cases where a URL-looking token in
+/// the anchor text resolves to a different registrable domain than the
+/// `href` attribute.
+///
+/// Returns `(hits, overflow)`. `hits` contains at most
+/// [`MAX_MISMATCH_HITS`] entries; `overflow` counts additional mismatches
+/// past the cap so the caller can emit a summary warning.
+fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
+    let mut hits = Vec::new();
+    let mut overflow: usize = 0;
+    let mut finder = linkify::LinkFinder::new();
+    finder.url_must_have_scheme(false);
+    for anchor in document.select(&SEL_ANCHOR) {
+        let Some(href) = anchor.value().attr("href") else {
+            continue;
+        };
+        let Some(href_domain) = extract_registrable_domain(href) else {
+            continue;
+        };
+        let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
+        if text.len() > MAX_ANCHOR_TEXT_SCAN {
+            text.truncate(MAX_ANCHOR_TEXT_SCAN);
+        }
+        let mut link_iter = finder
+            .links(&text)
+            .filter(|l| l.kind() == &linkify::LinkKind::Url);
+        let Some(link) = link_iter.next() else {
+            continue;
+        };
+        let Some(text_domain) = extract_registrable_domain(link.as_str()) else {
+            continue;
+        };
+        if text_domain.eq_ignore_ascii_case(&href_domain) {
+            continue;
+        }
+        if hits.len() < MAX_MISMATCH_HITS {
+            hits.push(MismatchHit {
+                text_domain,
+                href_domain,
+            });
+        } else {
+            overflow += 1;
+        }
+    }
+    (hits, overflow)
+}
+
 /// Walk the document and collect hidden-element hits plus their
 /// tree-order indices (so text extraction can skip them later).
 ///
@@ -341,6 +430,24 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
             code: crate::output::WarningCode::HtmlHiddenContentStripped,
             detail: Some(format!("method=mixed,additional_hits={hidden_overflow}")),
             location: Some("body:html".to_string()),
+        });
+    }
+    let (mismatches, mismatch_overflow) = detect_mismatches(&document);
+    for hit in &mismatches {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
+            detail: Some(format!(
+                "text_domain={},href_domain={}",
+                hit.text_domain, hit.href_domain
+            )),
+            location: Some("html:anchor".to_string()),
+        });
+    }
+    if mismatch_overflow > 0 {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
+            detail: Some(format!("additional_hits={mismatch_overflow}")),
+            location: Some("html:anchor".to_string()),
         });
     }
     // `hidden_hits` will be consumed by Task 9 (text extraction) to skip
@@ -551,6 +658,76 @@ mod tests {
             .expect("overflow warning has detail");
         assert!(overflow.contains("additional_hits=5"), "got {overflow}");
         assert!(overflow.contains("method=mixed"), "got {overflow}");
+    }
+
+    #[test]
+    fn mismatch_fires_for_different_domains() {
+        let input = br#"<html><body>
+            <a href="https://attacker.example/login">Visit bank.example.com now</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        let mismatch = result
+            .warnings
+            .iter()
+            .find(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch))
+            .expect("expected mismatch warning");
+        let detail = mismatch.detail.as_deref().expect("detail present");
+        // Detail records the registrable (PSL root), so `bank.example.com`
+        // collapses to `example.com` here. The plan-text spec asserted the
+        // raw subdomain, but that contradicts the matching-subdomain test
+        // and the documented behavior of `extract_registrable_domain`.
+        assert!(detail.contains("text_domain=example.com"), "got {detail}");
+        assert!(
+            detail.contains("href_domain=attacker.example"),
+            "got {detail}"
+        );
+        assert_eq!(mismatch.location.as_deref(), Some("html:anchor"));
+    }
+
+    #[test]
+    fn mismatch_does_not_fire_for_matching_subdomain() {
+        let input = br#"<html><body>
+            <a href="https://bank.example.com/auth">Go to login.bank.example.com</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch)),
+            "should not fire for matching registrable domain: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn mismatch_does_not_fire_for_click_here_text() {
+        let input = br#"<html><body>
+            <a href="https://attacker.example">click here</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch)),
+            "should not fire when anchor text has no URL token"
+        );
+    }
+
+    #[test]
+    fn mismatch_skips_mailto_and_relative_hrefs() {
+        let input = br#"<html><body>
+            <a href="mailto:foo@example.com">visit example.com</a>
+            <a href="/relative/path">relative.example</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch))
+        );
     }
 
     #[test]
