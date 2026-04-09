@@ -28,6 +28,7 @@ expression: value
   "security_warnings": [],
   "untrusted": {
     "alternate_parts": [],
+    "body_html": null,
     "body_text": "See forwarded message below."
   }
 }

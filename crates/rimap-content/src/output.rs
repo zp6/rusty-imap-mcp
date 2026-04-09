@@ -99,6 +99,13 @@ pub struct Untrusted {
     /// The primary `text/plain` body part, post-unicode-sanitization.
     /// Empty if no text/plain part was found.
     pub body_text: String,
+    /// Sanitized HTML view of the message body, when the message
+    /// carries a `text/html` part. `None` when no HTML body exists.
+    ///
+    /// Produced by the `html` module via an allowlist-based ammonia
+    /// pipeline with remote content (images, scripts, stylesheets, and
+    /// other network-fetching elements) stripped.
+    pub body_html: Option<String>,
     /// Other `text/*` parts (e.g. additional alternatives), each
     /// independently sanitized.
     pub alternate_parts: Vec<String>,

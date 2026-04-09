@@ -1,6 +1,5 @@
 ---
 source: crates/rimap-content/tests/snapshots.rs
-assertion_line: 41
 expression: value
 ---
 {
@@ -23,6 +22,7 @@ expression: value
   "security_warnings": [],
   "untrusted": {
     "alternate_parts": [],
+    "body_html": null,
     "body_text": ""
   }
 }

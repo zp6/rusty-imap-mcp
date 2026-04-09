@@ -77,6 +77,7 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
         meta,
         untrusted: Untrusted {
             body_text: bodies.primary_text,
+            body_html: None,
             alternate_parts: bodies.alternates,
         },
         security_warnings: warnings,
