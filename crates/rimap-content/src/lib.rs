@@ -10,6 +10,8 @@ pub mod output;
 pub mod parse;
 pub mod unicode;
 
+mod html;
+
 pub use error::ContentError;
 pub use output::{
     AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
