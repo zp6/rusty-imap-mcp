@@ -97,9 +97,19 @@ fn build_ammonia_builder() -> Builder<'static> {
 
 /// Process a raw HTML body into sanitized text + html + warnings.
 ///
+/// # Arguments
+///
+/// * `raw` - Raw HTML body bytes as received from the MIME part.
+/// * `charset` - Optional charset label from the MIME `Content-Type`
+///   header (e.g. `Some("iso-8859-1")`). When `None`, `unicode::decode`
+///   falls back to `encoding_rs` auto-detection (UTF-8 with BOM sniffing
+///   then Windows-1252). Invalid bytes are replaced with U+FFFD.
+///
+/// # Errors
+///
 /// Returns [`ContentError::LimitExceeded`] if `raw` exceeds
 /// [`MAX_HTML_BYTES`].
-pub(crate) fn process(raw: &[u8]) -> Result<HtmlResult, ContentError> {
+pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, ContentError> {
     // Warm the LazyLocks so the const selectors and ammonia builder are
     // exercised on first call. This both validates them at runtime and
     // keeps them out of dead-code analysis until later tasks consume them.
@@ -117,7 +127,12 @@ pub(crate) fn process(raw: &[u8]) -> Result<HtmlResult, ContentError> {
             limit: MAX_HTML_BYTES,
         });
     }
-    // Stubs filled in Tasks 6–11.
+    let decoded = crate::unicode::decode(raw, charset);
+    let document = scraper::Html::parse_document(&decoded);
+    // Task 7 will pass `document` to detect_hidden; until then keep the
+    // parse result alive so the parse path is exercised at runtime.
+    let _ = document;
+    // Stubs filled in Tasks 7–11.
     Ok(HtmlResult {
         body_text: String::new(),
         body_html: String::new(),
@@ -134,7 +149,7 @@ mod tests {
     #[test]
     fn process_oversize_input_returns_limit_exceeded() {
         let huge = vec![b'<'; MAX_HTML_BYTES + 1];
-        let err = process(&huge).expect_err("oversize input must error");
+        let err = process(&huge, None).expect_err("oversize input must error");
         match err {
             ContentError::LimitExceeded { kind, limit } => {
                 assert_eq!(kind, HTML_BODY_LIMIT_KIND);
@@ -146,10 +161,31 @@ mod tests {
 
     #[test]
     fn process_empty_input_returns_empty_result() {
-        let result = process(b"").expect("empty input is valid");
+        let result = process(b"", None).expect("empty input is valid");
         assert!(result.body_text.is_empty());
         assert!(result.body_html.is_empty());
         assert!(result.anchor_hrefs.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn process_minimal_html_document_parses_without_panic() {
+        let html = b"<!DOCTYPE html><html><head><title>Hi</title></head>\
+            <body><p>hello</p></body></html>";
+        let result = process(html, Some("utf-8")).expect("valid html parses");
+        assert!(result.body_text.is_empty());
+        assert!(result.body_html.is_empty());
+        assert!(result.anchor_hrefs.is_empty());
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn process_unclosed_tags_does_not_error() {
+        // scraper/html5ever recovers from malformed input rather than
+        // erroring; verify the pipeline tolerates it.
+        let html = b"<html><body><p>oops<div><span>still here";
+        let result = process(html, None).expect("malformed html still parses");
+        assert!(result.body_text.is_empty());
         assert!(result.warnings.is_empty());
     }
 
