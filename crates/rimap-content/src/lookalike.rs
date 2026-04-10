@@ -22,11 +22,16 @@ use crate::output::{ContentMeta, SecurityWarning, WarningCode};
 #[derive(Debug)]
 pub(crate) struct LookalikeInput<'a> {
     /// Header-derived metadata (from, subject, list-id, …).
+    #[expect(dead_code, reason = "retained for future homograph comparison passes")]
     pub meta: &'a ContentMeta,
     /// Sanitized plain-text body, used for body-URL scanning.
     pub body_text: &'a str,
     /// Anchor hrefs collected from the sanitized HTML body.
     pub anchor_hrefs: &'a [String],
+    /// Pre-extracted header address domains with their locations.
+    /// Built at the `parse_message` boundary using structured
+    /// `Addr.address` data rather than re-parsing rendered strings.
+    pub header_domains: Vec<(String, String)>,
 }
 
 /// Maximum `body_text` bytes scanned for URL tokens via linkify.
@@ -141,29 +146,18 @@ fn compute_skeleton(domain: &str) -> String {
 /// of warnings.
 pub(crate) fn audit(input: &LookalikeInput<'_>) -> Vec<SecurityWarning> {
     let mut out: Vec<SecurityWarning> = Vec::new();
-    scan_header_domains(input.meta, &mut out);
+    scan_header_domains(input, &mut out);
     scan_anchor_hrefs(input.anchor_hrefs, &mut out);
     scan_body_urls(input.body_text, &mut out);
     out
 }
 
-/// Pass 1: classify domains pulled from `From`/`To`/`Cc` header
-/// address fields. `Reply-To` is not yet retained on `ContentMeta`.
-fn scan_header_domains(meta: &ContentMeta, out: &mut Vec<SecurityWarning>) {
-    if let Some(from) = meta.from.as_deref()
-        && let Some(domain) = extract_domain_from_address(from)
-    {
-        emit_classification(&domain, "header:from", out);
-    }
-    for addr in &meta.to {
-        if let Some(domain) = extract_domain_from_address(addr) {
-            emit_classification(&domain, "header:to", out);
-        }
-    }
-    for addr in &meta.cc {
-        if let Some(domain) = extract_domain_from_address(addr) {
-            emit_classification(&domain, "header:cc", out);
-        }
+/// Pass 1: classify pre-extracted header address domains from
+/// `LookalikeInput::header_domains` (built at the parse boundary
+/// using structured `Addr.address` data).
+fn scan_header_domains(input: &LookalikeInput<'_>, out: &mut Vec<SecurityWarning>) {
+    for (domain, location) in &input.header_domains {
+        emit_classification(domain, location, out);
     }
 }
 
@@ -198,6 +192,13 @@ fn scan_body_urls(body_text: &str, out: &mut Vec<SecurityWarning>) {
 /// Pull the domain from a header address. Handles `Name <user@host>`
 /// and bare `user@host` forms. Returns `None` if no `@` is present
 /// or the right-hand side is empty.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "used by test helper; retained for future audit passes"
+    )
+)]
 fn extract_domain_from_address(addr: &str) -> Option<String> {
     let trimmed = addr.trim();
     let inner = if let (Some(lt), Some(gt)) = (trimmed.rfind('<'), trimmed.rfind('>'))
@@ -370,10 +371,32 @@ mod tests {
         body_text: &str,
         anchor_hrefs: &[String],
     ) -> Vec<SecurityWarning> {
+        let mut header_domains = Vec::new();
+        if let Some(from) = meta.from.as_deref()
+            && let Some(domain) = extract_domain_from_address(from)
+        {
+            header_domains.push((domain, "header:from".to_string()));
+        }
+        for addr in &meta.to {
+            if let Some(domain) = extract_domain_from_address(addr) {
+                header_domains.push((domain, "header:to".to_string()));
+            }
+        }
+        for addr in &meta.cc {
+            if let Some(domain) = extract_domain_from_address(addr) {
+                header_domains.push((domain, "header:cc".to_string()));
+            }
+        }
+        if let Some(reply_to) = meta.reply_to.as_deref()
+            && let Some(domain) = extract_domain_from_address(reply_to)
+        {
+            header_domains.push((domain, "header:reply_to".to_string()));
+        }
         audit(&LookalikeInput {
             meta,
             body_text,
             anchor_hrefs,
+            header_domains,
         })
     }
 
@@ -394,6 +417,27 @@ mod tests {
                 .iter()
                 .all(|w| w.location.as_deref() == Some("header:from")),
             "all emitted warnings should be located on header:from"
+        );
+    }
+
+    #[test]
+    fn audit_flags_mixed_script_reply_to_domain() {
+        let mut meta = empty_meta();
+        meta.from = Some("legit@example.com".to_string());
+        meta.reply_to = Some("support@p\u{0430}ypal.com".to_string());
+        let warnings = run_audit(&meta, "", &[]);
+        let reply_to_warnings: Vec<_> = warnings
+            .iter()
+            .filter(|w| {
+                w.code == WarningCode::LookalikeMixedScript
+                    && w.location.as_deref() == Some("header:reply_to")
+            })
+            .collect();
+        assert_eq!(
+            reply_to_warnings.len(),
+            1,
+            "expected one mixed-script hit on reply_to, \
+             got {warnings:?}"
         );
     }
 

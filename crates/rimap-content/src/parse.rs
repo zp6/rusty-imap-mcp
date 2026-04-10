@@ -86,14 +86,64 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
         security_warnings: warnings,
     };
 
+    let header_domains = collect_header_domains(&message);
     let lookalike_warnings = lookalike::audit(&lookalike::LookalikeInput {
         meta: &content.meta,
         body_text: &content.untrusted.body_text,
         anchor_hrefs: &html_anchor_hrefs,
+        header_domains,
     });
     content.security_warnings.extend(lookalike_warnings);
 
     Ok(content)
+}
+
+/// Pre-extract domains from structured `Addr.address` fields for
+/// all header address sources (From, To, Cc, Reply-To). Using the
+/// parser's structured data is more reliable than re-parsing the
+/// rendered display string.
+fn collect_header_domains(message: &Message<'_>) -> Vec<(String, String)> {
+    let mut domains = Vec::new();
+    if let Some(address) = message.from() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:from".to_string()));
+            }
+        }
+    }
+    if let Some(address) = message.to() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:to".to_string()));
+            }
+        }
+    }
+    if let Some(address) = message.cc() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:cc".to_string()));
+            }
+        }
+    }
+    if let Some(address) = message.reply_to() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:reply_to".to_string()));
+            }
+        }
+    }
+    domains
+}
+
+/// Extract the domain portion from a structured `mail_parser::Addr`.
+fn addr_domain(addr: &mail_parser::Addr<'_>) -> Option<String> {
+    let email = addr.address.as_deref()?;
+    let (_local, domain) = email.rsplit_once('@')?;
+    let trimmed = domain.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 fn enforce_header_count(
