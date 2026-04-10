@@ -117,6 +117,7 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::HtmlScriptStripped => "html_script_stripped",
         WarningCode::HtmlStyleStripped => "html_style_stripped",
         WarningCode::HtmlRemoteImageStripped => "html_remote_image_stripped",
+        WarningCode::HtmlAnchorUnparsableHref => "html_anchor_unparsable_href",
         WarningCode::LookalikeMixedScript => "lookalike_mixed_script",
         WarningCode::LookalikeHomographDomain => "lookalike_homograph_domain",
         WarningCode::LookalikeIdnPunycode => "lookalike_idn_punycode",

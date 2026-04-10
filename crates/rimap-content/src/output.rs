@@ -117,8 +117,11 @@ pub struct Untrusted {
 pub struct SecurityWarning {
     /// Classification of the warning.
     pub code: WarningCode,
-    /// Short human-readable context (e.g. a counter of stripped
-    /// codepoints). `None` when no additional detail is available.
+    /// Human-readable context string. Consumers MUST NOT parse this
+    /// field programmatically — use `code` and other typed fields for
+    /// dispatch. Format may change without notice.
+    ///
+    /// `None` when no additional detail is available.
     pub detail: Option<String>,
     /// Logical location in the message (e.g. `"header:subject"`,
     /// `"body:part[2]"`, `"attachment[0]"`). `None` for crate-wide events.
@@ -175,6 +178,11 @@ pub enum WarningCode {
     /// whose registrable domain differs from the anchor's `href`
     /// registrable domain. Detail format:
     /// `text_domain=<ascii>,href_domain=<ascii>`.
+    ///
+    /// Reflects the original message content (pre-ammonia), not the
+    /// sanitized `body_html`. An anchor stripped by ammonia may still
+    /// produce this warning — the warning signals the message's
+    /// intent, not the sanitized output.
     HtmlLinkTextHrefMismatch,
     /// One or more `<script>` elements were removed during HTML
     /// sanitization. Detail format: `count=N`.
@@ -186,6 +194,12 @@ pub enum WarningCode {
     /// attributes removed during HTML sanitization to prevent
     /// remote tracking-pixel loads. Detail format: `count=N`.
     HtmlRemoteImageStripped,
+    /// An HTML anchor's `href` could not be resolved to a registrable
+    /// domain via the Public Suffix List, but the anchor's visible text
+    /// contained a URL-looking token (detected by `linkify`). This
+    /// distinguishes "we checked and it's fine" from "we couldn't
+    /// check." Consumers should treat the anchor with suspicion.
+    HtmlAnchorUnparsableHref,
     /// A domain label contained characters from multiple Unicode
     /// scripts outside the TR39 Highly Restrictive profile. Detail
     /// format: `domain=<punycode>,scripts=<S1+S2>`.
@@ -253,6 +267,7 @@ impl WarningCode {
             WarningCode::ParseBodyTruncated
             | WarningCode::HtmlStyleStripped
             | WarningCode::HtmlRemoteImageStripped
+            | WarningCode::HtmlAnchorUnparsableHref
             | WarningCode::LookalikeIdnPunycode => WarningSeverity::Informational,
         }
     }
@@ -349,6 +364,10 @@ mod tests {
             WarningSeverity::Informational
         );
         assert_eq!(
+            WarningCode::HtmlAnchorUnparsableHref.severity(),
+            WarningSeverity::Informational
+        );
+        assert_eq!(
             WarningCode::LookalikeMixedScript.severity(),
             WarningSeverity::Adversarial
         );
@@ -382,6 +401,10 @@ mod tests {
             (
                 WarningCode::HtmlRemoteImageStripped,
                 "html_remote_image_stripped",
+            ),
+            (
+                WarningCode::HtmlAnchorUnparsableHref,
+                "html_anchor_unparsable_href",
             ),
             (WarningCode::LookalikeMixedScript, "lookalike_mixed_script"),
             (
