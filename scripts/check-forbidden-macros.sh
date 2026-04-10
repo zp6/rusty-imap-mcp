@@ -12,7 +12,7 @@ while IFS= read -r f; do
 done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.rs' |
     grep -vE '(^|/)tests?/' |
     grep -vE '(^|/)benches/' |
-    grep -vE '(^|/)build\.rs$' ||
+    grep -vE '(^|/)crates/[^/]+/build\.rs$' ||
     true)
 
 if [ "${#files[@]}" -eq 0 ]; then

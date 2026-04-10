@@ -112,9 +112,14 @@ scraper = { version = "0.26.0", default-features = false }
 # ammonia MSRV 1.80, MIT OR Apache-2.0
 ammonia = "4.1.2"
 linkify = "0.10.0"
-# idna 1.x is the current Servo URL-standard IDNA implementation; pulled
-# transitively by url crate in other workspace members, pinned here so we
-# control the version.
+# First url/idna entry in the workspace. idna 1.x replaced in-crate
+# Unicode tables with the ICU4X provider stack, pulling ~20 new
+# transitive crates (icu_collections, icu_locale_core, icu_normalizer,
+# icu_normalizer_data, icu_properties, icu_properties_data,
+# icu_provider, idna_adapter, litemap, potential_utf, tinystr,
+# writeable, yoke*, zerofrom*, zerotrie, zerovec*, utf8_iter,
+# displaydoc). Accepted because ICU4X is the unicode-org canonical
+# path; re-audit on any minor bump of the idna or icu_* family.
 idna = "1.1.0"
 # addr 0.15 with default psl feature for registrable-domain extraction.
 addr = "0.15.6"
@@ -124,9 +129,9 @@ unicode-script = "0.5.8"
 # dep for that build.rs; declared here for workspace inheritance, the member
 # crate lists it under [build-dependencies], not [dependencies].
 #
-# Direct deps: phf 0.13.1 and phf_codegen 0.13.1. Our phf line sets
-# default-features = false, so it does NOT itself enable phf_macros; the
-# phf_codegen path runs in build.rs and is reviewed as code we own.
+# Our direct phf declaration disables defaults; phf_macros still
+# enters the graph transitively via cssparser, which is acknowledged
+# in the proc-macro enumeration above.
 #
 # Transitively-introduced proc-macros entering the graph with the Sprint 4b
 # dep additions (each executes arbitrary Rust at build time, so SC-PROC-01
@@ -146,6 +151,11 @@ unicode-script = "0.5.8"
 # expansion respectively. No RUSTSEC advisories apply to any of these
 # versions as of 2026-04-08, and `cargo deny check` passes against the
 # full graph (advisories, bans, licenses, sources).
+#
+# - yoke-derive 0.8.2 (unicode-org via ICU4X, pulled through idna_adapter)
+# - zerofrom-derive 0.1.7 (unicode-org via ICU4X, pulled through idna_adapter)
+# - zerovec-derive 0.11.3 (unicode-org via ICU4X, pulled through idna_adapter)
+# - displaydoc 0.2.5 (unicode-org via ICU4X, pulled through idna_adapter)
 #
 # Re-audit trigger: any minor version bump of scraper, ammonia, or the
 # phf family. (SC-PROC-01)
