@@ -530,7 +530,16 @@ fn walk_element(
 /// space when the buffer is non-empty and does not already end in
 /// whitespace. Internal whitespace is left intact for
 /// [`normalize_whitespace`] to collapse.
+///
+/// Text nodes containing `]]>` are skipped: html5ever treats
+/// `<![CDATA[` in non-SVG/MathML context as a bogus comment, but
+/// content between the inner tags and the closing `]]>` leaks as
+/// text nodes. The `]]>` marker never appears in legitimate visible
+/// HTML text.
 fn push_text(out: &mut String, text: &str) {
+    if text.contains("]]>") {
+        return;
+    }
     if !out.is_empty() && !out.ends_with(char::is_whitespace) {
         out.push(' ');
     }
@@ -1251,6 +1260,30 @@ mod tests {
                 .anchor_hrefs
                 .iter()
                 .any(|h| h.contains("javascript:"))
+        );
+    }
+
+    #[test]
+    fn cdata_script_content_excluded_from_body_text() {
+        let html = br#"<html><body>
+            <p>visible</p>
+            <![CDATA[<script>alert("cdata-bypass")</script>]]>
+        </body></html>"#;
+        let result = process(html, None).expect("ok");
+        assert!(
+            !result.body_text.contains("alert"),
+            "CDATA script content should not leak into body_text: {:?}",
+            result.body_text
+        );
+        assert!(
+            !result.body_text.contains("cdata-bypass"),
+            "CDATA content should not appear in body_text: {:?}",
+            result.body_text
+        );
+        assert!(
+            result.body_text.contains("visible"),
+            "non-CDATA text should still appear: {:?}",
+            result.body_text
         );
     }
 
