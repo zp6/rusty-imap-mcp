@@ -123,6 +123,7 @@ fn extract_meta(
     let from = first_address_string(message.from(), "header:from", warnings);
     let to = address_strings(message.to(), "header:to", warnings);
     let cc = address_strings(message.cc(), "header:cc", warnings);
+    let reply_to = first_address_string(message.reply_to(), "header:reply_to", warnings);
     let subject = sanitize_opt_str(message.subject(), "header:subject", warnings);
     let date = message.date().and_then(convert_datetime);
     let message_id = sanitize_opt_str(message.message_id(), "header:message_id", warnings);
@@ -136,7 +137,7 @@ fn extract_meta(
         from,
         to,
         cc,
-        reply_to: None,
+        reply_to,
         subject,
         date,
         message_id,
@@ -1875,6 +1876,40 @@ mod tests {
             }),
             "expected LookalikeFilenameExtensionSpoof with double_extension, \
              got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn reply_to_extracted_into_meta() {
+        let eml = b"From: sender@example.com\r\n\
+            Reply-To: reply@different.com\r\n\
+            To: recipient@example.com\r\n\
+            Subject: test\r\n\
+            \r\n\
+            body\r\n";
+        let content = parse_message(eml).unwrap();
+        assert_eq!(
+            content.meta.reply_to.as_deref(),
+            Some("reply@different.com")
+        );
+    }
+
+    #[test]
+    fn reply_to_bidi_override_emits_warning() {
+        let eml = "From: sender@example.com\r\n\
+             Reply-To: attacker@evil\u{202E}.com\r\n\
+             To: recipient@example.com\r\n\
+             Subject: test\r\n\
+             \r\n\
+             body\r\n";
+        let content = parse_message(eml.as_bytes()).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeHomographDomain
+                    && w.location.as_deref() == Some("header:reply_to")
+            }),
+            "expected LookalikeHomographDomain on reply_to, got {:?}",
             content.security_warnings
         );
     }
