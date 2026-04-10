@@ -136,6 +136,15 @@ fn build_ammonia_builder() -> Builder<'static> {
     builder.url_schemes(schemes);
     builder.rm_tag_attributes("img", &["src", "srcset"]);
     builder.add_tag_attributes("img", &["alt", "width", "height"]);
+    // Pin tag removals against ammonia default drift. details/summary
+    // are explicitly removed: collapsed content is invisible to humans
+    // but visible to LLMs reading HTML tokens.
+    builder.rm_tags(&[
+        "script", "style", "iframe", "object", "embed", "meta", "base", "link", "form", "input",
+        "button", "textarea", "svg", "math", "frame", "frameset", "noframes", "applet", "details",
+        "summary",
+    ]);
+    builder.strip_comments(true);
     builder
 }
 
@@ -1200,5 +1209,39 @@ mod tests {
         let _ = &*SEL_STYLE;
         let _ = &*SEL_BODY_ALL;
         let _ = &*AMMONIA_BUILDER;
+    }
+
+    #[test]
+    fn sanitize_drops_iframe_and_details() {
+        let tags = [
+            "iframe", "object", "embed", "meta", "base", "link", "form", "input", "button",
+            "textarea", "svg", "math", "frame", "frameset", "noframes", "applet", "details",
+            "summary",
+        ];
+        for tag in tags {
+            let input = format!("<html><body><{tag}>hidden content</{tag}></body></html>");
+            let result = process(input.as_bytes(), None).expect("process should succeed");
+            assert!(
+                !result.body_html.contains(&format!("<{tag}")),
+                "tag <{tag}> should be stripped from body_html, got: {}",
+                result.body_html
+            );
+        }
+    }
+
+    #[test]
+    fn body_html_has_no_html_comments() {
+        let input = b"<html><body><!-- secret comment --><p>visible</p></body></html>";
+        let result = process(input, None).expect("process should succeed");
+        assert!(
+            !result.body_html.contains("<!--"),
+            "HTML comments should be stripped, got: {}",
+            result.body_html
+        );
+        assert!(
+            !result.body_html.contains("secret comment"),
+            "comment content should be stripped, got: {}",
+            result.body_html
+        );
     }
 }
