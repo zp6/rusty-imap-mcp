@@ -165,11 +165,12 @@ pub enum WarningCode {
     ParseAttachmentFilenameRewritten,
     /// HTML content contained hidden elements (e.g. `display:none`,
     /// `visibility:hidden`, `opacity:0`, off-screen positioning,
-    /// zero font size, or background-color-matching text). Stripped
-    /// from the extracted `body_text`. Detail format:
+    /// zero font size, or background-color-matching text). Hidden
+    /// content is stripped from `body_text` but may remain in
+    /// `body_html` when the posture allows HTML exposure. Detail format:
     /// `method=<display_none|visibility_hidden|opacity_0|offscreen|zero_font|color_match>`
     /// optionally followed by `,count=N` when summarized.
-    HtmlHiddenContentStripped,
+    HtmlHiddenContentDetected,
     /// An HTML anchor's visible text contained a URL-looking token
     /// whose registrable domain differs from the anchor's `href`
     /// registrable domain. Detail format:
@@ -243,7 +244,7 @@ impl WarningCode {
             | WarningCode::ParseMimePartCountExceeded
             | WarningCode::ParseHeaderCountExceeded
             | WarningCode::ParseAttachmentFilenameRewritten
-            | WarningCode::HtmlHiddenContentStripped
+            | WarningCode::HtmlHiddenContentDetected
             | WarningCode::HtmlLinkTextHrefMismatch
             | WarningCode::HtmlScriptStripped
             | WarningCode::LookalikeMixedScript
@@ -328,7 +329,7 @@ mod tests {
             WarningSeverity::Adversarial
         );
         assert_eq!(
-            WarningCode::HtmlHiddenContentStripped.severity(),
+            WarningCode::HtmlHiddenContentDetected.severity(),
             WarningSeverity::Adversarial
         );
         assert_eq!(
@@ -369,8 +370,8 @@ mod tests {
     fn new_warning_variants_serialize_snake_case() {
         let cases = [
             (
-                WarningCode::HtmlHiddenContentStripped,
-                "html_hidden_content_stripped",
+                WarningCode::HtmlHiddenContentDetected,
+                "html_hidden_content_detected",
             ),
             (
                 WarningCode::HtmlLinkTextHrefMismatch,

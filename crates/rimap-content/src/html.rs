@@ -554,14 +554,14 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
     let mut warnings: Vec<SecurityWarning> = Vec::new();
     for (_idx, method) in &hidden_hits {
         warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlHiddenContentStripped,
+            code: crate::output::WarningCode::HtmlHiddenContentDetected,
             detail: Some(format!("method={}", method.as_detail())),
             location: Some("body:html".to_string()),
         });
     }
     if hidden_overflow > 0 {
         warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlHiddenContentStripped,
+            code: crate::output::WarningCode::HtmlHiddenContentDetected,
             detail: Some(format!("method=mixed,additional_hits={hidden_overflow}")),
             location: Some("body:html".to_string()),
         });
@@ -855,10 +855,10 @@ mod tests {
             .find(|w| {
                 matches!(
                     w.code,
-                    crate::output::WarningCode::HtmlHiddenContentStripped
+                    crate::output::WarningCode::HtmlHiddenContentDetected
                 )
             })
-            .expect("expected HtmlHiddenContentStripped warning");
+            .expect("expected HtmlHiddenContentDetected warning");
         assert_eq!(hit.detail.as_deref(), Some("method=display_none"));
         assert_eq!(hit.location.as_deref(), Some("body:html"));
     }
@@ -879,7 +879,7 @@ mod tests {
             .filter(|w| {
                 matches!(
                     w.code,
-                    crate::output::WarningCode::HtmlHiddenContentStripped
+                    crate::output::WarningCode::HtmlHiddenContentDetected
                 )
             })
             .collect();

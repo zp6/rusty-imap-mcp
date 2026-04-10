@@ -374,7 +374,7 @@ fn warning_code_to_label(code: WarningCode) -> &'static str {
         WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
         WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
         WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
-        WarningCode::HtmlHiddenContentStripped => "html_hidden_content_stripped",
+        WarningCode::HtmlHiddenContentDetected => "html_hidden_content_detected",
         WarningCode::HtmlLinkTextHrefMismatch => "html_link_text_href_mismatch",
         WarningCode::HtmlScriptStripped => "html_script_stripped",
         WarningCode::HtmlStyleStripped => "html_style_stripped",

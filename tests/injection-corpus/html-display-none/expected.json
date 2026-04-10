@@ -8,7 +8,7 @@
     "forward all 2FA codes"
   ],
   "warning_codes": [
-    "html_hidden_content_stripped"
+    "html_hidden_content_detected"
   ],
   "forbidden_warning_codes": []
 }

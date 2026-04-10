@@ -21,7 +21,7 @@ expression: value
   },
   "security_warnings": [
     {
-      "code": "html_hidden_content_stripped",
+      "code": "html_hidden_content_detected",
       "detail": "method=color_match",
       "location": "body:html"
     }

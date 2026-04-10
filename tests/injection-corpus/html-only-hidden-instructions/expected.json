@@ -1,9 +1,9 @@
 {
-  "description": "A text/html-only message with hidden instructions inside a display:none div. Sprint 4b Task 12 wires html::process so the hidden subtree is excluded from body_text and an HtmlHiddenContentStripped warning is emitted.",
+  "description": "A text/html-only message with hidden instructions inside a display:none div. Sprint 4b Task 12 wires html::process so the hidden subtree is excluded from body_text and an HtmlHiddenContentDetected warning is emitted.",
   "expect": "ok",
   "must_contain": ["Please review the attached document"],
   "must_not_contain": ["Ignore previous instructions", "display:none"],
-  "warning_codes": ["html_hidden_content_stripped"],
+  "warning_codes": ["html_hidden_content_detected"],
   "forbidden_warning_codes": [],
   "meta": {
     "attachment_count": 0

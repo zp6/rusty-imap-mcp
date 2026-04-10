@@ -1387,8 +1387,8 @@ mod tests {
             content
                 .security_warnings
                 .iter()
-                .any(|w| matches!(w.code, WarningCode::HtmlHiddenContentStripped)),
-            "expected HtmlHiddenContentStripped warning, got {:?}",
+                .any(|w| matches!(w.code, WarningCode::HtmlHiddenContentDetected)),
+            "expected HtmlHiddenContentDetected warning, got {:?}",
             content.security_warnings
         );
         assert!(!content.untrusted.body_text.contains("hidden"));
