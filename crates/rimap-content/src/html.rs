@@ -215,6 +215,24 @@ fn font_size_is_zero(val: &str) -> bool {
         .is_some_and(|n| n <= f64::EPSILON)
 }
 
+/// Parse a `transform: translate*(-Npx)` value and return the most
+/// negative pixel offset found, or `None` if no translate pattern
+/// matches.
+fn parse_translate_px(val: &str) -> Option<f64> {
+    let mut min: Option<f64> = None;
+    for part in val.split(['(', ',', ')']) {
+        let trimmed = part.trim();
+        if let Some(px_val) = parse_px(trimmed) {
+            match min {
+                Some(current) if px_val < current => min = Some(px_val),
+                None => min = Some(px_val),
+                _ => {}
+            }
+        }
+    }
+    min
+}
+
 /// Accumulator for off-screen / color-match detection across an inline
 /// style declaration list.
 #[derive(Default)]
@@ -222,6 +240,7 @@ struct StyleHints {
     position: Option<String>,
     left_px: Option<f64>,
     top_px: Option<f64>,
+    transform_offset_px: Option<f64>,
     color: Option<String>,
     bg_color: Option<String>,
 }
@@ -232,6 +251,7 @@ impl StyleHints {
             "position" => self.position = Some(val.to_string()),
             "left" => self.left_px = parse_px(val),
             "top" => self.top_px = parse_px(val),
+            "transform" => self.transform_offset_px = parse_translate_px(val),
             "color" => self.color = Some(val.to_string()),
             "background-color" => self.bg_color = Some(val.to_string()),
             _ => {}
@@ -243,9 +263,10 @@ impl StyleHints {
         if !positioned {
             return false;
         }
-        let off_left = self.left_px.is_some_and(|v| v <= -1000.0);
-        let off_top = self.top_px.is_some_and(|v| v <= -1000.0);
-        off_left || off_top
+        let off_left = self.left_px.is_some_and(|v| v < -100.0);
+        let off_top = self.top_px.is_some_and(|v| v < -100.0);
+        let off_transform = self.transform_offset_px.is_some_and(|v| v < -100.0);
+        off_left || off_top || off_transform
     }
 
     fn is_color_match(&self) -> bool {
@@ -1227,6 +1248,42 @@ mod tests {
                 result.body_html
             );
         }
+    }
+
+    #[test]
+    fn classify_offscreen_minus_999_fires() {
+        assert_eq!(
+            classify_inline_style("position: absolute; left: -999px"),
+            Some(HiddenMethod::OffScreen)
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_minus_50_does_not_fire() {
+        assert_eq!(
+            classify_inline_style("position: absolute; left: -50px"),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_transform_translate() {
+        assert_eq!(
+            classify_inline_style("position: absolute; transform: translateX(-9999px)"),
+            Some(HiddenMethod::OffScreen)
+        );
+        assert_eq!(
+            classify_inline_style("position: fixed; transform: translate(-500px, 0)"),
+            Some(HiddenMethod::OffScreen)
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_transform_small_value_no_fire() {
+        assert_eq!(
+            classify_inline_style("position: absolute; transform: translateX(-50px)"),
+            None
+        );
     }
 
     #[test]
