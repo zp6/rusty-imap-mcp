@@ -1,0 +1,12 @@
+{
+  "description": "Reply-To uses a Cyrillic homograph of paypal.com (Latin+Cyrillic mixed script). LookalikeMixedScript must fire on header:reply_to.",
+  "expect": "ok",
+  "must_contain": [
+    "Please verify your account"
+  ],
+  "must_not_contain": [],
+  "warning_codes": [
+    "lookalike_mixed_script"
+  ],
+  "forbidden_warning_codes": []
+}

@@ -1,0 +1,40 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "attacker@evil.example",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 385,
+    "references": [],
+    "reply_to": null,
+    "subject": "Offscreen evasion test",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "html_hidden_content_detected",
+      "detail": "method=offscreen",
+      "location": "body:html"
+    },
+    {
+      "code": "html_hidden_content_detected",
+      "detail": "method=offscreen",
+      "location": "body:html"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": "\n<p>Please review the attached document.</p>\n<div>HIDDEN BY LEFT OFFSET</div>\n<div>HIDDEN BY TRANSFORM</div>\n\n",
+    "body_text": "Please review the attached document."
+  }
+}

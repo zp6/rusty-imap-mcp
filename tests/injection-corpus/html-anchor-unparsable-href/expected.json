@@ -1,0 +1,12 @@
+{
+  "description": "Anchor href uses a single-label host (no dot, PSL fails) but visible text contains paypal.com. HtmlAnchorUnparsableHref must fire.",
+  "expect": "ok",
+  "must_contain": [
+    "Click to verify your account:"
+  ],
+  "must_not_contain": [],
+  "warning_codes": [
+    "html_anchor_unparsable_href"
+  ],
+  "forbidden_warning_codes": []
+}
