@@ -360,9 +360,10 @@ struct MismatchHit {
 /// Returns `(hits, overflow)`. `hits` contains at most
 /// [`MAX_MISMATCH_HITS`] entries; `overflow` counts additional mismatches
 /// past the cap so the caller can emit a summary warning.
-fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
+fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize, Vec<(String, String)>) {
     let mut hits = Vec::new();
     let mut overflow: usize = 0;
+    let mut unparsable_hrefs: Vec<(String, String)> = Vec::new();
     let mut finder = linkify::LinkFinder::new();
     finder.url_must_have_scheme(false);
     for anchor in document.select(&SEL_ANCHOR) {
@@ -370,6 +371,16 @@ fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
             continue;
         };
         let Some(href_domain) = extract_registrable_domain(href) else {
+            let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
+            if text.len() > MAX_ANCHOR_TEXT_SCAN {
+                text.truncate(MAX_ANCHOR_TEXT_SCAN);
+            }
+            let has_url_text = finder
+                .links(&text)
+                .any(|l| l.kind() == &linkify::LinkKind::Url);
+            if has_url_text {
+                unparsable_hrefs.push((href.to_string(), text.trim().to_string()));
+            }
             continue;
         };
         let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
@@ -397,7 +408,7 @@ fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
             overflow += 1;
         }
     }
-    (hits, overflow)
+    (hits, overflow, unparsable_hrefs)
 }
 
 /// Walk the document and collect hidden-element hits plus their
@@ -596,7 +607,7 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
             location: Some("body:html".to_string()),
         });
     }
-    let (mismatches, mismatch_overflow) = detect_mismatches(&document);
+    let (mismatches, mismatch_overflow, unparsable_hrefs) = detect_mismatches(&document);
     for hit in &mismatches {
         warnings.push(SecurityWarning {
             code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
@@ -612,6 +623,13 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
             code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
             detail: Some(format!("additional_hits={mismatch_overflow}")),
             location: Some("html:anchor".to_string()),
+        });
+    }
+    for (href, text) in &unparsable_hrefs {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlAnchorUnparsableHref,
+            detail: Some(format!("href={href},text={text}")),
+            location: Some("body_html:anchor".to_string()),
         });
     }
     let hidden_indices: HashSet<ElementIndex> = hidden_hits.iter().map(|(idx, _)| *idx).collect();
@@ -1026,6 +1044,22 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch))
+        );
+    }
+
+    #[test]
+    fn mismatch_emits_unparsable_href_for_psl_failure() {
+        let input = br#"<html><body>
+            <a href="https://evilserver/phish">Visit paypal.com now</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlAnchorUnparsableHref)),
+            "expected HtmlAnchorUnparsableHref, got {:?}",
+            result.warnings
         );
     }
 
