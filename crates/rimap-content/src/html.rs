@@ -462,10 +462,20 @@ fn extract_text(
     let body_selector = compile_selector("body");
     if let Some(body_el) = document.select(&body_selector).next() {
         let mut counter: usize = 0;
+        let mut after_cdata = false;
         for child in body_el.children() {
             if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                after_cdata = false;
                 walk_element(child_el, hidden_indices, &mut buf, &mut counter);
-            } else if let Some(text) = child.value().as_text() {
+            } else if child
+                .value()
+                .as_comment()
+                .is_some_and(|c| c.starts_with("[CDATA["))
+            {
+                after_cdata = true;
+            } else if let Some(text) = child.value().as_text()
+                && !after_cdata
+            {
                 push_text(&mut buf, text);
             }
         }
@@ -500,10 +510,20 @@ fn collect_visible_text(
     ) {
         return;
     }
+    let mut after_cdata = false;
     for child in el.children() {
         if let Some(child_el) = scraper::ElementRef::wrap(child) {
+            after_cdata = false;
             walk_element(child_el, hidden_indices, out, counter);
-        } else if let Some(text) = child.value().as_text() {
+        } else if child
+            .value()
+            .as_comment()
+            .is_some_and(|c| c.starts_with("[CDATA["))
+        {
+            after_cdata = true;
+        } else if let Some(text) = child.value().as_text()
+            && !after_cdata
+        {
             push_text(out, text);
         }
     }
@@ -531,11 +551,14 @@ fn walk_element(
 /// whitespace. Internal whitespace is left intact for
 /// [`normalize_whitespace`] to collapse.
 ///
-/// Text nodes containing `]]>` are skipped: html5ever treats
-/// `<![CDATA[` in non-SVG/MathML context as a bogus comment, but
-/// content between the inner tags and the closing `]]>` leaks as
-/// text nodes. The `]]>` marker never appears in legitimate visible
-/// HTML text.
+/// Text nodes containing `]]>` are skipped as a secondary defense
+/// against CDATA leaks. html5ever treats `<![CDATA[` in non-SVG/
+/// `MathML` context as a bogus comment; content between inner tags
+/// and `]]>` leaks as text nodes. The primary defense is the
+/// `after_cdata` flag in [`extract_text`] and
+/// [`collect_visible_text`], which suppresses text siblings that
+/// immediately follow a CDATA bogus-comment node (covering the
+/// unclosed-CDATA case where `]]>` is absent).
 fn push_text(out: &mut String, text: &str) {
     if text.contains("]]>") {
         return;
@@ -1283,6 +1306,20 @@ mod tests {
         assert!(
             result.body_text.contains("visible"),
             "non-CDATA text should still appear: {:?}",
+            result.body_text
+        );
+    }
+
+    #[test]
+    fn unclosed_cdata_script_content_excluded_from_body_text() {
+        let html = br#"<html><body>
+            <p>visible</p>
+            <![CDATA[<script>alert("leaked")
+        </body></html>"#;
+        let result = process(html, None).expect("ok");
+        assert!(
+            !result.body_text.contains("alert"),
+            "unclosed CDATA script content should not leak: {:?}",
             result.body_text
         );
     }
