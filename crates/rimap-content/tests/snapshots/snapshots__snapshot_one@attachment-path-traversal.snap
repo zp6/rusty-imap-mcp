@@ -22,6 +22,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 291,
     "references": [],
+    "reply_to": null,
     "subject": null,
     "to": []
   },

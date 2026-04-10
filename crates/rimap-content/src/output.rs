@@ -42,6 +42,8 @@ pub struct ContentMeta {
     pub to: Vec<String>,
     /// Parsed `Cc:` header recipients, sanitized.
     pub cc: Vec<String>,
+    /// Parsed `Reply-To:` header, sanitized. `None` if absent.
+    pub reply_to: Option<String>,
     /// Parsed `Subject:` header, sanitized. `None` if absent.
     pub subject: Option<String>,
     /// Parsed `Date:` header as a UTC-normalized `OffsetDateTime`.
@@ -277,6 +279,15 @@ impl WarningCode {
 #[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_meta_has_reply_to_field() {
+        let meta = ContentMeta {
+            reply_to: Some("reply@example.com".to_string()),
+            ..ContentMeta::default()
+        };
+        assert_eq!(meta.reply_to.as_deref(), Some("reply@example.com"));
+    }
 
     #[test]
     fn content_default_meta_is_empty() {

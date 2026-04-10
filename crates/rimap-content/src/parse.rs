@@ -136,6 +136,7 @@ fn extract_meta(
         from,
         to,
         cc,
+        reply_to: None,
         subject,
         date,
         message_id,

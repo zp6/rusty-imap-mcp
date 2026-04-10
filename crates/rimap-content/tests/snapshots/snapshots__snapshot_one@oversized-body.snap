@@ -14,6 +14,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 1049684,
     "references": [],
+    "reply_to": null,
     "subject": "oversized",
     "to": []
   },

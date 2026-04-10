@@ -18,6 +18,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 308,
     "references": [],
+    "reply_to": null,
     "subject": "[dev] new release",
     "to": [
       "subscribers@example.com"

@@ -22,6 +22,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 396,
     "references": [],
+    "reply_to": null,
     "subject": "FWD: original message",
     "to": []
   },
