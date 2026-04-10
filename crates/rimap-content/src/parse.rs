@@ -733,6 +733,16 @@ fn build_attachment_meta(
                 location: Some(format!("attachment[{idx}]:filename")),
             });
         }
+        if let Some((penult, final_ext)) = detect_double_extension(name) {
+            warnings.push(SecurityWarning {
+                code: WarningCode::LookalikeFilenameExtensionSpoof,
+                detail: Some(format!(
+                    "reason=double_extension,visible=.{penult},\
+                     declared=.{penult}.{final_ext}"
+                )),
+                location: Some(format!("attachment[{idx}]:filename")),
+            });
+        }
         let (unicode_clean, mut ws) = unicode::sanitize(
             name.as_bytes(),
             Some("utf-8"),
@@ -1011,6 +1021,31 @@ fn contains_bidi_override(s: &str) -> bool {
                 | '\u{2069}'
         )
     })
+}
+
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    "pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "gif", "txt", "csv", "rtf",
+];
+
+const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "bat", "cmd", "ps1", "vbs", "js", "scr", "msi", "app", "dmg", "sh", "com", "pif",
+    "jar", "lnk",
+];
+
+fn detect_double_extension(name: &str) -> Option<(String, String)> {
+    let segments: Vec<&str> = name.split('.').collect();
+    if segments.len() < 3 {
+        return None;
+    }
+    let penultimate = segments[segments.len() - 2].to_ascii_lowercase();
+    let final_ext = segments[segments.len() - 1].to_ascii_lowercase();
+    if DOCUMENT_EXTENSIONS.contains(&penultimate.as_str())
+        && EXECUTABLE_EXTENSIONS.contains(&final_ext.as_str())
+    {
+        Some((penultimate, final_ext))
+    } else {
+        None
+    }
 }
 
 /// Return the substring after the last `.` in `filename`, if any.
@@ -1810,5 +1845,67 @@ mod tests {
         let content = parse_message(raw).unwrap();
         assert_eq!(content.meta.attachments.len(), 1);
         assert!(content.meta.attachments[0].size_bytes > 0);
+    }
+
+    #[test]
+    fn double_extension_pdf_exe_fires_spoof_warning() {
+        let eml = b"From: test@example.com\r\n\
+            Subject: invoice\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"bound\"\r\n\
+            \r\n\
+            --bound\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            See attached.\r\n\
+            --bound\r\n\
+            Content-Type: application/octet-stream\r\n\
+            Content-Disposition: attachment; filename=\"invoice.pdf.exe\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            AAAA\r\n\
+            --bound--\r\n";
+        let content = parse_message(eml).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeFilenameExtensionSpoof
+                    && w.detail
+                        .as_deref()
+                        .is_some_and(|d| d.contains("double_extension"))
+            }),
+            "expected LookalikeFilenameExtensionSpoof with double_extension, \
+             got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn single_extension_does_not_fire_double_extension() {
+        let eml = b"From: test@example.com\r\n\
+            Subject: file\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"bound\"\r\n\
+            \r\n\
+            --bound\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            See attached.\r\n\
+            --bound\r\n\
+            Content-Type: application/pdf\r\n\
+            Content-Disposition: attachment; filename=\"invoice.pdf\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            AAAA\r\n\
+            --bound--\r\n";
+        let content = parse_message(eml).unwrap();
+        assert!(
+            !content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeFilenameExtensionSpoof
+                    && w.detail
+                        .as_deref()
+                        .is_some_and(|d| d.contains("double_extension"))
+            }),
+            "single extension should not fire double_extension spoof"
+        );
     }
 }
