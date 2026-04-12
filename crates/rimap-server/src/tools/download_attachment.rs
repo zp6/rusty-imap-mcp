@@ -140,7 +140,7 @@ fn compute_part_ids(
         .ok_or_else(|| rimap_core::RimapError::Internal("message has no parts".into()))?;
 
     if root.is_multipart() {
-        walk_parts(msg, 0, "", &mut result)?;
+        walk_parts(msg, 0, "", &mut result, 0)?;
     } else {
         // Single-part message: the sole part is "1".
         result.push((0, "1".to_string()));
@@ -149,13 +149,20 @@ fn compute_part_ids(
     Ok(result)
 }
 
+/// Maximum recursion depth for MIME tree walking (denial-of-service guard).
+const MAX_MIME_DEPTH: u32 = 64;
+
 /// Recursively walk parts and assign IMAP-style IDs.
 fn walk_parts(
     msg: &mail_parser::Message<'_>,
     part_idx: usize,
     prefix: &str,
     out: &mut Vec<(usize, String)>,
+    depth: u32,
 ) -> Result<(), rimap_core::RimapError> {
+    if depth > MAX_MIME_DEPTH {
+        return Ok(());
+    }
     let part = msg.parts.get(part_idx).ok_or_else(|| {
         rimap_core::RimapError::Internal(format!("part index {part_idx} out of range"))
     })?;
@@ -168,7 +175,7 @@ fn walk_parts(
             } else {
                 format!("{prefix}.{num}")
             };
-            walk_parts(msg, child_idx as usize, &child_id, out)?;
+            walk_parts(msg, child_idx as usize, &child_id, out, depth + 1)?;
         }
     } else {
         let part_id = if prefix.is_empty() {
@@ -179,4 +186,19 @@ fn walk_parts(
         out.push((part_idx, part_id));
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn walk_parts_respects_depth_limit() {
+        let raw = b"From: a@b\r\nContent-Type: text/plain\r\n\r\nHi\r\n";
+        let msg = mail_parser::MessageParser::new().parse(raw).unwrap();
+        let mut out = Vec::new();
+        walk_parts(&msg, 0, "", &mut out, MAX_MIME_DEPTH + 1).unwrap();
+        assert!(out.is_empty());
+    }
 }
