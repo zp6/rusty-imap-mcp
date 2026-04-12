@@ -530,6 +530,7 @@ impl Connection {
                 | Error::Auth { .. }
                 | Error::Protocol(_)
                 | Error::InvalidInput { .. }
+                | Error::BatchTooLarge { .. }
                 | Error::Audit { .. },
             )
             | Ok(_) => false,
@@ -580,7 +581,7 @@ fn error_code_for(err: &Error) -> &'static str {
         Error::Auth { .. } => "ERR_AUTH",
         Error::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
         Error::Protocol(_) => "ERR_IMAP_PROTOCOL",
-        Error::InvalidInput { .. } => "ERR_INVALID_INPUT",
+        Error::InvalidInput { .. } | Error::BatchTooLarge { .. } => "ERR_INVALID_INPUT",
         Error::Audit { .. } => "ERR_AUDIT",
     }
 }

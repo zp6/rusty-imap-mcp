@@ -135,6 +135,15 @@ pub enum Flag {
     Keyword(String),
 }
 
+/// Whether to add or remove flags in a STORE command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagAction {
+    /// `+FLAGS` — add the given flags.
+    Add,
+    /// `-FLAGS` — remove the given flags.
+    Remove,
+}
+
 /// IMAP `ENVELOPE` response. Header values stay raw bytes — RFC 2047 decoding
 /// is Sprint 4's responsibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
