@@ -49,6 +49,11 @@ pub async fn move_messages(
 }
 
 /// Fallback: COPY + STORE \Deleted + EXPUNGE. Not atomic.
+///
+/// The plain `EXPUNGE` command removes all messages with `\Deleted` in
+/// the selected mailbox, not just the UIDs this operation flagged.
+/// `UID EXPUNGE` (RFC 4315) would be UID-scoped but async-imap 0.11
+/// does not expose it. Servers that support MOVE never reach this path.
 async fn copy_delete_fallback(
     session: &mut ImapSession,
     dest_folder: &str,
@@ -87,12 +92,10 @@ fn is_move_unsupported(err: &async_imap::error::Error) -> bool {
             let lower = msg.to_ascii_lowercase();
             lower.contains("unknown command") || lower.contains("not supported")
         }
-        async_imap::error::Error::Io(_)
-        | async_imap::error::Error::ConnectionLost
-        | async_imap::error::Error::Parse(_)
-        | async_imap::error::Error::Validate(_)
-        | async_imap::error::Error::Append
-        | _ => false,
+        // async_imap::error::Error is #[non_exhaustive], so the
+        // wildcard is required. All other known variants (Io,
+        // ConnectionLost, Parse, Validate, Append) are real failures.
+        _ => false,
     }
 }
 
