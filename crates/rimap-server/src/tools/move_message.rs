@@ -1,6 +1,7 @@
 //! `move_message` tool handler.
 
 use rimap_imap::types::Uid;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::response::ToolResponse;
@@ -8,7 +9,7 @@ use crate::server::ImapMcpServer;
 use crate::tools::flags::resolve_uids;
 
 /// Input for `move_message`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct MoveInput {
     /// Source folder.
     pub source_folder: String,

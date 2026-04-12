@@ -149,37 +149,87 @@ fn parse_args<T: serde::de::DeserializeOwned>(
         .map_err(|e| rimap_core::RimapError::Internal(format!("invalid arguments: {e}")))
 }
 
+/// Convert a `schemars::JsonSchema` type into a JSON object map
+/// suitable for an MCP tool's `inputSchema`.
+fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::Value> {
+    let schema = schemars::schema_for!(T);
+    match serde_json::to_value(schema) {
+        Ok(serde_json::Value::Object(map)) => map,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// Build an rmcp `Tool` definition for a `ToolName`. Returns `None`
 /// for sub-capabilities that share an MCP tool name with a parent
 /// (e.g. `SearchAdvanced` and `FetchMessageHtml` are gated
 /// sub-capabilities, not separate MCP tools).
 fn tool_definition(name: ToolName) -> Option<Tool> {
-    let (tool_name, description): (&str, &str) = match name {
-        ToolName::ListFolders => ("list_folders", "List all IMAP folders"),
-        ToolName::Search => ("search", "Search messages with structured query"),
+    use crate::tools::{
+        create_draft::CreateDraftInput, download_attachment::DownloadAttachmentInput,
+        fetch_message::FetchMessageInput, flags::FlagInput, list_attachments::ListAttachmentsInput,
+        move_message::MoveInput, search::SearchInput,
+    };
+
+    let (tool_name, description, schema): (&str, &str, serde_json::Map<_, _>) = match name {
+        ToolName::ListFolders => (
+            "list_folders",
+            "List all IMAP folders",
+            serde_json::Map::new(),
+        ),
+        ToolName::Search => (
+            "search",
+            "Search messages with structured query",
+            schema_map::<SearchInput>(),
+        ),
         ToolName::SearchAdvanced | ToolName::FetchMessageHtml => return None,
-        ToolName::FetchMessage => ("fetch_message", "Fetch message metadata and text body"),
-        ToolName::ListAttachments => ("list_attachments", "List attachments on a message"),
+        ToolName::FetchMessage => (
+            "fetch_message",
+            "Fetch message metadata and text body",
+            schema_map::<FetchMessageInput>(),
+        ),
+        ToolName::ListAttachments => (
+            "list_attachments",
+            "List attachments on a message",
+            schema_map::<ListAttachmentsInput>(),
+        ),
         ToolName::DownloadAttachment => (
             "download_attachment",
             "Download an attachment to the sandbox directory",
+            schema_map::<DownloadAttachmentInput>(),
         ),
-        ToolName::MarkRead => ("mark_read", "Mark messages as read"),
-        ToolName::MarkUnread => ("mark_unread", "Mark messages as unread"),
-        ToolName::Flag => ("flag", "Add the flagged flag to messages"),
-        ToolName::Unflag => ("unflag", "Remove the flagged flag from messages"),
-        ToolName::MoveMessage => ("move_message", "Move messages to another folder"),
+        ToolName::MarkRead => (
+            "mark_read",
+            "Mark messages as read",
+            schema_map::<FlagInput>(),
+        ),
+        ToolName::MarkUnread => (
+            "mark_unread",
+            "Mark messages as unread",
+            schema_map::<FlagInput>(),
+        ),
+        ToolName::Flag => (
+            "flag",
+            "Add the flagged flag to messages",
+            schema_map::<FlagInput>(),
+        ),
+        ToolName::Unflag => (
+            "unflag",
+            "Remove the flagged flag from messages",
+            schema_map::<FlagInput>(),
+        ),
+        ToolName::MoveMessage => (
+            "move_message",
+            "Move messages to another folder",
+            schema_map::<MoveInput>(),
+        ),
         ToolName::CreateDraft => (
             "create_draft",
             "Create a draft email with $PendingReview flag",
+            schema_map::<CreateDraftInput>(),
         ),
     };
 
-    Some(Tool::new(
-        tool_name,
-        description,
-        Arc::new(serde_json::Map::new()),
-    ))
+    Some(Tool::new(tool_name, description, Arc::new(schema)))
 }
 
 #[cfg(test)]
@@ -210,6 +260,22 @@ mod tests {
             assert!(
                 def.name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
                 "tool name {} is not snake_case",
+                def.name,
+            );
+        }
+    }
+
+    #[test]
+    fn tool_definitions_have_non_empty_schemas() {
+        for def in ToolName::all().into_iter().filter_map(tool_definition) {
+            // list_folders has no input — empty schema is expected.
+            if def.name == "list_folders" {
+                continue;
+            }
+            let schema = &def.input_schema;
+            assert!(
+                !schema.is_empty(),
+                "tool {} has empty input schema",
                 def.name,
             );
         }

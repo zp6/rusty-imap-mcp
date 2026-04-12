@@ -4,13 +4,14 @@
 use mail_builder::MessageBuilder;
 use mail_builder::headers::address::Address;
 use mail_builder::headers::message_id::MessageId;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::response::ToolResponse;
 use crate::server::ImapMcpServer;
 
 /// Input for `create_draft`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateDraftInput {
     /// Recipient addresses.
     pub to: Vec<AddressInput>,
@@ -29,7 +30,7 @@ pub struct CreateDraftInput {
 }
 
 /// An email address with optional display name.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddressInput {
     /// Display name (optional).
     pub name: Option<String>,
