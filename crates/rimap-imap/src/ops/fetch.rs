@@ -146,11 +146,13 @@ pub(crate) async fn fetch(
 /// - `Error::ConnectionLost` if the underlying transport tore down.
 /// - Other `async-imap` errors propagated through `super::folders::map_err`.
 ///
-/// NOTE: `async-imap` delivers each `Fetch` response as a parsed unit, so
-/// the body bytes are already in memory before the size check fires. The
-/// limit acts as an accept/reject gate, not a backpressure mechanism. A
-/// future async-imap version with chunked body streaming would let us
-/// enforce the limit mid-network-read.
+/// NOTE: This is the **defense-in-depth fallback**. The primary size
+/// enforcement is `preflight_fetch_size` + `preflight_size_check`,
+/// which rejects oversize messages before the body fetch begins.
+/// This post-parse check catches the case where the server
+/// misreports `RFC822.SIZE`. `async-imap` delivers each `Fetch`
+/// response as a parsed unit, so the body bytes are already in
+/// memory before this check fires.
 pub(crate) async fn fetch_body(
     session: &mut ImapSession,
     folder: &str,
