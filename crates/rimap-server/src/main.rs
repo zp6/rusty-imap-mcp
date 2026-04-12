@@ -6,6 +6,7 @@ mod audit_cmd;
 mod audit_init;
 mod cli;
 mod content;
+mod dispatch;
 mod dry_run;
 mod logging;
 mod mcp_error;
