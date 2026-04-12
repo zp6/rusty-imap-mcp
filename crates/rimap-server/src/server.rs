@@ -24,7 +24,10 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 
 /// Core MCP server. Owns every resource the handler methods need.
-#[expect(dead_code, reason = "fields used by tool handlers in later tasks")]
+#[expect(
+    dead_code,
+    reason = "config/audit/download_dir used by tool handlers in later tasks"
+)]
 pub struct ImapMcpServer {
     /// Validated configuration snapshot.
     pub(crate) config: ValidatedConfig,
@@ -71,7 +74,8 @@ impl ServerHandler for ImapMcpServer {
             return Err(crate::mcp_error::to_mcp_error(&e));
         }
 
-        let result = dispatch_tool(tool_name);
+        let args = request.arguments.unwrap_or_default();
+        let result = Box::pin(self.dispatch_tool(tool_name, &args)).await;
 
         match result {
             Ok(resp) => {
@@ -84,41 +88,62 @@ impl ServerHandler for ImapMcpServer {
     }
 }
 
-/// Dispatch to the tool handler for `tool`. All arms return a
-/// placeholder until real handlers land in later tasks.
-///
-/// The `Result` return and per-arm match structure are intentional:
-/// each arm will be replaced with a real handler that can fail.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "real handlers will return Err; scaffolding"
-)]
-#[expect(
-    clippy::match_same_arms,
-    reason = "each arm will diverge when handlers land"
-)]
-fn dispatch_tool(tool: ToolName) -> Result<crate::response::ToolResponse, rimap_core::RimapError> {
-    let placeholder = || crate::response::ToolResponse {
-        meta: serde_json::json!({"status": "not_implemented"}),
-        untrusted: None,
-        security_warnings: Vec::new(),
-    };
+impl ImapMcpServer {
+    /// Dispatch to the tool handler for `tool`.
+    #[expect(
+        clippy::match_same_arms,
+        reason = "placeholder arms will diverge when handlers land"
+    )]
+    async fn dispatch_tool(
+        &self,
+        tool: ToolName,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<crate::response::ToolResponse, rimap_core::RimapError> {
+        let placeholder = || crate::response::ToolResponse {
+            meta: serde_json::json!({"status": "not_implemented"}),
+            untrusted: None,
+            security_warnings: Vec::new(),
+        };
 
-    match tool {
-        ToolName::ListFolders => Ok(placeholder()),
-        ToolName::Search => Ok(placeholder()),
-        ToolName::SearchAdvanced => Ok(placeholder()),
-        ToolName::FetchMessage => Ok(placeholder()),
-        ToolName::FetchMessageHtml => Ok(placeholder()),
-        ToolName::ListAttachments => Ok(placeholder()),
-        ToolName::DownloadAttachment => Ok(placeholder()),
-        ToolName::MarkRead => Ok(placeholder()),
-        ToolName::MarkUnread => Ok(placeholder()),
-        ToolName::Flag => Ok(placeholder()),
-        ToolName::Unflag => Ok(placeholder()),
-        ToolName::MoveMessage => Ok(placeholder()),
-        ToolName::CreateDraft => Ok(placeholder()),
+        match tool {
+            ToolName::ListFolders => Box::pin(crate::tools::list_folders::handle(self)).await,
+            ToolName::MarkRead => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::flags::handle_mark_read(self, input)).await
+            }
+            ToolName::MarkUnread => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::flags::handle_mark_unread(self, input)).await
+            }
+            ToolName::Flag => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::flags::handle_flag(self, input)).await
+            }
+            ToolName::Unflag => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::flags::handle_unflag(self, input)).await
+            }
+            ToolName::MoveMessage => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::move_message::handle(self, input)).await
+            }
+            ToolName::Search => Ok(placeholder()),
+            ToolName::SearchAdvanced => Ok(placeholder()),
+            ToolName::FetchMessage => Ok(placeholder()),
+            ToolName::FetchMessageHtml => Ok(placeholder()),
+            ToolName::ListAttachments => Ok(placeholder()),
+            ToolName::DownloadAttachment => Ok(placeholder()),
+            ToolName::CreateDraft => Ok(placeholder()),
+        }
     }
+}
+
+/// Deserialize tool arguments into a typed input struct.
+fn parse_args<T: serde::de::DeserializeOwned>(
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<T, rimap_core::RimapError> {
+    serde_json::from_value(serde_json::Value::Object(args.clone()))
+        .map_err(|e| rimap_core::RimapError::Internal(format!("invalid arguments: {e}")))
 }
 
 /// Build an rmcp `Tool` definition for a `ToolName`. Returns `None`

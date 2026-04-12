@@ -12,6 +12,7 @@ mod logging;
 mod mcp_error;
 mod response;
 mod server;
+mod tools;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -112,7 +113,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
     rt.block_on(async {
         let transport = rmcp::transport::io::stdio();
-        let service = rmcp::serve_server(mcp_server, transport)
+        let service = Box::pin(rmcp::serve_server(mcp_server, transport))
             .await
             .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
         service
