@@ -215,6 +215,23 @@ fn single_address(addr: &AddressInput) -> Address<'_> {
     }
 }
 
+const MAX_REFERENCES: usize = 50;
+
+/// Truncate a References chain to at most `MAX_REFERENCES` entries,
+/// preserving the root (first) and most recent (last) entries.
+fn cap_references(mut refs: Vec<String>) -> Vec<String> {
+    if refs.len() <= MAX_REFERENCES {
+        return refs;
+    }
+    let root = refs.remove(0);
+    let keep_recent = MAX_REFERENCES - 1;
+    let start = refs.len().saturating_sub(keep_recent);
+    let mut result = Vec::with_capacity(MAX_REFERENCES);
+    result.push(root);
+    result.extend(refs.into_iter().skip(start));
+    result
+}
+
 /// Fetch the referenced message and set In-Reply-To / References.
 async fn apply_threading_headers<'a>(
     server: &ImapMcpServer,
@@ -262,6 +279,7 @@ async fn apply_threading_headers<'a>(
         _ => {}
     }
     ref_ids.push(msg_id);
+    let ref_ids = cap_references(ref_ids);
 
     let builder = builder.references(MessageId::new_list(ref_ids.into_iter()));
 
@@ -276,7 +294,7 @@ mod tests {
     use mail_builder::headers::message_id::MessageId;
 
     use super::{
-        AddressInput, CreateDraftInput, addresses_to_builder, sanitize_message_id,
+        AddressInput, CreateDraftInput, addresses_to_builder, cap_references, sanitize_message_id,
         validate_draft_input,
     };
 
@@ -560,5 +578,21 @@ mod tests {
             address: "bob@example.com".into(),
         }]);
         validate_draft_input(&input).unwrap();
+    }
+
+    #[test]
+    fn references_chain_capped_at_50() {
+        let refs: Vec<String> = (0..200).map(|i| format!("msg-{i}@example.com")).collect();
+        let capped = cap_references(refs);
+        assert_eq!(capped.len(), 50);
+        assert_eq!(capped[0], "msg-0@example.com");
+        assert_eq!(capped[49], "msg-199@example.com");
+    }
+
+    #[test]
+    fn references_chain_under_cap_unchanged() {
+        let refs: Vec<String> = (0..10).map(|i| format!("msg-{i}@example.com")).collect();
+        let capped = cap_references(refs);
+        assert_eq!(capped.len(), 10);
     }
 }
