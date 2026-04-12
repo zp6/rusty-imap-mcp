@@ -8,6 +8,7 @@ mod cli;
 mod content;
 mod dry_run;
 mod logging;
+mod mcp_error;
 mod response;
 
 use std::io::Write;

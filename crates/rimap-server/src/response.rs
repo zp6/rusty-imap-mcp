@@ -7,7 +7,7 @@
 use serde::Serialize;
 
 /// Top-level tool response envelope.
-#[expect(dead_code, reason = "used by tool handlers in later tasks")]
+#[expect(dead_code, reason = "scaffolding for tool handlers in later tasks")]
 #[derive(Debug, Serialize)]
 pub struct ToolResponse {
     /// Server-controlled metadata. Trusted.
