@@ -21,6 +21,10 @@ rimap-config = { path = "../rimap-config", version = "0.0.0" }
 rimap-authz = { path = "../rimap-authz", version = "0.0.0" }
 rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
 rimap-content = { path = "../rimap-content", version = "0.0.0" }
+rimap-imap = { path = "../rimap-imap", version = "0.0.0" }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+infer = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
 anyhow = { workspace = true }

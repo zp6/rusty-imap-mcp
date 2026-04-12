@@ -162,6 +162,16 @@ unicode-script = "0.5.8"
 phf = { version = "0.13.1", default-features = false }
 phf_codegen = "0.13.1"
 
+# MCP server (Sprint 5)
+# rmcp 1.4 is the Rust MCP SDK. Transitive proc-macros: rmcp-macros (the
+# macros feature). Reviewed v1.4: published by ModelContextProtocol org,
+# Apache-2.0 OR MIT, standard proc-macro2/quote/syn stack, no build.rs,
+# no network/fs/process access in macro source. Re-audit on minor bump.
+# (SC-PROC-01)
+rmcp = { version = "1.4", features = ["server", "macros", "transport-io"] }
+schemars = "1.0"
+infer = "0.19"
+
 # Dev dependencies shared across crates
 assert_cmd = "2.0"
 predicates = "3.1"
