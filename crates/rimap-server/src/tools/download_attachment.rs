@@ -92,6 +92,12 @@ pub async fn handle(
         security_warnings.extend(cross_validate_mime_type(&bs_type, &declared_type));
     }
 
+    // Compare declared MIME type against magic-byte detection.
+    security_warnings.extend(check_sniff_mismatch(
+        &declared_type,
+        mime_sniffed.as_deref(),
+    ));
+
     Ok(ToolResponse {
         meta: serde_json::json!({
             "folder": input.folder,
@@ -123,6 +129,26 @@ fn cross_validate_mime_type(bodystructure_type: &str, parser_type: &str) -> Vec<
         "parser_type": parser_type,
         "message":
             "BODYSTRUCTURE MIME type disagrees with parsed content type"
+    })]
+}
+
+/// Compare declared MIME type against magic-byte-sniffed type.
+///
+/// Returns a security warning when they disagree. Returns nothing
+/// when sniffing produced no result (unknown magic bytes).
+fn check_sniff_mismatch(declared: &str, sniffed: Option<&str>) -> Vec<serde_json::Value> {
+    let Some(sniffed) = sniffed else {
+        return Vec::new();
+    };
+    if declared.eq_ignore_ascii_case(sniffed) {
+        return Vec::new();
+    }
+    vec![serde_json::json!({
+        "type": "mime_sniff_mismatch",
+        "mime_declared": declared,
+        "mime_sniffed": sniffed,
+        "message":
+            "declared MIME type disagrees with magic-byte detection"
     })]
 }
 
@@ -392,5 +418,32 @@ mod tests {
         }
         // The deeply nested part should be unreachable.
         assert!(lookup_bodystructure_type(&bs, "1").is_none());
+    }
+
+    // -- check_sniff_mismatch -----------------------------------------------
+
+    #[test]
+    fn sniff_mismatch_produces_warning() {
+        let warnings = check_sniff_mismatch("text/plain", Some("image/png"));
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].to_string().contains("mime_sniff_mismatch"));
+    }
+
+    #[test]
+    fn sniff_match_produces_no_warning() {
+        let warnings = check_sniff_mismatch("image/png", Some("image/png"));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn sniff_none_produces_no_warning() {
+        let warnings = check_sniff_mismatch("text/plain", None);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn sniff_mismatch_case_insensitive() {
+        let warnings = check_sniff_mismatch("IMAGE/PNG", Some("image/png"));
+        assert!(warnings.is_empty());
     }
 }
