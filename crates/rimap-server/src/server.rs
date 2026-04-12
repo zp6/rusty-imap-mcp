@@ -3,7 +3,7 @@
 //! `ImapMcpServer` holds the validated config, IMAP connection, authz
 //! guard, audit writer, and download directory. The `ServerHandler`
 //! trait wires `list_tools` (posture-filtered) and `call_tool`
-//! (dispatch pipeline + placeholder handlers).
+//! (dispatch pipeline).
 
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -95,12 +95,6 @@ impl ImapMcpServer {
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::response::ToolResponse, rimap_core::RimapError> {
-        let placeholder = || crate::response::ToolResponse {
-            meta: serde_json::json!({"status": "not_implemented"}),
-            untrusted: None,
-            security_warnings: Vec::new(),
-        };
-
         match tool {
             ToolName::ListFolders => Box::pin(crate::tools::list_folders::handle(self)).await,
             ToolName::MarkRead => {
@@ -139,7 +133,10 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::download_attachment::handle(self, input)).await
             }
-            ToolName::CreateDraft => Ok(placeholder()),
+            ToolName::CreateDraft => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::create_draft::handle(self, input)).await
+            }
         }
     }
 }
