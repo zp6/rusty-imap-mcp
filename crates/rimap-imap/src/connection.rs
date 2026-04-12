@@ -570,6 +570,39 @@ impl Connection {
         }
         result
     }
+
+    /// Move messages from `source_folder` to `dest_folder`.
+    ///
+    /// Uses IMAP MOVE extension (RFC 6851) when available; falls back
+    /// to COPY + STORE \Deleted + EXPUNGE otherwise. The fallback is
+    /// not atomic.
+    ///
+    /// Batch limit: 100 UIDs.
+    ///
+    /// # Errors
+    /// Returns `Error::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Propagates timeout, connection-lost, or protocol errors.
+    pub async fn move_messages(
+        &self,
+        source_folder: &str,
+        dest_folder: &str,
+        uids: &[crate::types::Uid],
+    ) -> Result<Vec<crate::types::MoveResult>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("move", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::select(session, source_folder, false).await?;
+            crate::ops::move_msg::move_messages(session, dest_folder, uids).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
 }
 
 /// Drain the unsolicited-response channel and return `true` if any
