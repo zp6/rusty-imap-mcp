@@ -603,6 +603,36 @@ impl Connection {
         }
         result
     }
+
+    /// `APPEND` a raw RFC 5322 message to `folder` with the given
+    /// flags and keywords.
+    ///
+    /// Does NOT select the folder first -- APPEND targets a named
+    /// mailbox directly per RFC 3501 section 6.3.11.
+    ///
+    /// # Errors
+    /// Propagates timeout, connection-lost, or protocol errors.
+    pub async fn append_message(
+        &self,
+        folder: &str,
+        message: &[u8],
+        flags: &[crate::types::Flag],
+        keywords: &[&str],
+    ) -> Result<crate::types::AppendResult, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("append", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::append::append(session, folder, message, flags, keywords).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
 }
 
 /// Drain the unsolicited-response channel and return `true` if any
