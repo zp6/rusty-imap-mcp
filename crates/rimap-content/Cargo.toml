@@ -3,6 +3,10 @@ name = "rimap-content"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+# TODO: data/confusables.txt is licensed under Unicode-DFS-2016. If
+# this crate is ever published to crates.io, update the license field
+# to reflect the vendored data and add "Unicode-DFS-2016" to the
+# workspace deny.toml allow list.
 license.workspace = true
 repository.workspace = true
 authors.workspace = true

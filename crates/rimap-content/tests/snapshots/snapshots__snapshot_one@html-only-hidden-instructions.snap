@@ -14,6 +14,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 292,
     "references": [],
+    "reply_to": null,
     "subject": "Important",
     "to": [
       "victim@example.com"
@@ -21,7 +22,7 @@ expression: value
   },
   "security_warnings": [
     {
-      "code": "html_hidden_content_stripped",
+      "code": "html_hidden_content_detected",
       "detail": "method=display_none",
       "location": "body:html"
     }

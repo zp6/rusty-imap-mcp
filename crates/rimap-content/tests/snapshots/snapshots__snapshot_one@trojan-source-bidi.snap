@@ -14,6 +14,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 133,
     "references": [],
+    "reply_to": null,
     "subject": "filename.txt.exe",
     "to": []
   },

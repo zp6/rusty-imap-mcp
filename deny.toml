@@ -108,9 +108,16 @@ skip-tree = [
     # when ammonia publishes a release that bumps to html5ever 0.39+ /
     # cssparser 0.36+; track https://github.com/rust-ammonia/ammonia for
     # the upstream bump.
+    # NOTE: cargo-deny interprets bare version strings as caret ranges
+    # (e.g., "0.35" matches ">=0.35.0, <0.36.0"). This is intentional
+    # here — ammonia floats its own transitive html5ever pin.
     { name = "html5ever", version = "0.35" },
     { name = "cssparser", version = "0.35" },
 ]
+# psl (via addr) uses a versioning scheme where the patch number
+# tracks the Public Suffix List snapshot date (e.g. 2.1.200). This
+# is legitimate but looks like a massive version bump to naive
+# pattern matching.
 
 [sources]
 unknown-registry = "deny"

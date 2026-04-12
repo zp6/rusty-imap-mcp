@@ -135,6 +135,35 @@ pub enum Flag {
     Keyword(String),
 }
 
+/// Whether to add or remove flags in a STORE command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagAction {
+    /// `+FLAGS` — add the given flags.
+    Add,
+    /// `-FLAGS` — remove the given flags.
+    Remove,
+}
+
+/// Result of moving a single message. `new_uid` is `None` when the
+/// server lacks UIDPLUS or when using the COPY+DELETE fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveResult {
+    /// UID in the source folder (before the move).
+    pub old_uid: Uid,
+    /// UID in the destination folder (after the move). `None` if the
+    /// server does not report it (no UIDPLUS, or COPY+DELETE fallback).
+    pub new_uid: Option<Uid>,
+}
+
+/// Result of appending a message to a mailbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendResult {
+    /// UID assigned by the server. `None` if the server lacks UIDPLUS.
+    /// async-imap 0.11's `append()` does not expose the APPENDUID
+    /// response code, so this is always `None` for now.
+    pub uid: Option<Uid>,
+}
+
 /// IMAP `ENVELOPE` response. Header values stay raw bytes — RFC 2047 decoding
 /// is Sprint 4's responsibility.
 #[derive(Debug, Clone, PartialEq, Eq)]

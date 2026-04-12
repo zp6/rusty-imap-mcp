@@ -160,3 +160,18 @@ fn snapshot_lookalike_filename_rlo_bidi() {
 fn snapshot_html_tokenizer_divergence() {
     snapshot_one("html-tokenizer-divergence");
 }
+
+#[test]
+fn snapshot_html_offscreen_evasion() {
+    snapshot_one("html-offscreen-evasion");
+}
+
+#[test]
+fn snapshot_html_anchor_unparsable_href() {
+    snapshot_one("html-anchor-unparsable-href");
+}
+
+#[test]
+fn snapshot_lookalike_reply_to_mismatch() {
+    snapshot_one("lookalike-reply-to-mismatch");
+}

@@ -1,0 +1,180 @@
+# Security Model
+
+## Threat model
+
+The primary adversary is a crafted email that, when read by an agent
+through this MCP server, attempts to induce the agent to take a harmful
+action: exfiltrate data, send mail on the attacker's behalf, modify
+mailbox state, or pivot to other tools.
+
+Secondary adversaries include a hostile IMAP server (MITM, malformed
+responses) and local malware with the user's file-system privileges.
+
+**The server does not trust:** email bodies, headers, sender addresses,
+display names, attachment filenames, link targets, or any
+server-provided content. All of these are treated as untrusted input
+that must be parsed, sanitized, tagged, and structurally separated from
+server-controlled metadata before being returned to an MCP client.
+
+**The server does trust:** its own configuration file, its own keychain
+entries, its own audit log, and (within limits defined by fingerprint
+pinning) the TLS identity of its configured IMAP server.
+
+## Defense layers
+
+### 1. Content pipeline
+
+Every byte from IMAP flows through the content pipeline
+(`rimap-content`) before reaching any tool response. The pipeline has
+zero IMAP dependencies -- it takes `&[u8]` in and emits typed `Content`
+structures out.
+
+**Pipeline stages:**
+
+1. **Parse** -- `mail-parser` decodes RFC 5322 into headers + body
+   parts. Malformed messages produce a structured error, not a panic.
+2. **Header extraction** -- Header names are ASCII-validated (control
+   chars in names indicate header smuggling and are rejected). Values
+   are decoded from RFC 2047 encoded-words, then processed through the
+   Unicode pipeline. CR/LF inside decoded header values is rejected
+   (header smuggling defense).
+3. **Mailing list detection** -- `List-Id` and `List-*` headers are
+   extracted before sanitization so the raw values survive for agent
+   filtering.
+4. **Body part selection** -- MIME tree walk preferring `text/plain`;
+   falls back to `text/html` through the HTML-to-text converter.
+5. **HTML to text conversion** -- Strips `<script>`, `<style>`,
+   `<iframe>`, `<form>`, and other dangerous elements. Strips elements
+   with hidden visibility (CSS `display:none`, `visibility:hidden`,
+   `opacity:0`, `font-size:0`, white-on-white color). Strips zero-width
+   and bidirectional override characters. Link handling detects
+   text/href domain mismatches and emits `link_warnings`.
+6. **Sanitized HTML** (only with `include_html=true` in `full` posture)
+   -- `ammonia` with a conservative allowlist: no scripts, no event
+   handlers, no external resources, no `data:` URIs except images
+   under 1 MiB.
+7. **Attachment metadata extraction** -- Filenames sanitized (path
+   separators stripped, leading dots stripped, Windows reserved names
+   prefixed, length truncated). No bytes are read at this stage.
+8. **Content tagging** -- The final output is wrapped in the `untrusted`
+   field, separate from `meta`.
+
+### 2. Unicode policy
+
+Every string leaving the content pipeline is:
+
+- Valid UTF-8
+- In NFKC form (collapses visually-equivalent forms for security)
+- Free of invisible/ambiguous codepoints (zero-width chars,
+  bidirectional overrides, C0/C1 controls except `\t` and `\n`,
+  unassigned/private-use codepoints)
+- Preserves legitimate scripts (CJK, Hebrew, Arabic, European
+  accents, emoji including ZWJ sequences)
+
+### 3. Response envelope
+
+Every tool response structurally separates three fields:
+
+- **`meta`** -- server-controlled metadata (folder names, UIDs, flags,
+  sizes). Trusted.
+- **`untrusted`** -- sanitized content derived from email data. Agents
+  and host LLMs should treat this as untrusted input.
+- **`security_warnings`** -- structured observations emitted by the
+  server's look-alike and sanitization layers. Trusted metadata (the
+  server's assessment, not email content).
+
+This structural separation means agents can apply different trust
+policies to different parts of the response without parsing conventions
+out of a flat string.
+
+### 4. Look-alike detection
+
+Detects and flags (never rejects) visual spoofing attempts on:
+
+- Sender addresses (mixed-script, confusable skeleton matching)
+- Display name vs. address mismatches
+  (`From: "support@paypal.com" <eve@evil.example>`)
+- Reply-To vs. From domain mismatches
+- Link href domain vs. link text mismatches
+- Attachment filename bidirectional tricks
+
+Body text prose is not scanned (false-positive rate on multilingual
+content is too high). All detection is local, deterministic, and
+rules-based -- no network lookups, no ML.
+
+Warning codes include `LOOKALIKE_SENDER_MIXED_SCRIPT`,
+`LOOKALIKE_SENDER_CONFUSABLE`, `LOOKALIKE_DISPLAY_NAME_SPOOFS_ADDRESS`,
+`LOOKALIKE_REPLY_TO_DOMAIN_MISMATCH`, `LOOKALIKE_LINK_DOMAIN_MISMATCH`,
+`LOOKALIKE_FILENAME_BIDI_EXTENSION`, and others.
+
+### 5. `$PendingReview` human-in-the-loop gate
+
+`create_draft` appends messages to the Drafts folder with `\Draft` and
+`$PendingReview` keywords. The server never opens an SMTP connection in
+v1. A human must review and send from their mail client. This prevents
+an agent from autonomously sending mail, even in the `full` posture.
+
+### 6. Posture-based authorization
+
+Three postures (`readonly`, `draft-safe`, `full`) control which tools
+are available. Tools denied by the active posture are not advertised via
+`list_tools` and are rejected at dispatch. See [postures.md](postures.md).
+
+### 7. Audit log
+
+Every tool invocation produces exactly two audit records (`tool_start`
++ `tool_end`), linked by a monotonic sequence number. The audit log
+tracks content provenance: a ring buffer of recently-read message IDs
+is snapshotted into every `tool_end` record, enabling post-hoc
+detection of suspicious read-then-draft sequences.
+
+The audit file is exclusively locked for the process lifetime. Write
+failures fail the tool call by default (`fail_open = false`). See
+[audit-log.md](audit-log.md).
+
+### 8. Rate limiting
+
+- Global rate limiter: `commands_per_second` (default 10/sec) with a
+  burst of 20.
+- Separate stricter limit for `create_draft`: `drafts_per_minute`
+  (default 5/min).
+- On exceed: waits up to 250ms, then fails with `ERR_RATE_LIMITED` and
+  a `retry_after_ms` hint.
+
+### 9. Circuit breaker
+
+Sliding-window count-based breaker protects against cascading failures:
+
+- **Closed** (normal): counts errors in the configured window (default
+  30s). At threshold (default 5 errors), transitions to Open.
+- **Open**: immediately fails with `ERR_CIRCUIT_OPEN` for a cooldown
+  period.
+- **Half-open**: allows one probe call. Success returns to Closed;
+  failure re-opens with a doubled cooldown (capped at 5 min).
+- Auth failures trip immediately (single failure opens for 60s).
+
+Errors that trip the breaker: `ConnectionLost`, `AuthFailure`,
+`Timeout`, `ProtocolError`, `TlsError`. User/policy errors
+(`NotFound`, `InvalidInput`, `PostureDenied`, `RateLimited`) do not
+trip it.
+
+### 10. TLS fingerprint pinning
+
+When `imap.tls_fingerprint_sha256` is set, the server verifies the
+IMAP server's TLS certificate fingerprint before any application data
+flows. A mismatch is a hard failure -- the server does not fall back
+to the system trust store when pinning is configured.
+
+## Dispatch chain
+
+Every tool call passes through all layers in order:
+
+```
+ToolCall -> input validation -> posture authorization -> circuit breaker
+         -> rate limiter -> audit start -> tool execution -> audit end
+         -> response
+```
+
+Any stage failing short-circuits to a structured error response and
+records an audit end entry. Failures before tool execution never reach
+the network.

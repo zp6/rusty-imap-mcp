@@ -136,6 +136,15 @@ fn build_ammonia_builder() -> Builder<'static> {
     builder.url_schemes(schemes);
     builder.rm_tag_attributes("img", &["src", "srcset"]);
     builder.add_tag_attributes("img", &["alt", "width", "height"]);
+    // Pin tag removals against ammonia default drift. details/summary
+    // are explicitly removed: collapsed content is invisible to humans
+    // but visible to LLMs reading HTML tokens.
+    builder.rm_tags(&[
+        "script", "style", "iframe", "object", "embed", "meta", "base", "link", "form", "input",
+        "button", "textarea", "svg", "math", "frame", "frameset", "noframes", "applet", "details",
+        "summary",
+    ]);
+    builder.strip_comments(true);
     builder
 }
 
@@ -206,6 +215,24 @@ fn font_size_is_zero(val: &str) -> bool {
         .is_some_and(|n| n <= f64::EPSILON)
 }
 
+/// Parse a `transform: translate*(-Npx)` value and return the most
+/// negative pixel offset found, or `None` if no translate pattern
+/// matches.
+fn parse_translate_px(val: &str) -> Option<f64> {
+    let mut min: Option<f64> = None;
+    for part in val.split(['(', ',', ')']) {
+        let trimmed = part.trim();
+        if let Some(px_val) = parse_px(trimmed) {
+            match min {
+                Some(current) if px_val < current => min = Some(px_val),
+                None => min = Some(px_val),
+                _ => {}
+            }
+        }
+    }
+    min
+}
+
 /// Accumulator for off-screen / color-match detection across an inline
 /// style declaration list.
 #[derive(Default)]
@@ -213,6 +240,7 @@ struct StyleHints {
     position: Option<String>,
     left_px: Option<f64>,
     top_px: Option<f64>,
+    transform_offset_px: Option<f64>,
     color: Option<String>,
     bg_color: Option<String>,
 }
@@ -223,6 +251,7 @@ impl StyleHints {
             "position" => self.position = Some(val.to_string()),
             "left" => self.left_px = parse_px(val),
             "top" => self.top_px = parse_px(val),
+            "transform" => self.transform_offset_px = parse_translate_px(val),
             "color" => self.color = Some(val.to_string()),
             "background-color" => self.bg_color = Some(val.to_string()),
             _ => {}
@@ -234,9 +263,10 @@ impl StyleHints {
         if !positioned {
             return false;
         }
-        let off_left = self.left_px.is_some_and(|v| v <= -1000.0);
-        let off_top = self.top_px.is_some_and(|v| v <= -1000.0);
-        off_left || off_top
+        let off_left = self.left_px.is_some_and(|v| v < -100.0);
+        let off_top = self.top_px.is_some_and(|v| v < -100.0);
+        let off_transform = self.transform_offset_px.is_some_and(|v| v < -100.0);
+        off_left || off_top || off_transform
     }
 
     fn is_color_match(&self) -> bool {
@@ -330,9 +360,10 @@ struct MismatchHit {
 /// Returns `(hits, overflow)`. `hits` contains at most
 /// [`MAX_MISMATCH_HITS`] entries; `overflow` counts additional mismatches
 /// past the cap so the caller can emit a summary warning.
-fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
+fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize, Vec<(String, String)>) {
     let mut hits = Vec::new();
     let mut overflow: usize = 0;
+    let mut unparsable_hrefs: Vec<(String, String)> = Vec::new();
     let mut finder = linkify::LinkFinder::new();
     finder.url_must_have_scheme(false);
     for anchor in document.select(&SEL_ANCHOR) {
@@ -340,6 +371,16 @@ fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
             continue;
         };
         let Some(href_domain) = extract_registrable_domain(href) else {
+            let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
+            if text.len() > MAX_ANCHOR_TEXT_SCAN {
+                text.truncate(MAX_ANCHOR_TEXT_SCAN);
+            }
+            let has_url_text = finder
+                .links(&text)
+                .any(|l| l.kind() == &linkify::LinkKind::Url);
+            if has_url_text {
+                unparsable_hrefs.push((href.to_string(), text.trim().to_string()));
+            }
             continue;
         };
         let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
@@ -367,7 +408,7 @@ fn detect_mismatches(document: &Html) -> (Vec<MismatchHit>, usize) {
             overflow += 1;
         }
     }
-    (hits, overflow)
+    (hits, overflow, unparsable_hrefs)
 }
 
 /// Walk the document and collect hidden-element hits plus their
@@ -421,10 +462,20 @@ fn extract_text(
     let body_selector = compile_selector("body");
     if let Some(body_el) = document.select(&body_selector).next() {
         let mut counter: usize = 0;
+        let mut after_cdata = false;
         for child in body_el.children() {
             if let Some(child_el) = scraper::ElementRef::wrap(child) {
+                after_cdata = false;
                 walk_element(child_el, hidden_indices, &mut buf, &mut counter);
-            } else if let Some(text) = child.value().as_text() {
+            } else if child
+                .value()
+                .as_comment()
+                .is_some_and(|c| c.starts_with("[CDATA["))
+            {
+                after_cdata = true;
+            } else if let Some(text) = child.value().as_text()
+                && !after_cdata
+            {
                 push_text(&mut buf, text);
             }
         }
@@ -459,10 +510,20 @@ fn collect_visible_text(
     ) {
         return;
     }
+    let mut after_cdata = false;
     for child in el.children() {
         if let Some(child_el) = scraper::ElementRef::wrap(child) {
+            after_cdata = false;
             walk_element(child_el, hidden_indices, out, counter);
-        } else if let Some(text) = child.value().as_text() {
+        } else if child
+            .value()
+            .as_comment()
+            .is_some_and(|c| c.starts_with("[CDATA["))
+        {
+            after_cdata = true;
+        } else if let Some(text) = child.value().as_text()
+            && !after_cdata
+        {
             push_text(out, text);
         }
     }
@@ -489,7 +550,19 @@ fn walk_element(
 /// space when the buffer is non-empty and does not already end in
 /// whitespace. Internal whitespace is left intact for
 /// [`normalize_whitespace`] to collapse.
+///
+/// Text nodes containing `]]>` are skipped as a secondary defense
+/// against CDATA leaks. html5ever treats `<![CDATA[` in non-SVG/
+/// `MathML` context as a bogus comment; content between inner tags
+/// and `]]>` leaks as text nodes. The primary defense is the
+/// `after_cdata` flag in [`extract_text`] and
+/// [`collect_visible_text`], which suppresses text siblings that
+/// immediately follow a CDATA bogus-comment node (covering the
+/// unclosed-CDATA case where `]]>` is absent).
 fn push_text(out: &mut String, text: &str) {
+    if text.contains("]]>") {
+        return;
+    }
     if !out.is_empty() && !out.ends_with(char::is_whitespace) {
         out.push(' ');
     }
@@ -554,19 +627,19 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
     let mut warnings: Vec<SecurityWarning> = Vec::new();
     for (_idx, method) in &hidden_hits {
         warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlHiddenContentStripped,
+            code: crate::output::WarningCode::HtmlHiddenContentDetected,
             detail: Some(format!("method={}", method.as_detail())),
             location: Some("body:html".to_string()),
         });
     }
     if hidden_overflow > 0 {
         warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlHiddenContentStripped,
+            code: crate::output::WarningCode::HtmlHiddenContentDetected,
             detail: Some(format!("method=mixed,additional_hits={hidden_overflow}")),
             location: Some("body:html".to_string()),
         });
     }
-    let (mismatches, mismatch_overflow) = detect_mismatches(&document);
+    let (mismatches, mismatch_overflow, unparsable_hrefs) = detect_mismatches(&document);
     for hit in &mismatches {
         warnings.push(SecurityWarning {
             code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
@@ -582,6 +655,13 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
             code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
             detail: Some(format!("additional_hits={mismatch_overflow}")),
             location: Some("html:anchor".to_string()),
+        });
+    }
+    for (href, text) in &unparsable_hrefs {
+        warnings.push(SecurityWarning {
+            code: crate::output::WarningCode::HtmlAnchorUnparsableHref,
+            detail: Some(format!("href={href},text={text}")),
+            location: Some("body_html:anchor".to_string()),
         });
     }
     let hidden_indices: HashSet<ElementIndex> = hidden_hits.iter().map(|(idx, _)| *idx).collect();
@@ -855,10 +935,10 @@ mod tests {
             .find(|w| {
                 matches!(
                     w.code,
-                    crate::output::WarningCode::HtmlHiddenContentStripped
+                    crate::output::WarningCode::HtmlHiddenContentDetected
                 )
             })
-            .expect("expected HtmlHiddenContentStripped warning");
+            .expect("expected HtmlHiddenContentDetected warning");
         assert_eq!(hit.detail.as_deref(), Some("method=display_none"));
         assert_eq!(hit.location.as_deref(), Some("body:html"));
     }
@@ -879,7 +959,7 @@ mod tests {
             .filter(|w| {
                 matches!(
                     w.code,
-                    crate::output::WarningCode::HtmlHiddenContentStripped
+                    crate::output::WarningCode::HtmlHiddenContentDetected
                 )
             })
             .collect();
@@ -996,6 +1076,22 @@ mod tests {
                 .warnings
                 .iter()
                 .any(|w| matches!(w.code, crate::output::WarningCode::HtmlLinkTextHrefMismatch))
+        );
+    }
+
+    #[test]
+    fn mismatch_emits_unparsable_href_for_psl_failure() {
+        let input = br#"<html><body>
+            <a href="https://evilserver/phish">Visit paypal.com now</a>
+        </body></html>"#;
+        let result = process(input, None).expect("ok");
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::HtmlAnchorUnparsableHref)),
+            "expected HtmlAnchorUnparsableHref, got {:?}",
+            result.warnings
         );
     }
 
@@ -1191,6 +1287,44 @@ mod tests {
     }
 
     #[test]
+    fn cdata_script_content_excluded_from_body_text() {
+        let html = br#"<html><body>
+            <p>visible</p>
+            <![CDATA[<script>alert("cdata-bypass")</script>]]>
+        </body></html>"#;
+        let result = process(html, None).expect("ok");
+        assert!(
+            !result.body_text.contains("alert"),
+            "CDATA script content should not leak into body_text: {:?}",
+            result.body_text
+        );
+        assert!(
+            !result.body_text.contains("cdata-bypass"),
+            "CDATA content should not appear in body_text: {:?}",
+            result.body_text
+        );
+        assert!(
+            result.body_text.contains("visible"),
+            "non-CDATA text should still appear: {:?}",
+            result.body_text
+        );
+    }
+
+    #[test]
+    fn unclosed_cdata_script_content_excluded_from_body_text() {
+        let html = br#"<html><body>
+            <p>visible</p>
+            <![CDATA[<script>alert("leaked")
+        </body></html>"#;
+        let result = process(html, None).expect("ok");
+        assert!(
+            !result.body_text.contains("alert"),
+            "unclosed CDATA script content should not leak: {:?}",
+            result.body_text
+        );
+    }
+
+    #[test]
     fn lazylocks_initialize_without_panic() {
         // Touch each LazyLock so the compile_selector expectation is
         // exercised even if the process() warming pattern changes later.
@@ -1200,5 +1334,75 @@ mod tests {
         let _ = &*SEL_STYLE;
         let _ = &*SEL_BODY_ALL;
         let _ = &*AMMONIA_BUILDER;
+    }
+
+    #[test]
+    fn sanitize_drops_iframe_and_details() {
+        let tags = [
+            "iframe", "object", "embed", "meta", "base", "link", "form", "input", "button",
+            "textarea", "svg", "math", "frame", "frameset", "noframes", "applet", "details",
+            "summary",
+        ];
+        for tag in tags {
+            let input = format!("<html><body><{tag}>hidden content</{tag}></body></html>");
+            let result = process(input.as_bytes(), None).expect("process should succeed");
+            assert!(
+                !result.body_html.contains(&format!("<{tag}")),
+                "tag <{tag}> should be stripped from body_html, got: {}",
+                result.body_html
+            );
+        }
+    }
+
+    #[test]
+    fn classify_offscreen_minus_999_fires() {
+        assert_eq!(
+            classify_inline_style("position: absolute; left: -999px"),
+            Some(HiddenMethod::OffScreen)
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_minus_50_does_not_fire() {
+        assert_eq!(
+            classify_inline_style("position: absolute; left: -50px"),
+            None
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_transform_translate() {
+        assert_eq!(
+            classify_inline_style("position: absolute; transform: translateX(-9999px)"),
+            Some(HiddenMethod::OffScreen)
+        );
+        assert_eq!(
+            classify_inline_style("position: fixed; transform: translate(-500px, 0)"),
+            Some(HiddenMethod::OffScreen)
+        );
+    }
+
+    #[test]
+    fn classify_offscreen_transform_small_value_no_fire() {
+        assert_eq!(
+            classify_inline_style("position: absolute; transform: translateX(-50px)"),
+            None
+        );
+    }
+
+    #[test]
+    fn body_html_has_no_html_comments() {
+        let input = b"<html><body><!-- secret comment --><p>visible</p></body></html>";
+        let result = process(input, None).expect("process should succeed");
+        assert!(
+            !result.body_html.contains("<!--"),
+            "HTML comments should be stripped, got: {}",
+            result.body_html
+        );
+        assert!(
+            !result.body_html.contains("secret comment"),
+            "comment content should be stripped, got: {}",
+            result.body_html
+        );
     }
 }

@@ -22,6 +22,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 488,
     "references": [],
+    "reply_to": null,
     "subject": "Photo attached",
     "to": [
       "victim@example.com"

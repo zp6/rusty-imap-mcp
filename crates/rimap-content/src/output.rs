@@ -42,6 +42,8 @@ pub struct ContentMeta {
     pub to: Vec<String>,
     /// Parsed `Cc:` header recipients, sanitized.
     pub cc: Vec<String>,
+    /// Parsed `Reply-To:` header, sanitized. `None` if absent.
+    pub reply_to: Option<String>,
     /// Parsed `Subject:` header, sanitized. `None` if absent.
     pub subject: Option<String>,
     /// Parsed `Date:` header as a UTC-normalized `OffsetDateTime`.
@@ -117,8 +119,11 @@ pub struct Untrusted {
 pub struct SecurityWarning {
     /// Classification of the warning.
     pub code: WarningCode,
-    /// Short human-readable context (e.g. a counter of stripped
-    /// codepoints). `None` when no additional detail is available.
+    /// Human-readable context string. Consumers MUST NOT parse this
+    /// field programmatically — use `code` and other typed fields for
+    /// dispatch. Format may change without notice.
+    ///
+    /// `None` when no additional detail is available.
     pub detail: Option<String>,
     /// Logical location in the message (e.g. `"header:subject"`,
     /// `"body:part[2]"`, `"attachment[0]"`). `None` for crate-wide events.
@@ -165,15 +170,21 @@ pub enum WarningCode {
     ParseAttachmentFilenameRewritten,
     /// HTML content contained hidden elements (e.g. `display:none`,
     /// `visibility:hidden`, `opacity:0`, off-screen positioning,
-    /// zero font size, or background-color-matching text). Stripped
-    /// from the extracted `body_text`. Detail format:
+    /// zero font size, or background-color-matching text). Hidden
+    /// content is stripped from `body_text` but may remain in
+    /// `body_html` when the posture allows HTML exposure. Detail format:
     /// `method=<display_none|visibility_hidden|opacity_0|offscreen|zero_font|color_match>`
     /// optionally followed by `,count=N` when summarized.
-    HtmlHiddenContentStripped,
+    HtmlHiddenContentDetected,
     /// An HTML anchor's visible text contained a URL-looking token
     /// whose registrable domain differs from the anchor's `href`
     /// registrable domain. Detail format:
     /// `text_domain=<ascii>,href_domain=<ascii>`.
+    ///
+    /// Reflects the original message content (pre-ammonia), not the
+    /// sanitized `body_html`. An anchor stripped by ammonia may still
+    /// produce this warning — the warning signals the message's
+    /// intent, not the sanitized output.
     HtmlLinkTextHrefMismatch,
     /// One or more `<script>` elements were removed during HTML
     /// sanitization. Detail format: `count=N`.
@@ -185,6 +196,12 @@ pub enum WarningCode {
     /// attributes removed during HTML sanitization to prevent
     /// remote tracking-pixel loads. Detail format: `count=N`.
     HtmlRemoteImageStripped,
+    /// An HTML anchor's `href` could not be resolved to a registrable
+    /// domain via the Public Suffix List, but the anchor's visible text
+    /// contained a URL-looking token (detected by `linkify`). This
+    /// distinguishes "we checked and it's fine" from "we couldn't
+    /// check." Consumers should treat the anchor with suspicion.
+    HtmlAnchorUnparsableHref,
     /// A domain label contained characters from multiple Unicode
     /// scripts outside the TR39 Highly Restrictive profile. Detail
     /// format: `domain=<punycode>,scripts=<S1+S2>`.
@@ -243,7 +260,7 @@ impl WarningCode {
             | WarningCode::ParseMimePartCountExceeded
             | WarningCode::ParseHeaderCountExceeded
             | WarningCode::ParseAttachmentFilenameRewritten
-            | WarningCode::HtmlHiddenContentStripped
+            | WarningCode::HtmlHiddenContentDetected
             | WarningCode::HtmlLinkTextHrefMismatch
             | WarningCode::HtmlScriptStripped
             | WarningCode::LookalikeMixedScript
@@ -252,6 +269,7 @@ impl WarningCode {
             WarningCode::ParseBodyTruncated
             | WarningCode::HtmlStyleStripped
             | WarningCode::HtmlRemoteImageStripped
+            | WarningCode::HtmlAnchorUnparsableHref
             | WarningCode::LookalikeIdnPunycode => WarningSeverity::Informational,
         }
     }
@@ -261,6 +279,15 @@ impl WarningCode {
 #[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_meta_has_reply_to_field() {
+        let meta = ContentMeta {
+            reply_to: Some("reply@example.com".to_string()),
+            ..ContentMeta::default()
+        };
+        assert_eq!(meta.reply_to.as_deref(), Some("reply@example.com"));
+    }
 
     #[test]
     fn content_default_meta_is_empty() {
@@ -328,7 +355,7 @@ mod tests {
             WarningSeverity::Adversarial
         );
         assert_eq!(
-            WarningCode::HtmlHiddenContentStripped.severity(),
+            WarningCode::HtmlHiddenContentDetected.severity(),
             WarningSeverity::Adversarial
         );
         assert_eq!(
@@ -345,6 +372,10 @@ mod tests {
         );
         assert_eq!(
             WarningCode::HtmlRemoteImageStripped.severity(),
+            WarningSeverity::Informational
+        );
+        assert_eq!(
+            WarningCode::HtmlAnchorUnparsableHref.severity(),
             WarningSeverity::Informational
         );
         assert_eq!(
@@ -369,8 +400,8 @@ mod tests {
     fn new_warning_variants_serialize_snake_case() {
         let cases = [
             (
-                WarningCode::HtmlHiddenContentStripped,
-                "html_hidden_content_stripped",
+                WarningCode::HtmlHiddenContentDetected,
+                "html_hidden_content_detected",
             ),
             (
                 WarningCode::HtmlLinkTextHrefMismatch,
@@ -381,6 +412,10 @@ mod tests {
             (
                 WarningCode::HtmlRemoteImageStripped,
                 "html_remote_image_stripped",
+            ),
+            (
+                WarningCode::HtmlAnchorUnparsableHref,
+                "html_anchor_unparsable_href",
             ),
             (WarningCode::LookalikeMixedScript, "lookalike_mixed_script"),
             (

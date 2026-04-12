@@ -14,6 +14,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 218,
     "references": [],
+    "reply_to": null,
     "subject": "Important task",
     "to": [
       "Victim <victim@example.com>"

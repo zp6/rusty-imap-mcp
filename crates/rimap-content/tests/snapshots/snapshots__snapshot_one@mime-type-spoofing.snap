@@ -22,6 +22,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 327,
     "references": [],
+    "reply_to": null,
     "subject": "attachment with spoofed type",
     "to": []
   },

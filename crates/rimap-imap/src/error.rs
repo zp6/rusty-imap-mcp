@@ -55,6 +55,14 @@ pub enum Error {
         /// Human-readable explanation of the validation failure.
         reason: &'static str,
     },
+    /// Caller passed more UIDs than the per-command batch limit.
+    #[error("ERR_BATCH_TOO_LARGE: {count} UIDs exceeds limit of {limit}")]
+    BatchTooLarge {
+        /// Number of UIDs the caller provided.
+        count: usize,
+        /// Maximum UIDs allowed per command.
+        limit: usize,
+    },
     /// Audit-subsystem failure during a tool call. The IMAP transport may
     /// be healthy; this variant exists so audit-write failures stay
     /// distinguishable from network failures in metrics and observability.
@@ -111,7 +119,7 @@ impl From<Error> for RimapError {
             Error::Auth { .. } => ErrorCode::Auth,
             Error::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
             Error::Protocol(_) => ErrorCode::ImapProtocol,
-            Error::InvalidInput { .. } => ErrorCode::InvalidInput,
+            Error::InvalidInput { .. } | Error::BatchTooLarge { .. } => ErrorCode::InvalidInput,
             Error::Audit { .. } => ErrorCode::Internal,
         };
         let message = err.to_string();

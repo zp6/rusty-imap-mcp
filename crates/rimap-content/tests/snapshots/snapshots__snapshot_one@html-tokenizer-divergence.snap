@@ -12,8 +12,9 @@ expression: value
     "in_reply_to": null,
     "mailing_list": null,
     "message_id": null,
-    "original_size_bytes": 332,
+    "original_size_bytes": 382,
     "references": [],
+    "reply_to": null,
     "subject": "Policy update",
     "to": [
       "victim@example.com"
@@ -28,7 +29,7 @@ expression: value
   ],
   "untrusted": {
     "alternate_parts": [],
-    "body_html": "<p>Notice: please review the policy update.</p>\n",
+    "body_html": "<p>Notice: please review the policy update.</p>alert(\"cdata-bypass\")]]&gt;\n",
     "body_text": "Notice: please review the policy update."
   }
 }

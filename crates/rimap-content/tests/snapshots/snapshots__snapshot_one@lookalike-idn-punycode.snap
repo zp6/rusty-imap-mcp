@@ -14,6 +14,7 @@ expression: value
     "message_id": null,
     "original_size_bytes": 190,
     "references": [],
+    "reply_to": null,
     "subject": "Payment link",
     "to": [
       "victim@example.com"

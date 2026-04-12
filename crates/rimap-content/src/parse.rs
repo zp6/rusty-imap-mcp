@@ -86,14 +86,64 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
         security_warnings: warnings,
     };
 
+    let header_domains = collect_header_domains(&message);
     let lookalike_warnings = lookalike::audit(&lookalike::LookalikeInput {
         meta: &content.meta,
         body_text: &content.untrusted.body_text,
         anchor_hrefs: &html_anchor_hrefs,
+        header_domains,
     });
     content.security_warnings.extend(lookalike_warnings);
 
     Ok(content)
+}
+
+/// Pre-extract domains from structured `Addr.address` fields for
+/// all header address sources (From, To, Cc, Reply-To). Using the
+/// parser's structured data is more reliable than re-parsing the
+/// rendered display string.
+fn collect_header_domains(message: &Message<'_>) -> Vec<(String, String)> {
+    let mut domains = Vec::new();
+    if let Some(address) = message.from() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:from".to_string()));
+            }
+        }
+    }
+    if let Some(address) = message.to() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:to".to_string()));
+            }
+        }
+    }
+    if let Some(address) = message.cc() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:cc".to_string()));
+            }
+        }
+    }
+    if let Some(address) = message.reply_to() {
+        for addr in address.iter() {
+            if let Some(domain) = addr_domain(addr) {
+                domains.push((domain, "header:reply_to".to_string()));
+            }
+        }
+    }
+    domains
+}
+
+/// Extract the domain portion from a structured `mail_parser::Addr`.
+fn addr_domain(addr: &mail_parser::Addr<'_>) -> Option<String> {
+    let email = addr.address.as_deref()?;
+    let (_local, domain) = email.rsplit_once('@')?;
+    let trimmed = domain.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
 }
 
 fn enforce_header_count(
@@ -123,6 +173,7 @@ fn extract_meta(
     let from = first_address_string(message.from(), "header:from", warnings);
     let to = address_strings(message.to(), "header:to", warnings);
     let cc = address_strings(message.cc(), "header:cc", warnings);
+    let reply_to = first_address_string(message.reply_to(), "header:reply_to", warnings);
     let subject = sanitize_opt_str(message.subject(), "header:subject", warnings);
     let date = message.date().and_then(convert_datetime);
     let message_id = sanitize_opt_str(message.message_id(), "header:message_id", warnings);
@@ -136,6 +187,7 @@ fn extract_meta(
         from,
         to,
         cc,
+        reply_to,
         subject,
         date,
         message_id,
@@ -732,6 +784,16 @@ fn build_attachment_meta(
                 location: Some(format!("attachment[{idx}]:filename")),
             });
         }
+        if let Some((penult, final_ext)) = detect_double_extension(name) {
+            warnings.push(SecurityWarning {
+                code: WarningCode::LookalikeFilenameExtensionSpoof,
+                detail: Some(format!(
+                    "reason=double_extension,visible=.{penult},\
+                     declared=.{penult}.{final_ext}"
+                )),
+                location: Some(format!("attachment[{idx}]:filename")),
+            });
+        }
         let (unicode_clean, mut ws) = unicode::sanitize(
             name.as_bytes(),
             Some("utf-8"),
@@ -1010,6 +1072,31 @@ fn contains_bidi_override(s: &str) -> bool {
                 | '\u{2069}'
         )
     })
+}
+
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    "pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "gif", "txt", "csv", "rtf",
+];
+
+const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "bat", "cmd", "ps1", "vbs", "js", "scr", "msi", "app", "dmg", "sh", "com", "pif",
+    "jar", "lnk",
+];
+
+fn detect_double_extension(name: &str) -> Option<(String, String)> {
+    let segments: Vec<&str> = name.split('.').collect();
+    if segments.len() < 3 {
+        return None;
+    }
+    let penultimate = segments[segments.len() - 2].to_ascii_lowercase();
+    let final_ext = segments[segments.len() - 1].to_ascii_lowercase();
+    if DOCUMENT_EXTENSIONS.contains(&penultimate.as_str())
+        && EXECUTABLE_EXTENSIONS.contains(&final_ext.as_str())
+    {
+        Some((penultimate, final_ext))
+    } else {
+        None
+    }
 }
 
 /// Return the substring after the last `.` in `filename`, if any.
@@ -1387,8 +1474,8 @@ mod tests {
             content
                 .security_warnings
                 .iter()
-                .any(|w| matches!(w.code, WarningCode::HtmlHiddenContentStripped)),
-            "expected HtmlHiddenContentStripped warning, got {:?}",
+                .any(|w| matches!(w.code, WarningCode::HtmlHiddenContentDetected)),
+            "expected HtmlHiddenContentDetected warning, got {:?}",
             content.security_warnings
         );
         assert!(!content.untrusted.body_text.contains("hidden"));
@@ -1809,5 +1896,101 @@ mod tests {
         let content = parse_message(raw).unwrap();
         assert_eq!(content.meta.attachments.len(), 1);
         assert!(content.meta.attachments[0].size_bytes > 0);
+    }
+
+    #[test]
+    fn double_extension_pdf_exe_fires_spoof_warning() {
+        let eml = b"From: test@example.com\r\n\
+            Subject: invoice\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"bound\"\r\n\
+            \r\n\
+            --bound\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            See attached.\r\n\
+            --bound\r\n\
+            Content-Type: application/octet-stream\r\n\
+            Content-Disposition: attachment; filename=\"invoice.pdf.exe\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            AAAA\r\n\
+            --bound--\r\n";
+        let content = parse_message(eml).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeFilenameExtensionSpoof
+                    && w.detail
+                        .as_deref()
+                        .is_some_and(|d| d.contains("double_extension"))
+            }),
+            "expected LookalikeFilenameExtensionSpoof with double_extension, \
+             got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn reply_to_extracted_into_meta() {
+        let eml = b"From: sender@example.com\r\n\
+            Reply-To: reply@different.com\r\n\
+            To: recipient@example.com\r\n\
+            Subject: test\r\n\
+            \r\n\
+            body\r\n";
+        let content = parse_message(eml).unwrap();
+        assert_eq!(
+            content.meta.reply_to.as_deref(),
+            Some("reply@different.com")
+        );
+    }
+
+    #[test]
+    fn reply_to_bidi_override_emits_warning() {
+        let eml = "From: sender@example.com\r\n\
+             Reply-To: attacker@evil\u{202E}.com\r\n\
+             To: recipient@example.com\r\n\
+             Subject: test\r\n\
+             \r\n\
+             body\r\n";
+        let content = parse_message(eml.as_bytes()).unwrap();
+        assert!(
+            content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeHomographDomain
+                    && w.location.as_deref() == Some("header:reply_to")
+            }),
+            "expected LookalikeHomographDomain on reply_to, got {:?}",
+            content.security_warnings
+        );
+    }
+
+    #[test]
+    fn single_extension_does_not_fire_double_extension() {
+        let eml = b"From: test@example.com\r\n\
+            Subject: file\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"bound\"\r\n\
+            \r\n\
+            --bound\r\n\
+            Content-Type: text/plain\r\n\
+            \r\n\
+            See attached.\r\n\
+            --bound\r\n\
+            Content-Type: application/pdf\r\n\
+            Content-Disposition: attachment; filename=\"invoice.pdf\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            AAAA\r\n\
+            --bound--\r\n";
+        let content = parse_message(eml).unwrap();
+        assert!(
+            !content.security_warnings.iter().any(|w| {
+                w.code == WarningCode::LookalikeFilenameExtensionSpoof
+                    && w.detail
+                        .as_deref()
+                        .is_some_and(|d| d.contains("double_extension"))
+            }),
+            "single extension should not fire double_extension spoof"
+        );
     }
 }

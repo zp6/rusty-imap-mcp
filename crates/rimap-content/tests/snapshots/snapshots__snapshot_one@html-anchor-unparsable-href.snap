@@ -1,0 +1,35 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "phisher@evil.example",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 287,
+    "references": [],
+    "reply_to": null,
+    "subject": "Unparsable href test",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "html_anchor_unparsable_href",
+      "detail": "href=https://evilserver/phishing-page,text=Visit paypal.com to verify",
+      "location": "body_html:anchor"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": "\n<p>Click to verify your account:</p>\n<a href=\"https://evilserver/phishing-page\" rel=\"noopener noreferrer\">Visit paypal.com to verify</a>\n\n",
+    "body_text": "Click to verify your account: Visit paypal.com to verify"
+  }
+}

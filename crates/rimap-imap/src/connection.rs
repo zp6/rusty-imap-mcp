@@ -530,11 +530,105 @@ impl Connection {
                 | Error::Auth { .. }
                 | Error::Protocol(_)
                 | Error::InvalidInput { .. }
+                | Error::BatchTooLarge { .. }
                 | Error::Audit { .. },
             )
             | Ok(_) => false,
         };
         if should_invalidate {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// `UID STORE` — add or remove flags on messages.
+    ///
+    /// Batch limit: 100 UIDs. Returns the UIDs the server confirmed.
+    ///
+    /// # Errors
+    /// Returns `Error::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Propagates timeout, connection-lost, or protocol errors.
+    pub async fn store_flags(
+        &self,
+        folder: &str,
+        uids: &[crate::types::Uid],
+        flags: &[crate::types::Flag],
+        action: crate::types::FlagAction,
+    ) -> Result<Vec<crate::types::Uid>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("store", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::select(session, folder, false).await?;
+            crate::ops::store::store(session, uids, flags, action).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// Move messages from `source_folder` to `dest_folder`.
+    ///
+    /// Uses IMAP MOVE extension (RFC 6851) when available; falls back
+    /// to COPY + STORE \Deleted + EXPUNGE otherwise. The fallback is
+    /// not atomic.
+    ///
+    /// Batch limit: 100 UIDs.
+    ///
+    /// # Errors
+    /// Returns `Error::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Propagates timeout, connection-lost, or protocol errors.
+    pub async fn move_messages(
+        &self,
+        source_folder: &str,
+        dest_folder: &str,
+        uids: &[crate::types::Uid],
+    ) -> Result<Vec<crate::types::MoveResult>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("move", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::select(session, source_folder, false).await?;
+            crate::ops::move_msg::move_messages(session, dest_folder, uids).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// `APPEND` a raw RFC 5322 message to `folder` with the given
+    /// flags and keywords.
+    ///
+    /// Does NOT select the folder first -- APPEND targets a named
+    /// mailbox directly per RFC 3501 section 6.3.11.
+    ///
+    /// # Errors
+    /// Propagates timeout, connection-lost, or protocol errors.
+    pub async fn append_message(
+        &self,
+        folder: &str,
+        message: &[u8],
+        flags: &[crate::types::Flag],
+        keywords: &[&str],
+    ) -> Result<crate::types::AppendResult, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("append", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::append::append(session, folder, message, flags, keywords).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
             self.invalidate().await;
         }
         result
@@ -580,7 +674,7 @@ fn error_code_for(err: &Error) -> &'static str {
         Error::Auth { .. } => "ERR_AUTH",
         Error::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
         Error::Protocol(_) => "ERR_IMAP_PROTOCOL",
-        Error::InvalidInput { .. } => "ERR_INVALID_INPUT",
+        Error::InvalidInput { .. } | Error::BatchTooLarge { .. } => "ERR_INVALID_INPUT",
         Error::Audit { .. } => "ERR_AUDIT",
     }
 }

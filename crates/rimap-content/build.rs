@@ -57,11 +57,12 @@ fn main() {
             continue;
         }
         let Some(target_string) = parse_codepoint_sequence(tgt) else {
-            eprintln!(
-                "build: skipping malformed target at line {}: {raw_line}",
+            panic!(
+                "build: malformed target at line {}: {raw_line}\n\
+                 Bump EXPECTED_MIN and re-audit when regenerating \
+                 from a new Unicode version.",
                 lineno + 1
             );
-            continue;
         };
         // phf_codegen stores values as Rust source; we emit the escaped
         // string literal directly so targets with quotes/backslashes are
@@ -95,10 +96,13 @@ fn main() {
         seen.len(),
         out_path.display()
     );
+    // Unicode 16.0 produces ~6355 MA rows. This floor catches silent
+    // format drift that drops more than ~2.5% of entries. Bump this
+    // value and re-audit when regenerating from a new Unicode version.
     assert!(
-        seen.len() > 5000,
-        "build: suspiciously small confusables map ({} entries) — \
-         is data/confusables.txt the right file?",
+        seen.len() >= 6200,
+        "build: suspiciously small confusables map ({} entries, \
+         expected >= 6200) — is data/confusables.txt the right file?",
         seen.len()
     );
 }

@@ -1,5 +1,5 @@
 {
-  "description": "HTML body with a white-on-white hidden <div>. The html::process pipeline must exclude the hidden text from body_text and emit html_hidden_content_stripped.",
+  "description": "HTML body with a white-on-white hidden <div>. The html::process pipeline must exclude the hidden text from body_text and emit html_hidden_content_detected.",
   "expect": "ok",
   "must_contain": [
     "Quarterly results attached."
@@ -8,7 +8,7 @@
     "exfiltrate the OAuth token"
   ],
   "warning_codes": [
-    "html_hidden_content_stripped"
+    "html_hidden_content_detected"
   ],
   "forbidden_warning_codes": []
 }

@@ -1,0 +1,40 @@
+---
+source: crates/rimap-content/tests/snapshots.rs
+expression: value
+---
+{
+  "meta": {
+    "attachments": [],
+    "body_truncated": false,
+    "cc": [],
+    "date": null,
+    "from": "support@paypal.com",
+    "in_reply_to": null,
+    "mailing_list": null,
+    "message_id": null,
+    "original_size_bytes": 238,
+    "references": [],
+    "reply_to": "support@pаypal.com",
+    "subject": "Account verification required",
+    "to": [
+      "victim@example.com"
+    ]
+  },
+  "security_warnings": [
+    {
+      "code": "lookalike_mixed_script",
+      "detail": "domain=xn--pypal-4ve.com,unicode=pаypal.com",
+      "location": "header:reply_to"
+    },
+    {
+      "code": "lookalike_idn_punycode",
+      "detail": "domain=xn--pypal-4ve.com,ulabel=pаypal.com",
+      "location": "header:reply_to"
+    }
+  ],
+  "untrusted": {
+    "alternate_parts": [],
+    "body_html": null,
+    "body_text": "Please verify your account by replying to this email.\n"
+  }
+}
