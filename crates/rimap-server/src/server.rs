@@ -90,7 +90,7 @@ impl ServerHandler for ImapMcpServer {
 
 impl ImapMcpServer {
     /// Dispatch to the tool handler for `tool`.
-    async fn dispatch_tool(
+    pub(crate) async fn dispatch_tool(
         &self,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,

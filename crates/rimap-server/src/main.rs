@@ -15,6 +15,9 @@ mod response;
 mod server;
 mod tools;
 
+#[cfg(test)]
+mod e2e_test;
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
