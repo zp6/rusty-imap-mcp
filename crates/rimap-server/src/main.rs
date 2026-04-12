@@ -106,6 +106,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let imap = Connection::new(conn_cfg, audit.clone(), credentials);
     let download_dir = resolve_download_dir(&validated)?;
 
+    let audit_for_shutdown = audit.clone();
     let mcp_server = server::ImapMcpServer {
         config: validated,
         imap,
@@ -115,7 +116,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
-    rt.block_on(async {
+    let mcp_result: anyhow::Result<()> = rt.block_on(async {
         let transport = rmcp::transport::io::stdio();
         let service = Box::pin(rmcp::serve_server(mcp_server, transport))
             .await
@@ -123,9 +124,22 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         service
             .waiting()
             .await
-            .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))
-    })?;
-    Ok(())
+            .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
+        Ok(())
+    });
+
+    // Best-effort process_end emission.
+    let reason = match &mcp_result {
+        Ok(()) => rimap_audit::ProcessEndReason::Eof,
+        Err(_) => rimap_audit::ProcessEndReason::Error,
+    };
+    // total_tool_calls is not tracked yet — use 0 as placeholder.
+    // A future PR can add an AtomicU64 counter to ImapMcpServer.
+    if let Err(e) = audit_for_shutdown.log_process_end(reason, 0) {
+        tracing::error!(error = %e, "failed to write process_end audit record");
+    }
+
+    mcp_result
 }
 
 /// Resolve the config file path from `--config` or the

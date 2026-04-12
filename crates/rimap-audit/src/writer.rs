@@ -350,6 +350,33 @@ impl AuditWriter {
     }
 }
 
+impl AuditWriter {
+    /// Build a `process_end` record, allocate a seq, and write it.
+    /// Stamps the record with the writer's stable `process_id` and
+    /// `Timestamp::now()`. Returns the allocated `seq` on success.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_process_end(
+        &self,
+        reason: crate::record::ProcessEndReason,
+        total_tool_calls: u64,
+    ) -> Result<crate::ids::Seq, AuditError> {
+        let seq = self.allocate_seq()?;
+        let record = crate::record::AuditRecord {
+            seq,
+            ts: crate::ids::Timestamp::now(),
+            process_id: self.process_id,
+            payload: crate::record::Payload::ProcessEnd(crate::record::ProcessEnd {
+                reason,
+                total_tool_calls,
+            }),
+        };
+        self.write_record(&record)?;
+        Ok(seq)
+    }
+}
+
 /// Inputs to [`AuditWriter::log_process_start`]. Caller computes the
 /// inode-tamper signal by passing the trailing state from
 /// [`crate::self_check::read_trailing_state`] (run before `open`) and the
@@ -940,6 +967,61 @@ mod tests {
         assert_eq!(v["previous_process_id"], prior_pid.to_string());
         assert_eq!(v["previous_file_inode"], 8888);
         assert_eq!(v["audit_file_inode_changed"], true);
+    }
+
+    #[test]
+    fn log_process_end_writes_valid_record() {
+        use crate::record::ProcessEndReason;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let seq = writer.log_process_end(ProcessEndReason::Eof, 42).unwrap();
+        assert_eq!(seq, crate::ids::Seq::FIRST);
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert_eq!(v["kind"], "process_end");
+        assert_eq!(v["reason"], "eof");
+        assert_eq!(v["total_tool_calls"], 42);
+    }
+
+    #[test]
+    fn log_process_end_uses_writer_process_id() {
+        use crate::record::ProcessEndReason;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::ids::Seq::FIRST,
+        })
+        .unwrap();
+        let pid = writer.process_id();
+
+        writer
+            .log_process_end(ProcessEndReason::SignalTerm, 7)
+            .unwrap();
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let v: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+        assert_eq!(v["process_id"], pid.to_string());
+        assert_eq!(v["reason"], "signal_term");
     }
 
     #[test]
