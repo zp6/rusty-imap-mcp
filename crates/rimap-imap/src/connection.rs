@@ -565,7 +565,7 @@ impl Connection {
             crate::ops::store::store(session, uids, flags, action).await
         })
         .await;
-        if let Err(Error::ConnectionLost) = &result {
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
             self.invalidate().await;
         }
         result
@@ -598,7 +598,7 @@ impl Connection {
             crate::ops::move_msg::move_messages(session, dest_folder, uids).await
         })
         .await;
-        if let Err(Error::ConnectionLost) = &result {
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
             self.invalidate().await;
         }
         result
@@ -628,7 +628,7 @@ impl Connection {
             crate::ops::append::append(session, folder, message, flags, keywords).await
         })
         .await;
-        if let Err(Error::ConnectionLost) = &result {
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
             self.invalidate().await;
         }
         result
