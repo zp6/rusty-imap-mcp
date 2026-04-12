@@ -203,6 +203,46 @@ fn project_size(total: u64, chunk: usize, limit: u64) -> Result<u64, Error> {
     }
 }
 
+/// Check whether a server-reported `RFC822.SIZE` exceeds `limit`.
+/// Returns `Ok(())` when the size is absent (server did not report it)
+/// or within the limit. Returns `Err(Error::SizeLimit)` when the
+/// reported size strictly exceeds `limit`.
+pub(crate) fn preflight_size_check(server_size: Option<u32>, limit: u64) -> Result<(), Error> {
+    if let Some(size) = server_size
+        && u64::from(size) > limit
+    {
+        return Err(Error::SizeLimit { limit });
+    }
+    Ok(())
+}
+
+/// Issue `UID FETCH <uid> (RFC822.SIZE)` and return the server-reported
+/// size, or `None` if the server omitted it.
+pub(crate) async fn preflight_fetch_size(
+    session: &mut ImapSession,
+    folder: &str,
+    uid: Uid,
+) -> Result<Option<u32>, Error> {
+    session
+        .examine(folder)
+        .await
+        .map_err(super::folders::map_err)?;
+
+    let mut stream = session
+        .uid_fetch(uid.get().to_string(), "RFC822.SIZE")
+        .await
+        .map_err(super::folders::map_err)?;
+
+    let mut size: Option<u32> = None;
+    while let Some(msg) = stream.next().await {
+        let msg = msg.map_err(super::folders::map_err)?;
+        if msg.uid == Some(uid.get()) {
+            size = msg.size;
+        }
+    }
+    Ok(size)
+}
+
 fn build_fetch_items(spec: FetchSpec) -> String {
     let mut parts: Vec<&str> = vec!["UID"]; // always request UID
     if spec.envelope {
@@ -368,7 +408,10 @@ fn convert_flag(f: &async_imap::types::Flag<'_>) -> crate::types::Flag {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_BODYSTRUCTURE_DEPTH, compress_uid_set, convert_bs_inner, project_size};
+    use super::{
+        MAX_BODYSTRUCTURE_DEPTH, compress_uid_set, convert_bs_inner, preflight_size_check,
+        project_size,
+    };
     use crate::error::Error;
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
@@ -659,6 +702,37 @@ mod tests {
     fn compress_singleton_u32_max() {
         let input = [uid(u32::MAX)];
         assert_eq!(compress_uid_set(&input), "4294967295");
+    }
+
+    #[test]
+    #[expect(clippy::panic, reason = "test failure path")]
+    fn preflight_size_check_rejects_oversize() {
+        let limit = 5_000_000;
+        let result = preflight_size_check(Some(10_000_000), limit);
+        match result {
+            Err(Error::SizeLimit { limit: l }) => assert_eq!(l, limit),
+            other => panic!("expected SizeLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "test")]
+    fn preflight_size_check_accepts_within_limit() {
+        preflight_size_check(Some(1_000_000), 5_000_000).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "test")]
+    fn preflight_size_check_accepts_at_exact_limit() {
+        // u32::MAX fits in u64, so use a smaller example for clarity.
+        let limit = 5_000_000;
+        preflight_size_check(Some(5_000_000), limit).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "test")]
+    fn preflight_size_check_passes_when_server_omits_size() {
+        preflight_size_check(None, 5_000_000).unwrap();
     }
 
     // NOTE: The round-trip parser in this proptest is a SIMPLIFIED model.

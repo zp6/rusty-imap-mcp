@@ -517,20 +517,18 @@ impl Connection {
     /// # Size cap is enforced post-parse, not pre-allocation
     ///
     /// `async-imap 0.11` yields each FETCH item as an already-materialized
-    /// `Fetch` whose `body()` slice has been parsed into memory by the
-    /// upstream crate before this function gets a chance to inspect its
-    /// length. That means a hostile (or misconfigured) server can force a
-    /// single-item allocation up to the literal size it announces in the
-    /// FETCH response, **independent of `max_fetch_body_bytes`**. Our cap
-    /// is checked immediately after the item lands — so the session is
-    /// torn down and `Error::SizeLimit` is returned before any bytes reach
-    /// the caller — but the intermediate allocation inside async-imap has
-    /// already happened.
+    /// ## Pre-flight size check
     ///
-    /// Callers exposed to untrusted servers should pair this with an
-    /// external wall-clock memory limit (cgroups, `RLIMIT_AS`) until
-    /// <https://github.com/randomparity/rusty-imap-mcp/issues/32> lands
-    /// a pre-allocation path.
+    /// Before issuing `FETCH BODY.PEEK[]`, this method issues
+    /// `UID FETCH <uid> (RFC822.SIZE)` and rejects with
+    /// `Error::SizeLimit` if the server-reported size exceeds
+    /// `max_fetch_body_bytes`. This prevents async-imap from buffering
+    /// the full body into memory for oversize messages, at the cost of
+    /// one extra IMAP round-trip.
+    ///
+    /// The post-parse `project_size` check inside `ops::fetch::fetch_body`
+    /// remains as defense-in-depth because servers can lie about
+    /// `RFC822.SIZE`.
     ///
     /// # Errors
     /// Propagates `Error::SizeLimit` if the body exceeds the configured
@@ -544,6 +542,8 @@ impl Connection {
             let session = guard
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            let server_size = crate::ops::fetch::preflight_fetch_size(session, folder, uid).await?;
+            crate::ops::fetch::preflight_size_check(server_size, limit)?;
             crate::ops::fetch::fetch_body(session, folder, uid, limit).await
         })
         .await;
