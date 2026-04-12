@@ -102,11 +102,13 @@ fn find_part_by_id(
     msg: &mail_parser::Message<'_>,
     target_part_id: &str,
 ) -> Result<(Vec<u8>, String, Option<String>), rimap_core::RimapError> {
-    let part_ids = compute_part_ids(msg);
+    let part_ids = compute_part_ids(msg)?;
 
     for (idx, computed_id) in &part_ids {
         if computed_id == target_part_id {
-            let part = &msg.parts[*idx];
+            let part = msg.parts.get(*idx).ok_or_else(|| {
+                rimap_core::RimapError::Internal(format!("part index {idx} out of range"))
+            })?;
             let body = part.contents().to_vec();
             let content_type = if let Some(ct) = part.content_type() {
                 let main = ct.ctype();
@@ -128,18 +130,23 @@ fn find_part_by_id(
 
 /// Compute IMAP-style part IDs for all leaf parts in a parsed
 /// message. Returns `(part_index, imap_part_id)` pairs.
-fn compute_part_ids(msg: &mail_parser::Message<'_>) -> Vec<(usize, String)> {
+fn compute_part_ids(
+    msg: &mail_parser::Message<'_>,
+) -> Result<Vec<(usize, String)>, rimap_core::RimapError> {
     let mut result = Vec::new();
-    let root = &msg.parts[0];
+    let root = msg
+        .parts
+        .first()
+        .ok_or_else(|| rimap_core::RimapError::Internal("message has no parts".into()))?;
 
     if root.is_multipart() {
-        walk_parts(msg, 0, "", &mut result);
+        walk_parts(msg, 0, "", &mut result)?;
     } else {
         // Single-part message: the sole part is "1".
         result.push((0, "1".to_string()));
     }
 
-    result
+    Ok(result)
 }
 
 /// Recursively walk parts and assign IMAP-style IDs.
@@ -148,8 +155,10 @@ fn walk_parts(
     part_idx: usize,
     prefix: &str,
     out: &mut Vec<(usize, String)>,
-) {
-    let part = &msg.parts[part_idx];
+) -> Result<(), rimap_core::RimapError> {
+    let part = msg.parts.get(part_idx).ok_or_else(|| {
+        rimap_core::RimapError::Internal(format!("part index {part_idx} out of range"))
+    })?;
 
     if let Some(children) = part.sub_parts() {
         for (i, &child_idx) in children.iter().enumerate() {
@@ -159,7 +168,7 @@ fn walk_parts(
             } else {
                 format!("{prefix}.{num}")
             };
-            walk_parts(msg, child_idx as usize, &child_id, out);
+            walk_parts(msg, child_idx as usize, &child_id, out)?;
         }
     } else {
         let part_id = if prefix.is_empty() {
@@ -169,4 +178,5 @@ fn walk_parts(
         };
         out.push((part_idx, part_id));
     }
+    Ok(())
 }
