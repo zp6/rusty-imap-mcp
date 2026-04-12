@@ -9,10 +9,6 @@ use rimap_content::{Content, ContentError, parse_message};
 ///
 /// Returns `ContentError` from the inner call, or
 /// `ContentError::Malformed` if the blocking task panicked.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired in Sprint 5 MCP tool handlers")
-)]
 pub async fn parse_message_async(raw: Vec<u8>) -> Result<Content, ContentError> {
     tokio::task::spawn_blocking(move || parse_message(&raw))
         .await

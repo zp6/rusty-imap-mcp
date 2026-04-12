@@ -127,10 +127,14 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::move_message::handle(self, input)).await
             }
-            ToolName::Search => Ok(placeholder()),
-            ToolName::SearchAdvanced => Ok(placeholder()),
-            ToolName::FetchMessage => Ok(placeholder()),
-            ToolName::FetchMessageHtml => Ok(placeholder()),
+            ToolName::Search | ToolName::SearchAdvanced => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::search::handle(self, input)).await
+            }
+            ToolName::FetchMessage | ToolName::FetchMessageHtml => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::fetch_message::handle(self, input)).await
+            }
             ToolName::ListAttachments => Ok(placeholder()),
             ToolName::DownloadAttachment => Ok(placeholder()),
             ToolName::CreateDraft => Ok(placeholder()),
