@@ -165,16 +165,37 @@ fn check_sniff_mismatch(declared: &str, sniffed: Option<&str>) -> Vec<serde_json
 /// Maximum recursion depth for BODYSTRUCTURE tree walking.
 const MAX_BS_DEPTH: u32 = 64;
 
+/// Compute the IMAP part ID for a leaf or message node.
+/// Root-level nodes get "1"; nested nodes keep their prefix.
+fn leaf_part_id(prefix: &str) -> String {
+    if prefix.is_empty() {
+        "1".to_string()
+    } else {
+        prefix.to_string()
+    }
+}
+
+/// Compute the IMAP part ID for a child of a multipart node.
+/// Root-level children are "1", "2", etc.; nested children
+/// are "prefix.1", "prefix.2", etc.
+fn child_part_id(prefix: &str, index: usize) -> String {
+    if prefix.is_empty() {
+        index.to_string()
+    } else {
+        format!("{prefix}.{index}")
+    }
+}
+
 /// Look up a part's declared MIME type from a `BodyStructure` tree by
 /// IMAP-style part ID (e.g. "2", "1.2").
 fn lookup_bodystructure_type(bs: &BodyStructure, target_part_id: &str) -> Option<String> {
-    lookup_bs_recursive(bs, &mut String::new(), target_part_id, 0)
+    lookup_bs_recursive(bs, "", target_part_id, 0)
 }
 
 /// Recursive walker that mirrors `collect_attachments` numbering.
 fn lookup_bs_recursive(
     bs: &BodyStructure,
-    prefix: &mut String,
+    prefix: &str,
     target: &str,
     depth: u32,
 ) -> Option<String> {
@@ -187,11 +208,7 @@ fn lookup_bs_recursive(
             mime_subtype,
             ..
         } => {
-            let part_id = if prefix.is_empty() {
-                "1".to_string()
-            } else {
-                prefix.clone()
-            };
+            let part_id = leaf_part_id(prefix);
             if part_id == target {
                 Some(format!(
                     "{}/{}",
@@ -204,25 +221,16 @@ fn lookup_bs_recursive(
         }
         BodyStructure::Multipart { parts, .. } => {
             for (i, part) in parts.iter().enumerate() {
-                let idx = i + 1;
-                let mut child = if prefix.is_empty() {
-                    idx.to_string()
-                } else {
-                    format!("{prefix}.{idx}")
-                };
-                if let Some(found) = lookup_bs_recursive(part, &mut child, target, depth + 1) {
+                let child = child_part_id(prefix, i + 1);
+                if let Some(found) = lookup_bs_recursive(part, &child, target, depth + 1) {
                     return Some(found);
                 }
             }
             None
         }
         BodyStructure::Message { body, .. } => {
-            let mut part_id = if prefix.is_empty() {
-                "1".to_string()
-            } else {
-                prefix.clone()
-            };
-            lookup_bs_recursive(body, &mut part_id, target, depth + 1)
+            let part_id = leaf_part_id(prefix);
+            lookup_bs_recursive(body, &part_id, target, depth + 1)
         }
     }
 }
