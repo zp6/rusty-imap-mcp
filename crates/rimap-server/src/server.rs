@@ -154,7 +154,12 @@ fn parse_args<T: serde::de::DeserializeOwned>(
 fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::Value> {
     let schema = schemars::schema_for!(T);
     match serde_json::to_value(schema) {
-        Ok(serde_json::Value::Object(map)) => map,
+        Ok(serde_json::Value::Object(mut map)) => {
+            // Strip Rust struct name to avoid leaking implementation
+            // details in the MCP list_tools response.
+            map.remove("title");
+            map
+        }
         _ => serde_json::Map::new(),
     }
 }

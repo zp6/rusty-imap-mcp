@@ -133,7 +133,7 @@ fn validate_draft_input(input: &CreateDraftInput) -> Result<(), rimap_core::Rima
         return Err(rimap_core::RimapError::Authz {
             code: rimap_core::error::ErrorCode::InvalidInput,
             message: format!(
-                "subject too long ({} chars); max is {MAX_SUBJECT_LEN}",
+                "subject too long ({} bytes); max is {MAX_SUBJECT_LEN}",
                 input.subject.len()
             ),
         });

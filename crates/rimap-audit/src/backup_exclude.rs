@@ -17,7 +17,7 @@ pub fn exclude_from_backup(path: &Path) {
 
 #[cfg(target_os = "macos")]
 fn exclude_macos(path: &Path) {
-    match std::process::Command::new("tmutil")
+    match std::process::Command::new("/usr/bin/tmutil")
         .args(["addexclusion", "-p"])
         .arg(path)
         .output()

@@ -39,7 +39,7 @@ pub async fn append(
 
 /// Reject messages exceeding the configured byte limit.
 fn check_append_size(message: &[u8], max_append_bytes: u64) -> Result<(), Error> {
-    let len = message.len() as u64;
+    let len = u64::try_from(message.len()).unwrap_or(u64::MAX);
     if len > max_append_bytes {
         return Err(Error::SizeLimit {
             limit: max_append_bytes,

@@ -79,11 +79,10 @@ pub async fn handle(
 
     let safe_filename = original_filename.as_deref().unwrap_or("attachment");
 
-    let path = download::write_attachment_async(dest, safe_filename.to_string(), part_body.clone())
-        .await?;
     let size = part_body.len();
     let sha256 = download::sha256_hex(&part_body);
     let mime_sniffed = download::sniff_mime(&part_body);
+    let path = download::write_attachment_async(dest, safe_filename.to_string(), part_body).await?;
 
     let path_str = path.to_string_lossy().to_string();
 
