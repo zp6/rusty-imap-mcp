@@ -130,6 +130,9 @@ pub struct LimitsConfig {
     /// Max attachment bytes.
     #[serde(default = "default_max_attach")]
     pub max_attachment_bytes: u64,
+    /// Max APPEND message bytes.
+    #[serde(default = "default_max_append")]
+    pub max_append_bytes: u64,
     /// Rate limiter: commands per second.
     #[serde(default = "default_cps")]
     pub commands_per_second: u32,
@@ -151,6 +154,7 @@ impl Default for LimitsConfig {
             max_search_results_cap: default_max_search_cap(),
             max_fetch_body_bytes: default_max_body(),
             max_attachment_bytes: default_max_attach(),
+            max_append_bytes: default_max_append(),
             commands_per_second: default_cps(),
             drafts_per_minute: default_drafts_per_min(),
             circuit_breaker_error_threshold: default_breaker_threshold(),
@@ -170,6 +174,9 @@ fn default_max_body() -> u64 {
 }
 fn default_max_attach() -> u64 {
     26_214_400
+}
+fn default_max_append() -> u64 {
+    10_485_760
 }
 fn default_cps() -> u32 {
     10

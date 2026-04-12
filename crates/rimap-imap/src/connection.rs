@@ -52,6 +52,8 @@ pub struct ConnectionConfig {
     pub command_timeout: Duration,
     /// Hard cap on `FETCH BODY[]` byte count.
     pub max_fetch_body_bytes: u64,
+    /// Hard cap on `APPEND` message byte count.
+    pub max_append_bytes: u64,
 }
 
 /// Active IMAP session type alias. `async-imap` parameterizes over the
@@ -620,12 +622,13 @@ impl Connection {
         keywords: &[&str],
     ) -> Result<crate::types::AppendResult, Error> {
         let dur = self.inner.cfg.command_timeout;
+        let limit = self.inner.cfg.max_append_bytes;
         let result = crate::time::with_timeout("append", dur, async {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("session() ensures Some"));
-            crate::ops::append::append(session, folder, message, flags, keywords).await
+            crate::ops::append::append(session, folder, message, flags, keywords, limit).await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {

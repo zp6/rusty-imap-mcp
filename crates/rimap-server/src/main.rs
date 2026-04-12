@@ -165,6 +165,7 @@ fn build_connection_config(cfg: &ValidatedConfig) -> ConnectionConfig {
         connect_timeout: Duration::from_secs(u64::from(imap.connect_timeout_seconds)),
         command_timeout: Duration::from_secs(u64::from(imap.command_timeout_seconds)),
         max_fetch_body_bytes: cfg.config.limits.max_fetch_body_bytes,
+        max_append_bytes: cfg.config.limits.max_append_bytes,
     }
 }
 

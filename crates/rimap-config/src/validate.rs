@@ -109,6 +109,12 @@ fn validate_limits(config: &Config) -> Result<(), ConfigError> {
             reason: "must be > 0".to_string(),
         });
     }
+    if limits.max_append_bytes == 0 {
+        return Err(ConfigError::InvalidLimit {
+            field: "limits.max_append_bytes",
+            reason: "must be > 0".to_string(),
+        });
+    }
     Ok(())
 }
 

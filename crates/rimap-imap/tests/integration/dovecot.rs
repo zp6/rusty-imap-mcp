@@ -133,6 +133,7 @@ async fn case_04_login_rejected_emits_audit() {
         connect_timeout: Duration::from_secs(10),
         command_timeout: Duration::from_secs(10),
         max_fetch_body_bytes: 5_242_880,
+        max_append_bytes: 10_485_760,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(WrongPass);
     // Reuse h.audit so the rejected-auth record lands in the same file
@@ -264,6 +265,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         connect_timeout: Duration::from_secs(10),
         command_timeout: Duration::from_secs(10),
         max_fetch_body_bytes: 10,
+        max_append_bytes: 10_485_760,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
         DovecotHarness::password().to_string(),

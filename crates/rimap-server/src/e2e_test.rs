@@ -299,6 +299,7 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
         connect_timeout: Duration::from_secs(10),
         command_timeout: Duration::from_secs(30),
         max_fetch_body_bytes: 5_242_880,
+        max_append_bytes: 10_485_760,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(StaticCreds("testpass".into()));
     Connection::new(conn_cfg, audit.clone(), creds)
