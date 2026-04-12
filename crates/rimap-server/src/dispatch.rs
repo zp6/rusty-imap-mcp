@@ -14,10 +14,6 @@ use rimap_core::tool::ToolName;
 /// Run the pre-call guard chain.
 ///
 /// Returns `Ok(())` if all guards pass, or the first `RimapError`.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "scaffolding for tool handlers in later tasks")
-)]
 pub fn pre_call_guards<C: Clock>(
     guard: &DispatchGuard<C>,
     tool: ToolName,
