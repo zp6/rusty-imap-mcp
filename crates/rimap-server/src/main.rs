@@ -8,6 +8,7 @@ mod cli;
 mod content;
 mod dry_run;
 mod logging;
+mod response;
 
 use std::io::Write;
 use std::path::PathBuf;
