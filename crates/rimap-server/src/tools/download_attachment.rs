@@ -1,7 +1,7 @@
 //! `download_attachment` tool handler.
 
 use mail_parser::MimeHeaders;
-use rimap_imap::types::Uid;
+use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -76,6 +76,22 @@ pub async fn handle(
 
     let path_str = path.to_string_lossy().to_string();
 
+    let mut security_warnings = Vec::new();
+
+    // Cross-validate: fetch BODYSTRUCTURE and compare its declared
+    // MIME type against what mail_parser reports. Best-effort — if
+    // the fetch or lookup fails we skip validation silently.
+    let spec = FetchSpec {
+        bodystructure: true,
+        ..FetchSpec::default()
+    };
+    if let Ok(msgs) = server.imap.fetch(&input.folder, &[uid], spec).await
+        && let Some(bs) = msgs.into_iter().next().and_then(|m| m.bodystructure)
+        && let Some(bs_type) = lookup_bodystructure_type(&bs, &input.part_id)
+    {
+        security_warnings.extend(cross_validate_mime_type(&bs_type, &declared_type));
+    }
+
     Ok(ToolResponse {
         meta: serde_json::json!({
             "folder": input.folder,
@@ -90,8 +106,89 @@ pub async fn handle(
         untrusted: Some(serde_json::json!({
             "filename_original": original_filename,
         })),
-        security_warnings: Vec::new(),
+        security_warnings,
     })
+}
+
+/// Compare BODYSTRUCTURE-declared MIME type against `mail_parser`'s type.
+///
+/// Returns a security warning if they disagree (case-insensitive).
+fn cross_validate_mime_type(bodystructure_type: &str, parser_type: &str) -> Vec<serde_json::Value> {
+    if bodystructure_type.eq_ignore_ascii_case(parser_type) {
+        return Vec::new();
+    }
+    vec![serde_json::json!({
+        "type": "mime_type_mismatch",
+        "bodystructure_type": bodystructure_type,
+        "parser_type": parser_type,
+        "message":
+            "BODYSTRUCTURE MIME type disagrees with parsed content type"
+    })]
+}
+
+/// Maximum recursion depth for BODYSTRUCTURE tree walking.
+const MAX_BS_DEPTH: u32 = 64;
+
+/// Look up a part's declared MIME type from a `BodyStructure` tree by
+/// IMAP-style part ID (e.g. "2", "1.2").
+fn lookup_bodystructure_type(bs: &BodyStructure, target_part_id: &str) -> Option<String> {
+    lookup_bs_recursive(bs, &mut String::new(), target_part_id, 0)
+}
+
+/// Recursive walker that mirrors `collect_attachments` numbering.
+fn lookup_bs_recursive(
+    bs: &BodyStructure,
+    prefix: &mut String,
+    target: &str,
+    depth: u32,
+) -> Option<String> {
+    if depth > MAX_BS_DEPTH {
+        return None;
+    }
+    match bs {
+        BodyStructure::Single {
+            mime_type,
+            mime_subtype,
+            ..
+        } => {
+            let part_id = if prefix.is_empty() {
+                "1".to_string()
+            } else {
+                prefix.clone()
+            };
+            if part_id == target {
+                Some(format!(
+                    "{}/{}",
+                    mime_type.to_lowercase(),
+                    mime_subtype.to_lowercase()
+                ))
+            } else {
+                None
+            }
+        }
+        BodyStructure::Multipart { parts, .. } => {
+            for (i, part) in parts.iter().enumerate() {
+                let idx = i + 1;
+                let mut child = if prefix.is_empty() {
+                    idx.to_string()
+                } else {
+                    format!("{prefix}.{idx}")
+                };
+                if let Some(found) = lookup_bs_recursive(part, &mut child, target, depth + 1) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        BodyStructure::Message { body, .. } => {
+            let mut part_id = if prefix.is_empty() {
+                "1".to_string()
+            } else {
+                prefix.clone()
+            };
+            lookup_bs_recursive(body, &mut part_id, target, depth + 1)
+        }
+    }
 }
 
 /// Find the MIME part matching `part_id` in a parsed message.
@@ -200,5 +297,100 @@ mod tests {
         let mut out = Vec::new();
         walk_parts(&msg, 0, "", &mut out, MAX_MIME_DEPTH + 1).unwrap();
         assert!(out.is_empty());
+    }
+
+    // -- cross_validate_mime_type ------------------------------------------
+
+    #[test]
+    fn cross_validate_catches_type_mismatch() {
+        let warnings = cross_validate_mime_type("image/png", "text/html");
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].to_string().contains("mime_type_mismatch"));
+    }
+
+    #[test]
+    fn cross_validate_passes_on_match() {
+        let warnings = cross_validate_mime_type("image/png", "image/png");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn cross_validate_case_insensitive() {
+        let warnings = cross_validate_mime_type("IMAGE/PNG", "image/png");
+        assert!(warnings.is_empty());
+    }
+
+    // -- lookup_bodystructure_type ----------------------------------------
+
+    fn single(mt: &str, sub: &str) -> BodyStructure {
+        BodyStructure::Single {
+            mime_type: mt.to_string(),
+            mime_subtype: sub.to_string(),
+            params: Vec::new(),
+            encoding: "7bit".to_string(),
+            size: 100,
+        }
+    }
+
+    #[test]
+    fn lookup_single_part_message() {
+        let bs = single("image", "png");
+        let result = lookup_bodystructure_type(&bs, "1");
+        assert_eq!(result.as_deref(), Some("image/png"));
+    }
+
+    #[test]
+    fn lookup_multipart_by_id() {
+        let bs = BodyStructure::Multipart {
+            subtype: "mixed".to_string(),
+            parts: vec![single("text", "plain"), single("application", "pdf")],
+        };
+        assert_eq!(
+            lookup_bodystructure_type(&bs, "2").as_deref(),
+            Some("application/pdf")
+        );
+        assert_eq!(
+            lookup_bodystructure_type(&bs, "1").as_deref(),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn lookup_nested_multipart() {
+        let inner = BodyStructure::Multipart {
+            subtype: "mixed".to_string(),
+            parts: vec![single("text", "plain"), single("image", "gif")],
+        };
+        let bs = BodyStructure::Multipart {
+            subtype: "mixed".to_string(),
+            parts: vec![inner, single("application", "zip")],
+        };
+        assert_eq!(
+            lookup_bodystructure_type(&bs, "1.2").as_deref(),
+            Some("image/gif")
+        );
+        assert_eq!(
+            lookup_bodystructure_type(&bs, "2").as_deref(),
+            Some("application/zip")
+        );
+    }
+
+    #[test]
+    fn lookup_missing_part_id_returns_none() {
+        let bs = single("text", "plain");
+        assert!(lookup_bodystructure_type(&bs, "99").is_none());
+    }
+
+    #[test]
+    fn lookup_respects_depth_limit() {
+        let mut bs = single("application", "pdf");
+        for _ in 0..70 {
+            bs = BodyStructure::Multipart {
+                subtype: "mixed".to_string(),
+                parts: vec![bs],
+            };
+        }
+        // The deeply nested part should be unreachable.
+        assert!(lookup_bodystructure_type(&bs, "1").is_none());
     }
 }
