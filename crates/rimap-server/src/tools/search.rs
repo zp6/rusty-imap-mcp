@@ -106,6 +106,12 @@ fn build_query(
                 code: e.code(),
                 message: e.to_string(),
             })?;
+        if raw.bytes().any(|b| b == b'\r' || b == b'\n' || b == b'\0') {
+            return Err(rimap_core::RimapError::Authz {
+                code: ErrorCode::InvalidInput,
+                message: "advanced_query contains forbidden control bytes".into(),
+            });
+        }
         return Ok(SearchQuery::Raw(raw.clone()));
     }
 
@@ -130,6 +136,34 @@ fn parse_iso_date(s: &str) -> Result<time::Date, rimap_core::RimapError> {
         code: ErrorCode::InvalidInput,
         message: format!("invalid date '{s}': {e}"),
     })
+}
+
+/// Strip control characters and Unicode tag/bidi characters from
+/// a string destined for MCP response output.
+fn sanitize_for_output(s: &str) -> String {
+    s.chars()
+        .filter(|c| !is_forbidden_output_char(*c))
+        .collect()
+}
+
+/// Returns `true` for characters that must not appear in MCP output:
+/// C0 controls (except `\n` and `\t`), DEL, Unicode tag characters,
+/// bidi overrides, and zero-width characters.
+fn is_forbidden_output_char(c: char) -> bool {
+    // `matches!` is appropriate here: char ranges have no fields to
+    // destructure, so the "no matches!" guideline does not apply.
+    matches!(
+        c,
+        '\x00'..='\x08'
+            | '\x0b'..='\x0c'
+            | '\x0e'..='\x1f'
+            | '\x7f'
+            | '\u{E0001}'..='\u{E007F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{FEFF}'
+    )
 }
 
 /// Format an address as `"name <mailbox@host>"` or `"mailbox@host"`.
@@ -195,21 +229,83 @@ fn format_search_result(msg: &FetchedMessage) -> serde_json::Value {
 
     if let Some(env) = &msg.envelope {
         if let Some(subj) = &env.subject_raw {
-            entry["subject"] = serde_json::json!(String::from_utf8_lossy(subj));
+            let raw = String::from_utf8_lossy(subj);
+            entry["subject"] = serde_json::json!(sanitize_for_output(&raw));
         }
         if let Some(date) = &env.date {
-            entry["date"] = serde_json::json!(String::from_utf8_lossy(date));
+            let raw = String::from_utf8_lossy(date);
+            entry["date"] = serde_json::json!(sanitize_for_output(&raw));
         }
         if !env.from.is_empty() {
-            entry["from"] = serde_json::json!(format_addresses(&env.from));
+            let addrs: Vec<String> = format_addresses(&env.from)
+                .into_iter()
+                .map(|a| sanitize_for_output(&a))
+                .collect();
+            entry["from"] = serde_json::json!(addrs);
         }
         if !env.to.is_empty() {
-            entry["to"] = serde_json::json!(format_addresses(&env.to));
+            let addrs: Vec<String> = format_addresses(&env.to)
+                .into_iter()
+                .map(|a| sanitize_for_output(&a))
+                .collect();
+            entry["to"] = serde_json::json!(addrs);
         }
         if let Some(mid) = &env.message_id {
-            entry["message_id"] = serde_json::json!(String::from_utf8_lossy(mid.as_bytes()));
+            let raw = String::from_utf8_lossy(mid.as_bytes());
+            entry["message_id"] = serde_json::json!(sanitize_for_output(&raw));
         }
     }
 
     entry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_strips_null_byte() {
+        assert_eq!(sanitize_for_output("hello\x00world"), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_strips_bidi_overrides() {
+        let input = "normal\u{202A}injected\u{202C}text";
+        let result = sanitize_for_output(input);
+        assert_eq!(result, "normalinjectedtext");
+    }
+
+    #[test]
+    fn sanitize_strips_unicode_tags() {
+        let input = "safe\u{E0001}tagged\u{E007F}end";
+        let result = sanitize_for_output(input);
+        assert_eq!(result, "safetaggedend");
+    }
+
+    #[test]
+    fn sanitize_strips_zero_width_chars() {
+        let input = "a\u{200B}b\u{200D}c\u{FEFF}d";
+        // U+200D (ZWJ) is outside the filtered range 200B..200F,
+        // so it passes through.
+        let result = sanitize_for_output(input);
+        assert!(!result.contains('\u{200B}'));
+        assert!(!result.contains('\u{FEFF}'));
+    }
+
+    #[test]
+    fn sanitize_preserves_newline_and_tab() {
+        assert_eq!(sanitize_for_output("a\nb\tc"), "a\nb\tc");
+    }
+
+    #[test]
+    fn sanitize_strips_c0_controls() {
+        let input = "hello\x01\x02\x03world";
+        assert_eq!(sanitize_for_output(input), "helloworld");
+    }
+
+    #[test]
+    fn sanitize_preserves_normal_unicode() {
+        let input = "cafe\u{0301} naïve résumé 日本語";
+        assert_eq!(sanitize_for_output(input), input);
+    }
 }

@@ -98,6 +98,9 @@ async fn handle_flag_op(
     })
 }
 
+/// Maximum number of UIDs in a single batch operation.
+pub(crate) const MAX_BATCH_UIDS: usize = 100;
+
 /// Resolve `uid` or `uids` from input to a `Vec<Uid>`.
 pub fn resolve_uids(
     uid: Option<u32>,
@@ -105,25 +108,88 @@ pub fn resolve_uids(
 ) -> Result<Vec<Uid>, rimap_core::RimapError> {
     match (uid, uids) {
         (Some(u), None) => {
-            let uid = Uid::new(u)
-                .ok_or_else(|| rimap_core::RimapError::Internal("UID must be non-zero".into()))?;
+            let uid = Uid::new(u).ok_or_else(|| rimap_core::RimapError::Authz {
+                code: rimap_core::error::ErrorCode::InvalidInput,
+                message: "UID must be non-zero".into(),
+            })?;
             Ok(vec![uid])
         }
         (None, Some(us)) => {
+            if us.len() > MAX_BATCH_UIDS {
+                return Err(rimap_core::RimapError::Authz {
+                    code: rimap_core::error::ErrorCode::InvalidInput,
+                    message: format!(
+                        "uids batch size {} exceeds maximum of {MAX_BATCH_UIDS}",
+                        us.len()
+                    ),
+                });
+            }
             let mut result = Vec::with_capacity(us.len());
             for u in us {
-                let uid = Uid::new(u).ok_or_else(|| {
-                    rimap_core::RimapError::Internal("UID must be non-zero".into())
+                let uid = Uid::new(u).ok_or_else(|| rimap_core::RimapError::Authz {
+                    code: rimap_core::error::ErrorCode::InvalidInput,
+                    message: "UID must be non-zero".into(),
                 })?;
                 result.push(uid);
             }
             Ok(result)
         }
-        (Some(_), Some(_)) => Err(rimap_core::RimapError::Internal(
-            "provide uid or uids, not both".into(),
-        )),
-        (None, None) => Err(rimap_core::RimapError::Internal(
-            "provide uid or uids".into(),
-        )),
+        (Some(_), Some(_)) => Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: "provide uid or uids, not both".into(),
+        }),
+        (None, None) => Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: "provide uid or uids".into(),
+        }),
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_uids_single() {
+        let result = resolve_uids(Some(42), None).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].get(), 42);
+    }
+
+    #[test]
+    fn resolve_uids_batch_within_limit() {
+        let uids: Vec<u32> = (1..=100).collect();
+        let result = resolve_uids(None, Some(uids)).unwrap();
+        assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn resolve_uids_batch_exceeds_limit() {
+        let uids: Vec<u32> = (1..=101).collect();
+        let result = resolve_uids(None, Some(uids));
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn resolve_uids_rejects_zero() {
+        let result = resolve_uids(Some(0), None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("non-zero"));
+    }
+
+    #[test]
+    fn resolve_uids_rejects_both() {
+        let result = resolve_uids(Some(1), Some(vec![2]));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resolve_uids_rejects_neither() {
+        let result = resolve_uids(None, None);
+        assert!(result.is_err());
     }
 }
