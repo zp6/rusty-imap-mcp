@@ -98,40 +98,27 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
     Ok(content)
 }
 
+/// Append the domain of every address in `group` to `out`, tagging each
+/// with `label`. No-op when `group` is `None`.
+fn push_domains_from(group: Option<&Address<'_>>, label: &str, out: &mut Vec<(String, String)>) {
+    let Some(address) = group else { return };
+    for addr in address.iter() {
+        if let Some(domain) = addr_domain(addr) {
+            out.push((domain, label.to_string()));
+        }
+    }
+}
+
 /// Pre-extract domains from structured `Addr.address` fields for
 /// all header address sources (From, To, Cc, Reply-To). Using the
 /// parser's structured data is more reliable than re-parsing the
 /// rendered display string.
 fn collect_header_domains(message: &Message<'_>) -> Vec<(String, String)> {
     let mut domains = Vec::new();
-    if let Some(address) = message.from() {
-        for addr in address.iter() {
-            if let Some(domain) = addr_domain(addr) {
-                domains.push((domain, "header:from".to_string()));
-            }
-        }
-    }
-    if let Some(address) = message.to() {
-        for addr in address.iter() {
-            if let Some(domain) = addr_domain(addr) {
-                domains.push((domain, "header:to".to_string()));
-            }
-        }
-    }
-    if let Some(address) = message.cc() {
-        for addr in address.iter() {
-            if let Some(domain) = addr_domain(addr) {
-                domains.push((domain, "header:cc".to_string()));
-            }
-        }
-    }
-    if let Some(address) = message.reply_to() {
-        for addr in address.iter() {
-            if let Some(domain) = addr_domain(addr) {
-                domains.push((domain, "header:reply_to".to_string()));
-            }
-        }
-    }
+    push_domains_from(message.from(), "header:from", &mut domains);
+    push_domains_from(message.to(), "header:to", &mut domains);
+    push_domains_from(message.cc(), "header:cc", &mut domains);
+    push_domains_from(message.reply_to(), "header:reply_to", &mut domains);
     domains
 }
 
