@@ -314,3 +314,271 @@ async fn case_11_tcp_half_open_recovery() {
     let folders = h.connection.list_folders("*").await.unwrap();
     assert!(!folders.is_empty());
 }
+
+#[tokio::test]
+async fn case_12_store_add_seen_flag() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+
+    // Seed a message via APPEND.
+    let msg = support::fixtures::minimal_rfc5322("store-seen");
+    h.connection
+        .append_message("INBOX", &msg, &[], &[])
+        .await
+        .unwrap();
+
+    // Search for it.
+    let uids = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("store-seen".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!uids.is_empty(), "seeded message not found");
+    let uid = uids[0];
+
+    // Add \Seen flag.
+    let updated = h
+        .connection
+        .store_flags(
+            "INBOX",
+            &[uid],
+            &[rimap_imap::types::Flag::Seen],
+            rimap_imap::types::FlagAction::Add,
+        )
+        .await
+        .unwrap();
+    assert!(updated.contains(&uid));
+
+    // Verify the flag is set.
+    let fetched = h
+        .connection
+        .fetch(
+            "INBOX",
+            &[uid],
+            rimap_imap::types::FetchSpec {
+                flags: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let flags = fetched[0].flags.as_ref().unwrap();
+    assert!(flags.contains(&rimap_imap::types::Flag::Seen));
+}
+
+#[tokio::test]
+async fn case_13_store_remove_seen_flag() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+
+    // Seed a message with \Seen.
+    let msg = support::fixtures::minimal_rfc5322("store-unseen");
+    h.connection
+        .append_message("INBOX", &msg, &[rimap_imap::types::Flag::Seen], &[])
+        .await
+        .unwrap();
+
+    let uids = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("store-unseen".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!uids.is_empty());
+    let uid = uids[0];
+
+    // Remove \Seen flag.
+    let updated = h
+        .connection
+        .store_flags(
+            "INBOX",
+            &[uid],
+            &[rimap_imap::types::Flag::Seen],
+            rimap_imap::types::FlagAction::Remove,
+        )
+        .await
+        .unwrap();
+    assert!(updated.contains(&uid));
+
+    // Verify the flag is removed.
+    let fetched = h
+        .connection
+        .fetch(
+            "INBOX",
+            &[uid],
+            rimap_imap::types::FetchSpec {
+                flags: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let flags = fetched[0].flags.as_ref().unwrap();
+    assert!(!flags.contains(&rimap_imap::types::Flag::Seen));
+}
+
+#[tokio::test]
+async fn case_14_store_batch_too_large() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+
+    let uids: Vec<rimap_imap::types::Uid> = (1..=101)
+        .map(|n| rimap_imap::types::Uid::new(n).unwrap())
+        .collect();
+
+    let result = h
+        .connection
+        .store_flags(
+            "INBOX",
+            &uids,
+            &[rimap_imap::types::Flag::Seen],
+            rimap_imap::types::FlagAction::Add,
+        )
+        .await;
+
+    match result {
+        Err(rimap_imap::error::Error::BatchTooLarge {
+            count: 101,
+            limit: 100,
+        }) => {}
+        #[expect(clippy::panic, reason = "test failure path")]
+        other => panic!("expected BatchTooLarge, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn case_15_append_message_to_inbox() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+
+    let msg = support::fixtures::minimal_rfc5322("append-test");
+    let result = h
+        .connection
+        .append_message(
+            "INBOX",
+            &msg,
+            &[rimap_imap::types::Flag::Draft],
+            &["$PendingReview"],
+        )
+        .await
+        .unwrap();
+
+    // async-imap doesn't expose APPENDUID, so uid is None.
+    assert_eq!(result.uid, None);
+
+    // Verify the message is in INBOX by searching for it.
+    let uids = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("append-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!uids.is_empty(), "appended message not found");
+
+    // Verify it has the \Draft flag.
+    let fetched = h
+        .connection
+        .fetch(
+            "INBOX",
+            &[uids[0]],
+            rimap_imap::types::FetchSpec {
+                flags: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let flags = fetched[0].flags.as_ref().unwrap();
+    assert!(flags.contains(&rimap_imap::types::Flag::Draft));
+}
+
+#[tokio::test]
+async fn case_16_move_message_between_folders() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+
+    // Seed a message in INBOX.
+    let msg = support::fixtures::minimal_rfc5322("move-test");
+    h.connection
+        .append_message("INBOX", &msg, &[], &[])
+        .await
+        .unwrap();
+
+    let uids = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("move-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!uids.is_empty(), "seeded message not found");
+    let uid = uids[0];
+
+    // Move to Archive (seeded in Dovecot entrypoint.sh).
+    let results = h
+        .connection
+        .move_messages("INBOX", "Archive", &[uid])
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].old_uid, uid);
+
+    // Verify the message is gone from INBOX.
+    let after_uids = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("move-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        after_uids.is_empty(),
+        "message should be gone from INBOX after move"
+    );
+
+    // Verify the message is in Archive.
+    let archive_uids = h
+        .connection
+        .search(
+            "Archive",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("move-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !archive_uids.is_empty(),
+        "message should be in Archive after move"
+    );
+}
