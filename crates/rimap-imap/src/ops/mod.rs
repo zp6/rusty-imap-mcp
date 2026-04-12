@@ -3,3 +3,4 @@
 pub mod fetch;
 pub mod folders;
 pub mod search;
+pub mod store;
