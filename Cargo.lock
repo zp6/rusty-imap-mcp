@@ -1952,6 +1952,7 @@ dependencies = [
  "rimap-audit",
  "rimap-authz",
  "rimap-config",
+ "rimap-content",
  "rimap-core",
  "serde_json",
  "sha2",
