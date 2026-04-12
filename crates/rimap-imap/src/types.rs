@@ -155,6 +155,15 @@ pub struct MoveResult {
     pub new_uid: Option<Uid>,
 }
 
+/// Result of appending a message to a mailbox.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendResult {
+    /// UID assigned by the server. `None` if the server lacks UIDPLUS.
+    /// async-imap 0.11's `append()` does not expose the APPENDUID
+    /// response code, so this is always `None` for now.
+    pub uid: Option<Uid>,
+}
+
 /// IMAP `ENVELOPE` response. Header values stay raw bytes — RFC 2047 decoding
 /// is Sprint 4's responsibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
