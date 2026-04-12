@@ -144,6 +144,17 @@ pub enum FlagAction {
     Remove,
 }
 
+/// Result of moving a single message. `new_uid` is `None` when the
+/// server lacks UIDPLUS or when using the COPY+DELETE fallback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveResult {
+    /// UID in the source folder (before the move).
+    pub old_uid: Uid,
+    /// UID in the destination folder (after the move). `None` if the
+    /// server does not report it (no UIDPLUS, or COPY+DELETE fallback).
+    pub new_uid: Option<Uid>,
+}
+
 /// IMAP `ENVELOPE` response. Header values stay raw bytes — RFC 2047 decoding
 /// is Sprint 4's responsibility.
 #[derive(Debug, Clone, PartialEq, Eq)]
