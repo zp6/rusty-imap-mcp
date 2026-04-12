@@ -30,6 +30,10 @@ pub fn init_audit_writer(
         initial_seq,
     })?;
 
+    if let Some(parent) = writer.path().parent() {
+        rimap_audit::backup_exclude::exclude_from_backup(parent);
+    }
+
     let current = rimap_audit::current_inode(audit_path)?;
     let config_hash = compute_config_hash(config_file_path);
 
