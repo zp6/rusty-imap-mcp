@@ -11,11 +11,25 @@ use crate::types::{Flag, FlagAction, MoveResult, Uid};
 /// Maximum UIDs per MOVE command.
 const MAX_BATCH: usize = 100;
 
+/// Outcome of a `move_messages` call.
+#[derive(Debug)]
+pub struct MoveOutcome {
+    /// Per-UID results.
+    pub results: Vec<MoveResult>,
+    /// `true` when the non-atomic COPY+DELETE+EXPUNGE fallback was used
+    /// instead of the atomic UID MOVE command. Callers should surface a
+    /// security warning when this is `true`.
+    pub used_fallback: bool,
+}
+
 /// Move `uids` from the currently selected folder to `dest_folder`.
 ///
-/// Tries `UID MOVE` first (RFC 6851). If the server rejects the
-/// command (BAD / unknown / not supported), falls back to
-/// COPY + STORE \Deleted + EXPUNGE.
+/// When `has_move` is `true` the server advertised the MOVE capability
+/// and UID MOVE is used directly. A BAD response in this case is
+/// propagated as an error (the server lied about its capabilities).
+///
+/// When `has_move` is `false` the COPY+DELETE fallback is used
+/// immediately without attempting UID MOVE.
 ///
 /// # Errors
 ///
@@ -25,7 +39,8 @@ pub async fn move_messages(
     session: &mut ImapSession,
     dest_folder: &str,
     uids: &[Uid],
-) -> Result<Vec<MoveResult>, Error> {
+    has_move: bool,
+) -> Result<MoveOutcome, Error> {
     if uids.len() > MAX_BATCH {
         return Err(Error::BatchTooLarge {
             count: uids.len(),
@@ -33,17 +48,28 @@ pub async fn move_messages(
         });
     }
     if uids.is_empty() {
-        return Ok(Vec::new());
+        return Ok(MoveOutcome {
+            results: Vec::new(),
+            used_fallback: false,
+        });
+    }
+
+    if !has_move {
+        let results = copy_delete_fallback(session, dest_folder, uids).await?;
+        return Ok(MoveOutcome {
+            results,
+            used_fallback: true,
+        });
     }
 
     let uid_set = store::uid_set_string(uids);
-
-    // Try MOVE first; fall back to COPY+DELETE if the server rejects it.
     let move_result = session.uid_mv(&uid_set, dest_folder).await;
 
     match move_result {
-        Ok(()) => Ok(build_results(uids)),
-        Err(e) if is_move_unsupported(&e) => copy_delete_fallback(session, dest_folder, uids).await,
+        Ok(()) => Ok(MoveOutcome {
+            results: build_results(uids),
+            used_fallback: false,
+        }),
         Err(e) => Err(super::folders::map_err(e)),
     }
 }
@@ -80,23 +106,6 @@ async fn copy_delete_fallback(
     }
 
     Ok(build_results(uids))
-}
-
-/// Check whether the async-imap error indicates that the MOVE command
-/// is not supported by the server (BAD response, "unknown command",
-/// "not supported").
-fn is_move_unsupported(err: &async_imap::error::Error) -> bool {
-    match err {
-        async_imap::error::Error::Bad(_) => true,
-        async_imap::error::Error::No(msg) => {
-            let lower = msg.to_ascii_lowercase();
-            lower.contains("unknown command") || lower.contains("not supported")
-        }
-        // async_imap::error::Error is #[non_exhaustive], so the
-        // wildcard is required. All other known variants (Io,
-        // ConnectionLost, Parse, Validate, Append) are real failures.
-        _ => false,
-    }
 }
 
 /// Build `MoveResult` entries with `new_uid: None` (async-imap does

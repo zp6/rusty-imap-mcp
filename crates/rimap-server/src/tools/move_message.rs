@@ -26,12 +26,13 @@ pub async fn handle(
     input: MoveInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uids = resolve_uids(input.uid, input.uids)?;
-    let results = server
+    let outcome = server
         .imap
         .move_messages(&input.source_folder, &input.dest_folder, &uids)
         .await?;
 
-    let moves: Vec<serde_json::Value> = results
+    let moves: Vec<serde_json::Value> = outcome
+        .results
         .iter()
         .map(|r| {
             serde_json::json!({
@@ -41,6 +42,17 @@ pub async fn handle(
         })
         .collect();
 
+    let mut warnings = Vec::new();
+    if outcome.used_fallback {
+        warnings.push(serde_json::json!({
+            "type": "non_atomic_move",
+            "message": "Server lacks MOVE capability; \
+                used non-atomic COPY+DELETE+EXPUNGE fallback. \
+                Other messages with \\Deleted flag in the source \
+                folder may have been expunged.",
+        }));
+    }
+
     Ok(ToolResponse {
         meta: serde_json::json!({
             "source_folder": input.source_folder,
@@ -48,6 +60,6 @@ pub async fn handle(
             "moves": moves,
         }),
         untrusted: None,
-        security_warnings: Vec::new(),
+        security_warnings: warnings,
     })
 }
