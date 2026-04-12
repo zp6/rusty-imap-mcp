@@ -540,6 +540,36 @@ impl Connection {
         }
         result
     }
+
+    /// `UID STORE` — add or remove flags on messages.
+    ///
+    /// Batch limit: 100 UIDs. Returns the UIDs the server confirmed.
+    ///
+    /// # Errors
+    /// Returns `Error::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Propagates timeout, connection-lost, or protocol errors.
+    pub async fn store_flags(
+        &self,
+        folder: &str,
+        uids: &[crate::types::Uid],
+        flags: &[crate::types::Flag],
+        action: crate::types::FlagAction,
+    ) -> Result<Vec<crate::types::Uid>, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("store", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+            crate::ops::folders::select(session, folder, false).await?;
+            crate::ops::store::store(session, uids, flags, action).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
 }
 
 /// Drain the unsolicited-response channel and return `true` if any
