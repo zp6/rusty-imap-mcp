@@ -1,4 +1,0 @@
-[default.extend-words]
-# STRIDE table uses bold-letter formatting: **I**nformation, **D**enial, etc.
-# "nformation" is not a misspelling — it's the suffix after the bold "I".
-nformation = "nformation"
