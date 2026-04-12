@@ -95,6 +95,50 @@ pub fn write_attachment(dir: &Path, filename: &str, data: &[u8]) -> Result<PathB
     Ok(path)
 }
 
+/// Async wrapper around [`resolve_dest_dir`] that runs on a
+/// blocking thread.
+///
+/// # Errors
+///
+/// Returns `RimapError::Internal` if the blocking task panics or
+/// if `resolve_dest_dir` itself fails.
+pub async fn resolve_dest_dir_async(
+    dest_dir: Option<String>,
+    allowed_root: PathBuf,
+    fallback_dir: PathBuf,
+) -> Result<PathBuf, RimapError> {
+    tokio::task::spawn_blocking(move || {
+        resolve_dest_dir(dest_dir.as_deref(), &allowed_root, &fallback_dir)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        Err(RimapError::Internal(format!(
+            "spawn_blocking panicked: {e}"
+        )))
+    })
+}
+
+/// Async wrapper around [`write_attachment`] that runs on a
+/// blocking thread.
+///
+/// # Errors
+///
+/// Returns `RimapError::Internal` if the blocking task panics or
+/// if `write_attachment` itself fails.
+pub async fn write_attachment_async(
+    dir: PathBuf,
+    filename: String,
+    data: Vec<u8>,
+) -> Result<PathBuf, RimapError> {
+    tokio::task::spawn_blocking(move || write_attachment(&dir, &filename, &data))
+        .await
+        .unwrap_or_else(|e| {
+            Err(RimapError::Internal(format!(
+                "spawn_blocking panicked: {e}"
+            )))
+        })
+}
+
 /// MIME-sniff `data` using magic bytes.
 #[must_use]
 pub fn sniff_mime(data: &[u8]) -> Option<String> {

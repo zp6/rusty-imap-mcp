@@ -4,13 +4,14 @@
 use mail_builder::MessageBuilder;
 use mail_builder::headers::address::Address;
 use mail_builder::headers::message_id::MessageId;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::response::ToolResponse;
 use crate::server::ImapMcpServer;
 
 /// Input for `create_draft`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateDraftInput {
     /// Recipient addresses.
     pub to: Vec<AddressInput>,
@@ -29,7 +30,7 @@ pub struct CreateDraftInput {
 }
 
 /// An email address with optional display name.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddressInput {
     /// Display name (optional).
     pub name: Option<String>,
@@ -114,6 +115,40 @@ fn validate_draft_input(input: &CreateDraftInput) -> Result<(), rimap_core::Rima
             message: "at least one To recipient is required".into(),
         });
     }
+
+    let total_recipients = input.to.len()
+        + input.cc.as_ref().map_or(0, Vec::len)
+        + input.bcc.as_ref().map_or(0, Vec::len);
+    if total_recipients > MAX_RECIPIENTS {
+        return Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: format!(
+                "too many recipients ({total_recipients}); \
+                 max is {MAX_RECIPIENTS}"
+            ),
+        });
+    }
+
+    if input.subject.len() > MAX_SUBJECT_LEN {
+        return Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: format!(
+                "subject too long ({} bytes); max is {MAX_SUBJECT_LEN}",
+                input.subject.len()
+            ),
+        });
+    }
+
+    if input.body_text.len() > MAX_BODY_BYTES {
+        return Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: format!(
+                "body_text too large ({} bytes); max is {MAX_BODY_BYTES}",
+                input.body_text.len()
+            ),
+        });
+    }
+
     validate_addresses("To", &input.to)?;
     if let Some(cc) = &input.cc {
         validate_addresses("CC", cc)?;
@@ -214,6 +249,27 @@ fn single_address(addr: &AddressInput) -> Address<'_> {
     }
 }
 
+const MAX_RECIPIENTS: usize = 100;
+const MAX_SUBJECT_LEN: usize = 1000;
+const MAX_BODY_BYTES: usize = 1_048_576;
+
+const MAX_REFERENCES: usize = 50;
+
+/// Truncate a References chain to at most `MAX_REFERENCES` entries,
+/// preserving the root (first) and most recent (last) entries.
+fn cap_references(mut refs: Vec<String>) -> Vec<String> {
+    if refs.len() <= MAX_REFERENCES {
+        return refs;
+    }
+    let root = refs.remove(0);
+    let keep_recent = MAX_REFERENCES - 1;
+    let start = refs.len().saturating_sub(keep_recent);
+    let mut result = Vec::with_capacity(MAX_REFERENCES);
+    result.push(root);
+    result.extend(refs.into_iter().skip(start));
+    result
+}
+
 /// Fetch the referenced message and set In-Reply-To / References.
 async fn apply_threading_headers<'a>(
     server: &ImapMcpServer,
@@ -261,6 +317,7 @@ async fn apply_threading_headers<'a>(
         _ => {}
     }
     ref_ids.push(msg_id);
+    let ref_ids = cap_references(ref_ids);
 
     let builder = builder.references(MessageId::new_list(ref_ids.into_iter()));
 
@@ -275,7 +332,7 @@ mod tests {
     use mail_builder::headers::message_id::MessageId;
 
     use super::{
-        AddressInput, CreateDraftInput, addresses_to_builder, sanitize_message_id,
+        AddressInput, CreateDraftInput, addresses_to_builder, cap_references, sanitize_message_id,
         validate_draft_input,
     };
 
@@ -558,6 +615,116 @@ mod tests {
             name: Some("Bob".into()),
             address: "bob@example.com".into(),
         }]);
+        validate_draft_input(&input).unwrap();
+    }
+
+    #[test]
+    fn references_chain_capped_at_50() {
+        let refs: Vec<String> = (0..200).map(|i| format!("msg-{i}@example.com")).collect();
+        let capped = cap_references(refs);
+        assert_eq!(capped.len(), 50);
+        assert_eq!(capped[0], "msg-0@example.com");
+        assert_eq!(capped[49], "msg-199@example.com");
+    }
+
+    #[test]
+    fn references_chain_under_cap_unchanged() {
+        let refs: Vec<String> = (0..10).map(|i| format!("msg-{i}@example.com")).collect();
+        let capped = cap_references(refs);
+        assert_eq!(capped.len(), 10);
+    }
+
+    #[test]
+    fn too_many_recipients_rejected() {
+        let addrs: Vec<AddressInput> = (0..101)
+            .map(|i| AddressInput {
+                name: None,
+                address: format!("user{i}@example.com"),
+            })
+            .collect();
+        let input = make_input(addrs);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn too_many_recipients_across_fields_rejected() {
+        let to: Vec<AddressInput> = (0..50)
+            .map(|i| AddressInput {
+                name: None,
+                address: format!("to{i}@example.com"),
+            })
+            .collect();
+        let cc: Vec<AddressInput> = (0..30)
+            .map(|i| AddressInput {
+                name: None,
+                address: format!("cc{i}@example.com"),
+            })
+            .collect();
+        let bcc: Vec<AddressInput> = (0..21)
+            .map(|i| AddressInput {
+                name: None,
+                address: format!("bcc{i}@example.com"),
+            })
+            .collect();
+        let mut input = make_input(to);
+        input.cc = Some(cc);
+        input.bcc = Some(bcc);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn exactly_max_recipients_accepted() {
+        let addrs: Vec<AddressInput> = (0..100)
+            .map(|i| AddressInput {
+                name: None,
+                address: format!("user{i}@example.com"),
+            })
+            .collect();
+        let input = make_input(addrs);
+        validate_draft_input(&input).unwrap();
+    }
+
+    #[test]
+    fn subject_too_long_rejected() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.subject = "x".repeat(1001);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn subject_at_max_accepted() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.subject = "x".repeat(1000);
+        validate_draft_input(&input).unwrap();
+    }
+
+    #[test]
+    fn body_too_large_rejected() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.body_text = "x".repeat(1_048_577);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn body_at_max_accepted() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.body_text = "x".repeat(1_048_576);
         validate_draft_input(&input).unwrap();
     }
 }

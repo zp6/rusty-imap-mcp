@@ -13,6 +13,7 @@
 //! `docs/architecture/audit-locking.md` (added in Task 17).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_imap::Session;
@@ -52,6 +53,8 @@ pub struct ConnectionConfig {
     pub command_timeout: Duration,
     /// Hard cap on `FETCH BODY[]` byte count.
     pub max_fetch_body_bytes: u64,
+    /// Hard cap on `APPEND` message byte count.
+    pub max_append_bytes: u64,
 }
 
 /// Active IMAP session type alias. `async-imap` parameterizes over the
@@ -71,6 +74,9 @@ struct ConnectionInner {
     /// `None` = never connected, or last command tore down the connection.
     /// `Some(_)` = live session ready for the next command.
     session: Mutex<Option<ImapSession>>,
+    /// Server advertised MOVE capability (RFC 6851) after login.
+    /// Reset to `false` on `invalidate()`.
+    has_move: AtomicBool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -97,6 +103,7 @@ impl Connection {
                 audit,
                 credentials,
                 session: Mutex::new(None),
+                has_move: AtomicBool::new(false),
             }),
         }
     }
@@ -120,10 +127,17 @@ impl Connection {
         Ok(guard)
     }
 
+    /// Whether the server advertised the MOVE capability (RFC 6851).
+    #[must_use]
+    pub fn has_move_capability(&self) -> bool {
+        self.inner.has_move.load(Ordering::Relaxed)
+    }
+
     /// Drop any current session. Called by ops on connection-lost errors.
     pub(crate) async fn invalidate(&self) {
         let mut guard = self.inner.session.lock().await;
         *guard = None;
+        self.inner.has_move.store(false, Ordering::Relaxed);
     }
 
     /// The full connect/handshake/login/CAPABILITY flow. Emits exactly one
@@ -288,15 +302,33 @@ impl Connection {
             })?;
 
         // Attempt LOGIN. On NO response the server rejected the credentials.
-        match client.login(&cfg.username, &password).await {
-            Ok(session) => Ok(session),
-            Err((err, _client)) => match err {
-                async_imap::error::Error::No(_) => Err(Error::Auth {
-                    reason: AuthFailure::LoginRejected,
-                }),
-                other => Err(Error::Protocol(other)),
-            },
-        }
+        let mut session = match client.login(&cfg.username, &password).await {
+            Ok(session) => session,
+            Err((err, _client)) => {
+                return match err {
+                    async_imap::error::Error::No(_) => Err(Error::Auth {
+                        reason: AuthFailure::LoginRejected,
+                    }),
+                    other => Err(Error::Protocol(other)),
+                };
+            }
+        };
+
+        // Post-login: probe CAPABILITY for MOVE (RFC 6851).
+        let has_move = match session.capabilities().await {
+            Ok(caps) => caps.has_str("MOVE"),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "post-login CAPABILITY probe failed; \
+                     assuming no MOVE support",
+                );
+                false
+            }
+        };
+        self.inner.has_move.store(has_move, Ordering::Relaxed);
+
+        Ok(session)
     }
 
     /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside
@@ -573,9 +605,10 @@ impl Connection {
 
     /// Move messages from `source_folder` to `dest_folder`.
     ///
-    /// Uses IMAP MOVE extension (RFC 6851) when available; falls back
-    /// to COPY + STORE \Deleted + EXPUNGE otherwise. The fallback is
-    /// not atomic.
+    /// Uses IMAP MOVE extension (RFC 6851) when the server advertised
+    /// it; falls back to COPY + STORE \Deleted + EXPUNGE otherwise.
+    /// The fallback is not atomic — callers should inspect
+    /// `MoveOutcome::used_fallback` and surface a warning.
     ///
     /// Batch limit: 100 UIDs.
     ///
@@ -587,15 +620,16 @@ impl Connection {
         source_folder: &str,
         dest_folder: &str,
         uids: &[crate::types::Uid],
-    ) -> Result<Vec<crate::types::MoveResult>, Error> {
+    ) -> Result<crate::ops::move_msg::MoveOutcome, Error> {
         let dur = self.inner.cfg.command_timeout;
+        let has_move = self.has_move_capability();
         let result = crate::time::with_timeout("move", dur, async {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("session() ensures Some"));
             crate::ops::folders::select(session, source_folder, false).await?;
-            crate::ops::move_msg::move_messages(session, dest_folder, uids).await
+            crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move).await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
@@ -620,12 +654,13 @@ impl Connection {
         keywords: &[&str],
     ) -> Result<crate::types::AppendResult, Error> {
         let dur = self.inner.cfg.command_timeout;
+        let limit = self.inner.cfg.max_append_bytes;
         let result = crate::time::with_timeout("append", dur, async {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("session() ensures Some"));
-            crate::ops::append::append(session, folder, message, flags, keywords).await
+            crate::ops::append::append(session, folder, message, flags, keywords, limit).await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {

@@ -133,6 +133,7 @@ async fn case_04_login_rejected_emits_audit() {
         connect_timeout: Duration::from_secs(10),
         command_timeout: Duration::from_secs(10),
         max_fetch_body_bytes: 5_242_880,
+        max_append_bytes: 10_485_760,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(WrongPass);
     // Reuse h.audit so the rejected-auth record lands in the same file
@@ -264,6 +265,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         connect_timeout: Duration::from_secs(10),
         command_timeout: Duration::from_secs(10),
         max_fetch_body_bytes: 10,
+        max_append_bytes: 10_485_760,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
         DovecotHarness::password().to_string(),
@@ -540,13 +542,13 @@ async fn case_16_move_message_between_folders() {
     let uid = uids[0];
 
     // Move to Archive (seeded in Dovecot entrypoint.sh).
-    let results = h
+    let outcome = h
         .connection
         .move_messages("INBOX", "Archive", &[uid])
         .await
         .unwrap();
-    assert_eq!(results.len(), 1);
-    assert_eq!(results[0].old_uid, uid);
+    assert_eq!(outcome.results.len(), 1);
+    assert_eq!(outcome.results[0].old_uid, uid);
 
     // Verify the message is gone from INBOX.
     let after_uids = h

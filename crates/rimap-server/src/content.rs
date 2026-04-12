@@ -1,6 +1,13 @@
 //! Async wrapper for the synchronous `rimap_content::parse_message`.
 
+use std::sync::LazyLock;
+
 use rimap_content::{Content, ContentError, parse_message};
+use tokio::sync::Semaphore;
+
+/// Limits concurrent `spawn_blocking` parse invocations to avoid
+/// saturating the blocking threadpool (default 512 threads).
+static PARSE_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(8));
 
 /// Run `parse_message` on the blocking threadpool to avoid starving
 /// the tokio runtime. `parse_message` is CPU-bound (~2 ms per message).
@@ -10,6 +17,12 @@ use rimap_content::{Content, ContentError, parse_message};
 /// Returns `ContentError` from the inner call, or
 /// `ContentError::Malformed` if the blocking task panicked.
 pub async fn parse_message_async(raw: Vec<u8>) -> Result<Content, ContentError> {
+    let _permit = PARSE_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| ContentError::Malformed {
+            reason: "parse semaphore closed".into(),
+        })?;
     tokio::task::spawn_blocking(move || parse_message(&raw))
         .await
         .unwrap_or_else(|e| {

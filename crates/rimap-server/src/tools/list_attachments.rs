@@ -61,7 +61,7 @@ pub async fn handle(
     })?;
 
     let mut attachments = Vec::new();
-    collect_attachments(&bodystructure, &mut String::new(), &mut attachments);
+    collect_attachments(&bodystructure, &mut String::new(), &mut attachments, 0);
 
     let attachment_values: Vec<serde_json::Value> = attachments
         .iter()
@@ -88,13 +88,24 @@ pub async fn handle(
     })
 }
 
+/// Maximum recursion depth for MIME tree walking (denial-of-service guard).
+const MAX_MIME_DEPTH: u32 = 64;
+
 /// Walk the `BodyStructure` tree and collect attachment parts.
 ///
 /// IMAP part numbering: for a multipart message the top-level parts
 /// are "1", "2", "3", etc. Nested multipart sub-parts are "1.1",
 /// "1.2", etc. For a non-multipart (single-part) message at the
 /// root, the sole part is "1".
-fn collect_attachments(bs: &BodyStructure, prefix: &mut String, out: &mut Vec<AttachmentInfo>) {
+fn collect_attachments(
+    bs: &BodyStructure,
+    prefix: &mut String,
+    out: &mut Vec<AttachmentInfo>,
+    depth: u32,
+) {
+    if depth > MAX_MIME_DEPTH {
+        return;
+    }
     match bs {
         BodyStructure::Single {
             mime_type,
@@ -132,7 +143,7 @@ fn collect_attachments(bs: &BodyStructure, prefix: &mut String, out: &mut Vec<At
                     format!("{prefix}.{idx}")
                 };
                 let mut child = child_prefix;
-                collect_attachments(part, &mut child, out);
+                collect_attachments(part, &mut child, out, depth + 1);
             }
         }
         BodyStructure::Message { body, .. } => {
@@ -142,7 +153,7 @@ fn collect_attachments(bs: &BodyStructure, prefix: &mut String, out: &mut Vec<At
                 prefix.clone()
             };
             // Walk into the embedded message's body structure.
-            collect_attachments(body, &mut part_id.clone(), out);
+            collect_attachments(body, &mut part_id.clone(), out, depth + 1);
         }
     }
 }
@@ -195,7 +206,7 @@ mod tests {
     fn single_text_plain_is_not_attachment() {
         let bs = single("text", "plain", 100);
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out);
+        collect_attachments(&bs, &mut String::new(), &mut out, 0);
         assert!(out.is_empty());
     }
 
@@ -203,7 +214,7 @@ mod tests {
     fn single_text_html_is_not_attachment() {
         let bs = single("text", "html", 200);
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out);
+        collect_attachments(&bs, &mut String::new(), &mut out, 0);
         assert!(out.is_empty());
     }
 
@@ -211,7 +222,7 @@ mod tests {
     fn single_image_is_attachment() {
         let bs = single_with_name("image", "png", 5000, "photo.png");
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out);
+        collect_attachments(&bs, &mut String::new(), &mut out, 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].part_id, "1");
         assert_eq!(out[0].mime_type, "image/png");
@@ -230,7 +241,7 @@ mod tests {
             ],
         };
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out);
+        collect_attachments(&bs, &mut String::new(), &mut out, 0);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].part_id, "2");
         assert_eq!(out[0].mime_type, "application/pdf");
@@ -255,7 +266,7 @@ mod tests {
             ],
         };
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out);
+        collect_attachments(&bs, &mut String::new(), &mut out, 0);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].part_id, "1.2");
         assert_eq!(out[0].filename.as_deref(), Some("anim.gif"));
@@ -284,5 +295,19 @@ mod tests {
     fn extract_filename_returns_none_when_absent() {
         let params = vec![("charset".to_string(), "utf-8".to_string())];
         assert_eq!(extract_filename(&params), None);
+    }
+
+    #[test]
+    fn deeply_nested_mime_respects_depth_limit() {
+        let mut bs = single("application", "pdf", 100);
+        for _ in 0..70 {
+            bs = BodyStructure::Multipart {
+                subtype: "mixed".to_string(),
+                parts: vec![bs],
+            };
+        }
+        let mut out = Vec::new();
+        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        assert!(out.is_empty());
     }
 }

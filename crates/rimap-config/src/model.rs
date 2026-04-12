@@ -130,6 +130,9 @@ pub struct LimitsConfig {
     /// Max attachment bytes.
     #[serde(default = "default_max_attach")]
     pub max_attachment_bytes: u64,
+    /// Max APPEND message bytes.
+    #[serde(default = "default_max_append")]
+    pub max_append_bytes: u64,
     /// Rate limiter: commands per second.
     #[serde(default = "default_cps")]
     pub commands_per_second: u32,
@@ -151,6 +154,7 @@ impl Default for LimitsConfig {
             max_search_results_cap: default_max_search_cap(),
             max_fetch_body_bytes: default_max_body(),
             max_attachment_bytes: default_max_attach(),
+            max_append_bytes: default_max_append(),
             commands_per_second: default_cps(),
             drafts_per_minute: default_drafts_per_min(),
             circuit_breaker_error_threshold: default_breaker_threshold(),
@@ -170,6 +174,9 @@ fn default_max_body() -> u64 {
 }
 fn default_max_attach() -> u64 {
     26_214_400
+}
+fn default_max_append() -> u64 {
+    10_485_760
 }
 fn default_cps() -> u32 {
     10
@@ -194,13 +201,20 @@ pub struct AuditConfig {
     #[serde(default = "default_rotate_bytes")]
     pub rotate_bytes: u64,
     /// Number of rotated files to keep on disk after a rotation. This is
-    /// a COUNT-based cap only. Under low write volumes a single rotated
-    /// file may represent months of audit history, so operators who need
-    /// a time-based retention floor should ALSO configure external log
-    /// rotation or wait for the in-crate time-based retention tracked
-    /// in issue #44 (LOCAL-PRI-01). Default: 5.
+    /// a count-based cap. For time-based expiry, also set
+    /// `retention_seconds`. A rotated file is kept only if it is among
+    /// the newest `rotate_keep` AND within the retention window.
+    /// Default: 5.
     #[serde(default = "default_rotate_keep")]
     pub rotate_keep: u32,
+    /// Optional time-based retention in seconds. When set, rotated siblings
+    /// whose mtime is older than `now - retention_seconds` are deleted during
+    /// pruning, in addition to the count-based `rotate_keep` cap. A file is
+    /// kept only if it is among the newest `rotate_keep` AND within the
+    /// retention window. `None` (the default) disables time-based expiry.
+    /// `Some(0)` is rejected at validation — use `None` instead.
+    #[serde(default)]
+    pub retention_seconds: Option<u64>,
     /// Provenance ring buffer window in seconds.
     #[serde(default = "default_provenance_window")]
     pub provenance_window_seconds: u32,

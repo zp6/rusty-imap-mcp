@@ -19,7 +19,9 @@ pub async fn append(
     message: &[u8],
     flags: &[Flag],
     keywords: &[&str],
+    max_append_bytes: u64,
 ) -> Result<AppendResult, Error> {
+    check_append_size(message, max_append_bytes)?;
     let flag_str = build_flags_string(flags, keywords)?;
     let flags_arg = if flag_str.is_empty() {
         None
@@ -33,6 +35,17 @@ pub async fn append(
         .map_err(super::folders::map_err)?;
 
     Ok(AppendResult { uid: None })
+}
+
+/// Reject messages exceeding the configured byte limit.
+fn check_append_size(message: &[u8], max_append_bytes: u64) -> Result<(), Error> {
+    let len = u64::try_from(message.len()).unwrap_or(u64::MAX);
+    if len > max_append_bytes {
+        return Err(Error::SizeLimit {
+            limit: max_append_bytes,
+        });
+    }
+    Ok(())
 }
 
 /// Build the combined flags string from system flags and keywords.
@@ -56,8 +69,27 @@ fn build_flags_string(flags: &[Flag], keywords: &[&str]) -> Result<String, Error
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn append_rejects_oversized_message() {
+        let limit: u64 = 100;
+        let message = vec![b'X'; 101];
+        let result = super::check_append_size(&message, limit);
+        match result {
+            Err(Error::SizeLimit { limit: l }) => assert_eq!(l, 100),
+            other => panic!("expected SizeLimit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn append_accepts_message_at_limit() {
+        let limit: u64 = 100;
+        let message = vec![b'X'; 100];
+        assert!(super::check_append_size(&message, limit).is_ok());
+    }
 
     #[test]
     fn build_flags_string_rejects_bad_keyword() {

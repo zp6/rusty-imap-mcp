@@ -37,6 +37,7 @@ pub struct ValidatedConfig {
 pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     let tls_fingerprint = parse_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
     validate_limits(&config)?;
+    validate_audit(&config)?;
     validate_paths(&config)?;
     let tool_overrides = resolve_tool_overrides(&config)?;
     Ok(ValidatedConfig {
@@ -54,6 +55,18 @@ fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, C
         reason: e.to_string(),
     })?;
     Ok(Some(fp))
+}
+
+fn validate_audit(config: &Config) -> Result<(), ConfigError> {
+    if config.audit.retention_seconds == Some(0) {
+        return Err(ConfigError::InvalidLimit {
+            field: "audit.retention_seconds",
+            reason: "must be > 0 (use None / omit the field to disable \
+                     time-based retention)"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_limits(config: &Config) -> Result<(), ConfigError> {
@@ -106,6 +119,12 @@ fn validate_limits(config: &Config) -> Result<(), ConfigError> {
     if limits.max_attachment_bytes == 0 {
         return Err(ConfigError::InvalidLimit {
             field: "limits.max_attachment_bytes",
+            reason: "must be > 0".to_string(),
+        });
+    }
+    if limits.max_append_bytes == 0 {
+        return Err(ConfigError::InvalidLimit {
+            field: "limits.max_append_bytes",
             reason: "must be > 0".to_string(),
         });
     }
@@ -271,6 +290,7 @@ mod tests {
                 path: audit_dir.join("audit.jsonl"),
                 rotate_bytes: 10_485_760,
                 rotate_keep: 5,
+                retention_seconds: None,
                 provenance_window_seconds: 60,
                 fail_open: false,
                 allowed_base_dir: Some(audit_dir.to_path_buf()),
@@ -464,6 +484,29 @@ mod tests {
         cfg.audit.allowed_base_dir = Some(base.path().to_path_buf());
         let err = validate(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::AuditPathOutsideBase { .. }));
+    }
+
+    #[test]
+    fn retention_seconds_zero_is_rejected() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.audit.retention_seconds = Some(0);
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidLimit {
+                field: "audit.retention_seconds",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn retention_seconds_nonzero_passes() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.audit.retention_seconds = Some(3600);
+        validate(cfg).unwrap();
     }
 
     #[test]

@@ -2,13 +2,14 @@
 //! `unflag`.
 
 use rimap_imap::types::{Flag, FlagAction, Uid};
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::response::ToolResponse;
 use crate::server::ImapMcpServer;
 
 /// Input for flag mutation tools.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct FlagInput {
     /// Target folder.
     pub folder: String,

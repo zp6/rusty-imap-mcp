@@ -2,6 +2,7 @@
 
 #![deny(missing_docs)]
 
+pub mod backup_exclude;
 pub mod error;
 pub(crate) mod fs_ext;
 pub mod ids;

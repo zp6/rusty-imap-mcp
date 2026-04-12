@@ -508,6 +508,7 @@ impl ConnectedHarness {
             path: audit_path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: Seq::FIRST,
         })
@@ -529,6 +530,7 @@ impl ConnectedHarness {
             connect_timeout: std::time::Duration::from_secs(10),
             command_timeout: std::time::Duration::from_secs(10),
             max_fetch_body_bytes: 5_242_880,
+            max_append_bytes: 10_485_760,
         };
         let creds: Arc<dyn CredentialStore> =
             Arc::new(StaticCreds(DovecotHarness::password().to_string()));

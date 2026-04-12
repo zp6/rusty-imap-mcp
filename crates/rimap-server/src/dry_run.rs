@@ -40,6 +40,7 @@ pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
     let audit_path = validated.config.audit.path.clone();
     let rotate_bytes = validated.config.audit.rotate_bytes;
     let rotate_keep = validated.config.audit.rotate_keep;
+    let retention_seconds = validated.config.audit.retention_seconds;
     // dry-run is a one-shot diagnostic path that exits immediately after
     // printing the matrix. Chain-of-history continuation (trailing state) is
     // not useful here; Seq::FIRST is correct.
@@ -47,6 +48,7 @@ pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
         path: audit_path.clone(),
         rotate_bytes,
         rotate_keep,
+        retention_seconds,
         fail_open: validated.config.audit.fail_open,
         initial_seq: rimap_audit::Seq::FIRST,
     })
@@ -124,6 +126,7 @@ allowed_base_dir = "{}"
             path: audit_path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: rimap_audit::Seq::FIRST,
         })

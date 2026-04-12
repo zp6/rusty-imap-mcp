@@ -25,9 +25,14 @@ pub fn init_audit_writer(
         path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
         rotate_keep: cfg.config.audit.rotate_keep,
+        retention_seconds: cfg.config.audit.retention_seconds,
         fail_open: cfg.config.audit.fail_open,
         initial_seq,
     })?;
+
+    if let Some(parent) = writer.path().parent() {
+        rimap_audit::backup_exclude::exclude_from_backup(parent);
+    }
 
     let current = rimap_audit::current_inode(audit_path)?;
     let config_hash = compute_config_hash(config_file_path);
@@ -125,6 +130,33 @@ allowed_base_dir = "{}"
     }
 
     #[test]
+    fn process_end_writes_after_start() {
+        use rimap_audit::ProcessEndReason;
+
+        let dir = TempDir::new().unwrap();
+        let config_path = write_config(&dir);
+        let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
+        let validated = rimap_config::validate::validate(raw).unwrap();
+        let audit_path = validated.config.audit.path.clone();
+
+        {
+            let writer = init_audit_writer(&validated, &config_path).unwrap();
+            writer.log_process_end(ProcessEndReason::Eof, 0).unwrap();
+        }
+
+        let contents = std::fs::read_to_string(&audit_path).unwrap();
+        let lines: Vec<&str> = contents.lines().collect();
+        assert_eq!(lines.len(), 2);
+
+        let first: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(first["kind"], "process_start");
+
+        let second: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(second["kind"], "process_end");
+        assert_eq!(second["seq"], 2);
+    }
+
+    #[test]
     fn seq_continues_from_trailing_state() {
         use rimap_audit::{
             AuditOptions, AuditRecord, AuditWriter, Payload, ProcessEnd, ProcessEndReason,
@@ -143,6 +175,7 @@ allowed_base_dir = "{}"
                 path: audit_path.clone(),
                 rotate_bytes: 0,
                 rotate_keep: 0,
+                retention_seconds: None,
                 fail_open: false,
                 initial_seq: Seq::FIRST,
             })

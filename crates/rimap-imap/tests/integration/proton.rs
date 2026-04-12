@@ -61,6 +61,7 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
         path: dir.path().join("audit.jsonl"),
         rotate_bytes: 0,
         rotate_keep: 0,
+        retention_seconds: None,
         fail_open: false,
         initial_seq: Seq::FIRST,
     })
@@ -73,6 +74,7 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
         connect_timeout: Duration::from_secs(15),
         command_timeout: Duration::from_secs(60),
         max_fetch_body_bytes: 26_214_400,
+        max_append_bytes: 10_485_760,
     };
     let creds: Arc<dyn CredentialStore> = Arc::new(EnvCreds(cfg.pass.clone()));
     Connection::new(conn_cfg, audit, creds)
