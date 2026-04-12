@@ -234,6 +234,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         path: audit_dir.path().join("audit.jsonl"),
         rotate_bytes: 0,
         rotate_keep: 0,
+        retention_seconds: None,
         fail_open: false,
         initial_seq: Seq::FIRST,
     })
@@ -279,6 +280,7 @@ fn test_config(harness: &DovecotHarness, audit_dir: &TempDir) -> ValidatedConfig
                 path: audit_dir.path().join("audit.jsonl"),
                 rotate_bytes: 0,
                 rotate_keep: 0,
+                retention_seconds: None,
                 provenance_window_seconds: 60,
                 fail_open: false,
                 allowed_base_dir: Some(audit_dir.path().to_path_buf()),

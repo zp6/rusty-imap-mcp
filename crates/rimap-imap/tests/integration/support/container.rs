@@ -508,6 +508,7 @@ impl ConnectedHarness {
             path: audit_path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: Seq::FIRST,
         })

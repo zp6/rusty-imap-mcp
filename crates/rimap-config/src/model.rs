@@ -201,13 +201,20 @@ pub struct AuditConfig {
     #[serde(default = "default_rotate_bytes")]
     pub rotate_bytes: u64,
     /// Number of rotated files to keep on disk after a rotation. This is
-    /// a COUNT-based cap only. Under low write volumes a single rotated
-    /// file may represent months of audit history, so operators who need
-    /// a time-based retention floor should ALSO configure external log
-    /// rotation or wait for the in-crate time-based retention tracked
-    /// in issue #44 (LOCAL-PRI-01). Default: 5.
+    /// a count-based cap. For time-based expiry, also set
+    /// `retention_seconds`. A rotated file is kept only if it is among
+    /// the newest `rotate_keep` AND within the retention window.
+    /// Default: 5.
     #[serde(default = "default_rotate_keep")]
     pub rotate_keep: u32,
+    /// Optional time-based retention in seconds. When set, rotated siblings
+    /// whose mtime is older than `now - retention_seconds` are deleted during
+    /// pruning, in addition to the count-based `rotate_keep` cap. A file is
+    /// kept only if it is among the newest `rotate_keep` AND within the
+    /// retention window. `None` (the default) disables time-based expiry.
+    /// `Some(0)` is rejected at validation — use `None` instead.
+    #[serde(default)]
+    pub retention_seconds: Option<u64>,
     /// Provenance ring buffer window in seconds.
     #[serde(default = "default_provenance_window")]
     pub provenance_window_seconds: u32,

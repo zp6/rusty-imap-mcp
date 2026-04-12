@@ -32,6 +32,10 @@ pub struct AuditOptions {
     /// `0` means "keep none — delete every rotated sibling immediately
     /// after rotation". The default at the config layer is 5.
     pub rotate_keep: u32,
+    /// Optional time-based retention in seconds. When set, rotated siblings
+    /// older than `now - retention_seconds` are pruned during rotation,
+    /// in addition to the count-based `rotate_keep` cap.
+    pub retention_seconds: Option<u64>,
     /// If `true`, write/flush/fsync failures inside `write_record` are
     /// logged via `tracing::error!` and converted to `Ok(())` so the
     /// surrounding tool call still succeeds. The default is `false`
@@ -53,6 +57,7 @@ pub struct AuditWriter {
     path: PathBuf,
     rotate_bytes: u64,
     rotate_keep: u32,
+    retention_seconds: Option<u64>,
     fail_open: bool,
     process_id: crate::ids::ProcessId,
     suppressed_failures: Arc<AtomicU64>,
@@ -125,6 +130,7 @@ impl AuditWriter {
             path: opts.path.clone(),
             rotate_bytes: opts.rotate_bytes,
             rotate_keep: opts.rotate_keep,
+            retention_seconds: opts.retention_seconds,
             fail_open: opts.fail_open,
             process_id: crate::ids::ProcessId::new_now(),
             suppressed_failures: Arc::new(AtomicU64::new(0)),
@@ -268,7 +274,8 @@ impl AuditWriter {
         // This prevents two clones of AuditWriter from both observing "needs
         // rotation" and racing on the rename.
         if self.rotate_bytes > 0 && guard.bytes_written >= self.rotate_bytes {
-            let (new_buf, new_len) = crate::rotation::rotate_file(&self.path, self.rotate_keep)?;
+            let (new_buf, new_len) =
+                crate::rotation::rotate_file(&self.path, self.rotate_keep, self.retention_seconds)?;
             guard.buf = new_buf;
             guard.bytes_written = new_len;
             tracing::info!(path = %self.path.display(), "audit file rotated");
@@ -484,6 +491,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -500,6 +508,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -508,6 +517,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -527,6 +537,7 @@ mod tests {
                 path: path.clone(),
                 rotate_bytes: 0,
                 rotate_keep: 0,
+                retention_seconds: None,
                 fail_open: false,
                 initial_seq: crate::ids::Seq::FIRST,
             })
@@ -537,6 +548,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -551,6 +563,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -570,6 +583,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -606,6 +620,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -640,6 +655,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 200,
             rotate_keep: 5,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -709,6 +725,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 200,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -731,6 +748,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -749,6 +767,7 @@ mod tests {
             path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -766,6 +785,7 @@ mod tests {
             path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -786,6 +806,7 @@ mod tests {
             path,
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq(42),
         })
@@ -804,6 +825,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -844,6 +866,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -886,6 +909,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })
@@ -929,6 +953,7 @@ mod tests {
             path: path.clone(),
             rotate_bytes: 0,
             rotate_keep: 0,
+            retention_seconds: None,
             fail_open: false,
             initial_seq: crate::ids::Seq::FIRST,
         })

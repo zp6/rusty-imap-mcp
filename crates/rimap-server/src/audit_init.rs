@@ -25,6 +25,7 @@ pub fn init_audit_writer(
         path: audit_path.clone(),
         rotate_bytes: cfg.config.audit.rotate_bytes,
         rotate_keep: cfg.config.audit.rotate_keep,
+        retention_seconds: cfg.config.audit.retention_seconds,
         fail_open: cfg.config.audit.fail_open,
         initial_seq,
     })?;
@@ -143,6 +144,7 @@ allowed_base_dir = "{}"
                 path: audit_path.clone(),
                 rotate_bytes: 0,
                 rotate_keep: 0,
+                retention_seconds: None,
                 fail_open: false,
                 initial_seq: Seq::FIRST,
             })

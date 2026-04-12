@@ -42,6 +42,7 @@ fn fail_open_false_propagates_rotation_failure() {
         path: path.clone(),
         rotate_bytes: 10,
         rotate_keep: 5,
+        retention_seconds: None,
         fail_open: false,
         initial_seq: Seq::FIRST,
     })
@@ -69,6 +70,7 @@ fn fail_open_true_suppresses_rotation_failure_and_counts_it() {
         path: path.clone(),
         rotate_bytes: 10,
         rotate_keep: 5,
+        retention_seconds: None,
         fail_open: true,
         initial_seq: Seq::FIRST,
     })

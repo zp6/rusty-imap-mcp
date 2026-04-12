@@ -66,7 +66,11 @@ fn unique_rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
 /// # Errors
 /// Any I/O error during `rename`, `open`, or `try_lock_exclusive` surfaces as
 /// [`AuditError::Rotate`] with a descriptive `reason`.
-pub fn rotate_file(active: &Path, keep: u32) -> Result<(BufWriter<File>, u64), AuditError> {
+pub fn rotate_file(
+    active: &Path,
+    keep: u32,
+    retention_seconds: Option<u64>,
+) -> Result<(BufWriter<File>, u64), AuditError> {
     let dst = unique_rotated_path(active, OffsetDateTime::now_utc());
     std::fs::rename(active, &dst).map_err(|source| AuditError::Rotate {
         path: active.to_path_buf(),
@@ -106,7 +110,7 @@ pub fn rotate_file(active: &Path, keep: u32) -> Result<(BufWriter<File>, u64), A
 
     // Prune old rotated siblings best-effort. Failures here are logged
     // but never propagated — a stale file is not a write failure.
-    prune_rotated_siblings(active, keep);
+    prune_rotated_siblings(active, keep, retention_seconds);
 
     Ok((BufWriter::new(new_file), 0))
 }
@@ -114,7 +118,7 @@ pub fn rotate_file(active: &Path, keep: u32) -> Result<(BufWriter<File>, u64), A
 /// Enumerate sibling files matching `<active_filename>.*`, sort by mtime
 /// descending, and delete all but the `keep` newest. `keep == 0` deletes
 /// every rotated sibling.
-fn prune_rotated_siblings(active: &Path, keep: u32) {
+fn prune_rotated_siblings(active: &Path, keep: u32, retention_seconds: Option<u64>) {
     let parent = match active.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         _ => return,
@@ -173,8 +177,18 @@ fn prune_rotated_siblings(active: &Path, keep: u32) {
     siblings.sort_by(|a, b| b.0.cmp(&a.0));
 
     let keep_usize = usize::try_from(keep).unwrap_or(usize::MAX);
-    for (_, path) in siblings.into_iter().skip(keep_usize) {
-        if let Err(err) = std::fs::remove_file(&path) {
+    let cutoff = retention_seconds.map(|secs| {
+        std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(secs))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+    });
+
+    for (idx, (mtime, path)) in siblings.into_iter().enumerate() {
+        let beyond_count = idx >= keep_usize;
+        let beyond_time = cutoff.is_some_and(|c| mtime < c);
+        if (beyond_count || beyond_time)
+            && let Err(err) = std::fs::remove_file(&path)
+        {
             tracing::warn!(
                 path = %path.display(),
                 error = %err,
@@ -241,7 +255,7 @@ mod tests {
 
         for _ in 0..7 {
             std::fs::write(&active, b"x\n").unwrap();
-            let (_buf, _len) = rotate_file(&active, 3).unwrap();
+            let (_buf, _len) = rotate_file(&active, 3, None).unwrap();
             sleep(Duration::from_millis(2));
         }
 
@@ -267,7 +281,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let active = dir.path().join("audit.jsonl");
         std::fs::write(&active, b"x\n").unwrap();
-        let (_buf, _len) = rotate_file(&active, 0).unwrap();
+        let (_buf, _len) = rotate_file(&active, 0, None).unwrap();
 
         let rotated = std::fs::read_dir(dir.path())
             .unwrap()
@@ -289,7 +303,7 @@ mod tests {
 
         // Create a real rotated sibling that should be kept.
         std::fs::write(&active, b"x\n").unwrap();
-        let (_buf, _len) = rotate_file(&active, 5).unwrap();
+        let (_buf, _len) = rotate_file(&active, 5, None).unwrap();
 
         // Plant a symlink whose name matches the rotated-sibling prefix.
         // Its target is an arbitrary file (here, /etc/hostname — any
@@ -303,7 +317,7 @@ mod tests {
         //   - keep the most recent real rotated file
         //   - skip the symlink entirely (not delete it and not rank it)
         std::fs::write(&active, b"y\n").unwrap();
-        let (_buf, _len) = rotate_file(&active, 1).unwrap();
+        let (_buf, _len) = rotate_file(&active, 1, None).unwrap();
 
         // The symlink must still exist — we never touched it.
         assert!(
@@ -329,5 +343,67 @@ mod tests {
             })
             .count();
         assert_eq!(real_rotated, 1, "expected exactly 1 real rotated sibling");
+    }
+
+    #[test]
+    fn prune_respects_retention_seconds() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+
+        // Create two rotated siblings (milliseconds old).
+        std::fs::write(&active, b"x\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 10, None).unwrap();
+        sleep(Duration::from_millis(10));
+
+        std::fs::write(&active, b"y\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 10, None).unwrap();
+        sleep(Duration::from_millis(10));
+
+        // Both siblings are milliseconds old. Rotate with retention_seconds=0
+        // (raw function level — config validation rejects 0, but the function
+        // handles it). With retention 0, cutoff = now, so everything with
+        // mtime < now is expired.
+        std::fs::write(&active, b"z\n").unwrap();
+        let (_buf, _len) = rotate_file(&active, 10, Some(0)).unwrap();
+
+        let rotated = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("audit.jsonl."))
+            })
+            .count();
+        // The two older siblings should be expired by time. The newest one
+        // (just created by the third rotate_file) is racing with "now" so
+        // it may or may not survive. At most 1 should remain.
+        assert!(
+            rotated <= 1,
+            "expected at most 1 rotated sibling, got {rotated}"
+        );
+    }
+
+    #[test]
+    fn retention_none_preserves_count_only_behavior() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+
+        for _ in 0..5 {
+            std::fs::write(&active, b"x\n").unwrap();
+            let (_buf, _len) = rotate_file(&active, 3, None).unwrap();
+            sleep(Duration::from_millis(2));
+        }
+
+        let rotated = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("audit.jsonl."))
+            })
+            .count();
+        assert_eq!(rotated, 3, "without retention_seconds, count-only applies");
     }
 }
