@@ -37,11 +37,46 @@ pub struct AddressInput {
     pub address: String,
 }
 
+/// Reject strings containing bytes that could inject RFC 5322 headers
+/// or break angle-bracket quoting when passed to `mail-builder`.
+fn validate_header_text(field: &str, value: &str) -> Result<(), rimap_core::RimapError> {
+    if value
+        .bytes()
+        .any(|b| matches!(b, b'\r' | b'\n' | b'\0' | b'<' | b'>'))
+    {
+        return Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: format!("{field} contains forbidden characters"),
+        });
+    }
+    Ok(())
+}
+
+/// Validate all address fields in a slice of [`AddressInput`].
+fn validate_addresses(field: &str, addrs: &[AddressInput]) -> Result<(), rimap_core::RimapError> {
+    for addr in addrs {
+        validate_header_text(&format!("{field} address"), &addr.address)?;
+        if let Some(name) = &addr.name {
+            validate_header_text(&format!("{field} name"), name)?;
+        }
+    }
+    Ok(())
+}
+
+/// Strip characters from a parsed Message-ID that could inject
+/// headers if written back into an RFC 5322 message.
+fn sanitize_message_id(id: &str) -> String {
+    id.chars()
+        .filter(|c| !matches!(c, '\r' | '\n' | '\0' | '<' | '>'))
+        .collect()
+}
+
 /// `create_draft` handler.
 pub async fn handle(
     server: &ImapMcpServer,
     input: CreateDraftInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
+    validate_draft_input(&input)?;
     let raw_msg = build_draft(server, &input).await?;
 
     let drafts_folder = "Drafts";
@@ -71,6 +106,36 @@ pub async fn handle(
     })
 }
 
+/// Validate all user-supplied fields in the draft input.
+fn validate_draft_input(input: &CreateDraftInput) -> Result<(), rimap_core::RimapError> {
+    if input.to.is_empty() {
+        return Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: "at least one To recipient is required".into(),
+        });
+    }
+    validate_addresses("To", &input.to)?;
+    if let Some(cc) = &input.cc {
+        validate_addresses("CC", cc)?;
+    }
+    if let Some(bcc) = &input.bcc {
+        validate_addresses("BCC", bcc)?;
+    }
+    // Defense-in-depth: mail-builder Q-encodes subjects, but
+    // reject CR/LF anyway to prevent surprises.
+    if input
+        .subject
+        .bytes()
+        .any(|b| matches!(b, b'\r' | b'\n' | b'\0'))
+    {
+        return Err(rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::InvalidInput,
+            message: "subject contains forbidden characters".into(),
+        });
+    }
+    Ok(())
+}
+
 /// Build a raw RFC 5322 message from the draft input.
 ///
 /// Separated from `handle` so unit tests can exercise message
@@ -92,16 +157,32 @@ async fn build_draft(
     })
 }
 
-/// Set From, To, CC, BCC, Subject, and body on a `MessageBuilder`.
+/// Generate a Message-ID that does not leak the local hostname.
+///
+/// Uses PID + monotonic nanosecond timestamp + the domain portion
+/// of the From address. Collisions are acceptable for drafts — the
+/// IMAP server assigns the canonical UID.
+fn generate_message_id(from_addr: &str) -> String {
+    let domain = from_addr.rsplit('@').next().unwrap_or("local");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{}.{}@{domain}", std::process::id(), nanos)
+}
+
+/// Set From, To, CC, BCC, Subject, body, and Message-ID on a
+/// `MessageBuilder`.
 fn build_message_headers<'a>(
     from_addr: &'a str,
     input: &'a CreateDraftInput,
 ) -> MessageBuilder<'a> {
+    let msg_id = generate_message_id(from_addr);
     let builder = MessageBuilder::new()
         .from(from_addr)
         .to(addresses_to_builder(&input.to))
         .subject(input.subject.as_str())
-        .text_body(input.body_text.as_str());
+        .text_body(input.body_text.as_str())
+        .message_id(msg_id);
 
     let builder = if let Some(cc) = &input.cc {
         builder.cc(addresses_to_builder(cc))
@@ -154,11 +235,12 @@ async fn apply_threading_headers<'a>(
             rimap_core::RimapError::Internal("failed to parse referenced message".into())
         })?;
 
-    let Some(msg_id) = parsed.message_id() else {
+    let Some(raw_msg_id) = parsed.message_id() else {
         return Ok(builder);
     };
 
-    let builder = builder.in_reply_to(msg_id.to_string());
+    let msg_id = sanitize_message_id(raw_msg_id);
+    let builder = builder.in_reply_to(msg_id.clone());
 
     // Build References chain: existing References + this Message-ID.
     let mut ref_ids: Vec<String> = Vec::new();
@@ -167,18 +249,18 @@ async fn apply_threading_headers<'a>(
     // References headers.
     match parsed.references() {
         mail_parser::HeaderValue::Text(t) => {
-            ref_ids.push(t.to_string());
+            ref_ids.push(sanitize_message_id(t));
         }
         mail_parser::HeaderValue::TextList(list) => {
             for r in list {
-                ref_ids.push(r.to_string());
+                ref_ids.push(sanitize_message_id(r));
             }
         }
         // External type with many variants; other shapes are not
         // expected for References but are harmless to ignore.
         _ => {}
     }
-    ref_ids.push(msg_id.to_string());
+    ref_ids.push(msg_id);
 
     let builder = builder.references(MessageId::new_list(ref_ids.into_iter()));
 
@@ -192,7 +274,10 @@ mod tests {
     use mail_builder::headers::address::Address;
     use mail_builder::headers::message_id::MessageId;
 
-    use super::{AddressInput, CreateDraftInput, addresses_to_builder};
+    use super::{
+        AddressInput, CreateDraftInput, addresses_to_builder, sanitize_message_id,
+        validate_draft_input,
+    };
 
     /// Build a minimal draft, parse it, verify headers round-trip.
     #[test]
@@ -352,5 +437,127 @@ mod tests {
         } else {
             panic!("expected Address::Address for single input");
         }
+    }
+
+    fn make_input(to: Vec<AddressInput>) -> CreateDraftInput {
+        CreateDraftInput {
+            to,
+            cc: None,
+            bcc: None,
+            subject: "Test".into(),
+            body_text: "body".into(),
+            in_reply_to_uid: None,
+            in_reply_to_folder: None,
+        }
+    }
+
+    /// CRLF in address field is rejected.
+    #[test]
+    fn crlf_in_address_rejected() {
+        let input = make_input(vec![AddressInput {
+            name: None,
+            address: "a@b>\r\nBcc: spy@evil".into(),
+        }]);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
+    }
+
+    /// CRLF in display name is rejected.
+    #[test]
+    fn crlf_in_name_rejected() {
+        let input = make_input(vec![AddressInput {
+            name: Some("Evil\r\nBcc: spy@evil".into()),
+            address: "ok@example.com".into(),
+        }]);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
+    }
+
+    /// Angle brackets in address are rejected.
+    #[test]
+    fn angle_brackets_in_address_rejected() {
+        let input = make_input(vec![AddressInput {
+            name: None,
+            address: "<injected>@example.com".into(),
+        }]);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
+    }
+
+    /// Empty `to` vec is rejected.
+    #[test]
+    fn empty_to_rejected() {
+        let input = make_input(vec![]);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
+        assert!(
+            err.to_string().contains("at least one To"),
+            "unexpected message: {err}",
+        );
+    }
+
+    /// Subject with CR/LF is rejected.
+    #[test]
+    fn subject_crlf_rejected() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.subject = "Hello\r\nBcc: spy@evil".into();
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
+    }
+
+    /// CC address validation is exercised.
+    #[test]
+    fn cc_address_validated() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.cc = Some(vec![AddressInput {
+            name: None,
+            address: "bad\n@example.com".into(),
+        }]);
+        let err = validate_draft_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
+    }
+
+    /// `sanitize_message_id` strips dangerous characters.
+    #[test]
+    fn sanitize_message_id_strips_crlf_and_angles() {
+        assert_eq!(sanitize_message_id("<id\r\n@host>"), "id@host",);
+        assert_eq!(sanitize_message_id("clean@host"), "clean@host",);
+    }
+
+    /// Generated Message-ID uses the from-address domain, not the
+    /// local hostname.
+    #[test]
+    fn message_id_uses_from_domain() {
+        let input = make_input(vec![AddressInput {
+            name: None,
+            address: "bob@example.com".into(),
+        }]);
+        let builder = super::build_message_headers("alice@secret-host.internal", &input);
+        let raw = builder.write_to_vec().unwrap();
+        let parsed = mail_parser::MessageParser::new().parse(&raw).unwrap();
+        let mid = parsed.message_id().unwrap();
+        assert!(
+            mid.ends_with("@secret-host.internal"),
+            "Message-ID should use from domain: {mid}",
+        );
+        // Must not contain the machine hostname (heuristic: no
+        // space or slash, which gethostname wouldn't produce either,
+        // but at minimum it should use the from domain).
+    }
+
+    /// Valid input passes validation.
+    #[test]
+    fn valid_input_passes() {
+        let input = make_input(vec![AddressInput {
+            name: Some("Bob".into()),
+            address: "bob@example.com".into(),
+        }]);
+        validate_draft_input(&input).unwrap();
     }
 }
