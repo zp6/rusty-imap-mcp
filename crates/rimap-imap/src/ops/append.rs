@@ -20,7 +20,7 @@ pub async fn append(
     flags: &[Flag],
     keywords: &[&str],
 ) -> Result<AppendResult, Error> {
-    let flag_str = build_flags_string(flags, keywords);
+    let flag_str = build_flags_string(flags, keywords)?;
     let flags_arg = if flag_str.is_empty() {
         None
     } else {
@@ -36,14 +36,41 @@ pub async fn append(
 }
 
 /// Build the combined flags string from system flags and keywords.
-fn build_flags_string(flags: &[Flag], keywords: &[&str]) -> String {
-    use crate::ops::store::flags_string;
-    let mut s = flags_string(flags);
+///
+/// # Errors
+///
+/// Returns `Error::InvalidInput` if any keyword or `Flag::Keyword`
+/// content contains non-atom characters.
+fn build_flags_string(flags: &[Flag], keywords: &[&str]) -> Result<String, Error> {
+    use crate::ops::store;
+    let mut s = store::flags_string(flags)?;
     for kw in keywords {
+        store::validate_keyword(kw)?;
         if !s.is_empty() {
             s.push(' ');
         }
         s.push_str(kw);
     }
-    s
+    Ok(s)
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_flags_string_rejects_bad_keyword() {
+        let flags = vec![Flag::Seen];
+        let keywords = &["good", "inject\r\nDATA"];
+        assert!(build_flags_string(&flags, keywords).is_err());
+    }
+
+    #[test]
+    fn build_flags_string_accepts_valid() {
+        let flags = vec![Flag::Flagged];
+        let keywords = &["$label1", "Important"];
+        let s = build_flags_string(&flags, keywords).unwrap();
+        assert_eq!(s, "\\Flagged $label1 Important");
+    }
 }
