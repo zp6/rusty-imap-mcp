@@ -2096,6 +2096,7 @@ dependencies = [
  "clap",
  "hex",
  "infer",
+ "mail-parser",
  "predicates",
  "rimap-audit",
  "rimap-authz",

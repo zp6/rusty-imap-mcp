@@ -90,10 +90,6 @@ impl ServerHandler for ImapMcpServer {
 
 impl ImapMcpServer {
     /// Dispatch to the tool handler for `tool`.
-    #[expect(
-        clippy::match_same_arms,
-        reason = "placeholder arms will diverge when handlers land"
-    )]
     async fn dispatch_tool(
         &self,
         tool: ToolName,
@@ -135,8 +131,14 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::fetch_message::handle(self, input)).await
             }
-            ToolName::ListAttachments => Ok(placeholder()),
-            ToolName::DownloadAttachment => Ok(placeholder()),
+            ToolName::ListAttachments => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::list_attachments::handle(self, input)).await
+            }
+            ToolName::DownloadAttachment => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::download_attachment::handle(self, input)).await
+            }
             ToolName::CreateDraft => Ok(placeholder()),
         }
     }
