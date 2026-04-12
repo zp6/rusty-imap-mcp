@@ -22,6 +22,7 @@ rimap-authz = { path = "../rimap-authz", version = "0.0.0" }
 rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
 rimap-content = { path = "../rimap-content", version = "0.0.0" }
 rimap-imap = { path = "../rimap-imap", version = "0.0.0" }
+mail-builder = { workspace = true }
 mail-parser = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
