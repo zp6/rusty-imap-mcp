@@ -48,14 +48,20 @@ pub fn resolve_dest_dir(
 /// Returns `RimapError::Internal` if writing fails or if more than
 /// 1000 filename collisions occur.
 pub fn write_attachment(dir: &Path, filename: &str, data: &[u8]) -> Result<PathBuf, RimapError> {
-    let base = Path::new(filename);
+    // Strip path components to prevent directory traversal.
+    let safe_name = Path::new(filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("attachment");
+
+    let base = Path::new(safe_name);
     let stem = base
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("attachment");
     let ext = base.extension().and_then(|s| s.to_str());
 
-    let mut path = dir.join(filename);
+    let mut path = dir.join(safe_name);
     let mut counter = 1u32;
     while path.exists() {
         let new_name = match ext {
@@ -67,6 +73,20 @@ pub fn write_attachment(dir: &Path, filename: &str, data: &[u8]) -> Result<PathB
         if counter > 1000 {
             return Err(RimapError::Internal("too many filename collisions".into()));
         }
+    }
+
+    // Verify the resolved path is still inside the target directory.
+    let canonical_dir = dir
+        .canonicalize()
+        .map_err(|e| RimapError::Internal(format!("cannot canonicalize download dir: {e}")))?;
+    let canonical_path =
+        path.parent().unwrap_or(dir).canonicalize().map_err(|e| {
+            RimapError::Internal(format!("cannot canonicalize attachment path: {e}"))
+        })?;
+    if !canonical_path.starts_with(&canonical_dir) {
+        return Err(RimapError::Internal(
+            "attachment path escapes download directory".into(),
+        ));
     }
 
     std::fs::write(&path, data)
@@ -148,6 +168,33 @@ mod tests {
         std::fs::write(tmp.path().join("readme"), b"old").unwrap();
         let path = write_attachment(tmp.path(), "readme", b"new").unwrap();
         assert_eq!(path, tmp.path().join("readme_1"));
+    }
+
+    #[test]
+    fn write_attachment_rejects_relative_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_attachment(tmp.path(), "../escape.txt", b"data").unwrap();
+        // Must land inside tmp, not escape.
+        assert!(path.starts_with(tmp.path()));
+        assert_eq!(path.file_name().unwrap(), "escape.txt");
+        assert_eq!(std::fs::read(&path).unwrap(), b"data");
+    }
+
+    #[test]
+    fn write_attachment_rejects_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_attachment(tmp.path(), "/etc/passwd", b"data").unwrap();
+        assert!(path.starts_with(tmp.path()));
+        assert_eq!(path.file_name().unwrap(), "passwd");
+        assert_eq!(std::fs::read(&path).unwrap(), b"data");
+    }
+
+    #[test]
+    fn write_attachment_handles_deep_traversal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write_attachment(tmp.path(), "../../.ssh/authorized_keys", b"data").unwrap();
+        assert!(path.starts_with(tmp.path()));
+        assert_eq!(path.file_name().unwrap(), "authorized_keys");
     }
 
     #[test]
