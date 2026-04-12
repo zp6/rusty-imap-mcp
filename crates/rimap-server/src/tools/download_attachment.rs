@@ -49,27 +49,38 @@ pub async fn handle(
         });
     }
 
-    let dest = download::resolve_dest_dir(
-        input.dest_dir.as_deref(),
-        &server.download_dir,
-        &server.download_dir,
-    )?;
+    let dest = download::resolve_dest_dir_async(
+        input.dest_dir,
+        server.download_dir.clone(),
+        server.download_dir.clone(),
+    )
+    .await?;
 
     let raw = server.imap.fetch_body(&input.folder, uid).await?;
 
-    let parsed = mail_parser::MessageParser::new()
-        .parse(&raw)
-        .ok_or_else(|| {
-            rimap_core::RimapError::Internal(
-                "failed to parse message for attachment extraction".into(),
-            )
-        })?;
+    let parsed = tokio::task::spawn_blocking(move || {
+        mail_parser::MessageParser::new()
+            .parse(&raw)
+            .map(mail_parser::Message::into_owned)
+            .ok_or_else(|| {
+                rimap_core::RimapError::Internal(
+                    "failed to parse message for attachment extraction".into(),
+                )
+            })
+    })
+    .await
+    .unwrap_or_else(|e| {
+        Err(rimap_core::RimapError::Internal(format!(
+            "spawn_blocking panicked: {e}"
+        )))
+    })?;
 
     let (part_body, declared_type, original_filename) = find_part_by_id(&parsed, &input.part_id)?;
 
     let safe_filename = original_filename.as_deref().unwrap_or("attachment");
 
-    let path = download::write_attachment(&dest, safe_filename, &part_body)?;
+    let path = download::write_attachment_async(dest, safe_filename.to_string(), part_body.clone())
+        .await?;
     let size = part_body.len();
     let sha256 = download::sha256_hex(&part_body);
     let mime_sniffed = download::sniff_mime(&part_body);
