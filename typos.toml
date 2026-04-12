@@ -8,6 +8,10 @@ extend-ignore-re = [
 # Intentional project vocabulary. Add sparingly with a comment.
 imap = "imap"
 rimap = "rimap"
+# CVE Numbering Authority — a recognized industry acronym; typos incorrectly suggests "CAN"
+CNA = "CNA"
+# STRIDE table uses bold-letter notation (**I**nformation). Typos sees "nformation" as a fragment.
+nformation = "nformation"
 
 [files]
 extend-exclude = [

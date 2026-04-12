@@ -61,7 +61,7 @@ pub async fn handle(
     })?;
 
     let mut attachments = Vec::new();
-    collect_attachments(&bodystructure, &mut String::new(), &mut attachments, 0);
+    collect_attachments(&bodystructure, "", &mut attachments, 0);
 
     let attachment_values: Vec<serde_json::Value> = attachments
         .iter()
@@ -91,6 +91,27 @@ pub async fn handle(
 /// Maximum recursion depth for MIME tree walking (denial-of-service guard).
 const MAX_MIME_DEPTH: u32 = 64;
 
+/// Compute the IMAP part ID for a leaf or message node.
+/// Root-level nodes get "1"; nested nodes keep their prefix.
+fn leaf_part_id(prefix: &str) -> String {
+    if prefix.is_empty() {
+        "1".to_string()
+    } else {
+        prefix.to_string()
+    }
+}
+
+/// Compute the IMAP part ID for a child of a multipart node.
+/// Root-level children are "1", "2", etc.; nested children
+/// are "prefix.1", "prefix.2", etc.
+fn child_part_id(prefix: &str, index: usize) -> String {
+    if prefix.is_empty() {
+        index.to_string()
+    } else {
+        format!("{prefix}.{index}")
+    }
+}
+
 /// Walk the `BodyStructure` tree and collect attachment parts.
 ///
 /// IMAP part numbering: for a multipart message the top-level parts
@@ -99,7 +120,7 @@ const MAX_MIME_DEPTH: u32 = 64;
 /// root, the sole part is "1".
 fn collect_attachments(
     bs: &BodyStructure,
-    prefix: &mut String,
+    prefix: &str,
     out: &mut Vec<AttachmentInfo>,
     depth: u32,
 ) {
@@ -114,11 +135,7 @@ fn collect_attachments(
             size,
             ..
         } => {
-            let part_id = if prefix.is_empty() {
-                "1".to_string()
-            } else {
-                prefix.clone()
-            };
+            let part_id = leaf_part_id(prefix);
             if !is_inline_text(mime_type, mime_subtype) {
                 let filename = extract_filename(params);
                 let full_type = format!(
@@ -136,24 +153,14 @@ fn collect_attachments(
         }
         BodyStructure::Multipart { parts, .. } => {
             for (i, part) in parts.iter().enumerate() {
-                let idx = i + 1;
-                let child_prefix = if prefix.is_empty() {
-                    idx.to_string()
-                } else {
-                    format!("{prefix}.{idx}")
-                };
-                let mut child = child_prefix;
-                collect_attachments(part, &mut child, out, depth + 1);
+                let child = child_part_id(prefix, i + 1);
+                collect_attachments(part, &child, out, depth + 1);
             }
         }
         BodyStructure::Message { body, .. } => {
-            let part_id = if prefix.is_empty() {
-                "1".to_string()
-            } else {
-                prefix.clone()
-            };
+            let part_id = leaf_part_id(prefix);
             // Walk into the embedded message's body structure.
-            collect_attachments(body, &mut part_id.clone(), out, depth + 1);
+            collect_attachments(body, &part_id, out, depth + 1);
         }
     }
 }
@@ -206,7 +213,7 @@ mod tests {
     fn single_text_plain_is_not_attachment() {
         let bs = single("text", "plain", 100);
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        collect_attachments(&bs, "", &mut out, 0);
         assert!(out.is_empty());
     }
 
@@ -214,7 +221,7 @@ mod tests {
     fn single_text_html_is_not_attachment() {
         let bs = single("text", "html", 200);
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        collect_attachments(&bs, "", &mut out, 0);
         assert!(out.is_empty());
     }
 
@@ -222,7 +229,7 @@ mod tests {
     fn single_image_is_attachment() {
         let bs = single_with_name("image", "png", 5000, "photo.png");
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        collect_attachments(&bs, "", &mut out, 0);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].part_id, "1");
         assert_eq!(out[0].mime_type, "image/png");
@@ -241,7 +248,7 @@ mod tests {
             ],
         };
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        collect_attachments(&bs, "", &mut out, 0);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].part_id, "2");
         assert_eq!(out[0].mime_type, "application/pdf");
@@ -266,7 +273,7 @@ mod tests {
             ],
         };
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        collect_attachments(&bs, "", &mut out, 0);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].part_id, "1.2");
         assert_eq!(out[0].filename.as_deref(), Some("anim.gif"));
@@ -307,7 +314,7 @@ mod tests {
             };
         }
         let mut out = Vec::new();
-        collect_attachments(&bs, &mut String::new(), &mut out, 0);
+        collect_attachments(&bs, "", &mut out, 0);
         assert!(out.is_empty());
     }
 }

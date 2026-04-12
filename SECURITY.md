@@ -35,4 +35,30 @@ especially Sections 1, 6, 7, 8, 9, and 10.
 ## Supported versions
 
 During pre-v1 development, only the latest commit on `main` is supported. Once
-v1.0.0 ships, a supported-versions table will appear here.
+v1.0.0 ships, this policy applies:
+
+| Version | Security fixes | End of support |
+|---------|---------------|----------------|
+| Current major (e.g., 1.x) | All severity levels | 12 months after next major |
+| Previous major (e.g., 0.x) | Critical only | 6 months after next major |
+
+## Disclosure timeline
+
+- **Initial response:** within 7 calendar days of report
+- **Fix target:** within 90 calendar days of confirmed vulnerability
+- **Coordinated disclosure:** preferred; we will work with the reporter on timing
+- **Public disclosure:** after the fix ships, or after 90 days, whichever comes first
+
+## CVE process
+
+Security vulnerabilities are tracked via
+[GitHub Security Advisories](https://github.com/randomparity/rusty-imap-mcp/security/advisories).
+CVEs are requested through GitHub's CNA (CVE Numbering Authority) integration
+when the advisory is published. We do not self-assign CVE IDs.
+
+## Security contact identity
+
+Pre-v1, the security contact is the repository owner via GitHub Security
+Advisories (no direct email). A Sigstore signing identity and release
+attestations will be established when release automation lands (tracked in
+[#19](https://github.com/randomparity/rusty-imap-mcp/issues/19)).
