@@ -514,10 +514,7 @@ impl Connection {
     /// the connection on size-limit overflow OR connection loss so the
     /// half-consumed response state never leaks to the next op.
     ///
-    /// # Size cap is enforced post-parse, not pre-allocation
-    ///
-    /// `async-imap 0.11` yields each FETCH item as an already-materialized
-    /// ## Pre-flight size check
+    /// # Pre-flight size check
     ///
     /// Before issuing `FETCH BODY.PEEK[]`, this method issues
     /// `UID FETCH <uid> (RFC822.SIZE)` and rejects with
