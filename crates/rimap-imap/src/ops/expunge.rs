@@ -13,7 +13,6 @@ use crate::types::Uid;
 /// # Errors
 ///
 /// Propagates connection-lost or protocol errors.
-#[expect(dead_code, reason = "called by higher-level crate once wired up")]
 pub(crate) async fn count_deleted(
     session: &mut ImapSession,
     folder: &str,
@@ -36,7 +35,6 @@ pub(crate) async fn count_deleted(
 /// # Errors
 ///
 /// Propagates connection-lost or protocol errors.
-#[expect(dead_code, reason = "called by higher-level crate once wired up")]
 pub(crate) async fn expunge(session: &mut ImapSession) -> Result<u32, Error> {
     let stream = session.expunge().await.map_err(super::folders::map_err)?;
     futures_util::pin_mut!(stream);

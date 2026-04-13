@@ -17,7 +17,6 @@ use crate::types::{Flag, FlagAction, Uid};
 /// # Errors
 ///
 /// Propagates connection-lost or protocol errors from async-imap.
-#[expect(dead_code, reason = "called by higher-level crate once wired up")]
 pub(crate) async fn delete_message(
     session: &mut ImapSession,
     uid: Uid,

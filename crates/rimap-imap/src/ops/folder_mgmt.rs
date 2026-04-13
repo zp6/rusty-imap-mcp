@@ -45,7 +45,6 @@ pub(crate) fn validate_folder_name(name: &str) -> Result<(), Error> {
 ///
 /// Returns `Error::InvalidInput` for invalid names.
 /// Propagates protocol errors from async-imap.
-#[expect(dead_code, reason = "called by higher-level crate once wired up")]
 pub(crate) async fn create_folder(session: &mut ImapSession, name: &str) -> Result<(), Error> {
     validate_folder_name(name)?;
     session
@@ -61,7 +60,6 @@ pub(crate) async fn create_folder(session: &mut ImapSession, name: &str) -> Resu
 ///
 /// Returns `Error::InvalidInput` for invalid `new_name`.
 /// Propagates protocol errors from async-imap.
-#[expect(dead_code, reason = "called by higher-level crate once wired up")]
 pub(crate) async fn rename_folder(
     session: &mut ImapSession,
     old_name: &str,
@@ -80,7 +78,6 @@ pub(crate) async fn rename_folder(
 /// # Errors
 ///
 /// Propagates protocol errors from async-imap.
-#[expect(dead_code, reason = "called by higher-level crate once wired up")]
 pub(crate) async fn delete_folder(session: &mut ImapSession, name: &str) -> Result<(), Error> {
     session
         .delete(name)
