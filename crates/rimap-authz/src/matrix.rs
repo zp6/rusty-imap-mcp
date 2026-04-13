@@ -12,54 +12,13 @@ use rimap_core::tool::ToolName;
 
 use crate::error::AuthzError;
 
-/// Compile-time truth table. `true` = allowed by base posture.
-///
-/// Layout: outer by [`ToolName`] (19 tools),
-/// inner `[readonly, draft_safe, full, destructive]`.
-pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 4]); 19] = [
-    (ToolName::ListFolders, [true, true, true, true]),
-    (ToolName::Search, [true, true, true, true]),
-    (ToolName::SearchAdvanced, [false, false, true, true]),
-    (ToolName::FetchMessage, [true, true, true, true]),
-    (ToolName::FetchMessageHtml, [false, false, true, true]),
-    (ToolName::ListAttachments, [true, true, true, true]),
-    (ToolName::DownloadAttachment, [true, true, true, true]),
-    (ToolName::MarkRead, [false, true, true, true]),
-    (ToolName::MarkUnread, [false, true, true, true]),
-    (ToolName::Flag, [false, true, true, true]),
-    (ToolName::Unflag, [false, true, true, true]),
-    (ToolName::MoveMessage, [false, true, true, true]),
-    (ToolName::CreateDraft, [false, true, true, true]),
-    // v2 tools:
-    (ToolName::SendEmail, [false, false, true, true]),
-    (ToolName::DeleteMessage, [false, false, true, true]),
-    (ToolName::CreateFolder, [false, false, true, true]),
-    (ToolName::RenameFolder, [false, false, true, true]),
-    (ToolName::Expunge, [false, false, false, true]),
-    (ToolName::DeleteFolder, [false, false, false, true]),
-];
-
-fn posture_index(p: Posture) -> usize {
-    match p {
-        Posture::Readonly => 0,
-        Posture::DraftSafe => 1,
-        Posture::Full => 2,
-        Posture::Destructive => 3,
-    }
-}
-
 /// Lookup against the base `const` matrix, before overrides.
+///
+/// Delegates to [`rimap_core::base_allows`] — the single authoritative
+/// source of posture truth shared with `rimap-config`.
 #[must_use]
 pub fn base_allows(posture: Posture, tool: ToolName) -> bool {
-    let idx = posture_index(posture);
-    for (t, row) in POSTURE_MATRIX {
-        if t == tool {
-            return row[idx];
-        }
-    }
-    // Unreachable: POSTURE_MATRIX must cover all ToolName variants.
-    // A compile-time exhaustiveness check lives in the test module.
-    false
+    rimap_core::base_allows(posture, tool)
 }
 
 /// Effective authorization matrix: base posture merged with per-tool overrides.
@@ -142,7 +101,9 @@ mod tests {
     use rimap_core::tool::ToolName;
 
     use crate::error::AuthzError;
-    use crate::matrix::{EffectiveMatrix, POSTURE_MATRIX, base_allows};
+    use rimap_core::posture_matrix::POSTURE_MATRIX;
+
+    use crate::matrix::{EffectiveMatrix, base_allows};
 
     #[test]
     fn matrix_covers_every_tool_variant_exactly_once() {

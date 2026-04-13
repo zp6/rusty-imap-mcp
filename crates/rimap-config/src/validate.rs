@@ -282,10 +282,8 @@ fn validate_smtp_required(
     config: &Config,
     tool_overrides: &BTreeMap<ToolName, Verdict>,
 ) -> Result<(), ConfigError> {
-    use rimap_core::posture::Posture;
-
     let posture = config.security.posture;
-    let send_email_base = matches!(posture, Posture::Full | Posture::Destructive);
+    let send_email_base = rimap_core::base_allows(posture, ToolName::SendEmail);
     let send_email_effective = match tool_overrides.get(&ToolName::SendEmail) {
         Some(Verdict::Allow) => true,
         Some(Verdict::Deny) => false,
