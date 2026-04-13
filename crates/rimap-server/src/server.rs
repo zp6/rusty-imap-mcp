@@ -49,6 +49,15 @@ impl ServerHandler for ImapMcpServer {
         let mut tools: Vec<Tool> = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
+        // Infrastructure tools — always advertised.
+        for name in [ToolName::UseAccount, ToolName::ListAccounts] {
+            if let Some(def) = tool_definition(name) {
+                seen.insert(name);
+                tools.push(def);
+            }
+        }
+
+        // Union of posture-filtered tools from all accounts.
         for state in self.registry.accounts().values() {
             for &tn in &state.guard.matrix().advertised() {
                 if seen.insert(tn)
@@ -191,16 +200,33 @@ impl ImapMcpServer {
     }
 
     /// Handle infrastructure tools that bypass account resolution.
-    #[expect(clippy::unused_self, reason = "T6 will use self.registry")]
     fn dispatch_infrastructure(
         &self,
         tool: ToolName,
-        _args: &serde_json::Map<String, serde_json::Value>,
+        args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, ErrorData> {
-        Err(ErrorData::internal_error(
-            format!("{} not yet implemented", tool.as_str()),
-            None,
-        ))
+        let result = match tool {
+            ToolName::UseAccount => {
+                let input: crate::tools::accounts::UseAccountInput =
+                    parse_args(args).map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
+                crate::tools::accounts::handle_use_account(&self.registry, &input)
+            }
+            ToolName::ListAccounts => crate::tools::accounts::handle_list_accounts(&self.registry),
+            _ => {
+                return Err(ErrorData::internal_error(
+                    format!("not an infrastructure tool: {}", tool.as_str(),),
+                    None,
+                ));
+            }
+        };
+        match result {
+            Ok(resp) => {
+                let value = serde_json::to_value(&resp)
+                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+                Ok(CallToolResult::structured(value))
+            }
+            Err(e) => Err(crate::mcp_error::to_mcp_error(&e)),
+        }
     }
 }
 
@@ -234,7 +260,8 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
 fn tool_definition(name: ToolName) -> Option<Tool> {
     let (tool_name, description, schema) = tool_spec_v1(name)
         .or_else(|| tool_spec_v2(name))
-        .or_else(|| tool_spec_v3(name))?;
+        .or_else(|| tool_spec_v3(name))
+        .or_else(|| tool_spec_infra(name))?;
     Some(Tool::new(tool_name, description, Arc::new(schema)))
 }
 
@@ -384,6 +411,26 @@ fn tool_spec_v3(name: ToolName) -> Option<ToolSpec> {
     Some(tuple)
 }
 
+/// Return (name, description, schema) for infrastructure tools.
+fn tool_spec_infra(name: ToolName) -> Option<ToolSpec> {
+    use crate::tools::accounts::UseAccountInput;
+
+    let tuple = match name {
+        ToolName::UseAccount => (
+            "use_account",
+            "Set the active account for subsequent tool calls",
+            schema_map::<UseAccountInput>(),
+        ),
+        ToolName::ListAccounts => (
+            "list_accounts",
+            "List all configured email accounts",
+            serde_json::Map::new(),
+        ),
+        _ => return None,
+    };
+    Some(tuple)
+}
+
 #[cfg(test)]
 mod tests {
     use rimap_core::tool::ToolName;
@@ -396,8 +443,8 @@ mod tests {
             .into_iter()
             .filter_map(tool_definition)
             .collect();
-        // 22 tool variants minus 2 sub-capabilities = 20
-        assert_eq!(defs.len(), 20);
+        // 24 tool variants minus 2 sub-capabilities = 22
+        assert_eq!(defs.len(), 22);
     }
 
     #[test]
@@ -420,8 +467,9 @@ mod tests {
     #[test]
     fn tool_definitions_have_non_empty_schemas() {
         for def in ToolName::all().into_iter().filter_map(tool_definition) {
-            // list_folders has no input — empty schema is expected.
-            if def.name == "list_folders" {
+            // list_folders and list_accounts have no input — empty
+            // schema is expected.
+            if def.name == "list_folders" || def.name == "list_accounts" {
                 continue;
             }
             let schema = &def.input_schema;

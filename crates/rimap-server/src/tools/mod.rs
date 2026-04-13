@@ -1,5 +1,6 @@
 //! MCP tool handlers.
 
+pub mod accounts;
 pub mod create_draft;
 pub mod delete_message;
 pub mod download_attachment;

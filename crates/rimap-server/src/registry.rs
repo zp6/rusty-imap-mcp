@@ -114,10 +114,6 @@ impl AccountRegistry {
     ///
     /// Returns [`RimapError::UnknownAccount`] if `name` does not
     /// match any configured account.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used by use_account handler in T6")
-    )]
     pub fn set_active(&self, name: &str) -> Result<Option<String>, RimapError> {
         let id = self
             .accounts
@@ -142,7 +138,7 @@ impl AccountRegistry {
     #[must_use]
     #[cfg_attr(
         not(test),
-        expect(dead_code, reason = "used by list_accounts handler in T6")
+        expect(dead_code, reason = "convenience accessor for future use")
     )]
     pub fn account_names(&self) -> Vec<&AccountId> {
         self.accounts.keys().collect()
