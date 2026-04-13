@@ -48,6 +48,12 @@ pub enum AuthzError {
         /// The folder name.
         folder: String,
     },
+    /// Folder name failed structural validation.
+    #[error("invalid folder name: {reason}")]
+    InvalidFolderName {
+        /// Why the name was rejected.
+        reason: String,
+    },
 }
 
 impl AuthzError {
@@ -61,6 +67,7 @@ impl AuthzError {
             Self::MatrixBuild(_) => ErrorCode::Config,
             Self::ProtectedFolder { .. } => ErrorCode::ProtectedFolder,
             Self::ExpungeDenied { .. } => ErrorCode::ExpungeDenied,
+            Self::InvalidFolderName { .. } => ErrorCode::InvalidInput,
         }
     }
 }
@@ -109,6 +116,13 @@ mod tests {
             }
             .code(),
             ErrorCode::ExpungeDenied
+        );
+        assert_eq!(
+            AuthzError::InvalidFolderName {
+                reason: "test".into(),
+            }
+            .code(),
+            ErrorCode::InvalidInput
         );
     }
 }
