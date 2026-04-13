@@ -122,4 +122,13 @@ pub enum ConfigError {
         /// The conflicting folder name.
         folder: String,
     },
+    /// SMTP encryption set to "none" for a non-localhost host.
+    #[error(
+        "smtp encryption is 'none' for host `{host}`; \
+         plaintext SMTP exposes credentials on the network"
+    )]
+    SmtpPlaintextDenied {
+        /// The configured SMTP host.
+        host: String,
+    },
 }

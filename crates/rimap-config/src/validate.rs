@@ -16,7 +16,7 @@ use rimap_core::tls::TlsFingerprint;
 use rimap_core::tool::ToolName;
 
 use crate::error::ConfigError;
-use crate::model::{Config, Verdict};
+use crate::model::{Config, SmtpEncryption, Verdict};
 
 /// Validated config: a `Config` plus the resolved per-tool override map
 /// keyed by `ToolName`, plus the parsed TLS fingerprint (if any).
@@ -42,6 +42,7 @@ pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     validate_folder_safety(&config)?;
     let tool_overrides = resolve_tool_overrides(&config)?;
     validate_smtp_required(&config, &tool_overrides)?;
+    validate_smtp_encryption(&config)?;
     Ok(ValidatedConfig {
         config,
         tool_overrides,
@@ -294,6 +295,20 @@ fn validate_smtp_required(
         return Err(ConfigError::SmtpRequired {
             posture: posture.to_string(),
         });
+    }
+    Ok(())
+}
+
+fn validate_smtp_encryption(config: &Config) -> Result<(), ConfigError> {
+    let Some(smtp) = &config.smtp else {
+        return Ok(());
+    };
+    if smtp.encryption == SmtpEncryption::None {
+        let host = &smtp.host;
+        let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "::1";
+        if !is_localhost {
+            return Err(ConfigError::SmtpPlaintextDenied { host: host.clone() });
+        }
     }
     Ok(())
 }
@@ -671,6 +686,48 @@ path = "/tmp/audit.jsonl"
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn smtp_plaintext_rejected_for_remote_host() {
+        use crate::model::SmtpConfig;
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        cfg.smtp = Some(SmtpConfig {
+            host: "smtp.example.com".into(),
+            port: 587,
+            encryption: SmtpEncryption::None,
+            username: "user".into(),
+            command_timeout_seconds: 30,
+            connect_timeout_seconds: 10,
+        });
+        let result = validate(cfg);
+        assert!(
+            matches!(result, Err(ConfigError::SmtpPlaintextDenied { .. })),
+            "expected SmtpPlaintextDenied, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn smtp_plaintext_allowed_for_localhost() {
+        use crate::model::SmtpConfig;
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        cfg.smtp = Some(SmtpConfig {
+            host: "127.0.0.1".into(),
+            port: 1025,
+            encryption: SmtpEncryption::None,
+            username: "user".into(),
+            command_timeout_seconds: 30,
+            connect_timeout_seconds: 10,
+        });
+        let result = validate(cfg);
+        assert!(
+            result.is_ok(),
+            "localhost plaintext should be allowed: {result:?}",
+        );
     }
 
     #[test]
