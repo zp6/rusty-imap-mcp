@@ -77,6 +77,9 @@ struct ConnectionInner {
     /// Server advertised MOVE capability (RFC 6851) after login.
     /// Reset to `false` on `invalidate()`.
     has_move: AtomicBool,
+    /// Server advertised UIDPLUS capability (RFC 4315) after login.
+    /// Reset to `false` on `invalidate()`.
+    has_uidplus: AtomicBool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -104,6 +107,7 @@ impl Connection {
                 credentials,
                 session: Mutex::new(None),
                 has_move: AtomicBool::new(false),
+                has_uidplus: AtomicBool::new(false),
             }),
         }
     }
@@ -133,11 +137,18 @@ impl Connection {
         self.inner.has_move.load(Ordering::Relaxed)
     }
 
+    /// Whether the server advertised the UIDPLUS capability (RFC 4315).
+    #[must_use]
+    pub fn has_uidplus_capability(&self) -> bool {
+        self.inner.has_uidplus.load(Ordering::Relaxed)
+    }
+
     /// Drop any current session. Called by ops on connection-lost errors.
     pub(crate) async fn invalidate(&self) {
         let mut guard = self.inner.session.lock().await;
         *guard = None;
         self.inner.has_move.store(false, Ordering::Relaxed);
+        self.inner.has_uidplus.store(false, Ordering::Relaxed);
     }
 
     /// The full connect/handshake/login/CAPABILITY flow. Emits exactly one
@@ -314,19 +325,21 @@ impl Connection {
             }
         };
 
-        // Post-login: probe CAPABILITY for MOVE (RFC 6851).
-        let has_move = match session.capabilities().await {
-            Ok(caps) => caps.has_str("MOVE"),
+        // Post-login: probe CAPABILITY for MOVE (RFC 6851) and
+        // UIDPLUS (RFC 4315).
+        let (has_move, has_uidplus) = match session.capabilities().await {
+            Ok(caps) => (caps.has_str("MOVE"), caps.has_str("UIDPLUS")),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "post-login CAPABILITY probe failed; \
-                     assuming no MOVE support",
+                     assuming no MOVE/UIDPLUS support",
                 );
-                false
+                (false, false)
             }
         };
         self.inner.has_move.store(has_move, Ordering::Relaxed);
+        self.inner.has_uidplus.store(has_uidplus, Ordering::Relaxed);
 
         Ok(session)
     }
@@ -620,13 +633,15 @@ impl Connection {
     ) -> Result<crate::ops::move_msg::MoveOutcome, Error> {
         let dur = self.inner.cfg.command_timeout;
         let has_move = self.has_move_capability();
+        let has_uidplus = self.has_uidplus_capability();
         let result = crate::time::with_timeout("move", dur, async {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("session() ensures Some"));
             crate::ops::folders::select(session, source_folder, false).await?;
-            crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move).await
+            crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move, has_uidplus)
+                .await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
@@ -682,13 +697,22 @@ impl Connection {
     ) -> Result<crate::ops::delete::DeleteResult, Error> {
         let dur = self.inner.cfg.command_timeout;
         let has_move = self.has_move_capability();
+        let has_uidplus = self.has_uidplus_capability();
         let result = crate::time::with_timeout("delete_message", dur, async {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
                 .unwrap_or_else(|| unreachable!("session() ensures Some"));
             crate::ops::folders::select(session, folder, false).await?;
-            crate::ops::delete::delete_message(session, uid, folder, trash_folder, has_move).await
+            crate::ops::delete::delete_message(
+                session,
+                uid,
+                folder,
+                trash_folder,
+                has_move,
+                has_uidplus,
+            )
+            .await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
