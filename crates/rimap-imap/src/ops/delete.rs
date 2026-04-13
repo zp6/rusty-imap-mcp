@@ -25,6 +25,9 @@ pub(crate) async fn delete_message(
     has_move: bool,
     has_uidplus: bool,
 ) -> Result<DeleteResult, Error> {
+    super::folder_mgmt::validate_folder_name(source_folder)?;
+    super::folder_mgmt::validate_folder_name(trash_folder)?;
+
     // Step 1: STORE +FLAGS (\Deleted)
     store::store(session, &[uid], &[Flag::Deleted], FlagAction::Add).await?;
 

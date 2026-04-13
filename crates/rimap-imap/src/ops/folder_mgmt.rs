@@ -10,7 +10,7 @@ const MAX_FOLDER_NAME_BYTES: usize = 255;
 /// # Errors
 ///
 /// Returns `Error::InvalidInput` for empty names, names exceeding
-/// 255 bytes, names containing null bytes, or path traversal attempts.
+/// 255 bytes, names containing control characters, or path traversal attempts.
 pub(crate) fn validate_folder_name(name: &str) -> Result<(), Error> {
     if name.is_empty() {
         return Err(Error::InvalidInput {
@@ -24,10 +24,10 @@ pub(crate) fn validate_folder_name(name: &str) -> Result<(), Error> {
             reason: "folder name exceeds 255 bytes",
         });
     }
-    if name.contains('\0') {
+    if name.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return Err(Error::InvalidInput {
             field: "folder_name",
-            reason: "folder name contains null byte",
+            reason: "folder name contains control characters",
         });
     }
     if name.contains("..") {
@@ -58,13 +58,14 @@ pub(crate) async fn create_folder(session: &mut ImapSession, name: &str) -> Resu
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` for invalid `new_name`.
+/// Returns `Error::InvalidInput` for invalid `old_name` or `new_name`.
 /// Propagates protocol errors from async-imap.
 pub(crate) async fn rename_folder(
     session: &mut ImapSession,
     old_name: &str,
     new_name: &str,
 ) -> Result<(), Error> {
+    validate_folder_name(old_name)?;
     validate_folder_name(new_name)?;
     session
         .rename(old_name, new_name)
@@ -77,8 +78,10 @@ pub(crate) async fn rename_folder(
 ///
 /// # Errors
 ///
+/// Returns `Error::InvalidInput` for invalid names.
 /// Propagates protocol errors from async-imap.
 pub(crate) async fn delete_folder(session: &mut ImapSession, name: &str) -> Result<(), Error> {
+    validate_folder_name(name)?;
     session
         .delete(name)
         .await
@@ -102,8 +105,11 @@ mod tests {
     }
 
     #[test]
-    fn validate_null_byte_rejected() {
+    fn validate_control_characters_rejected() {
         assert!(validate_folder_name("bad\0name").is_err());
+        assert!(validate_folder_name("bad\r\nname").is_err());
+        assert!(validate_folder_name("bad\x01name").is_err());
+        assert!(validate_folder_name("bad\x7fname").is_err());
     }
 
     #[test]
