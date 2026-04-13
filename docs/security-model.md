@@ -10,6 +10,10 @@ mailbox state, or pivot to other tools.
 Secondary adversaries include a hostile IMAP server (MITM, malformed
 responses) and local malware with the user's file-system privileges.
 
+Multi-account introduces a cross-account exfiltration vector: a
+compromised agent could read from one account and send via another.
+Per-account posture gates, rate limits, and audit logging mitigate this.
+
 **The server does not trust:** email bodies, headers, sender addresses,
 display names, attachment filenames, link targets, or any
 server-provided content. All of these are treated as untrusted input
@@ -102,46 +106,53 @@ Body text prose is not scanned (false-positive rate on multilingual
 content is too high). All detection is local, deterministic, and
 rules-based -- no network lookups, no ML.
 
-Warning codes include `LOOKALIKE_SENDER_MIXED_SCRIPT`,
-`LOOKALIKE_SENDER_CONFUSABLE`, `LOOKALIKE_DISPLAY_NAME_SPOOFS_ADDRESS`,
-`LOOKALIKE_REPLY_TO_DOMAIN_MISMATCH`, `LOOKALIKE_LINK_DOMAIN_MISMATCH`,
-`LOOKALIKE_FILENAME_BIDI_EXTENSION`, and others.
-
 ### 5. `$PendingReview` human-in-the-loop gate
 
 `create_draft` appends messages to the Drafts folder with `\Draft` and
-`$PendingReview` keywords. The server never opens an SMTP connection in
-v1. A human must review and send from their mail client. This prevents
-an agent from autonomously sending mail, even in the `full` posture.
+`$PendingReview` keywords. A human must review and send from their mail
+client. This provides a safe drafting workflow in `draft-safe` posture
+without granting autonomous send capability.
 
 ### 6. Posture-based authorization
 
-Three postures (`readonly`, `draft-safe`, `full`) control which tools
-are available. Tools denied by the active posture are not advertised via
-`list_tools` and are rejected at dispatch. See [postures.md](postures.md).
+Four postures control which tools are available. Tools denied by the
+active posture are not advertised via `list_tools` and are rejected at
+dispatch.
 
-### 7. Audit log
+### 7. Folder safety
+
+- `protected_folders` (default: INBOX, Sent, Drafts, Trash) prevents
+  `rename_folder` and `delete_folder` on critical folders.
+- `expunge_folders` (default empty = deny all) is an allowlist for
+  `expunge` and `delete_folder`. Folders not in this list cannot be
+  expunged or deleted.
+- `create_folder` rejects names that collide with protected folders
+  (case-insensitive).
+
+### 8. Audit log
 
 Every tool invocation produces exactly two audit records (`tool_start`
 + `tool_end`), linked by a monotonic sequence number. The audit log
 tracks content provenance: a ring buffer of recently-read message IDs
 is snapshotted into every `tool_end` record, enabling post-hoc
-detection of suspicious read-then-draft sequences.
+detection of suspicious read-then-send sequences.
 
 The audit file is exclusively locked for the process lifetime. Write
 failures fail the tool call by default (`fail_open = false`). See
 [audit-log.md](audit-log.md).
 
-### 8. Rate limiting
+### 9. Rate limiting
 
 - Global rate limiter: `commands_per_second` (default 10/sec) with a
   burst of 20.
 - Separate stricter limit for `create_draft`: `drafts_per_minute`
   (default 5/min).
+- Separate stricter limit for `send_email`: `sends_per_minute`
+  (default 3/min).
 - On exceed: waits up to 250ms, then fails with `ERR_RATE_LIMITED` and
   a `retry_after_ms` hint.
 
-### 9. Circuit breaker
+### 10. Circuit breaker
 
 Sliding-window count-based breaker protects against cascading failures:
 
@@ -158,12 +169,45 @@ Errors that trip the breaker: `ConnectionLost`, `AuthFailure`,
 (`NotFound`, `InvalidInput`, `PostureDenied`, `RateLimited`) do not
 trip it.
 
-### 10. TLS fingerprint pinning
+### 11. TLS fingerprint pinning
 
 When `imap.tls_fingerprint_sha256` is set, the server verifies the
 IMAP server's TLS certificate fingerprint before any application data
 flows. A mismatch is a hard failure -- the server does not fall back
 to the system trust store when pinning is configured.
+
+## Posture matrix
+
+22 posture-gated tools across 4 postures. `use_account` and
+`list_accounts` are infrastructure tools that bypass the posture matrix.
+
+| Tool | `readonly` | `draft-safe` | `full` | `destructive` |
+|------|:----------:|:------------:|:------:|:-------------:|
+| `list_folders` | yes | yes | yes | yes |
+| `search` | yes | yes | yes | yes |
+| `search_advanced` | - | - | yes | yes |
+| `fetch_message` | yes | yes | yes | yes |
+| `fetch_message_html` | - | - | yes | yes |
+| `list_attachments` | yes | yes | yes | yes |
+| `download_attachment` | yes | yes | yes | yes |
+| `mark_read` | - | yes | yes | yes |
+| `mark_unread` | - | yes | yes | yes |
+| `flag` | - | yes | yes | yes |
+| `unflag` | - | yes | yes | yes |
+| `add_label` | - | yes | yes | yes |
+| `remove_label` | - | yes | yes | yes |
+| `list_labels` | yes | yes | yes | yes |
+| `move_message` | - | yes | yes | yes |
+| `create_draft` | - | yes | yes | yes |
+| `send_email` | - | - | yes | yes |
+| `delete_message` | - | - | yes | yes |
+| `create_folder` | - | - | yes | yes |
+| `rename_folder` | - | - | yes | yes |
+| `expunge` | - | - | - | yes |
+| `delete_folder` | - | - | - | yes |
+
+Per-tool overrides (`"allow"` / `"deny"`) merge on top of the base
+posture. An override that matches the posture's default is a no-op.
 
 ## Dispatch chain
 
