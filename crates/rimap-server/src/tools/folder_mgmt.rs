@@ -67,7 +67,7 @@ pub async fn handle_rename(
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     server
         .folder_guard
-        .check_protected(&input.old_name, "rename")
+        .check_rename(&input.old_name, &input.new_name)
         .map_err(|e| rimap_core::RimapError::Authz {
             code: e.code(),
             message: e.to_string(),
@@ -136,4 +136,25 @@ pub async fn handle_delete(
         untrusted: None,
         security_warnings: Vec::new(),
     })
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use rimap_authz::FolderGuard;
+    use rimap_core::error::ErrorCode;
+
+    #[test]
+    fn rename_to_protected_folder_rejected() {
+        let guard = FolderGuard::new(&["Sent".into(), "Drafts".into()], &[]);
+        let err = guard.check_rename("temp", "Sent").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ProtectedFolder);
+    }
+
+    #[test]
+    fn rename_to_inbox_rejected() {
+        let guard = FolderGuard::new(&[], &[]);
+        let err = guard.check_rename("temp", "INBOX").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ProtectedFolder);
+    }
 }
