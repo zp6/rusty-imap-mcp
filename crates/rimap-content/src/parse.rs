@@ -1137,6 +1137,7 @@ fn audit_addr_domain_bidi(
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
+#[expect(clippy::panic, reason = "test failure paths")]
 mod tests {
     use super::*;
 
@@ -1688,7 +1689,7 @@ mod tests {
         raw.resize(MAX_MESSAGE_BYTES + 1, b'x');
         let err = parse_message(&raw).unwrap_err();
         let ContentError::LimitExceeded { kind, limit } = err else {
-            unreachable!("expected LimitExceeded message_bytes, got {err:?}");
+            panic!("expected LimitExceeded message_bytes, got {err:?}");
         };
         assert_eq!(kind, "message_bytes");
         assert_eq!(limit, MAX_MESSAGE_BYTES);
@@ -1719,7 +1720,7 @@ mod tests {
         }
         let err = parse_message(raw.as_bytes()).unwrap_err();
         let ContentError::LimitExceeded { kind, .. } = err else {
-            unreachable!("expected LimitExceeded, got {err:?}");
+            panic!("expected LimitExceeded, got {err:?}");
         };
         assert!(
             kind == "mime_depth" || kind == "mime_parts",

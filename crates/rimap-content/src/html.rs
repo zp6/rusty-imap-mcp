@@ -734,6 +734,7 @@ fn sanitize_body(document: &Html, decoded: &str, warnings: &mut Vec<SecurityWarn
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests may expect on constructed values")]
+#[expect(clippy::panic, reason = "test failure paths")]
 mod tests {
     use super::*;
 
@@ -746,7 +747,7 @@ mod tests {
                 assert_eq!(kind, HTML_BODY_LIMIT_KIND);
                 assert_eq!(limit, MAX_HTML_BYTES);
             }
-            other => unreachable!("unexpected error: {other:?}"),
+            other => panic!("unexpected error: {other:?}"),
         }
     }
 

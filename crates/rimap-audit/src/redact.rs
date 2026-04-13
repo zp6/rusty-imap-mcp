@@ -158,12 +158,15 @@ impl<'a> Redactor<'a> {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json::to_vec(Value) is infallible"
+    )]
     fn salted_hash(&self, value: &Value) -> Value {
         // Canonicalize via `serde_json::to_vec`; equal values hash to the same
         // bytes within a process because `serde_json` preserves Map insertion
         // order (BTreeMap in our inputs).
-        let bytes = serde_json::to_vec(value)
-            .unwrap_or_else(|_| unreachable!("serde_json::to_vec of Value is infallible"));
+        let bytes = serde_json::to_vec(value).expect("serde_json::to_vec of Value is infallible");
         let mut hasher = Sha256::new();
         hasher.update(self.salt.as_bytes());
         hasher.update(&bytes);
@@ -180,9 +183,13 @@ impl<'a> Redactor<'a> {
 /// Computes `sha256(serde_json::to_vec(args))` on the *unredacted* arguments
 /// for the `arguments_hash_sha256` audit field.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "serde_json::to_vec(Value) is infallible"
+)]
 pub fn hash_arguments(args: &Value) -> String {
-    let bytes = serde_json::to_vec(args)
-        .unwrap_or_else(|_| unreachable!("serde_json::to_vec of Value is infallible"));
+    let bytes = serde_json::to_vec(args).expect("serde_json::to_vec of Value is infallible");
     let digest = Sha256::digest(&bytes);
     hex::encode(digest)
 }

@@ -60,11 +60,14 @@ impl TlsFingerprint {
                 return Err(FingerprintParseError::NonHex { ch: c });
             }
         }
+        // Both conversions are guarded by the validation above: 64 hex
+        // chars always decode to exactly 32 bytes. Map residual errors to
+        // WrongLength as a defensive fallback.
         let bytes = hex::decode(&cleaned)
-            .unwrap_or_else(|_| unreachable!("validated 64 ascii hex chars above"));
+            .map_err(|_| FingerprintParseError::WrongLength { got: cleaned.len() })?;
         let arr: [u8; 32] = bytes
             .try_into()
-            .unwrap_or_else(|_| unreachable!("64 hex chars decode to 32 bytes"));
+            .map_err(|_| FingerprintParseError::WrongLength { got: cleaned.len() })?;
         Ok(Self(arr))
     }
 

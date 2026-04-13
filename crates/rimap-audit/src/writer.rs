@@ -455,8 +455,9 @@ fn do_write_locked(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), A
         path: path.to_path_buf(),
         source,
     })?;
-    let written =
-        u64::try_from(bytes.len()).unwrap_or_else(|_| unreachable!("bytes.len() fits in u64"));
+    // bytes.len() is usize; on 64-bit targets this always fits in u64.
+    // On hypothetical 128-bit targets, saturate rather than panic.
+    let written = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
     guard.bytes_written = guard.bytes_written.saturating_add(written);
     Ok(())
 }

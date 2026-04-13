@@ -208,12 +208,13 @@ impl CredentialStore for StaticCreds {
         Ok(Some(self.0.clone()))
     }
 
+    #[expect(clippy::panic, clippy::panic_in_result_fn, reason = "test stub")]
     fn set_password(
         &self,
         _account: &str,
         _password: &str,
     ) -> Result<(), rimap_config::ConfigError> {
-        unreachable!("tests do not write credentials")
+        panic!("tests do not write credentials")
     }
 }
 

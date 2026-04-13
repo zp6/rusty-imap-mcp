@@ -201,6 +201,7 @@ expect_used = "warn"
 panic = "deny"
 panic_in_result_fn = "deny"
 unimplemented = "deny"
+unreachable = "deny"
 # No cheating
 allow_attributes = "deny"
 # Code hygiene

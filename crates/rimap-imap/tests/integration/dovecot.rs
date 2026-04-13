@@ -117,8 +117,9 @@ async fn case_04_login_rejected_emits_audit() {
         fn get_password(&self, _: &str) -> Result<Option<String>, rimap_config::ConfigError> {
             Ok(Some("wrong-password".to_string()))
         }
+        #[expect(clippy::panic, clippy::panic_in_result_fn, reason = "test stub")]
         fn set_password(&self, _: &str, _: &str) -> Result<(), rimap_config::ConfigError> {
-            unreachable!()
+            panic!("tests do not write credentials")
         }
     }
 
