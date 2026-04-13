@@ -1,0 +1,25 @@
+[package]
+name = "rimap-smtp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme.workspace = true
+description = "SMTP client for rusty-imap-mcp — lettre wrapper with TLS and error mapping"
+
+[lints]
+workspace = true
+
+[dependencies]
+rimap-core = { path = "../rimap-core", version = "0.0.0" }
+rimap-config = { path = "../rimap-config", version = "0.0.0" }
+
+lettre = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros"] }

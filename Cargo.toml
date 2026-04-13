@@ -8,6 +8,7 @@ members = [
     "crates/rimap-audit",
     "crates/rimap-authz",
     "crates/rimap-server",
+    "crates/rimap-smtp",
 ]
 
 [workspace.package]
@@ -163,6 +164,12 @@ unicode-script = "0.5.8"
 # phf family. (SC-PROC-01)
 phf = { version = "0.13.1", default-features = false }
 phf_codegen = "0.13.1"
+
+# SMTP client (Sprint 2b)
+# lettre 0.11 provides async SMTP with rustls TLS. The tokio1-rustls-tls
+# feature wires lettre's async executor to Tokio 1.x via rustls (not native-tls).
+# No proc-macros. Re-audit on any minor bump. (SC-DEP-10)
+lettre = { version = "0.11.21", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
 
 # MCP server (Sprint 5)
 # rmcp 1.4 is the Rust MCP SDK. Transitive proc-macros: rmcp-macros (the
