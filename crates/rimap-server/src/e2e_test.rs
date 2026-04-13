@@ -314,6 +314,7 @@ fn test_guard(config: &ValidatedConfig) -> DispatchGuard<SystemClock> {
     let governor = Governor::new(
         config.config.limits.commands_per_second,
         config.config.limits.drafts_per_minute,
+        config.config.limits.sends_per_minute,
     )
     .expect("governor");
     DispatchGuard::new(matrix, breaker, governor)
