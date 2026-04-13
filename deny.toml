@@ -26,6 +26,10 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "MPL-2.0",
+    # quoted_printable 0.5 (transitive of lettre) uses 0BSD — the BSD Zero
+    # Clause License, an OSI-approved permissive license more liberal than MIT
+    # (no attribution required). Accepted for Sprint 2b's rimap-smtp crate.
+    "0BSD",
     # webpki-roots >= 0.26.10 re-licensed from MPL-2.0 to CDLA-Permissive-2.0
     # (Community Data License Agreement). It's a legitimate permissive license
     # published by the Linux Foundation. Accepted here because the alternative
@@ -57,6 +61,12 @@ skip = [
     { name = "event-listener", version = "2" },
     { name = "thiserror", version = "1" },
     { name = "thiserror-impl", version = "1" },
+
+    # `nom` v7 is pulled by async-imap (via imap-proto), while v8 enters
+    # via lettre. Both are the latest releases from their respective
+    # consumers. Cannot unify without forking. Revisit when async-imap
+    # bumps imap-proto to a nom 8 release.
+    { name = "nom", version = "7" },
 
     # `utf7-imap 0.3.2` depends on `base64 0.13`, while `async-imap` and
     # `rmcp` use `base64 0.22`. utf7-imap is unmaintained upstream with
