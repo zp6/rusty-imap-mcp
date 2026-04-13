@@ -7,7 +7,6 @@ pub mod expunge;
 pub mod fetch_message;
 pub mod flags;
 pub mod folder_mgmt;
-#[expect(dead_code, reason = "handlers wired in 3a-T5 dispatch")]
 pub mod labels;
 pub mod list_attachments;
 pub mod list_folders;

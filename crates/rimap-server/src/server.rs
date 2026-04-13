@@ -172,9 +172,18 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::folder_mgmt::handle_delete(self, input)).await
             }
-            ToolName::AddLabel | ToolName::RemoveLabel | ToolName::ListLabels => Err(
-                rimap_core::RimapError::Internal("label tools not yet implemented".into()),
-            ),
+            ToolName::AddLabel => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::labels::handle_add_label(self, input)).await
+            }
+            ToolName::RemoveLabel => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::labels::handle_remove_label(self, input)).await
+            }
+            ToolName::ListLabels => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::labels::handle_list_labels(self, input)).await
+            }
         }
     }
 }
@@ -207,7 +216,9 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
 /// (e.g. `SearchAdvanced` and `FetchMessageHtml` are gated
 /// sub-capabilities, not separate MCP tools).
 fn tool_definition(name: ToolName) -> Option<Tool> {
-    let (tool_name, description, schema) = tool_spec_v1(name).or_else(|| tool_spec_v2(name))?;
+    let (tool_name, description, schema) = tool_spec_v1(name)
+        .or_else(|| tool_spec_v2(name))
+        .or_else(|| tool_spec_v3(name))?;
     Some(Tool::new(tool_name, description, Arc::new(schema)))
 }
 
@@ -332,6 +343,31 @@ fn tool_spec_v2(name: ToolName) -> Option<ToolSpec> {
     Some(tuple)
 }
 
+/// Return (name, description, schema) for v3 label tools.
+fn tool_spec_v3(name: ToolName) -> Option<ToolSpec> {
+    use crate::tools::labels::{LabelInput, ListLabelsInput};
+
+    let tuple = match name {
+        ToolName::AddLabel => (
+            "add_label",
+            "Add a keyword label to messages",
+            schema_map::<LabelInput>(),
+        ),
+        ToolName::RemoveLabel => (
+            "remove_label",
+            "Remove a keyword label from messages",
+            schema_map::<LabelInput>(),
+        ),
+        ToolName::ListLabels => (
+            "list_labels",
+            "List keyword labels on a message",
+            schema_map::<ListLabelsInput>(),
+        ),
+        _ => return None,
+    };
+    Some(tuple)
+}
+
 #[cfg(test)]
 mod tests {
     use rimap_core::tool::ToolName;
@@ -344,8 +380,8 @@ mod tests {
             .into_iter()
             .filter_map(tool_definition)
             .collect();
-        // 19 tool variants minus 2 sub-capabilities = 17
-        assert_eq!(defs.len(), 17);
+        // 22 tool variants minus 2 sub-capabilities = 20
+        assert_eq!(defs.len(), 20);
     }
 
     #[test]
