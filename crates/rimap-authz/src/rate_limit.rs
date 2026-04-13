@@ -70,13 +70,55 @@ impl Governor {
             retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
                 .unwrap_or(u64::MAX),
         })?;
-        if matches!(tool, ToolName::CreateDraft) {
+        let is_draft = match tool {
+            ToolName::CreateDraft => true,
+            ToolName::ListFolders
+            | ToolName::Search
+            | ToolName::SearchAdvanced
+            | ToolName::FetchMessage
+            | ToolName::FetchMessageHtml
+            | ToolName::ListAttachments
+            | ToolName::DownloadAttachment
+            | ToolName::MarkRead
+            | ToolName::MarkUnread
+            | ToolName::Flag
+            | ToolName::Unflag
+            | ToolName::MoveMessage
+            | ToolName::SendEmail
+            | ToolName::DeleteMessage
+            | ToolName::Expunge
+            | ToolName::CreateFolder
+            | ToolName::RenameFolder
+            | ToolName::DeleteFolder => false,
+        };
+        if is_draft {
             self.drafts.check().map_err(|nu| AuthzError::RateLimited {
                 retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
                     .unwrap_or(u64::MAX),
             })?;
         }
-        if matches!(tool, ToolName::SendEmail) {
+        let is_send = match tool {
+            ToolName::SendEmail => true,
+            ToolName::ListFolders
+            | ToolName::Search
+            | ToolName::SearchAdvanced
+            | ToolName::FetchMessage
+            | ToolName::FetchMessageHtml
+            | ToolName::ListAttachments
+            | ToolName::DownloadAttachment
+            | ToolName::MarkRead
+            | ToolName::MarkUnread
+            | ToolName::Flag
+            | ToolName::Unflag
+            | ToolName::MoveMessage
+            | ToolName::CreateDraft
+            | ToolName::DeleteMessage
+            | ToolName::Expunge
+            | ToolName::CreateFolder
+            | ToolName::RenameFolder
+            | ToolName::DeleteFolder => false,
+        };
+        if is_send {
             self.sends.check().map_err(|nu| AuthzError::RateLimited {
                 retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
                     .unwrap_or(u64::MAX),
