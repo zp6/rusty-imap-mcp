@@ -584,3 +584,166 @@ async fn case_16_move_message_between_folders() {
         "message should be in Archive after move"
     );
 }
+
+/// `delete_message`: flag + move to Trash, verify UID gone from INBOX.
+#[tokio::test]
+async fn case_17_delete_message() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+    // Append a test message to INBOX
+    let msg = support::fixtures::minimal_rfc5322("delete-test");
+    h.connection
+        .append_message("INBOX", &msg, &[], &[])
+        .await
+        .unwrap();
+
+    // Find the appended message
+    let uids = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("delete-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!uids.is_empty(), "seeded message not found");
+    let uid = uids[0];
+
+    // Create Trash folder (Dovecot may not have it by default)
+    let _ = h.connection.create_folder("Trash").await;
+
+    // Delete it (move to Trash)
+    let result = h
+        .connection
+        .delete_message("INBOX", uid, "Trash")
+        .await
+        .unwrap();
+    assert!(result.moved_to_trash);
+
+    // Verify it's gone from INBOX
+    let after = h
+        .connection
+        .search(
+            "INBOX",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("delete-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !after.contains(&uid),
+        "message should be gone from INBOX after delete"
+    );
+}
+
+/// expunge: flag \Deleted + expunge, verify message is permanently removed.
+#[tokio::test]
+async fn case_18_expunge() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+    let _ = h.connection.create_folder("Trash").await;
+
+    // Append a message directly to Trash
+    let msg = support::fixtures::minimal_rfc5322("expunge-test");
+    h.connection
+        .append_message("Trash", &msg, &[], &[])
+        .await
+        .unwrap();
+
+    // Find it
+    let uids = h
+        .connection
+        .search(
+            "Trash",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("expunge-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!uids.is_empty());
+    let uid = uids[0];
+
+    // Flag as \Deleted
+    h.connection
+        .store_flags(
+            "Trash",
+            &[uid],
+            &[rimap_imap::types::Flag::Deleted],
+            rimap_imap::types::FlagAction::Add,
+        )
+        .await
+        .unwrap();
+
+    // Expunge
+    let (deleted_uids, count) = h.connection.expunge("Trash").await.unwrap();
+    assert!(
+        !deleted_uids.is_empty(),
+        "should find deleted UIDs pre-expunge"
+    );
+    assert!(count > 0, "should expunge at least one message");
+
+    // Verify it's gone
+    let after = h
+        .connection
+        .search(
+            "Trash",
+            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+                subject: Some("expunge-test".to_string()),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        !after.contains(&uid),
+        "message should be gone after expunge"
+    );
+}
+
+/// `create_folder` + `rename_folder` + `delete_folder` round-trip.
+#[tokio::test]
+async fn case_19_folder_management() {
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+
+    // Create
+    h.connection.create_folder("TestFolder").await.unwrap();
+    let folders = h.connection.list_folders("*").await.unwrap();
+    assert!(
+        folders.iter().any(|f| f.name == "TestFolder"),
+        "TestFolder should exist after create"
+    );
+
+    // Rename
+    h.connection
+        .rename_folder("TestFolder", "RenamedFolder")
+        .await
+        .unwrap();
+    let folders = h.connection.list_folders("*").await.unwrap();
+    assert!(
+        folders.iter().any(|f| f.name == "RenamedFolder"),
+        "RenamedFolder should exist after rename"
+    );
+    assert!(
+        !folders.iter().any(|f| f.name == "TestFolder"),
+        "TestFolder should not exist after rename"
+    );
+
+    // Delete
+    h.connection.delete_folder("RenamedFolder").await.unwrap();
+    let folders = h.connection.list_folders("*").await.unwrap();
+    assert!(
+        !folders.iter().any(|f| f.name == "RenamedFolder"),
+        "RenamedFolder should not exist after delete"
+    );
+}
