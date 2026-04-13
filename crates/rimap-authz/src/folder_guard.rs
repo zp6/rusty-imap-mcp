@@ -51,6 +51,20 @@ impl FolderGuard {
         Ok(())
     }
 
+    /// Check that neither `old_name` nor `new_name` is protected.
+    /// Both names are validated and compared using IMAP-aware
+    /// normalization.
+    ///
+    /// # Errors
+    /// Returns [`AuthzError::InvalidFolderName`] if either name
+    /// fails validation. Returns [`AuthzError::ProtectedFolder`]
+    /// if either name is in the protected list or is INBOX.
+    pub fn check_rename(&self, old_name: &str, new_name: &str) -> Result<(), AuthzError> {
+        self.check_protected(old_name, "rename")?;
+        self.check_protected(new_name, "rename")?;
+        Ok(())
+    }
+
     /// Check whether folder is in the expunge allowlist. Validates
     /// folder name structure before comparison.
     ///
@@ -170,5 +184,29 @@ mod tests {
             g.check_expunge("test\0folder"),
             Err(AuthzError::InvalidFolderName { .. })
         ));
+    }
+
+    #[test]
+    fn rename_rejects_protected_old_name() {
+        let g = guard();
+        assert!(matches!(
+            g.check_rename("Sent", "Archive"),
+            Err(AuthzError::ProtectedFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn rename_rejects_protected_new_name() {
+        let g = guard();
+        assert!(matches!(
+            g.check_rename("MyFolder", "INBOX"),
+            Err(AuthzError::ProtectedFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn rename_allows_unprotected_both() {
+        let g = guard();
+        assert!(g.check_rename("Old", "New").is_ok());
     }
 }
