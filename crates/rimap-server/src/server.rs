@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
 use rimap_authz::DispatchGuard;
+use rimap_authz::FolderGuard;
 use rimap_authz::breaker::SystemClock;
 use rimap_config::validate::ValidatedConfig;
 use rimap_core::tool::ToolName;
@@ -39,6 +40,8 @@ pub struct ImapMcpServer {
     pub(crate) audit: AuditWriter,
     /// Directory for attachment downloads.
     pub(crate) download_dir: PathBuf,
+    /// Folder safety guard (protected folders + expunge allowlist).
+    pub(crate) folder_guard: FolderGuard,
 }
 
 impl ServerHandler for ImapMcpServer {

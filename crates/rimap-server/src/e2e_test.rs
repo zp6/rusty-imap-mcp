@@ -245,6 +245,10 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     let guard = test_guard(&config);
 
     let server = ImapMcpServer {
+        folder_guard: rimap_authz::FolderGuard::new(
+            &config.config.security.protected_folders,
+            &config.config.security.expunge_folders,
+        ),
         config,
         imap,
         guard,

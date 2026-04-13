@@ -108,6 +108,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     let audit_for_shutdown = audit.clone();
     let mcp_server = server::ImapMcpServer {
+        folder_guard: rimap_authz::FolderGuard::new(
+            &validated.config.security.protected_folders,
+            &validated.config.security.expunge_folders,
+        ),
         config: validated,
         imap,
         guard,
