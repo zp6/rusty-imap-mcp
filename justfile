@@ -142,8 +142,42 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
+# Remove stale rimap-it-* pods/volumes left by SIGKILL'd test runs.
+# Operates below compose to avoid the lock-exhaustion cascade where
+# compose-down itself fails because podman has no free locks.
+[private]
+prune-containers:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tool="${RIMAP_CONTAINER_TOOL:-}"
+    if [ -z "$tool" ]; then
+        if command -v docker >/dev/null 2>&1; then tool=docker
+        elif command -v podman >/dev/null 2>&1; then tool=podman
+        else exit 0; fi
+    fi
+    cutoff=$(($(date +%s) - 1800))
+    # Remove stale pods (podman) or containers (docker) whose names
+    # start with rimap-it- and that were created more than 30min ago.
+    if [ "$tool" = "podman" ]; then
+        podman pod ls --format '{{{{.Name}}' --noheading 2>/dev/null \
+        | grep '^rimap-it-' \
+        | while read -r pod; do
+            created=$(podman pod inspect "$pod" --format '{{{{.Created}}' 2>/dev/null) || continue
+            ts=$(date -d "$created" +%s 2>/dev/null) || continue
+            if [ "$ts" -lt "$cutoff" ]; then
+                podman pod rm -f "$pod" 2>/dev/null || true
+            fi
+        done || true
+    fi
+    # Prune orphaned rimap-it-* volumes regardless of runtime.
+    "$tool" volume ls --format '{{{{.Name}}' 2>/dev/null \
+    | grep '^rimap-it-' \
+    | while read -r vol; do
+        "$tool" volume rm -f "$vol" 2>/dev/null || true
+    done || true
+
 # Unit and fast tests (no Proton Bridge).
-test:
+test: prune-containers
     cargo nextest run --workspace --locked --no-tests=pass
 
 # Verify the MSRV toolchain still builds and tests the workspace.
