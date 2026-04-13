@@ -104,6 +104,14 @@ pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_c
             message: "subject contains forbidden characters".into(),
         });
     }
+    if let Some(folder) = &input.in_reply_to_folder {
+        rimap_authz::folder_name::FolderName::new(folder).map_err(|e| {
+            rimap_core::RimapError::Authz {
+                code: e.code(),
+                message: format!("in_reply_to_folder: {e}"),
+            }
+        })?;
+    }
     Ok(())
 }
 
@@ -651,6 +659,41 @@ mod tests {
             address: "ok@example.com".into(),
         }]);
         input.body_text = "x".repeat(1_048_576);
+        validate_compose_input(&input).unwrap();
+    }
+
+    #[test]
+    fn in_reply_to_folder_with_crlf_rejected() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.in_reply_to_uid = Some(1);
+        input.in_reply_to_folder = Some("bad\r\nfolder".into());
+        let err = validate_compose_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn in_reply_to_folder_with_null_rejected() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.in_reply_to_uid = Some(1);
+        input.in_reply_to_folder = Some("bad\0folder".into());
+        let err = validate_compose_input(&input).unwrap_err();
+        assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn in_reply_to_folder_valid_accepted() {
+        let mut input = make_input(vec![AddressInput {
+            name: None,
+            address: "ok@example.com".into(),
+        }]);
+        input.in_reply_to_uid = Some(1);
+        input.in_reply_to_folder = Some("INBOX".into());
         validate_compose_input(&input).unwrap();
     }
 
