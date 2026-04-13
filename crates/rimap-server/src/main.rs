@@ -32,9 +32,9 @@ use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
 use rimap_authz::matrix::EffectiveMatrix;
 use rimap_authz::rate_limit::Governor;
 use rimap_config::credential::{CredentialStore, KeyringStore};
-use rimap_config::loader::{load_from_path, resolve_config_path};
+use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
-use rimap_config::validate::{ValidatedConfig, validate};
+use rimap_config::validate::ValidatedAccountConfig;
 use rimap_imap::{Connection, ConnectionConfig};
 
 use crate::cli::{AuditAction, Cli, Command};
@@ -93,40 +93,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Server mode: load config, build subsystems, run MCP transport.
     let config_path = resolve_cli_config_path(&cli)?;
-    let raw = load_from_path(&config_path)
+    let multi = load_and_validate(&config_path)
         .with_context(|| format!("loading config {}", config_path.display()))?;
-    let validated = validate(raw).context("validating config")?;
-    let audit = audit_init::init_audit_writer(&validated, &config_path).with_context(|| {
-        format!(
-            "opening audit log at {}",
-            validated.config.audit.path.display()
-        )
-    })?;
+    let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
+        .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
 
-    let guard = build_dispatch_guard(&validated).context("building dispatch guard")?;
-    let conn_cfg = build_connection_config(&validated);
     let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
-    let imap = Connection::new(conn_cfg, audit.clone(), credentials);
-    let download_dir = resolve_download_dir(&validated)?;
-
-    let folder_guard = rimap_authz::FolderGuard::new(
-        &validated.config.security.protected_folders,
-        &validated.config.security.expunge_folders,
-    );
-    let from_address = validated.config.imap.username.clone();
-
-    let id = rimap_core::account::AccountId::default_account();
-    let state = registry::AccountState {
-        id: id.clone(),
-        from_address,
-        imap,
-        smtp: None,
-        guard,
-        folder_guard,
-    };
-    let mut accounts = std::collections::BTreeMap::new();
-    accounts.insert(id, state);
-    let registry = registry::AccountRegistry::new(accounts);
+    let download_dir = resolve_download_dir_multi(&multi)?;
+    let registry = build_registry(&multi, &audit, &credentials)?;
 
     let audit_for_shutdown = audit.clone();
     let mcp_server = server::ImapMcpServer {
@@ -174,44 +148,93 @@ fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
         })
 }
 
-/// Build the composed authz guard from validated config.
-fn build_dispatch_guard(cfg: &ValidatedConfig) -> anyhow::Result<DispatchGuard<SystemClock>> {
-    let matrix = EffectiveMatrix::from_validated(cfg);
-    let limits = &cfg.config.limits;
+/// Build the account registry from a validated multi-account config.
+fn build_registry(
+    multi: &rimap_config::validate::ValidatedMultiConfig,
+    audit: &rimap_audit::AuditWriter,
+    credentials: &Arc<dyn CredentialStore>,
+) -> anyhow::Result<registry::AccountRegistry> {
+    let mut account_states = std::collections::BTreeMap::new();
+    for (id, acfg) in &multi.accounts {
+        let guard = build_account_guard(acfg).context("building dispatch guard")?;
+        let conn_cfg = build_account_connection(acfg);
+        let imap = Connection::new(conn_cfg, audit.clone(), credentials.clone());
+
+        let smtp = build_smtp_client(acfg, credentials)?;
+
+        let folder_guard = rimap_authz::FolderGuard::new(
+            &acfg.security.protected_folders,
+            &acfg.security.expunge_folders,
+        );
+
+        let state = registry::AccountState {
+            id: id.clone(),
+            from_address: acfg.imap.username.clone(),
+            imap,
+            smtp,
+            guard,
+            folder_guard,
+        };
+        account_states.insert(id.clone(), state);
+    }
+    Ok(registry::AccountRegistry::new(account_states))
+}
+
+/// Build an SMTP client from account config, if SMTP is configured.
+fn build_smtp_client(
+    acfg: &ValidatedAccountConfig,
+    credentials: &Arc<dyn CredentialStore>,
+) -> anyhow::Result<Option<rimap_smtp::SmtpClient>> {
+    let Some(ref smtp_cfg) = acfg.smtp else {
+        return Ok(None);
+    };
+    let smtp_password =
+        rimap_config::resolve_credential(&**credentials, &smtp_cfg.username, &smtp_cfg.host)
+            .with_context(|| format!("resolving SMTP credential for {}", smtp_cfg.username))?;
+    let client = rimap_smtp::SmtpClient::new(smtp_cfg, &smtp_password)
+        .with_context(|| format!("building SMTP client for {}", smtp_cfg.host))?;
+    Ok(Some(client))
+}
+
+/// Build the composed authz guard from a per-account config.
+fn build_account_guard(
+    acfg: &ValidatedAccountConfig,
+) -> anyhow::Result<DispatchGuard<SystemClock>> {
+    let matrix = EffectiveMatrix::build(acfg.security.posture, &acfg.tool_overrides);
     let breaker_cfg = BreakerConfig {
-        error_threshold: limits.circuit_breaker_error_threshold,
-        window: Duration::from_secs(u64::from(limits.circuit_breaker_window_seconds)),
+        error_threshold: acfg.limits.circuit_breaker_error_threshold,
+        window: Duration::from_secs(u64::from(acfg.limits.circuit_breaker_window_seconds)),
         ..BreakerConfig::default_spec()
     };
     let breaker = CircuitBreaker::new(SystemClock::new(), breaker_cfg);
     let governor = Governor::new(
-        limits.commands_per_second,
-        limits.drafts_per_minute,
-        limits.sends_per_minute,
+        acfg.limits.commands_per_second,
+        acfg.limits.drafts_per_minute,
+        acfg.limits.sends_per_minute,
     )
     .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
     Ok(DispatchGuard::new(matrix, breaker, governor))
 }
 
-/// Map validated config fields to a `ConnectionConfig`.
-fn build_connection_config(cfg: &ValidatedConfig) -> ConnectionConfig {
-    let imap = &cfg.config.imap;
+/// Map a per-account config to a `ConnectionConfig`.
+fn build_account_connection(acfg: &ValidatedAccountConfig) -> ConnectionConfig {
     ConnectionConfig {
-        host: imap.host.clone(),
-        port: imap.port,
-        username: imap.username.clone(),
-        pinned_fingerprint: cfg.tls_fingerprint,
-        connect_timeout: Duration::from_secs(u64::from(imap.connect_timeout_seconds)),
-        command_timeout: Duration::from_secs(u64::from(imap.command_timeout_seconds)),
-        max_fetch_body_bytes: cfg.config.limits.max_fetch_body_bytes,
-        max_append_bytes: cfg.config.limits.max_append_bytes,
+        host: acfg.imap.host.clone(),
+        port: acfg.imap.port,
+        username: acfg.imap.username.clone(),
+        pinned_fingerprint: acfg.tls_fingerprint,
+        connect_timeout: Duration::from_secs(u64::from(acfg.imap.connect_timeout_seconds)),
+        command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
+        max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
+        max_append_bytes: acfg.limits.max_append_bytes,
     }
 }
 
-/// Resolve the attachment download directory. Uses the configured
-/// path if non-empty, otherwise creates a temporary directory.
-fn resolve_download_dir(cfg: &ValidatedConfig) -> anyhow::Result<PathBuf> {
-    let dir_str = &cfg.config.attachments.download_dir;
+/// Resolve the attachment download directory from a multi-account config.
+fn resolve_download_dir_multi(
+    multi: &rimap_config::validate::ValidatedMultiConfig,
+) -> anyhow::Result<PathBuf> {
+    let dir_str = &multi.attachments.download_dir;
     if dir_str.is_empty() {
         let tmp = std::env::temp_dir().join("rusty-imap-mcp-downloads");
         std::fs::create_dir_all(&tmp)

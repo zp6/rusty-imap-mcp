@@ -3,16 +3,23 @@
 
 use std::path::Path;
 
+use rimap_audit::record::AccountSummary;
 use rimap_audit::{AuditError, AuditOptions, AuditWriter, ProcessStartInputs, Seq};
+#[cfg(test)]
 use rimap_config::ValidatedConfig;
+use rimap_config::validate::ValidatedMultiConfig;
 use sha2::{Digest, Sha256};
 
-/// Open the audit writer, run the pre-flight self-check, and emit the
-/// `process_start` record. Returns the writer ready for production use.
+/// Open the audit writer from a legacy `ValidatedConfig`, run the pre-flight
+/// self-check, and emit the `process_start` record.
+///
+/// Retained for test compatibility. Production code uses
+/// [`init_audit_writer_multi`].
 ///
 /// # Errors
 /// Propagates any `AuditError` from the trailing-state read, open, inode
 /// fetch, or `process_start` write.
+#[cfg(test)]
 pub fn init_audit_writer(
     cfg: &ValidatedConfig,
     config_file_path: &Path,
@@ -42,6 +49,76 @@ pub fn init_audit_writer(
         git_commit: String::new(),
         posture: Some(cfg.config.security.posture.to_string()),
         accounts: None,
+        config_path: config_file_path.to_path_buf(),
+        config_hash_sha256: config_hash,
+        trailing,
+        current_inode: current,
+    })?;
+
+    Ok(writer)
+}
+
+/// Open the audit writer for a multi-account config and emit the
+/// `process_start` record with per-account summaries.
+///
+/// # Errors
+/// Propagates any `AuditError` from the trailing-state read, open, inode
+/// fetch, or `process_start` write.
+pub fn init_audit_writer_multi(
+    multi: &ValidatedMultiConfig,
+    config_file_path: &Path,
+) -> Result<AuditWriter, AuditError> {
+    let audit_path = &multi.audit.path;
+    let trailing = rimap_audit::read_trailing_state(audit_path)?;
+    let initial_seq = trailing.last_seq.map_or(Seq::FIRST, Seq::next);
+
+    let writer = AuditWriter::open(&AuditOptions {
+        path: audit_path.clone(),
+        rotate_bytes: multi.audit.rotate_bytes,
+        rotate_keep: multi.audit.rotate_keep,
+        retention_seconds: multi.audit.retention_seconds,
+        fail_open: multi.audit.fail_open,
+        initial_seq,
+    })?;
+
+    if let Some(parent) = writer.path().parent() {
+        rimap_audit::backup_exclude::exclude_from_backup(parent);
+    }
+
+    let current = rimap_audit::current_inode(audit_path)?;
+    let config_hash = compute_config_hash(config_file_path);
+
+    let single_account = multi.accounts.len() == 1;
+    let posture = if single_account {
+        multi
+            .accounts
+            .values()
+            .next()
+            .map(|a| a.security.posture.to_string())
+    } else {
+        None
+    };
+    let accounts = if single_account {
+        None
+    } else {
+        Some(
+            multi
+                .accounts
+                .values()
+                .map(|a| AccountSummary {
+                    name: a.id.as_str().to_string(),
+                    posture: a.security.posture.to_string(),
+                    imap_host: a.imap.host.clone(),
+                })
+                .collect(),
+        )
+    };
+
+    writer.log_process_start(ProcessStartInputs {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        git_commit: String::new(),
+        posture,
+        accounts,
         config_path: config_file_path.to_path_buf(),
         config_hash_sha256: config_hash,
         trailing,
