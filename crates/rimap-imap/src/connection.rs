@@ -410,7 +410,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::list(session, pattern).await
         })
         .await;
@@ -435,7 +437,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::status(session, folder, items).await
         })
         .await;
@@ -460,7 +464,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, folder, read_only).await
         })
         .await;
@@ -485,7 +491,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::search::search(session, folder, query).await
         })
         .await;
@@ -512,7 +520,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::fetch::fetch(session, folder, uids, spec).await
         })
         .await;
@@ -551,7 +561,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             let server_size = crate::ops::fetch::preflight_fetch_size(session, folder, uid).await?;
             crate::ops::fetch::preflight_size_check(server_size, limit)?;
             crate::ops::fetch::fetch_body(session, folder, uid, limit).await
@@ -602,7 +614,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, folder, false).await?;
             crate::ops::store::store(session, uids, flags, action).await
         })
@@ -638,7 +652,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, source_folder, false).await?;
             crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move, has_uidplus)
                 .await
@@ -671,7 +687,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::append::append(session, folder, message, flags, keywords, limit).await
         })
         .await;
@@ -702,7 +720,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, folder, false).await?;
             crate::ops::delete::delete_message(
                 session,
@@ -737,7 +757,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             let deleted_uids = crate::ops::expunge::count_deleted(session, folder).await?;
             crate::ops::folders::select(session, folder, false).await?;
             let count = crate::ops::expunge::expunge(session).await?;
@@ -763,7 +785,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folder_mgmt::create_folder(session, name).await
         })
         .await;
@@ -786,7 +810,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folder_mgmt::rename_folder(session, old_name, new_name).await
         })
         .await;
@@ -808,7 +834,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folder_mgmt::delete_folder(session, name).await
         })
         .await;
