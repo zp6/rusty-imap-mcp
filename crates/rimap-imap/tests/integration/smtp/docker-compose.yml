@@ -1,8 +1,9 @@
 services:
   smtp:
     # Mailpit: SMTP sink with HTTP API for test assertions.
-    # Pinned to exact version — update via Dependabot or manually.
-    image: docker.io/axllent/mailpit:v1.29.5
+    # Pinned by digest — update via Dependabot or manually.
+    # v1.29.5
+    image: docker.io/axllent/mailpit@sha256:0d7b9c8ed469f400087d9abf1df5b7c7c88b33ae7b8b381ea5a2b153ef27aacf
     container_name: ${COMPOSE_PROJECT_NAME:-rimap-it}-smtp
     ports:
       # Loopback-only. Host ports pre-allocated by the Rust harness.
