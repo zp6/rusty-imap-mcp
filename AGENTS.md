@@ -19,16 +19,20 @@ structural tagging (`meta` / `untrusted` / `security_warnings`), Unicode
 normalization, look-alike detection, content provenance tracking in the audit
 log, posture-based authorization, and rate limiting.
 
-**Source of truth:** the design specification lives at
-[`docs/superpowers/specs/2026-04-07-rusty-imap-mcp-design.md`](docs/superpowers/specs/2026-04-07-rusty-imap-mcp-design.md).
-Read it before making non-trivial changes. Sprint-by-sprint implementation
-plans live in [`docs/superpowers/plans/`](docs/superpowers/plans/).
+**Source of truth:** the design specifications live at
+[`docs/superpowers/specs/`](docs/superpowers/specs/): the v1 spec
+(`2026-04-07-rusty-imap-mcp-design.md`), v2 spec
+(`2026-04-12-v2-design.md`), and sprint 3 spec
+(`2026-04-13-sprint-3-design.md`). Read them before making non-trivial
+changes. Sprint-by-sprint implementation plans live in
+[`docs/superpowers/plans/`](docs/superpowers/plans/).
 
 ## Repository status
 
-The repo is under active pre-v1 development. Sprint 0 (scaffolding) landed on
-`main`. No feature code exists yet — the seven member crates under `crates/`
-are empty placeholders. Features land sprint by sprint against dedicated plans.
+v1.0.0 is feature-complete. The eight member crates under `crates/` implement
+22 posture-gated MCP tools + 2 infrastructure tools (24 `ToolName` variants),
+multi-account support, SMTP sending, an audit log, and a content pipeline with
+look-alike detection. Five platform targets are built via the release workflow.
 
 ## Development commands
 
@@ -86,6 +90,7 @@ crates/
 ├── rimap-content/   # MIME parse, Unicode, HTML→text, look-alike, sanitization
 ├── rimap-audit/     # append-only JSONL audit log with exclusive file locking
 ├── rimap-authz/     # posture matrix, rate limiter, circuit breaker
+├── rimap-smtp/      # lettre wrapper, SMTP connection, TLS
 └── rimap-server/    # rmcp server (bin), tool dispatch, main.rs
 ```
 
@@ -157,11 +162,12 @@ are the ones that trip people up or aren't obvious from the lint set.
 - **`prek` hooks run on every commit and push.** If a hook fails, fix the
   underlying issue — do not `--no-verify`. Do not `--amend` commits that have
   been pushed.
-- **PR workflow:** feature branch → push → PR against `main`. CI runs all six
+- **PR workflow:** feature branch -> push -> PR against `main`. CI runs all six
   status checks (`rustfmt`, `clippy`, `test (stable)`, `test (MSRV 1.88.0)`,
   `cargo-deny`, `zizmor self-check`), plus `SonarQube` for code quality. `main`
   has branch protection requiring the status checks strict (branch must be up
-  to date).
+  to date). A separate release workflow triggers on `v*` tags and builds
+  binaries for five platform targets.
 - **Never force-push to `main`.** Never amend commits that have been pushed.
   Never skip hooks.
 
@@ -175,10 +181,12 @@ Some changes deserve extra scrutiny. When touching:
   advisory lock. Never hold the lock across awaits. Never silently swallow
   write errors — audit failures must surface as `ERR_INTERNAL` tool errors by
   default.
-- **`rimap-authz` posture matrix:** additions to the tool set must update the
-  matrix in `rimap-core` first, then the matrix-driven tool advertisement in
-  `rimap-server`. Tools denied by the active posture must not be advertised via
-  `list_tools`.
+- **`rimap-authz` posture matrix:** the matrix has 22 tools x 4 postures
+  (readonly, draft-safe, full, destructive) plus 2 infrastructure tools
+  (use_account, list_accounts) that bypass posture checks. Additions to the
+  tool set must update the matrix in `rimap-core` first, then the
+  matrix-driven tool advertisement in `rimap-server`. Tools denied by the
+  active posture must not be advertised via `list_tools`.
 - **TLS fingerprint verifier** (`rimap-imap`): the custom `ServerCertVerifier`
   must reject on fingerprint mismatch *before* any application data flows.
   Never fall back to system trust on pinning failure.
