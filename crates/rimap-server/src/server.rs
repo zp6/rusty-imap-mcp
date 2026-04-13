@@ -25,10 +25,6 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 
 /// Core MCP server. Owns every resource the handler methods need.
-#[expect(
-    dead_code,
-    reason = "config/audit/download_dir used by tool handlers in later tasks"
-)]
 pub struct ImapMcpServer {
     /// Validated configuration snapshot.
     pub(crate) config: ValidatedConfig,
@@ -37,6 +33,7 @@ pub struct ImapMcpServer {
     /// Posture + circuit breaker + rate limiter guard.
     pub(crate) guard: DispatchGuard<SystemClock>,
     /// Append-only audit writer.
+    #[expect(dead_code, reason = "used by audit logging in later sprint")]
     pub(crate) audit: AuditWriter,
     /// Directory for attachment downloads.
     pub(crate) download_dir: PathBuf,
@@ -151,15 +148,30 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::create_draft::handle(self, input)).await
             }
-            ToolName::SendEmail
-            | ToolName::DeleteMessage
-            | ToolName::Expunge
-            | ToolName::CreateFolder
-            | ToolName::RenameFolder
-            | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
-                "tool `{tool}` reached dispatch without a definition; \
-                 this is a bug"
-            ))),
+            ToolName::SendEmail => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::send_email::handle(self, input)).await
+            }
+            ToolName::DeleteMessage => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::delete_message::handle(self, input)).await
+            }
+            ToolName::Expunge => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::expunge::handle(self, input)).await
+            }
+            ToolName::CreateFolder => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::folder_mgmt::handle_create(self, input)).await
+            }
+            ToolName::RenameFolder => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::folder_mgmt::handle_rename(self, input)).await
+            }
+            ToolName::DeleteFolder => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::folder_mgmt::handle_delete(self, input)).await
+            }
         }
     }
 }
@@ -192,13 +204,26 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
 /// (e.g. `SearchAdvanced` and `FetchMessageHtml` are gated
 /// sub-capabilities, not separate MCP tools).
 fn tool_definition(name: ToolName) -> Option<Tool> {
+    let (tool_name, description, schema) = tool_spec_v1(name).or_else(|| tool_spec_v2(name))?;
+    Some(Tool::new(tool_name, description, Arc::new(schema)))
+}
+
+/// Type alias for tool spec tuples.
+type ToolSpec = (
+    &'static str,
+    &'static str,
+    serde_json::Map<String, serde_json::Value>,
+);
+
+/// Return (name, description, schema) for v1 read/organize tools.
+fn tool_spec_v1(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
         create_draft::CreateDraftInput, download_attachment::DownloadAttachmentInput,
         fetch_message::FetchMessageInput, flags::FlagInput, list_attachments::ListAttachmentsInput,
         move_message::MoveInput, search::SearchInput,
     };
 
-    let (tool_name, description, schema): (&str, &str, serde_json::Map<_, _>) = match name {
+    let tuple = match name {
         ToolName::ListFolders => (
             "list_folders",
             "List all IMAP folders",
@@ -209,14 +234,6 @@ fn tool_definition(name: ToolName) -> Option<Tool> {
             "Search messages with structured query",
             schema_map::<SearchInput>(),
         ),
-        ToolName::SearchAdvanced
-        | ToolName::FetchMessageHtml
-        | ToolName::SendEmail
-        | ToolName::DeleteMessage
-        | ToolName::Expunge
-        | ToolName::CreateFolder
-        | ToolName::RenameFolder
-        | ToolName::DeleteFolder => return None,
         ToolName::FetchMessage => (
             "fetch_message",
             "Fetch message metadata and text body",
@@ -262,9 +279,54 @@ fn tool_definition(name: ToolName) -> Option<Tool> {
             "Create a draft email with $PendingReview flag",
             schema_map::<CreateDraftInput>(),
         ),
+        _ => return None,
+    };
+    Some(tuple)
+}
+
+/// Return (name, description, schema) for v2 write/management tools.
+fn tool_spec_v2(name: ToolName) -> Option<ToolSpec> {
+    use crate::tools::{
+        delete_message::DeleteMessageInput,
+        expunge::ExpungeInput,
+        folder_mgmt::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
+        send_email::SendEmailInput,
     };
 
-    Some(Tool::new(tool_name, description, Arc::new(schema)))
+    let tuple = match name {
+        ToolName::SendEmail => (
+            "send_email",
+            "Send an email via SMTP",
+            schema_map::<SendEmailInput>(),
+        ),
+        ToolName::DeleteMessage => (
+            "delete_message",
+            "Delete a message (move to Trash)",
+            schema_map::<DeleteMessageInput>(),
+        ),
+        ToolName::Expunge => (
+            "expunge",
+            "Permanently remove deleted messages from a folder",
+            schema_map::<ExpungeInput>(),
+        ),
+        ToolName::CreateFolder => (
+            "create_folder",
+            "Create a new IMAP folder",
+            schema_map::<CreateFolderInput>(),
+        ),
+        ToolName::RenameFolder => (
+            "rename_folder",
+            "Rename an IMAP folder",
+            schema_map::<RenameFolderInput>(),
+        ),
+        ToolName::DeleteFolder => (
+            "delete_folder",
+            "Delete an IMAP folder and all its contents",
+            schema_map::<DeleteFolderInput>(),
+        ),
+        _ => return None,
+    };
+    Some(tuple)
 }
 
 #[cfg(test)]
@@ -279,8 +341,8 @@ mod tests {
             .into_iter()
             .filter_map(tool_definition)
             .collect();
-        // 19 tool variants minus 8 (2 sub-capabilities + 6 unimplemented v2) = 11
-        assert_eq!(defs.len(), 11);
+        // 19 tool variants minus 2 sub-capabilities = 17
+        assert_eq!(defs.len(), 17);
     }
 
     #[test]
@@ -312,26 +374,6 @@ mod tests {
                 !schema.is_empty(),
                 "tool {} has empty input schema",
                 def.name,
-            );
-        }
-    }
-
-    #[test]
-    fn v2_tools_return_none_from_definition() {
-        use rimap_core::tool::ToolName;
-        let v2_tools = [
-            ToolName::SendEmail,
-            ToolName::DeleteMessage,
-            ToolName::Expunge,
-            ToolName::CreateFolder,
-            ToolName::RenameFolder,
-            ToolName::DeleteFolder,
-        ];
-        for tool in v2_tools {
-            assert!(
-                tool_definition(tool).is_none(),
-                "{} should not have a tool definition yet",
-                tool.as_str(),
             );
         }
     }

@@ -60,12 +60,40 @@ impl SmtpClient {
             .send(message.clone())
             .await
             .map_err(classify_smtp_error)?;
-        Ok(format!(
-            "{} {}",
-            response.code(),
-            response.message().collect::<Vec<_>>().join(" ")
-        ))
+        Ok(format_response(&response))
     }
+
+    /// Send raw RFC 5322 bytes with an explicit envelope.
+    ///
+    /// Use this when the message is already serialized (e.g. from
+    /// `mail-builder`) and constructing a `lettre::Message` is not
+    /// practical.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SmtpError` variants for auth, TLS, rejection, timeout,
+    /// or transport failures.
+    pub async fn send_raw(
+        &self,
+        envelope: &lettre::address::Envelope,
+        raw: &[u8],
+    ) -> Result<String, SmtpError> {
+        let response = self
+            .transport
+            .send_raw(envelope, raw)
+            .await
+            .map_err(classify_smtp_error)?;
+        Ok(format_response(&response))
+    }
+}
+
+/// Format a lettre SMTP response as a human-readable string.
+fn format_response(response: &lettre::transport::smtp::response::Response) -> String {
+    format!(
+        "{} {}",
+        response.code(),
+        response.message().collect::<Vec<_>>().join(" ")
+    )
 }
 
 /// Classify a lettre SMTP error into our error taxonomy.
