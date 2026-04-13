@@ -5,11 +5,173 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-04-13
 
 ### Added
 
-- Initial design specification (`docs/superpowers/specs/2026-04-07-rusty-imap-mcp-design.md`).
-- Sprint 0 scaffolding: cargo workspace, seven empty member crates, MSRV pin at
-  1.85.1, rustfmt/clippy/cargo-deny/typos configuration, justfile, prek
-  pre-commit hooks, SHA-pinned GitHub Actions CI, dual MIT/Apache-2.0 licensing.
+#### Multi-account support
+
+- Multiple IMAP/SMTP accounts in a single server process via `[[accounts]]`
+  config array with per-account posture, rate limits, and SMTP settings.
+- `use_account` tool to set the session-scoped default account.
+- `list_accounts` tool to enumerate configured accounts with posture and
+  SMTP status.
+- MCP resource discovery: `rimap://accounts/<name>` exposes account
+  metadata (host, posture, available tools) without credentials.
+- Account resolution: explicit `account` parameter > session default >
+  auto-select (single account) > error.
+- Full backward compatibility: existing single-account `[imap]` configs
+  work unchanged as a synthetic `"default"` account.
+
+#### MCP tools (22 posture-gated + 2 infrastructure)
+
+**Read operations (all postures):**
+
+- `list_folders` -- IMAP folder listing with message counts
+- `search` -- structured query builder (from, to, subject, date range)
+- `fetch_message` -- message fetch with text body extraction
+- `list_attachments` -- attachment metadata for a message
+- `download_attachment` -- download attachment by part index
+- `list_labels` -- list custom IMAP keyword flags on a message
+
+**Mutation operations (draft-safe and above):**
+
+- `mark_read` / `mark_unread` -- set or clear `\Seen` flag
+- `flag` / `unflag` -- set or clear `\Flagged` flag
+- `add_label` / `remove_label` -- add or remove custom IMAP keyword flags
+- `move_message` -- move message between folders
+- `create_draft` -- append to Drafts with `$PendingReview` keyword
+
+**Full posture operations:**
+
+- `search_advanced` -- raw IMAP SEARCH query passthrough
+- `fetch_message_html` -- sanitized HTML body alongside text
+- `send_email` -- SMTP send with Sent folder copy
+- `delete_message` -- flag `\Deleted` and move to Trash
+- `create_folder` / `rename_folder` -- IMAP folder management
+
+**Destructive posture operations:**
+
+- `expunge` -- permanently remove `\Deleted` messages (folder allowlist)
+- `delete_folder` -- permanently remove folder (folder allowlist +
+  protected folder check)
+
+**Infrastructure tools (always available):**
+
+- `use_account` -- switch active account context
+- `list_accounts` -- list configured accounts
+
+#### Security postures
+
+Four authorization tiers with per-tool overrides:
+
+| Posture | Scope |
+|---------|-------|
+| `readonly` | Read-only: list, search, fetch, download |
+| `draft-safe` | Read + safe mutations: flags, moves, drafts (default) |
+| `full` | All above + send, delete, folder management, HTML, advanced search |
+| `destructive` | All above + expunge, delete_folder |
+
+Tools denied by the active posture are not advertised via `list_tools`.
+Per-tool `"allow"` / `"deny"` overrides merge on top of the posture.
+
+#### Content pipeline
+
+- RFC 5322 / MIME parsing via `mail-parser`
+- Charset decoding via `encoding_rs`
+- NFKC Unicode normalization
+- Invisible/ambiguous codepoint stripping (zero-width chars, bidi
+  overrides, C0/C1 controls)
+- HTML-to-text conversion with hidden-content stripping (CSS
+  `display:none`, `visibility:hidden`, `opacity:0`, white-on-white)
+- Sanitized HTML output via `ammonia` (conservative allowlist)
+- Link text/href domain mismatch detection
+- Look-alike detection: mixed-script, confusable skeleton matching,
+  display-name spoofing, reply-to domain mismatch, filename bidi tricks
+- Attachment filename sanitization (path separators, leading dots,
+  Windows reserved names, length truncation)
+- Structured response envelope: `meta` (trusted), `untrusted`
+  (sanitized), `security_warnings` (server assessment)
+
+#### SMTP sending
+
+- `rimap-smtp` crate wrapping `lettre` with rustls TLS
+- STARTTLS (port 587), implicit TLS (port 465), and plaintext modes
+- Per-send connection lifecycle (no pooling)
+- Automatic Sent folder copy via IMAP APPEND after send
+- `sends_per_minute` rate limit (default 3)
+
+#### Audit log
+
+- Append-only JSONL audit log with exclusive OS advisory file lock
+- Every tool call produces `tool_start` + `tool_end` records linked by
+  sequence number
+- Content provenance ring buffer: recently-read message IDs snapshotted
+  into every `tool_end` record
+- Account name tagged on every record in multi-account configs
+- Size-based rotation with configurable count and time-based retention
+- `audit merge` subcommand with `--account` filter and `--since` /
+  `--until` time range
+- `fail_open = false` default: audit write failures fail the tool call
+
+#### Folder safety
+
+- `protected_folders` list (default: INBOX, Sent, Drafts, Trash) --
+  blocks rename and delete on protected folders
+- `expunge_folders` allowlist (default empty = deny all) -- required for
+  `expunge` and `delete_folder`
+- `create_folder` rejects names colliding with protected folders
+
+#### Rate limiting and circuit breaker
+
+- Token-bucket rate limiter: `commands_per_second` (default 10) with
+  burst of 20
+- Separate `drafts_per_minute` (default 5) and `sends_per_minute`
+  (default 3) limits
+- Sliding-window circuit breaker: closed > open > half-open state
+  machine
+- Auth failures trip immediately (single failure opens for 60s)
+- Exponential backoff cooldown (doubled per re-trip, capped at 5 min)
+
+#### TLS fingerprint pinning
+
+- SHA-256 certificate fingerprint pinning for self-signed certs (e.g.
+  Proton Bridge)
+- Verified before any application data flows
+- Hard failure on mismatch -- no fallback to system trust store when
+  pinning is configured
+
+#### Labels
+
+- IMAP keyword-based labels via `STORE +FLAGS` / `-FLAGS`
+- `add_label`, `remove_label`, `list_labels` tools
+- Label validation: max 256 bytes, IMAP atom charset, no system flag
+  namespace (`\` prefix rejected)
+
+#### Platform support
+
+Pre-built binaries for five targets:
+
+- `x86_64-unknown-linux-gnu` (native)
+- `aarch64-unknown-linux-gnu` (cross-compiled)
+- `aarch64-apple-darwin` (native macOS)
+- `powerpc64le-unknown-linux-gnu` (QEMU emulation)
+- `s390x-unknown-linux-gnu` (QEMU emulation)
+
+#### Development toolchain
+
+- Cargo workspace with 8 member crates
+- MSRV 1.88.0 (edition 2024), dev toolchain 1.94.0
+- SHA-pinned GitHub Actions CI (fmt, clippy, test, MSRV, cargo-deny,
+  zizmor, SonarQube)
+- Release workflow triggered on `v*` tags with SHA256 checksums
+- `prek` pre-commit hooks (fmt, clippy, shellcheck, actionlint, zizmor,
+  typos)
+- `cargo-deny` supply-chain audit (advisories, licenses, bans, sources)
+- `cargo-nextest` test runner
+- Property-based tests via `proptest`, snapshot tests via `insta`
+- Adversarial email injection corpus
+- `justfile` with `just ci` as the local-CI equivalent
+- Dual MIT / Apache-2.0 license
+
+## [Unreleased]
