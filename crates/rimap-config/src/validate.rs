@@ -39,7 +39,9 @@ pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     validate_limits(&config)?;
     validate_audit(&config)?;
     validate_paths(&config)?;
+    validate_folder_safety(&config)?;
     let tool_overrides = resolve_tool_overrides(&config)?;
+    validate_smtp_required(&config, &tool_overrides)?;
     Ok(ValidatedConfig {
         config,
         tool_overrides,
@@ -80,6 +82,12 @@ fn validate_limits(config: &Config) -> Result<(), ConfigError> {
     if limits.drafts_per_minute == 0 {
         return Err(ConfigError::InvalidLimit {
             field: "limits.drafts_per_minute",
+            reason: "must be > 0".to_string(),
+        });
+    }
+    if limits.sends_per_minute == 0 {
+        return Err(ConfigError::InvalidLimit {
+            field: "limits.sends_per_minute",
             reason: "must be > 0".to_string(),
         });
     }
@@ -252,6 +260,44 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_folder_safety(config: &Config) -> Result<(), ConfigError> {
+    let protected: Vec<String> = config
+        .security
+        .protected_folders
+        .iter()
+        .map(|f| f.to_lowercase())
+        .collect();
+    for folder in &config.security.expunge_folders {
+        if protected.contains(&folder.to_lowercase()) {
+            return Err(ConfigError::ConflictingFolders {
+                folder: folder.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_smtp_required(
+    config: &Config,
+    tool_overrides: &BTreeMap<ToolName, Verdict>,
+) -> Result<(), ConfigError> {
+    use rimap_core::posture::Posture;
+
+    let posture = config.security.posture;
+    let send_email_base = matches!(posture, Posture::Full | Posture::Destructive);
+    let send_email_effective = match tool_overrides.get(&ToolName::SendEmail) {
+        Some(Verdict::Allow) => true,
+        Some(Verdict::Deny) => false,
+        None => send_email_base,
+    };
+    if send_email_effective && config.smtp.is_none() {
+        return Err(ConfigError::SmtpRequired {
+            posture: posture.to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
     let mut out = BTreeMap::new();
     for (name, verdict) in &config.security.tools {
@@ -265,6 +311,7 @@ fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>
 #[expect(clippy::unwrap_used, reason = "tests")]
 #[expect(clippy::panic, reason = "tests")]
 mod tests {
+    use rimap_core::posture::Posture;
     use rimap_core::tool::{ParseToolNameError, ToolName};
     use tempfile::TempDir;
 
@@ -554,5 +601,75 @@ path = "/tmp/audit.jsonl"
         cfg.audit.allowed_base_dir = Some(nested);
         let err = validate(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::AuditPathOutsideBase { .. }));
+    }
+
+    #[test]
+    fn smtp_required_when_send_email_enabled_by_posture() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::SmtpRequired { .. }));
+    }
+
+    #[test]
+    fn smtp_not_required_when_send_email_explicitly_denied() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        cfg.security
+            .tools
+            .insert("send_email".into(), Verdict::Deny);
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn smtp_not_required_for_draft_safe_posture() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn conflicting_folders_fails() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.protected_folders = vec!["Trash".into()];
+        cfg.security.expunge_folders = vec!["Trash".into()];
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::ConflictingFolders { .. }));
+    }
+
+    #[test]
+    fn non_overlapping_folders_passes() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.protected_folders = vec!["INBOX".into(), "Sent".into()];
+        cfg.security.expunge_folders = vec!["Trash".into()];
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn conflicting_folders_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.protected_folders = vec!["trash".into()];
+        cfg.security.expunge_folders = vec!["Trash".into()];
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::ConflictingFolders { .. }));
+    }
+
+    #[test]
+    fn zero_sends_per_minute_fails() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.limits.sends_per_minute = 0;
+        assert!(matches!(
+            validate(cfg).unwrap_err(),
+            ConfigError::InvalidLimit {
+                field: "limits.sends_per_minute",
+                ..
+            }
+        ));
     }
 }

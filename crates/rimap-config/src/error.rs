@@ -103,4 +103,23 @@ pub enum ConfigError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// `send_email` is effectively enabled but no `[smtp]` section is configured.
+    #[error(
+        "send_email is enabled (posture = {posture}) but no [smtp] section \
+         is configured; add [smtp] or deny send_email via \
+         [security.tools] send_email = \"deny\""
+    )]
+    SmtpRequired {
+        /// The posture that enabled `send_email`.
+        posture: String,
+    },
+    /// A folder appears in both `protected_folders` and `expunge_folders`.
+    #[error(
+        "folder `{folder}` is in both protected_folders and expunge_folders; \
+         a folder cannot be both protected and expungeable"
+    )]
+    ConflictingFolders {
+        /// The conflicting folder name.
+        folder: String,
+    },
 }
