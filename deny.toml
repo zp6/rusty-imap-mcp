@@ -57,6 +57,12 @@ skip = [
     { name = "event-listener", version = "2" },
     { name = "thiserror", version = "1" },
     { name = "thiserror-impl", version = "1" },
+
+    # `utf7-imap 0.3.2` depends on `base64 0.13`, while `async-imap` and
+    # `rmcp` use `base64 0.22`. utf7-imap is unmaintained upstream with
+    # this pin; the older base64 is a pure encoder/decoder with no
+    # security advisories. Revisit if utf7-imap publishes a 0.4 bump.
+    { name = "base64", version = "0.13" },
 ]
 # Multiple `windows-sys` major lines coexist because each transitive
 # consumer (`directories`, `keyring`/`dbus-secret-service`, `rpassword`,

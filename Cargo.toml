@@ -39,6 +39,7 @@ rpassword = "7.3"
 
 # Authorization primitives
 governor = "0.7"
+utf7-imap = "0.3.2"
 nonzero_ext = "0.3"
 parking_lot = "0.12"
 

@@ -20,6 +20,7 @@ nonzero_ext = { workspace = true }
 parking_lot = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+utf7-imap = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
