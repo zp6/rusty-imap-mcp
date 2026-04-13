@@ -136,9 +136,9 @@ mod tests {
     use strum::IntoEnumIterator;
 
     #[test]
-    fn all_has_exactly_nineteen_variants() {
-        assert_eq!(ToolName::all().len(), 19);
-        assert_eq!(ToolName::iter().count(), 19);
+    fn all_has_exactly_twenty_two_variants() {
+        assert_eq!(ToolName::all().len(), 22);
+        assert_eq!(ToolName::iter().count(), 22);
     }
 
     #[test]

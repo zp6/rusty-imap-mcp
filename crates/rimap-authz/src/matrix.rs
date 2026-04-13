@@ -126,6 +126,7 @@ mod tests {
             ToolName::FetchMessage,
             ToolName::ListAttachments,
             ToolName::DownloadAttachment,
+            ToolName::ListLabels,
         ] {
             assert!(base_allows(Posture::Readonly, t), "{t} should be allowed");
         }
@@ -136,6 +137,8 @@ mod tests {
             ToolName::MarkUnread,
             ToolName::Flag,
             ToolName::Unflag,
+            ToolName::AddLabel,
+            ToolName::RemoveLabel,
             ToolName::MoveMessage,
             ToolName::CreateDraft,
             ToolName::SendEmail,
@@ -256,6 +259,7 @@ mod tests {
                 ToolName::FetchMessage,
                 ToolName::ListAttachments,
                 ToolName::DownloadAttachment,
+                ToolName::ListLabels,
             ]
         );
     }
