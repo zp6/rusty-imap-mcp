@@ -34,19 +34,13 @@ pub async fn handle_create(
     server: &ImapMcpServer,
     input: CreateFolderInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    let protected = &server.config.config.security.protected_folders;
-    if protected
-        .iter()
-        .any(|p| p.eq_ignore_ascii_case(&input.name))
-    {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: format!(
-                "cannot create folder `{}`: name collides with a protected folder",
-                input.name
-            ),
-        });
-    }
+    server
+        .folder_guard
+        .check_protected(&input.name, "create")
+        .map_err(|e| rimap_core::RimapError::Authz {
+            code: e.code(),
+            message: e.to_string(),
+        })?;
 
     server.imap.create_folder(&input.name).await?;
 
@@ -155,6 +149,13 @@ mod tests {
     fn rename_to_inbox_rejected() {
         let guard = FolderGuard::new(&[], &[]);
         let err = guard.check_rename("temp", "INBOX").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ProtectedFolder);
+    }
+
+    #[test]
+    fn create_inbox_rejected_even_with_empty_protected_list() {
+        let guard = FolderGuard::new(&[], &[]);
+        let err = guard.check_protected("INBOX", "create").unwrap_err();
         assert_eq!(err.code(), ErrorCode::ProtectedFolder);
     }
 }
