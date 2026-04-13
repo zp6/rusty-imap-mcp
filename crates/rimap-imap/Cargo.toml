@@ -14,9 +14,9 @@ workspace = true
 
 [dependencies]
 # Internal — direct path + explicit version to satisfy cargo-deny's wildcard ban.
-rimap-core = { path = "../rimap-core", version = "0.0.0" }
-rimap-config = { path = "../rimap-config", version = "0.0.0" }
-rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
+rimap-core = { path = "../rimap-core", version = "1.0.0" }
+rimap-config = { path = "../rimap-config", version = "1.0.0" }
+rimap-audit = { path = "../rimap-audit", version = "1.0.0" }
 
 # Async runtime
 tokio = { workspace = true }

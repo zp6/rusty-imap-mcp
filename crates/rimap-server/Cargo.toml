@@ -16,13 +16,13 @@ name = "rusty-imap-mcp"
 path = "src/main.rs"
 
 [dependencies]
-rimap-core = { path = "../rimap-core", version = "0.0.0" }
-rimap-config = { path = "../rimap-config", version = "0.0.0" }
-rimap-authz = { path = "../rimap-authz", version = "0.0.0" }
-rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
-rimap-content = { path = "../rimap-content", version = "0.0.0" }
-rimap-imap = { path = "../rimap-imap", version = "0.0.0" }
-rimap-smtp = { path = "../rimap-smtp", version = "0.0.0" }
+rimap-core = { path = "../rimap-core", version = "1.0.0" }
+rimap-config = { path = "../rimap-config", version = "1.0.0" }
+rimap-authz = { path = "../rimap-authz", version = "1.0.0" }
+rimap-audit = { path = "../rimap-audit", version = "1.0.0" }
+rimap-content = { path = "../rimap-content", version = "1.0.0" }
+rimap-imap = { path = "../rimap-imap", version = "1.0.0" }
+rimap-smtp = { path = "../rimap-smtp", version = "1.0.0" }
 lettre = { workspace = true }
 mail-builder = { workspace = true }
 mail-parser = { workspace = true }
