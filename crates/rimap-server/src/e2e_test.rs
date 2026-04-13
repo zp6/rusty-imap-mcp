@@ -271,6 +271,7 @@ fn test_config(harness: &DovecotHarness, audit_dir: &TempDir) -> ValidatedConfig
                 connect_timeout_seconds: 10,
                 command_timeout_seconds: 30,
             },
+            smtp: None,
             security: SecurityConfig {
                 posture: Posture::DraftSafe,
                 ..SecurityConfig::default()

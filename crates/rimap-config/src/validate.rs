@@ -270,7 +270,8 @@ mod tests {
 
     use crate::error::ConfigError;
     use crate::model::{
-        AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig, Verdict,
+        AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig,
+        SmtpEncryption, Verdict,
     };
     use crate::validate::validate;
 
@@ -284,6 +285,7 @@ mod tests {
                 command_timeout_seconds: 30,
                 connect_timeout_seconds: 10,
             },
+            smtp: None,
             security: SecurityConfig::default(),
             limits: LimitsConfig::default(),
             audit: AuditConfig {
@@ -506,6 +508,38 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut cfg = base_config(dir.path());
         cfg.audit.retention_seconds = Some(3600);
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn smtp_section_parses_from_toml() {
+        let toml_str = r#"
+[imap]
+host = "imap.example.com"
+port = 993
+username = "alice@example.com"
+
+[smtp]
+host = "smtp.example.com"
+port = 587
+encryption = "starttls"
+username = "alice@example.com"
+
+[audit]
+path = "/tmp/audit.jsonl"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let smtp = cfg.smtp.as_ref().unwrap();
+        assert_eq!(smtp.host, "smtp.example.com");
+        assert_eq!(smtp.port, 587);
+        assert_eq!(smtp.encryption, SmtpEncryption::Starttls);
+    }
+
+    #[test]
+    fn config_without_smtp_section_is_valid() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        assert!(cfg.smtp.is_none());
         validate(cfg).unwrap();
     }
 

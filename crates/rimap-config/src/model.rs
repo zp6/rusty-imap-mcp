@@ -16,6 +16,9 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// IMAP connection settings.
     pub imap: ImapConfig,
+    /// SMTP connection settings (optional — required when `send_email` is enabled).
+    #[serde(default)]
+    pub smtp: Option<SmtpConfig>,
     /// Security posture and overrides.
     #[serde(default)]
     pub security: SecurityConfig,
@@ -59,6 +62,38 @@ fn default_connect_timeout() -> u32 {
     10
 }
 
+/// SMTP encryption mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SmtpEncryption {
+    /// STARTTLS upgrade on port 587.
+    Starttls,
+    /// Implicit TLS on port 465.
+    Tls,
+    /// No encryption (testing only).
+    None,
+}
+
+/// `[smtp]` block. Optional — required only when `send_email` is enabled.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SmtpConfig {
+    /// SMTP server host.
+    pub host: String,
+    /// SMTP server port (587 for STARTTLS, 465 for implicit TLS).
+    pub port: u16,
+    /// Encryption mode.
+    pub encryption: SmtpEncryption,
+    /// SMTP username.
+    pub username: String,
+    /// Per-command timeout in seconds.
+    #[serde(default = "default_command_timeout")]
+    pub command_timeout_seconds: u32,
+    /// TCP + TLS handshake deadline.
+    #[serde(default = "default_connect_timeout")]
+    pub connect_timeout_seconds: u32,
+}
+
 /// Override verdict for a per-tool override.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -70,7 +105,7 @@ pub enum Verdict {
 }
 
 /// `[security]` block.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Base posture.
@@ -80,9 +115,36 @@ pub struct SecurityConfig {
     /// [`rimap_core::tool::ToolName`] during validation.
     #[serde(default)]
     pub tools: BTreeMap<String, Verdict>,
+    /// Folders that cannot be deleted or renamed. Case-insensitive matching.
+    #[serde(default = "default_protected_folders")]
+    pub protected_folders: Vec<String>,
+    /// Folders where `expunge` and `delete_folder` are permitted.
+    #[serde(default)]
+    pub expunge_folders: Vec<String>,
     /// Look-alike detection settings (placeholder for Sprint 4).
     #[serde(default)]
     pub lookalike: LookalikeConfig,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            posture: Posture::default(),
+            tools: BTreeMap::new(),
+            protected_folders: default_protected_folders(),
+            expunge_folders: Vec::new(),
+            lookalike: LookalikeConfig::default(),
+        }
+    }
+}
+
+fn default_protected_folders() -> Vec<String> {
+    vec![
+        "INBOX".to_string(),
+        "Sent".to_string(),
+        "Drafts".to_string(),
+        "Trash".to_string(),
+    ]
 }
 
 /// `[security.lookalike]` block. Shape only; Sprint 4 owns semantics.
@@ -139,6 +201,9 @@ pub struct LimitsConfig {
     /// Per-minute draft creation cap.
     #[serde(default = "default_drafts_per_min")]
     pub drafts_per_minute: u32,
+    /// Per-minute email send cap.
+    #[serde(default = "default_sends_per_min")]
+    pub sends_per_minute: u32,
     /// Circuit breaker error threshold within the window.
     #[serde(default = "default_breaker_threshold")]
     pub circuit_breaker_error_threshold: u32,
@@ -157,6 +222,7 @@ impl Default for LimitsConfig {
             max_append_bytes: default_max_append(),
             commands_per_second: default_cps(),
             drafts_per_minute: default_drafts_per_min(),
+            sends_per_minute: default_sends_per_min(),
             circuit_breaker_error_threshold: default_breaker_threshold(),
             circuit_breaker_window_seconds: default_breaker_window(),
         }
@@ -183,6 +249,9 @@ fn default_cps() -> u32 {
 }
 fn default_drafts_per_min() -> u32 {
     5
+}
+fn default_sends_per_min() -> u32 {
+    3
 }
 fn default_breaker_threshold() -> u32 {
     5
