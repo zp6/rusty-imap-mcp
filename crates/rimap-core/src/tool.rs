@@ -82,7 +82,7 @@ impl ToolName {
         }
     }
 
-    /// Every v1 tool, in declaration order. Used for exhaustive matrix tests
+    /// Every tool variant, in declaration order. Used for exhaustive matrix tests
     /// and for building the advertised-tools set in `list_tools`. Built from
     /// `EnumIter` so adding a new variant cannot silently desynchronize this
     /// list (compile-time parity).

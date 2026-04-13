@@ -279,7 +279,7 @@ mod tests {
             .into_iter()
             .filter_map(tool_definition)
             .collect();
-        // 13 capabilities minus 2 sub-capabilities = 11 MCP tools
+        // 19 tool variants minus 8 (2 sub-capabilities + 6 unimplemented v2) = 11
         assert_eq!(defs.len(), 11);
     }
 
