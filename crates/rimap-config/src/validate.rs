@@ -339,17 +339,17 @@ mod tests {
     }
 
     #[test]
-    fn override_v2_tool_fails_with_v2_error() {
+    fn override_v2_tool_resolves_successfully() {
         let dir = TempDir::new().unwrap();
         let mut cfg = base_config(dir.path());
         cfg.security
             .tools
             .insert("delete_message".into(), Verdict::Allow);
-        let err = validate(cfg).unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::ToolOverride(ParseToolNameError::V2(_))
-        ));
+        let v = validate(cfg).unwrap();
+        assert_eq!(
+            v.tool_overrides.get(&ToolName::DeleteMessage),
+            Some(&Verdict::Allow)
+        );
     }
 
     #[test]

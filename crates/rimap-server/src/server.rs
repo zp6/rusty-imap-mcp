@@ -137,6 +137,14 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::create_draft::handle(self, input)).await
             }
+            ToolName::SendEmail
+            | ToolName::DeleteMessage
+            | ToolName::Expunge
+            | ToolName::CreateFolder
+            | ToolName::RenameFolder
+            | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
+                "tool `{tool}` is not yet implemented"
+            ))),
         }
     }
 }
@@ -186,7 +194,14 @@ fn tool_definition(name: ToolName) -> Option<Tool> {
             "Search messages with structured query",
             schema_map::<SearchInput>(),
         ),
-        ToolName::SearchAdvanced | ToolName::FetchMessageHtml => return None,
+        ToolName::SearchAdvanced
+        | ToolName::FetchMessageHtml
+        | ToolName::SendEmail
+        | ToolName::DeleteMessage
+        | ToolName::Expunge
+        | ToolName::CreateFolder
+        | ToolName::RenameFolder
+        | ToolName::DeleteFolder => return None,
         ToolName::FetchMessage => (
             "fetch_message",
             "Fetch message metadata and text body",

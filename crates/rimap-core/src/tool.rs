@@ -39,6 +39,18 @@ pub enum ToolName {
     MoveMessage,
     /// `create_draft` (appends to Drafts with `$PendingReview`).
     CreateDraft,
+    /// `send_email`
+    SendEmail,
+    /// `delete_message`
+    DeleteMessage,
+    /// `expunge`
+    Expunge,
+    /// `create_folder`
+    CreateFolder,
+    /// `rename_folder`
+    RenameFolder,
+    /// `delete_folder`
+    DeleteFolder,
 }
 
 impl ToolName {
@@ -61,6 +73,12 @@ impl ToolName {
             Self::Unflag => "unflag",
             Self::MoveMessage => "move_message",
             Self::CreateDraft => "create_draft",
+            Self::SendEmail => "send_email",
+            Self::DeleteMessage => "delete_message",
+            Self::Expunge => "expunge",
+            Self::CreateFolder => "create_folder",
+            Self::RenameFolder => "rename_folder",
+            Self::DeleteFolder => "delete_folder",
         }
     }
 
@@ -80,20 +98,12 @@ impl fmt::Display for ToolName {
     }
 }
 
-/// Known v2 tool names. These are rejected at config load with a distinct
-/// error so users get "this is a v2 tool, not yet available" instead of
-/// "unknown tool".
-const V2_TOOL_NAMES: &[&str] = &["delete_message", "expunge", "send_email"];
-
 /// Error returned by [`ToolName::from_str`] when a name is not recognized.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParseToolNameError {
-    /// The name is not a v1 tool and not a known v2 tool.
+    /// The name is not a known tool.
     #[error("unknown tool name `{0}`")]
     Unknown(String),
-    /// The name refers to a v2 tool not available in v1.
-    #[error("tool `{0}` is reserved for v2 and cannot be used in configuration")]
-    V2(String),
 }
 
 impl FromStr for ToolName {
@@ -104,9 +114,6 @@ impl FromStr for ToolName {
             if tool.as_str() == s {
                 return Ok(tool);
             }
-        }
-        if V2_TOOL_NAMES.contains(&s) {
-            return Err(ParseToolNameError::V2(s.to_string()));
         }
         Err(ParseToolNameError::Unknown(s.to_string()))
     }
@@ -120,9 +127,9 @@ mod tests {
     use strum::IntoEnumIterator;
 
     #[test]
-    fn all_has_exactly_thirteen_variants() {
-        assert_eq!(ToolName::all().len(), 13);
-        assert_eq!(ToolName::iter().count(), 13);
+    fn all_has_exactly_nineteen_variants() {
+        assert_eq!(ToolName::all().len(), 19);
+        assert_eq!(ToolName::iter().count(), 19);
     }
 
     #[test]
@@ -152,11 +159,28 @@ mod tests {
     }
 
     #[test]
-    fn v2_tool_names_return_v2_error() {
-        for name in ["delete_message", "expunge", "send_email"] {
-            let err = ToolName::from_str(name).unwrap_err();
-            assert_eq!(err, ParseToolNameError::V2(name.to_string()));
-        }
+    fn v2_tool_names_parse_as_real_variants() {
+        assert_eq!(
+            ToolName::from_str("send_email").unwrap(),
+            ToolName::SendEmail
+        );
+        assert_eq!(
+            ToolName::from_str("delete_message").unwrap(),
+            ToolName::DeleteMessage
+        );
+        assert_eq!(ToolName::from_str("expunge").unwrap(), ToolName::Expunge);
+        assert_eq!(
+            ToolName::from_str("create_folder").unwrap(),
+            ToolName::CreateFolder
+        );
+        assert_eq!(
+            ToolName::from_str("rename_folder").unwrap(),
+            ToolName::RenameFolder
+        );
+        assert_eq!(
+            ToolName::from_str("delete_folder").unwrap(),
+            ToolName::DeleteFolder
+        );
     }
 
     #[test]

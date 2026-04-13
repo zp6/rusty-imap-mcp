@@ -32,7 +32,7 @@ pub enum ConfigError {
     /// The posture name in the config was not recognized.
     #[error(transparent)]
     Posture(#[from] UnknownPosture),
-    /// A per-tool override referenced an unknown or v2 tool name.
+    /// A per-tool override referenced an unknown tool name.
     #[error("invalid tool override: {0}")]
     ToolOverride(#[from] ParseToolNameError),
     /// TLS fingerprint did not parse as 32 hex bytes.
