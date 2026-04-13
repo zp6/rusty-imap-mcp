@@ -25,6 +25,17 @@ pub enum ProcessEndReason {
     Error,
 }
 
+/// Per-account summary for multi-account `process_start` records.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountSummary {
+    /// Account name from config.
+    pub name: String,
+    /// Effective posture for this account.
+    pub posture: String,
+    /// IMAP host for this account.
+    pub imap_host: String,
+}
+
 /// Payload of the `process_start` kind. Fields chosen to chain history across
 /// restarts (see spec §10 startup self-check).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,8 +45,12 @@ pub struct ProcessStart {
     /// Git commit SHA embedded at build (via `vergen` when wired in Sprint 5;
     /// populated as an empty string until then).
     pub git_commit: String,
-    /// Effective base posture at startup.
-    pub posture: String,
+    /// Effective base posture at startup (single-account mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub posture: Option<String>,
+    /// Per-account summaries (multi-account mode).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<Vec<AccountSummary>>,
     /// Absolute path of the loaded config file.
     pub config_path: PathBuf,
     /// SHA-256 of the config file contents at load time, hex-encoded.
@@ -91,6 +106,9 @@ pub enum AuthResult {
 /// Payload of the `auth` kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Auth {
+    /// Account name this auth attempt belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// Outcome.
     pub result: AuthResult,
     /// IMAP host attempted.
@@ -120,6 +138,9 @@ pub struct Auth {
 /// crash mid-call still leaves a breadcrumb.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolStart {
+    /// Account name this tool call targets.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// The v1 tool name as a string (matches `ToolName::as_str`).
     pub tool: String,
     /// Effective posture at dispatch time (after any config-override merge).
@@ -173,6 +194,9 @@ pub struct Provenance {
 /// Payload of the `tool_end` kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolEnd {
+    /// Account name this tool call targeted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     /// `seq` of the paired `tool_start` record.
     pub start_seq: Seq,
     /// Tool name (duplicated from `tool_start` for self-contained log lines).
@@ -235,7 +259,8 @@ mod tests {
             payload: Payload::ProcessStart(ProcessStart {
                 version: "0.1.0".to_string(),
                 git_commit: String::new(),
-                posture: "draft-safe".to_string(),
+                posture: Some("draft-safe".to_string()),
+                accounts: None,
                 config_path: PathBuf::from("/tmp/config.toml"),
                 config_hash_sha256: "abcd".repeat(16),
                 previous_last_seq: None,
@@ -254,6 +279,7 @@ mod tests {
         assert_eq!(v["kind"], "process_start");
         assert_eq!(v["seq"], 1);
         assert_eq!(v["posture"], "draft-safe");
+        assert!(v["accounts"].is_null(), "accounts should be omitted");
         assert!(v["ts"].is_string());
         assert_eq!(v["previous_file_inode"], 12345);
         assert_eq!(v["audit_file_inode_changed"], false);
@@ -300,6 +326,7 @@ mod tests {
             ts: Timestamp::now(),
             process_id: ProcessId::new_now(),
             payload: Payload::Auth(crate::record::Auth {
+                account: None,
                 result: crate::record::AuthResult::Success,
                 host: "127.0.0.1".to_string(),
                 port: 1143,
@@ -336,6 +363,7 @@ mod tests {
             ts: Timestamp::now(),
             process_id: ProcessId::new_now(),
             payload: Payload::ToolStart(crate::record::ToolStart {
+                account: None,
                 tool: "fetch_message".to_string(),
                 posture_effective: "draft-safe".to_string(),
                 arguments_redacted: serde_json::json!({
@@ -362,6 +390,7 @@ mod tests {
             ts: Timestamp::now(),
             process_id: ProcessId::new_now(),
             payload: Payload::ToolEnd(crate::record::ToolEnd {
+                account: None,
                 start_seq: Seq(10),
                 tool: "fetch_message".to_string(),
                 status: crate::record::ToolStatus::Ok,

@@ -78,6 +78,9 @@ pub enum AuditAction {
         /// Only include records whose `process_id` matches this ULID.
         #[arg(long)]
         process: Option<String>,
+        /// Only include records whose `account` field matches this name.
+        #[arg(long)]
+        account: Option<String>,
     },
 }
 
@@ -145,6 +148,8 @@ mod tests {
             "tool_end",
             "--process",
             "01JXAAAAAAAAAAAAAAAAAAAAAA",
+            "--account",
+            "work",
         ])
         .unwrap();
         match cli.command {
@@ -157,6 +162,7 @@ mod tests {
                         tool,
                         kind,
                         process,
+                        account,
                     },
             }) => {
                 assert_eq!(path, std::path::PathBuf::from("/tmp/audit.jsonl"));
@@ -165,6 +171,7 @@ mod tests {
                 assert_eq!(tool.as_deref(), Some("search"));
                 assert_eq!(kind.as_deref(), Some("tool_end"));
                 assert_eq!(process.as_deref(), Some("01JXAAAAAAAAAAAAAAAAAAAAAA"));
+                assert_eq!(account.as_deref(), Some("work"));
             }
             other => panic!("expected Audit::Merge, got {other:?}"),
         }

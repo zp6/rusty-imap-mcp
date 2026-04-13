@@ -70,6 +70,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 tool,
                 kind,
                 process,
+                account,
             },
     }) = cli.command
     {
@@ -80,6 +81,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             tool.as_deref(),
             kind.as_deref(),
             process.as_deref(),
+            account.as_deref(),
         );
     }
 

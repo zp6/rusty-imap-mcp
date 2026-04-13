@@ -388,8 +388,10 @@ pub struct ProcessStartInputs {
     /// Git commit SHA at build time. Empty string until `vergen` lands in
     /// Sprint 5.
     pub git_commit: String,
-    /// Effective base posture at startup.
-    pub posture: String,
+    /// Effective base posture at startup (single-account mode).
+    pub posture: Option<String>,
+    /// Per-account summaries (multi-account mode).
+    pub accounts: Option<Vec<crate::record::AccountSummary>>,
     /// Absolute path of the loaded config file.
     pub config_path: std::path::PathBuf,
     /// SHA-256 of the config file contents at load time, hex-encoded.
@@ -421,6 +423,7 @@ impl AuditWriter {
             version: inputs.version,
             git_commit: inputs.git_commit,
             posture: inputs.posture,
+            accounts: inputs.accounts,
             config_path: inputs.config_path,
             config_hash_sha256: inputs.config_hash_sha256,
             previous_last_seq: inputs.trailing.last_seq,
@@ -861,6 +864,7 @@ mod tests {
 
         let seq = writer
             .log_auth(Auth {
+                account: None,
                 result: AuthResult::Success,
                 host: "127.0.0.1".to_string(),
                 port: 993,
@@ -902,6 +906,7 @@ mod tests {
         let pid = writer.process_id();
 
         let make = || Auth {
+            account: None,
             result: AuthResult::Failure,
             host: "h".into(),
             port: 1,
@@ -947,7 +952,8 @@ mod tests {
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
-            posture: "draft-safe".to_string(),
+            posture: Some("draft-safe".to_string()),
+            accounts: None,
             config_path: std::path::PathBuf::from("/tmp/config.toml"),
             config_hash_sha256: "ab".repeat(32),
             trailing: TrailingState {
@@ -1045,7 +1051,8 @@ mod tests {
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
-            posture: "draft-safe".to_string(),
+            posture: Some("draft-safe".to_string()),
+            accounts: None,
             config_path: std::path::PathBuf::from("/tmp/c.toml"),
             config_hash_sha256: "00".repeat(32),
             trailing: TrailingState {

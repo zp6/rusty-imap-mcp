@@ -35,6 +35,7 @@ impl AuthContext<'_> {
 /// Build a successful `Auth` record.
 pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
     Auth {
+        account: None,
         result: AuthResult::Success,
         host: ctx.host.to_string(),
         port: ctx.port,
@@ -48,6 +49,7 @@ pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
 /// Build a failure `Auth` record carrying the stable error code.
 pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: &str) -> Auth {
     Auth {
+        account: None,
         result: AuthResult::Failure,
         host: ctx.host.to_string(),
         port: ctx.port,

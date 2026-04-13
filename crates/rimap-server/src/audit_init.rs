@@ -40,7 +40,8 @@ pub fn init_audit_writer(
     writer.log_process_start(ProcessStartInputs {
         version: env!("CARGO_PKG_VERSION").to_string(),
         git_commit: String::new(),
-        posture: cfg.config.security.posture.to_string(),
+        posture: Some(cfg.config.security.posture.to_string()),
+        accounts: None,
         config_path: config_file_path.to_path_buf(),
         config_hash_sha256: config_hash,
         trailing,

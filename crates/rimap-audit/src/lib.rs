@@ -19,8 +19,8 @@ pub use crate::ids::{ProcessId, Seq, Timestamp};
 pub use crate::provenance::ProvenanceBuffer;
 pub use crate::reader::{Filter, open_shared, stream_records};
 pub use crate::record::{
-    AuditRecord, Auth, AuthResult, ConfigEvent, Payload, ProcessEnd, ProcessEndReason,
-    ProcessStart, Provenance, ResultSummary, ToolEnd, ToolStart, ToolStatus,
+    AccountSummary, AuditRecord, Auth, AuthResult, ConfigEvent, Payload, ProcessEnd,
+    ProcessEndReason, ProcessStart, Provenance, ResultSummary, ToolEnd, ToolStart, ToolStatus,
 };
 pub use crate::redact::{
     FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments, schemas,
