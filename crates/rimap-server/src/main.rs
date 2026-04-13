@@ -11,6 +11,9 @@ mod download;
 mod dry_run;
 mod logging;
 mod mcp_error;
+// TODO(sprint-3b-T5): remove once ImapMcpServer uses AccountRegistry
+#[expect(dead_code, reason = "wired in sprint-3b-T5")]
+mod registry;
 mod response;
 mod server;
 mod tools;
