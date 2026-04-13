@@ -14,21 +14,22 @@ use crate::error::AuthzError;
 
 /// Compile-time truth table. `true` = allowed by base posture.
 ///
-/// Layout: outer by [`ToolName`] (13 tools), inner `[readonly, draft_safe, full]`.
-pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 3]); 13] = [
-    (ToolName::ListFolders, [true, true, true]),
-    (ToolName::Search, [true, true, true]),
-    (ToolName::SearchAdvanced, [false, false, true]),
-    (ToolName::FetchMessage, [true, true, true]),
-    (ToolName::FetchMessageHtml, [false, false, true]),
-    (ToolName::ListAttachments, [true, true, true]),
-    (ToolName::DownloadAttachment, [true, true, true]),
-    (ToolName::MarkRead, [false, true, true]),
-    (ToolName::MarkUnread, [false, true, true]),
-    (ToolName::Flag, [false, true, true]),
-    (ToolName::Unflag, [false, true, true]),
-    (ToolName::MoveMessage, [false, true, true]),
-    (ToolName::CreateDraft, [false, true, true]),
+/// Layout: outer by [`ToolName`] (13 tools), inner `[readonly, draft_safe, full, destructive]`.
+/// NOTE: Destructive column is a placeholder until Task 6 expands the matrix fully.
+pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 4]); 13] = [
+    (ToolName::ListFolders, [true, true, true, true]),
+    (ToolName::Search, [true, true, true, true]),
+    (ToolName::SearchAdvanced, [false, false, true, true]),
+    (ToolName::FetchMessage, [true, true, true, true]),
+    (ToolName::FetchMessageHtml, [false, false, true, true]),
+    (ToolName::ListAttachments, [true, true, true, true]),
+    (ToolName::DownloadAttachment, [true, true, true, true]),
+    (ToolName::MarkRead, [false, true, true, true]),
+    (ToolName::MarkUnread, [false, true, true, true]),
+    (ToolName::Flag, [false, true, true, true]),
+    (ToolName::Unflag, [false, true, true, true]),
+    (ToolName::MoveMessage, [false, true, true, true]),
+    (ToolName::CreateDraft, [false, true, true, true]),
 ];
 
 fn posture_index(p: Posture) -> usize {
@@ -36,6 +37,7 @@ fn posture_index(p: Posture) -> usize {
         Posture::Readonly => 0,
         Posture::DraftSafe => 1,
         Posture::Full => 2,
+        Posture::Destructive => 3,
     }
 }
 
