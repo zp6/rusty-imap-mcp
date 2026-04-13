@@ -208,6 +208,7 @@ pub fn schemas() -> Vec<RedactionSchema> {
     out.extend(write_tool_schemas());
     out.extend(v2_tool_schemas());
     out.extend(label_tool_schemas());
+    out.extend(account_tool_schemas());
     out
 }
 
@@ -468,6 +469,17 @@ fn label_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new("list_labels", &[("folder", Verbatim), ("uid", Verbatim)]),
+    ]
+}
+
+/// Schemas for infrastructure account tools: `use_account`,
+/// `list_accounts`.
+fn account_tool_schemas() -> Vec<RedactionSchema> {
+    use FieldPolicy::Verbatim;
+
+    vec![
+        RedactionSchema::new("use_account", &[("account", Verbatim)]),
+        RedactionSchema::new("list_accounts", &[]),
     ]
 }
 
