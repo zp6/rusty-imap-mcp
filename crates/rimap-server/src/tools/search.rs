@@ -8,8 +8,8 @@ use rimap_imap::types::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Maximum number of results per page.
 const MAX_LIMIT: usize = 100;
@@ -43,12 +43,12 @@ pub struct SearchInput {
 
 /// Execute the `search` tool.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: SearchInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    let query = build_query(server, &input)?;
+    let query = build_query(account, &input)?;
 
-    let uids = server.imap.search(&input.folder, query).await?;
+    let uids = account.imap.search(&input.folder, query).await?;
     let total_matched = uids.len();
 
     let offset = input.offset.unwrap_or(0);
@@ -61,7 +61,7 @@ pub async fn handle(
     let messages = if page_uids.is_empty() {
         Vec::new()
     } else {
-        let fetched = server
+        let fetched = account
             .imap
             .fetch(
                 &input.folder,
@@ -94,11 +94,11 @@ pub async fn handle(
 /// Build a `SearchQuery` from the input, checking posture for
 /// advanced queries.
 fn build_query(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: &SearchInput,
 ) -> Result<SearchQuery, rimap_core::RimapError> {
     if let Some(raw) = &input.advanced_query {
-        server
+        account
             .guard
             .matrix()
             .check(ToolName::SearchAdvanced)

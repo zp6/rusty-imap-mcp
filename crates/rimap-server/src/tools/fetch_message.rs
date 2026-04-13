@@ -4,8 +4,8 @@ use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for the `fetch_message` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -22,13 +22,13 @@ pub struct FetchMessageInput {
 
 /// Execute the `fetch_message` tool.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let include_html = input.include_html.unwrap_or(false);
     if include_html {
         use rimap_core::tool::ToolName;
-        server
+        account
             .guard
             .matrix()
             .check(ToolName::FetchMessageHtml)
@@ -43,7 +43,7 @@ pub async fn handle(
         message: "UID must be non-zero".to_string(),
     })?;
 
-    let raw = server.imap.fetch_body(&input.folder, uid).await?;
+    let raw = account.imap.fetch_body(&input.folder, uid).await?;
     let raw_size = raw.len();
 
     let content = crate::content::parse_message_async(raw)

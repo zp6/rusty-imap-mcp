@@ -1,21 +1,17 @@
 //! MCP server struct and `ServerHandler` implementation.
 //!
-//! `ImapMcpServer` holds the validated config, IMAP connection, authz
-//! guard, audit writer, and download directory. The `ServerHandler`
-//! trait wires `list_tools` (posture-filtered) and `call_tool`
-//! (dispatch pipeline).
+//! `ImapMcpServer` owns an `AccountRegistry` (per-account IMAP/SMTP
+//! connections, guards), an audit writer, and the download directory.
+//! The `ServerHandler` trait wires `list_tools` (posture-filtered
+//! union across accounts) and `call_tool` (account resolution +
+//! dispatch pipeline).
 
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
-use rimap_authz::DispatchGuard;
-use rimap_authz::FolderGuard;
-use rimap_authz::breaker::SystemClock;
-use rimap_config::validate::ValidatedConfig;
 use rimap_core::tool::ToolName;
-use rimap_imap::Connection;
 use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
@@ -24,21 +20,17 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 
+use crate::registry::{AccountRegistry, AccountState};
+
 /// Core MCP server. Owns every resource the handler methods need.
 pub struct ImapMcpServer {
-    /// Validated configuration snapshot.
-    pub(crate) config: ValidatedConfig,
-    /// Lazy-connect IMAP connection handle.
-    pub(crate) imap: Connection,
-    /// Posture + circuit breaker + rate limiter guard.
-    pub(crate) guard: DispatchGuard<SystemClock>,
+    /// Account registry holding per-account state.
+    pub(crate) registry: AccountRegistry,
     /// Append-only audit writer.
     #[expect(dead_code, reason = "used by audit logging in later sprint")]
     pub(crate) audit: AuditWriter,
     /// Directory for attachment downloads.
     pub(crate) download_dir: PathBuf,
-    /// Folder safety guard (protected folders + expunge allowlist).
-    pub(crate) folder_guard: FolderGuard,
 }
 
 impl ServerHandler for ImapMcpServer {
@@ -54,11 +46,19 @@ impl ServerHandler for ImapMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let allowed = self.guard.matrix().advertised();
-        let tools: Vec<Tool> = allowed
-            .iter()
-            .filter_map(|&tn| tool_definition(tn))
-            .collect();
+        let mut tools: Vec<Tool> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for state in self.registry.accounts().values() {
+            for &tn in &state.guard.matrix().advertised() {
+                if seen.insert(tn)
+                    && let Some(def) = tool_definition(tn)
+                {
+                    tools.push(def);
+                }
+            }
+        }
+
         Ok(ListToolsResult::with_all_items(tools))
     }
 
@@ -81,12 +81,28 @@ impl ServerHandler for ImapMcpServer {
             ));
         }
 
-        if let Err(e) = crate::dispatch::pre_call_guards(&self.guard, tool_name) {
+        let mut args = request.arguments.unwrap_or_default();
+
+        // Infrastructure tools bypass account resolution and guards.
+        if matches!(tool_name, ToolName::UseAccount | ToolName::ListAccounts) {
+            return self.dispatch_infrastructure(tool_name, &args);
+        }
+
+        // Extract and strip the optional "account" key.
+        let account_name = args
+            .remove("account")
+            .and_then(|v| v.as_str().map(String::from));
+
+        let account = self
+            .registry
+            .resolve(account_name.as_deref())
+            .map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
+
+        if let Err(e) = crate::dispatch::pre_call_guards(&account.guard, tool_name) {
             return Err(crate::mcp_error::to_mcp_error(&e));
         }
 
-        let args = request.arguments.unwrap_or_default();
-        let result = Box::pin(self.dispatch_tool(tool_name, &args)).await;
+        let result = Box::pin(self.dispatch_tool(account, tool_name, &args)).await;
 
         match result {
             Ok(resp) => {
@@ -103,91 +119,88 @@ impl ImapMcpServer {
     /// Dispatch to the tool handler for `tool`.
     pub(crate) async fn dispatch_tool(
         &self,
+        account: &AccountState,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<crate::response::ToolResponse, rimap_core::RimapError> {
+        use crate::tools::{
+            create_draft, delete_message, download_attachment, expunge, fetch_message, flags,
+            folder_mgmt, labels, list_attachments, list_folders, move_message, search, send_email,
+        };
         match tool {
-            ToolName::ListFolders => Box::pin(crate::tools::list_folders::handle(self)).await,
+            ToolName::ListFolders => Box::pin(list_folders::handle(account)).await,
             ToolName::MarkRead => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::flags::handle_mark_read(self, input)).await
+                Box::pin(flags::handle_mark_read(account, parse_args(args)?)).await
             }
             ToolName::MarkUnread => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::flags::handle_mark_unread(self, input)).await
+                Box::pin(flags::handle_mark_unread(account, parse_args(args)?)).await
             }
-            ToolName::Flag => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::flags::handle_flag(self, input)).await
-            }
-            ToolName::Unflag => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::flags::handle_unflag(self, input)).await
-            }
+            ToolName::Flag => Box::pin(flags::handle_flag(account, parse_args(args)?)).await,
+            ToolName::Unflag => Box::pin(flags::handle_unflag(account, parse_args(args)?)).await,
             ToolName::MoveMessage => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::move_message::handle(self, input)).await
+                Box::pin(move_message::handle(account, parse_args(args)?)).await
             }
             ToolName::Search | ToolName::SearchAdvanced => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::search::handle(self, input)).await
+                Box::pin(search::handle(account, parse_args(args)?)).await
             }
             ToolName::FetchMessage | ToolName::FetchMessageHtml => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::fetch_message::handle(self, input)).await
+                Box::pin(fetch_message::handle(account, parse_args(args)?)).await
             }
             ToolName::ListAttachments => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::list_attachments::handle(self, input)).await
+                Box::pin(list_attachments::handle(account, parse_args(args)?)).await
             }
             ToolName::DownloadAttachment => {
                 let input = parse_args(args)?;
-                Box::pin(crate::tools::download_attachment::handle(self, input)).await
+                Box::pin(download_attachment::handle(
+                    account,
+                    input,
+                    &self.download_dir,
+                ))
+                .await
             }
             ToolName::CreateDraft => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::create_draft::handle(self, input)).await
+                Box::pin(create_draft::handle(account, parse_args(args)?)).await
             }
-            ToolName::SendEmail => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::send_email::handle(self, input)).await
-            }
+            ToolName::SendEmail => Box::pin(send_email::handle(account, parse_args(args)?)).await,
             ToolName::DeleteMessage => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::delete_message::handle(self, input)).await
+                Box::pin(delete_message::handle(account, parse_args(args)?)).await
             }
-            ToolName::Expunge => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::expunge::handle(self, input)).await
-            }
+            ToolName::Expunge => Box::pin(expunge::handle(account, parse_args(args)?)).await,
             ToolName::CreateFolder => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::folder_mgmt::handle_create(self, input)).await
+                Box::pin(folder_mgmt::handle_create(account, parse_args(args)?)).await
             }
             ToolName::RenameFolder => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::folder_mgmt::handle_rename(self, input)).await
+                Box::pin(folder_mgmt::handle_rename(account, parse_args(args)?)).await
             }
             ToolName::DeleteFolder => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::folder_mgmt::handle_delete(self, input)).await
+                Box::pin(folder_mgmt::handle_delete(account, parse_args(args)?)).await
             }
             ToolName::AddLabel => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::labels::handle_add_label(self, input)).await
+                Box::pin(labels::handle_add_label(account, parse_args(args)?)).await
             }
             ToolName::RemoveLabel => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::labels::handle_remove_label(self, input)).await
+                Box::pin(labels::handle_remove_label(account, parse_args(args)?)).await
             }
             ToolName::ListLabels => {
-                let input = parse_args(args)?;
-                Box::pin(crate::tools::labels::handle_list_labels(self, input)).await
+                Box::pin(labels::handle_list_labels(account, parse_args(args)?)).await
             }
             ToolName::UseAccount | ToolName::ListAccounts => Err(rimap_core::RimapError::Internal(
-                "not yet implemented".into(),
+                "infrastructure tools must not reach dispatch_tool".into(),
             )),
         }
+    }
+
+    /// Handle infrastructure tools that bypass account resolution.
+    #[expect(clippy::unused_self, reason = "T6 will use self.registry")]
+    fn dispatch_infrastructure(
+        &self,
+        tool: ToolName,
+        _args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, ErrorData> {
+        Err(ErrorData::internal_error(
+            format!("{} not yet implemented", tool.as_str()),
+            None,
+        ))
     }
 }
 

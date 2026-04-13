@@ -3,8 +3,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for `expunge`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -15,10 +15,10 @@ pub struct ExpungeInput {
 
 /// `expunge` handler.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: ExpungeInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    server
+    account
         .folder_guard
         .check_expunge(&input.folder)
         .map_err(|e| rimap_core::RimapError::Authz {
@@ -26,7 +26,7 @@ pub async fn handle(
             message: e.to_string(),
         })?;
 
-    let (deleted_uids, expunged_count) = server.imap.expunge(&input.folder).await?;
+    let (deleted_uids, expunged_count) = account.imap.expunge(&input.folder).await?;
 
     Ok(ToolResponse {
         meta: serde_json::json!({

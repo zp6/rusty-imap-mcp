@@ -11,8 +11,6 @@ mod download;
 mod dry_run;
 mod logging;
 mod mcp_error;
-// TODO(sprint-3b-T5): remove once ImapMcpServer uses AccountRegistry
-#[expect(dead_code, reason = "wired in sprint-3b-T5")]
 mod registry;
 mod response;
 mod server;
@@ -109,15 +107,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let imap = Connection::new(conn_cfg, audit.clone(), credentials);
     let download_dir = resolve_download_dir(&validated)?;
 
+    let folder_guard = rimap_authz::FolderGuard::new(
+        &validated.config.security.protected_folders,
+        &validated.config.security.expunge_folders,
+    );
+    let from_address = validated.config.imap.username.clone();
+
+    let id = rimap_core::account::AccountId::default_account();
+    let state = registry::AccountState {
+        id: id.clone(),
+        from_address,
+        imap,
+        smtp: None,
+        guard,
+        folder_guard,
+    };
+    let mut accounts = std::collections::BTreeMap::new();
+    accounts.insert(id, state);
+    let registry = registry::AccountRegistry::new(accounts);
+
     let audit_for_shutdown = audit.clone();
     let mcp_server = server::ImapMcpServer {
-        folder_guard: rimap_authz::FolderGuard::new(
-            &validated.config.security.protected_folders,
-            &validated.config.security.expunge_folders,
-        ),
-        config: validated,
-        imap,
-        guard,
+        registry,
         audit,
         download_dir,
     };

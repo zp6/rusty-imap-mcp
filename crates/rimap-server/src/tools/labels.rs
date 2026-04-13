@@ -5,8 +5,8 @@ use rimap_imap::types::{FetchSpec, Flag, FlagAction};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 use crate::tools::flags::resolve_uids;
 
 /// IMAP atom specials (RFC 3501 §9) plus backslash. Any of these
@@ -85,12 +85,12 @@ pub struct ListLabelsInput {
 
 /// `add_label` handler.
 pub async fn handle_add_label(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: LabelInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     validate_label(&input.label)?;
     let uids = resolve_uids(input.uid, input.uids)?;
-    let updated = server
+    let updated = account
         .imap
         .store_flags(
             &input.folder,
@@ -114,12 +114,12 @@ pub async fn handle_add_label(
 
 /// `remove_label` handler.
 pub async fn handle_remove_label(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: LabelInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     validate_label(&input.label)?;
     let uids = resolve_uids(input.uid, input.uids)?;
-    let updated = server
+    let updated = account
         .imap
         .store_flags(
             &input.folder,
@@ -143,7 +143,7 @@ pub async fn handle_remove_label(
 
 /// `list_labels` handler.
 pub async fn handle_list_labels(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: ListLabelsInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uid = rimap_imap::types::Uid::new(input.uid)
@@ -153,7 +153,7 @@ pub async fn handle_list_labels(
         flags: true,
         ..FetchSpec::default()
     };
-    let messages = server.imap.fetch(&input.folder, &[uid], spec).await?;
+    let messages = account.imap.fetch(&input.folder, &[uid], spec).await?;
 
     let msg = messages
         .into_iter()

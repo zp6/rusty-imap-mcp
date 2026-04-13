@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::download;
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for the `download_attachment` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -34,8 +34,9 @@ pub struct DownloadAttachmentInput {
 /// Returns `RimapError` on invalid input, IMAP failure, part not
 /// found, or filesystem errors.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: DownloadAttachmentInput,
+    download_dir: &std::path::Path,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uid = Uid::new(input.uid).ok_or_else(|| rimap_core::RimapError::Authz {
         code: rimap_core::error::ErrorCode::InvalidInput,
@@ -51,12 +52,12 @@ pub async fn handle(
 
     let dest = download::resolve_dest_dir_async(
         input.dest_dir,
-        server.download_dir.clone(),
-        server.download_dir.clone(),
+        download_dir.to_path_buf(),
+        download_dir.to_path_buf(),
     )
     .await?;
 
-    let raw = server.imap.fetch_body(&input.folder, uid).await?;
+    let raw = account.imap.fetch_body(&input.folder, uid).await?;
 
     let parsed = tokio::task::spawn_blocking(move || {
         mail_parser::MessageParser::new()
@@ -95,7 +96,7 @@ pub async fn handle(
         bodystructure: true,
         ..FetchSpec::default()
     };
-    if let Ok(msgs) = server.imap.fetch(&input.folder, &[uid], spec).await
+    if let Ok(msgs) = account.imap.fetch(&input.folder, &[uid], spec).await
         && let Some(bs) = msgs.into_iter().next().and_then(|m| m.bodystructure)
         && let Some(bs_type) = lookup_bodystructure_type(&bs, &input.part_id)
     {

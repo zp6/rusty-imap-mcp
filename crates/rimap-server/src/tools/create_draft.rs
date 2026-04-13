@@ -1,8 +1,8 @@
 //! `create_draft` tool handler: compose a draft email and APPEND it
 //! to the Drafts folder with a `$PendingReview` keyword.
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 use crate::tools::message_builder::{self, ComposeInput};
 
 /// Input for `create_draft` — identical to shared `ComposeInput`.
@@ -10,15 +10,15 @@ pub type CreateDraftInput = ComposeInput;
 
 /// `create_draft` handler.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: CreateDraftInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     message_builder::validate_compose_input(&input)?;
-    let from_addr = &server.config.config.imap.username;
-    let raw_msg = message_builder::build_message(server, from_addr, &input).await?;
+    let from_addr = &account.from_address;
+    let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
     let drafts_folder = "Drafts";
-    let result = server
+    let result = account
         .imap
         .append_message(
             drafts_folder,

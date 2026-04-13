@@ -4,8 +4,8 @@ use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 use crate::tools::flags::resolve_uids;
 
 /// Input for `move_message`.
@@ -23,11 +23,11 @@ pub struct MoveInput {
 
 /// Execute the `move_message` tool.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: MoveInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uids = resolve_uids(input.uid, input.uids)?;
-    let outcome = server
+    let outcome = account
         .imap
         .move_messages(&input.source_folder, &input.dest_folder, &uids)
         .await?;

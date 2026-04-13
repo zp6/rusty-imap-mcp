@@ -4,8 +4,8 @@ use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for the `list_attachments` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -34,7 +34,7 @@ struct AttachmentInfo {
 ///
 /// Returns `RimapError` on invalid input or IMAP failure.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: ListAttachmentsInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uid = Uid::new(input.uid).ok_or_else(|| rimap_core::RimapError::Authz {
@@ -46,7 +46,7 @@ pub async fn handle(
         bodystructure: true,
         ..FetchSpec::default()
     };
-    let messages = server.imap.fetch(&input.folder, &[uid], spec).await?;
+    let messages = account.imap.fetch(&input.folder, &[uid], spec).await?;
 
     let msg = messages
         .into_iter()

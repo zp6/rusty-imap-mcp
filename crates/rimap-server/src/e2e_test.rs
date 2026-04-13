@@ -244,15 +244,27 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     let config = test_config(&harness, &audit_dir);
     let imap = test_connection(&harness, &audit);
     let guard = test_guard(&config);
+    let folder_guard = rimap_authz::FolderGuard::new(
+        &config.config.security.protected_folders,
+        &config.config.security.expunge_folders,
+    );
+    let from_address = config.config.imap.username.clone();
+
+    let id = rimap_core::account::AccountId::default_account();
+    let state = crate::registry::AccountState {
+        id: id.clone(),
+        from_address,
+        imap,
+        smtp: None,
+        guard,
+        folder_guard,
+    };
+    let mut accounts = BTreeMap::new();
+    accounts.insert(id, state);
+    let registry = crate::registry::AccountRegistry::new(accounts);
 
     let server = ImapMcpServer {
-        folder_guard: rimap_authz::FolderGuard::new(
-            &config.config.security.protected_folders,
-            &config.config.security.expunge_folders,
-        ),
-        config,
-        imap,
-        guard,
+        registry,
         audit,
         download_dir: download_dir.path().to_path_buf(),
     };
@@ -336,14 +348,16 @@ async fn call_tool(
         |e: rimap_core::tool::ParseToolNameError| rimap_core::RimapError::Internal(e.to_string()),
     )?;
 
-    crate::dispatch::pre_call_guards(&server.guard, tool)?;
+    let account = server.registry.resolve(None)?;
+
+    crate::dispatch::pre_call_guards(&account.guard, tool)?;
 
     let args_map = match args {
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
 
-    server.dispatch_tool(tool, &args_map).await
+    server.dispatch_tool(account, tool, &args_map).await
 }
 
 /// Extract a u32 from a JSON value (safe truncation check).
@@ -403,7 +417,8 @@ async fn assert_list_folders(server: &ImapMcpServer) {
 }
 
 async fn seed_message(server: &ImapMcpServer) {
-    server
+    let account = server.registry.resolve(None).expect("resolve account");
+    account
         .imap
         .append_message("INBOX", &test_message(), &[], &[])
         .await

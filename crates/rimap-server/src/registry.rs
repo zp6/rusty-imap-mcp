@@ -18,6 +18,8 @@ use rimap_smtp::SmtpClient;
 pub struct AccountState {
     /// Validated account identifier.
     pub id: AccountId,
+    /// Email address used as the From header (typically the IMAP username).
+    pub from_address: String,
     /// IMAP connection for this account.
     pub imap: Connection,
     /// Optional SMTP client (present when sending is configured).
@@ -112,6 +114,10 @@ impl AccountRegistry {
     ///
     /// Returns [`RimapError::UnknownAccount`] if `name` does not
     /// match any configured account.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by use_account handler in T6")
+    )]
     pub fn set_active(&self, name: &str) -> Result<Option<String>, RimapError> {
         let id = self
             .accounts
@@ -134,6 +140,10 @@ impl AccountRegistry {
 
     /// List all configured account names in sorted order.
     #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used by list_accounts handler in T6")
+    )]
     pub fn account_names(&self) -> Vec<&AccountId> {
         self.accounts.keys().collect()
     }
