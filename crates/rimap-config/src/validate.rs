@@ -672,4 +672,22 @@ path = "/tmp/audit.jsonl"
             }
         ));
     }
+
+    #[test]
+    fn smtp_config_debug_redacts_username() {
+        use crate::model::{SmtpConfig, SmtpEncryption};
+        let cfg = SmtpConfig {
+            host: "smtp.example.com".into(),
+            port: 587,
+            encryption: SmtpEncryption::Starttls,
+            username: "secret_user@example.com".into(),
+            command_timeout_seconds: 30,
+            connect_timeout_seconds: 10,
+        };
+        let debug = format!("{cfg:?}");
+        assert!(
+            !debug.contains("secret_user"),
+            "Debug output must not contain username: {debug}",
+        );
+    }
 }

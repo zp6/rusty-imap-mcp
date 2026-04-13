@@ -75,7 +75,7 @@ pub enum SmtpEncryption {
 }
 
 /// `[smtp]` block. Optional — required only when `send_email` is enabled.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SmtpConfig {
     /// SMTP server host.
@@ -92,6 +92,19 @@ pub struct SmtpConfig {
     /// TCP + TLS handshake deadline.
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_seconds: u32,
+}
+
+impl core::fmt::Debug for SmtpConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SmtpConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("encryption", &self.encryption)
+            .field("username", &"[redacted]")
+            .field("command_timeout_seconds", &self.command_timeout_seconds)
+            .field("connect_timeout_seconds", &self.connect_timeout_seconds)
+            .finish()
+    }
 }
 
 /// Override verdict for a per-tool override.
