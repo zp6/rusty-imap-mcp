@@ -23,6 +23,7 @@ pub(crate) async fn delete_message(
     source_folder: &str,
     trash_folder: &str,
     has_move: bool,
+    has_uidplus: bool,
 ) -> Result<DeleteResult, Error> {
     // Step 1: STORE +FLAGS (\Deleted)
     store::store(session, &[uid], &[Flag::Deleted], FlagAction::Add).await?;
@@ -44,17 +45,32 @@ pub(crate) async fn delete_message(
             .await
             .map_err(super::folders::map_err)?;
     } else {
-        // Fallback: COPY + EXPUNGE (same pattern as move_msg.rs)
+        // Fallback: COPY + scoped EXPUNGE.
         session
             .uid_copy(&uid_set, trash_folder)
             .await
             .map_err(super::folders::map_err)?;
-        // The \Deleted flag was already set in step 1, so EXPUNGE
-        // removes this message from the source folder.
-        let stream = session.expunge().await.map_err(super::folders::map_err)?;
-        futures_util::pin_mut!(stream);
-        while let Some(item) = stream.next().await {
-            let _seq = item.map_err(super::folders::map_err)?;
+        // The \Deleted flag was already set in step 1.
+        if has_uidplus {
+            // UID EXPUNGE (RFC 4315): only expunge this specific UID.
+            let stream = session
+                .uid_expunge(&uid_set)
+                .await
+                .map_err(super::folders::map_err)?;
+            futures_util::pin_mut!(stream);
+            while let Some(item) = StreamExt::next(&mut stream).await {
+                let _uid = item.map_err(super::folders::map_err)?;
+            }
+        } else {
+            // Plain EXPUNGE: removes ALL \Deleted messages in the folder.
+            // This is a known data-loss risk when other messages are
+            // concurrently flagged \Deleted. Servers without both MOVE
+            // and UIDPLUS are rare in practice.
+            let stream = session.expunge().await.map_err(super::folders::map_err)?;
+            futures_util::pin_mut!(stream);
+            while let Some(item) = StreamExt::next(&mut stream).await {
+                let _seq = item.map_err(super::folders::map_err)?;
+            }
         }
     }
 

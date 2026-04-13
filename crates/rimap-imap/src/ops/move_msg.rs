@@ -41,6 +41,7 @@ pub async fn move_messages(
     dest_folder: &str,
     uids: &[Uid],
     has_move: bool,
+    has_uidplus: bool,
 ) -> Result<MoveOutcome, Error> {
     if uids.len() > MAX_BATCH {
         return Err(Error::BatchTooLarge {
@@ -56,7 +57,7 @@ pub async fn move_messages(
     }
 
     if !has_move {
-        let results = copy_delete_fallback(session, dest_folder, uids).await?;
+        let results = copy_delete_fallback(session, dest_folder, uids, has_uidplus).await?;
         return Ok(MoveOutcome {
             results,
             used_fallback: true,
@@ -77,14 +78,15 @@ pub async fn move_messages(
 
 /// Fallback: COPY + STORE \Deleted + EXPUNGE. Not atomic.
 ///
-/// The plain `EXPUNGE` command removes all messages with `\Deleted` in
-/// the selected mailbox, not just the UIDs this operation flagged.
-/// `UID EXPUNGE` (RFC 4315) would be UID-scoped but async-imap 0.11
-/// does not expose it. Servers that support MOVE never reach this path.
+/// When `has_uidplus` is true, UID EXPUNGE (RFC 4315) is used to remove only
+/// the flagged UIDs. Otherwise plain EXPUNGE removes all `\Deleted` messages,
+/// which is a known data-loss risk for concurrent operations.
+/// Servers that support MOVE never reach this path.
 async fn copy_delete_fallback(
     session: &mut ImapSession,
     dest_folder: &str,
     uids: &[Uid],
+    has_uidplus: bool,
 ) -> Result<Vec<MoveResult>, Error> {
     let uid_set = store::uid_set_string(uids);
 
@@ -97,13 +99,26 @@ async fn copy_delete_fallback(
     // Step 2: STORE +FLAGS \Deleted on the originals.
     store::store(session, uids, &[Flag::Deleted], FlagAction::Add).await?;
 
-    // Step 3: EXPUNGE to remove deleted messages. The stream yields
-    // sequence numbers of expunged messages; drain it to completion.
-    // The stream is !Unpin, so we pin it before polling.
-    let stream = session.expunge().await.map_err(super::folders::map_err)?;
-    futures_util::pin_mut!(stream);
-    while let Some(item) = stream.next().await {
-        let _seq = item.map_err(super::folders::map_err)?;
+    // Step 3: Remove the flagged messages from the source folder.
+    if has_uidplus {
+        // UID EXPUNGE (RFC 4315): only expunge the UIDs we flagged.
+        let stream = session
+            .uid_expunge(&uid_set)
+            .await
+            .map_err(super::folders::map_err)?;
+        futures_util::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            let _uid = item.map_err(super::folders::map_err)?;
+        }
+    } else {
+        // Plain EXPUNGE: removes ALL \Deleted messages. Known data-loss
+        // risk with concurrent \Deleted flags. Servers without both MOVE
+        // and UIDPLUS are rare in practice.
+        let stream = session.expunge().await.map_err(super::folders::map_err)?;
+        futures_util::pin_mut!(stream);
+        while let Some(item) = stream.next().await {
+            let _seq = item.map_err(super::folders::map_err)?;
+        }
     }
 
     Ok(build_results(uids))
