@@ -37,6 +37,7 @@ pub async fn handle(
 
     // Send via SMTP using raw bytes
     let smtp_response = client.send_raw(&envelope, &raw_msg).await?;
+    tracing::info!(smtp_response, "send_email: SMTP send succeeded");
 
     // Extract Message-ID for the response
     let generated_msg_id = mail_parser::MessageParser::new()
@@ -45,15 +46,15 @@ pub async fn handle(
 
     // Best-effort: APPEND copy to Sent folder
     let sent_folder = "Sent";
-    let sent_uid = match server
+    let (sent_uid, sent_copy_failed) = match server
         .imap
         .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])
         .await
     {
-        Ok(result) => result.uid.map(rimap_imap::types::Uid::get),
+        Ok(result) => (result.uid.map(rimap_imap::types::Uid::get), false),
         Err(e) => {
             tracing::warn!("failed to append to Sent folder: {e}");
-            None
+            (None, true)
         }
     };
 
@@ -61,10 +62,11 @@ pub async fn handle(
         meta: serde_json::json!({
             "sent": true,
             "message_id": generated_msg_id,
-            "smtp_response": smtp_response,
+            "smtp_status": "delivered",
             "sent_copy": {
                 "folder": sent_folder,
                 "uid": sent_uid,
+                "failed": sent_copy_failed,
             },
         }),
         untrusted: None,
@@ -103,8 +105,8 @@ fn build_envelope(
 
 fn parse_lettre_addr(addr: &str) -> Result<lettre::Address, rimap_core::RimapError> {
     addr.parse::<lettre::Address>()
-        .map_err(|e| rimap_core::RimapError::Authz {
+        .map_err(|_| rimap_core::RimapError::Authz {
             code: rimap_core::error::ErrorCode::InvalidInput,
-            message: format!("invalid email address `{addr}`: {e}"),
+            message: "invalid email address in recipient list".into(),
         })
 }
