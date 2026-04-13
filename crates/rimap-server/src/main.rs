@@ -108,6 +108,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     let audit_for_shutdown = audit.clone();
     let mcp_server = server::ImapMcpServer {
+        folder_guard: rimap_authz::FolderGuard::new(
+            &validated.config.security.protected_folders,
+            &validated.config.security.expunge_folders,
+        ),
         config: validated,
         imap,
         guard,
@@ -164,8 +168,12 @@ fn build_dispatch_guard(cfg: &ValidatedConfig) -> anyhow::Result<DispatchGuard<S
         ..BreakerConfig::default_spec()
     };
     let breaker = CircuitBreaker::new(SystemClock::new(), breaker_cfg);
-    let governor = Governor::new(limits.commands_per_second, limits.drafts_per_minute)
-        .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
+    let governor = Governor::new(
+        limits.commands_per_second,
+        limits.drafts_per_minute,
+        limits.sends_per_minute,
+    )
+    .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
     Ok(DispatchGuard::new(matrix, breaker, governor))
 }
 

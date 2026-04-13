@@ -32,7 +32,7 @@ pub enum ConfigError {
     /// The posture name in the config was not recognized.
     #[error(transparent)]
     Posture(#[from] UnknownPosture),
-    /// A per-tool override referenced an unknown or v2 tool name.
+    /// A per-tool override referenced an unknown tool name.
     #[error("invalid tool override: {0}")]
     ToolOverride(#[from] ParseToolNameError),
     /// TLS fingerprint did not parse as 32 hex bytes.
@@ -102,5 +102,33 @@ pub enum ConfigError {
         /// Underlying keyring error.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    /// `send_email` is effectively enabled but no `[smtp]` section is configured.
+    #[error(
+        "send_email is enabled (posture = {posture}) but no [smtp] section \
+         is configured; add [smtp] or deny send_email via \
+         [security.tools] send_email = \"deny\""
+    )]
+    SmtpRequired {
+        /// The posture that enabled `send_email`.
+        posture: String,
+    },
+    /// A folder appears in both `protected_folders` and `expunge_folders`.
+    #[error(
+        "folder `{folder}` is in both protected_folders and expunge_folders; \
+         a folder cannot be both protected and expungeable"
+    )]
+    ConflictingFolders {
+        /// The conflicting folder name.
+        folder: String,
+    },
+    /// SMTP encryption set to "none" for a non-localhost host.
+    #[error(
+        "smtp encryption is 'none' for host `{host}`; \
+         plaintext SMTP exposes credentials on the network"
+    )]
+    SmtpPlaintextDenied {
+        /// The configured SMTP host.
+        host: String,
     },
 }

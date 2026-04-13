@@ -12,45 +12,13 @@ use rimap_core::tool::ToolName;
 
 use crate::error::AuthzError;
 
-/// Compile-time truth table. `true` = allowed by base posture.
-///
-/// Layout: outer by [`ToolName`] (13 tools), inner `[readonly, draft_safe, full]`.
-pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 3]); 13] = [
-    (ToolName::ListFolders, [true, true, true]),
-    (ToolName::Search, [true, true, true]),
-    (ToolName::SearchAdvanced, [false, false, true]),
-    (ToolName::FetchMessage, [true, true, true]),
-    (ToolName::FetchMessageHtml, [false, false, true]),
-    (ToolName::ListAttachments, [true, true, true]),
-    (ToolName::DownloadAttachment, [true, true, true]),
-    (ToolName::MarkRead, [false, true, true]),
-    (ToolName::MarkUnread, [false, true, true]),
-    (ToolName::Flag, [false, true, true]),
-    (ToolName::Unflag, [false, true, true]),
-    (ToolName::MoveMessage, [false, true, true]),
-    (ToolName::CreateDraft, [false, true, true]),
-];
-
-fn posture_index(p: Posture) -> usize {
-    match p {
-        Posture::Readonly => 0,
-        Posture::DraftSafe => 1,
-        Posture::Full => 2,
-    }
-}
-
 /// Lookup against the base `const` matrix, before overrides.
+///
+/// Delegates to [`rimap_core::base_allows`] — the single authoritative
+/// source of posture truth shared with `rimap-config`.
 #[must_use]
 pub fn base_allows(posture: Posture, tool: ToolName) -> bool {
-    let idx = posture_index(posture);
-    for (t, row) in POSTURE_MATRIX {
-        if t == tool {
-            return row[idx];
-        }
-    }
-    // Unreachable: POSTURE_MATRIX must cover all ToolName variants.
-    // A compile-time exhaustiveness check lives in the test module.
-    false
+    rimap_core::base_allows(posture, tool)
 }
 
 /// Effective authorization matrix: base posture merged with per-tool overrides.
@@ -133,7 +101,9 @@ mod tests {
     use rimap_core::tool::ToolName;
 
     use crate::error::AuthzError;
-    use crate::matrix::{EffectiveMatrix, POSTURE_MATRIX, base_allows};
+    use rimap_core::posture_matrix::POSTURE_MATRIX;
+
+    use crate::matrix::{EffectiveMatrix, base_allows};
 
     #[test]
     fn matrix_covers_every_tool_variant_exactly_once() {
@@ -168,6 +138,12 @@ mod tests {
             ToolName::Unflag,
             ToolName::MoveMessage,
             ToolName::CreateDraft,
+            ToolName::SendEmail,
+            ToolName::DeleteMessage,
+            ToolName::Expunge,
+            ToolName::CreateFolder,
+            ToolName::RenameFolder,
+            ToolName::DeleteFolder,
         ] {
             assert!(!base_allows(Posture::Readonly, t), "{t} should be denied");
         }
@@ -175,11 +151,21 @@ mod tests {
 
     #[test]
     fn base_draft_safe_row_matches_spec() {
-        for t in [ToolName::SearchAdvanced, ToolName::FetchMessageHtml] {
-            assert!(!base_allows(Posture::DraftSafe, t));
+        let denied = [
+            ToolName::SearchAdvanced,
+            ToolName::FetchMessageHtml,
+            ToolName::SendEmail,
+            ToolName::DeleteMessage,
+            ToolName::Expunge,
+            ToolName::CreateFolder,
+            ToolName::RenameFolder,
+            ToolName::DeleteFolder,
+        ];
+        for t in &denied {
+            assert!(!base_allows(Posture::DraftSafe, *t), "{t} expected denied");
         }
         for t in ToolName::all() {
-            if matches!(t, ToolName::SearchAdvanced | ToolName::FetchMessageHtml) {
+            if denied.contains(&t) {
                 continue;
             }
             assert!(base_allows(Posture::DraftSafe, t), "{t} expected allowed");
@@ -187,9 +173,30 @@ mod tests {
     }
 
     #[test]
-    fn base_full_row_allows_everything() {
+    fn base_full_allows_except_destructive() {
+        let denied = [ToolName::Expunge, ToolName::DeleteFolder];
         for t in ToolName::all() {
-            assert!(base_allows(Posture::Full, t), "full should allow {t}");
+            if denied.contains(&t) {
+                assert!(
+                    !base_allows(Posture::Full, t),
+                    "{t} expected denied at full"
+                );
+            } else {
+                assert!(
+                    base_allows(Posture::Full, t),
+                    "{t} expected allowed at full"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn base_destructive_allows_everything() {
+        for t in ToolName::all() {
+            assert!(
+                base_allows(Posture::Destructive, t),
+                "destructive should allow {t}"
+            );
         }
     }
 
@@ -255,7 +262,7 @@ mod tests {
 
     #[test]
     fn rows_iterates_every_tool() {
-        let m = EffectiveMatrix::build(Posture::Full, &BTreeMap::new());
+        let m = EffectiveMatrix::build(Posture::Destructive, &BTreeMap::new());
         let rows: Vec<_> = m.rows().collect();
         assert_eq!(rows.len(), ToolName::all().len());
         assert!(rows.iter().all(|(_, allowed)| *allowed));

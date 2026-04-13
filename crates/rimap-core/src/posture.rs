@@ -6,7 +6,7 @@ use core::str::FromStr;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// The three supported postures. Default is [`Posture::DraftSafe`].
+/// The four supported postures. Default is [`Posture::DraftSafe`].
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Posture {
@@ -17,6 +17,8 @@ pub enum Posture {
     DraftSafe,
     /// Read + mutations + escape hatches (`advanced_query`, `include_html`).
     Full,
+    /// Full permissions plus permanent deletion (`expunge`, `delete_folder`).
+    Destructive,
 }
 
 impl Posture {
@@ -27,13 +29,19 @@ impl Posture {
             Self::Readonly => "readonly",
             Self::DraftSafe => "draft-safe",
             Self::Full => "full",
+            Self::Destructive => "destructive",
         }
     }
 
     /// Every posture, in declaration order. Useful for exhaustive tests.
     #[must_use]
-    pub fn all() -> [Self; 3] {
-        [Self::Readonly, Self::DraftSafe, Self::Full]
+    pub fn all() -> [Self; 4] {
+        [
+            Self::Readonly,
+            Self::DraftSafe,
+            Self::Full,
+            Self::Destructive,
+        ]
     }
 }
 
@@ -45,7 +53,7 @@ impl fmt::Display for Posture {
 
 /// Error returned by [`Posture::from_str`] for unrecognized values.
 #[derive(Debug, Error, PartialEq, Eq)]
-#[error("unknown posture `{0}`; expected one of: readonly, draft-safe, full")]
+#[error("unknown posture `{0}`; expected one of: readonly, draft-safe, full, destructive")]
 pub struct UnknownPosture(pub String);
 
 impl FromStr for Posture {
@@ -56,6 +64,7 @@ impl FromStr for Posture {
             "readonly" => Ok(Self::Readonly),
             "draft-safe" => Ok(Self::DraftSafe),
             "full" => Ok(Self::Full),
+            "destructive" => Ok(Self::Destructive),
             other => Err(UnknownPosture(other.to_string())),
         }
     }
@@ -86,6 +95,14 @@ mod tests {
         assert_eq!(Posture::Readonly.to_string(), "readonly");
         assert_eq!(Posture::DraftSafe.to_string(), "draft-safe");
         assert_eq!(Posture::Full.to_string(), "full");
+        assert_eq!(Posture::Destructive.to_string(), "destructive");
+    }
+
+    #[test]
+    fn destructive_parses_and_displays() {
+        let parsed = Posture::from_str("destructive").unwrap();
+        assert_eq!(parsed, Posture::Destructive);
+        assert_eq!(parsed.to_string(), "destructive");
     }
 
     #[test]
@@ -94,6 +111,7 @@ mod tests {
         assert_eq!(err, UnknownPosture("yolo".to_string()));
         assert!(err.to_string().contains("yolo"));
         assert!(err.to_string().contains("draft-safe"));
+        assert!(err.to_string().contains("destructive"));
     }
 
     #[test]

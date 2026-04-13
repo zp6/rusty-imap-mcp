@@ -77,6 +77,9 @@ struct ConnectionInner {
     /// Server advertised MOVE capability (RFC 6851) after login.
     /// Reset to `false` on `invalidate()`.
     has_move: AtomicBool,
+    /// Server advertised UIDPLUS capability (RFC 4315) after login.
+    /// Reset to `false` on `invalidate()`.
+    has_uidplus: AtomicBool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -104,6 +107,7 @@ impl Connection {
                 credentials,
                 session: Mutex::new(None),
                 has_move: AtomicBool::new(false),
+                has_uidplus: AtomicBool::new(false),
             }),
         }
     }
@@ -133,11 +137,18 @@ impl Connection {
         self.inner.has_move.load(Ordering::Relaxed)
     }
 
+    /// Whether the server advertised the UIDPLUS capability (RFC 4315).
+    #[must_use]
+    pub fn has_uidplus_capability(&self) -> bool {
+        self.inner.has_uidplus.load(Ordering::Relaxed)
+    }
+
     /// Drop any current session. Called by ops on connection-lost errors.
     pub(crate) async fn invalidate(&self) {
         let mut guard = self.inner.session.lock().await;
         *guard = None;
         self.inner.has_move.store(false, Ordering::Relaxed);
+        self.inner.has_uidplus.store(false, Ordering::Relaxed);
     }
 
     /// The full connect/handshake/login/CAPABILITY flow. Emits exactly one
@@ -314,19 +325,21 @@ impl Connection {
             }
         };
 
-        // Post-login: probe CAPABILITY for MOVE (RFC 6851).
-        let has_move = match session.capabilities().await {
-            Ok(caps) => caps.has_str("MOVE"),
+        // Post-login: probe CAPABILITY for MOVE (RFC 6851) and
+        // UIDPLUS (RFC 4315).
+        let (has_move, has_uidplus) = match session.capabilities().await {
+            Ok(caps) => (caps.has_str("MOVE"), caps.has_str("UIDPLUS")),
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     "post-login CAPABILITY probe failed; \
-                     assuming no MOVE support",
+                     assuming no MOVE/UIDPLUS support",
                 );
-                false
+                (false, false)
             }
         };
         self.inner.has_move.store(has_move, Ordering::Relaxed);
+        self.inner.has_uidplus.store(has_uidplus, Ordering::Relaxed);
 
         Ok(session)
     }
@@ -397,7 +410,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::list(session, pattern).await
         })
         .await;
@@ -422,7 +437,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::status(session, folder, items).await
         })
         .await;
@@ -447,7 +464,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, folder, read_only).await
         })
         .await;
@@ -472,7 +491,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::search::search(session, folder, query).await
         })
         .await;
@@ -499,7 +520,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::fetch::fetch(session, folder, uids, spec).await
         })
         .await;
@@ -538,7 +561,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             let server_size = crate::ops::fetch::preflight_fetch_size(session, folder, uid).await?;
             crate::ops::fetch::preflight_size_check(server_size, limit)?;
             crate::ops::fetch::fetch_body(session, folder, uid, limit).await
@@ -589,7 +614,9 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, folder, false).await?;
             crate::ops::store::store(session, uids, flags, action).await
         })
@@ -620,13 +647,17 @@ impl Connection {
     ) -> Result<crate::ops::move_msg::MoveOutcome, Error> {
         let dur = self.inner.cfg.command_timeout;
         let has_move = self.has_move_capability();
+        let has_uidplus = self.has_uidplus_capability();
         let result = crate::time::with_timeout("move", dur, async {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::folders::select(session, source_folder, false).await?;
-            crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move).await
+            crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move, has_uidplus)
+                .await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
@@ -656,8 +687,157 @@ impl Connection {
             let mut guard = self.session().await?;
             let session = guard
                 .as_mut()
-                .unwrap_or_else(|| unreachable!("session() ensures Some"));
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
             crate::ops::append::append(session, folder, message, flags, keywords, limit).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// Delete a message by flagging it as `\Deleted` and moving it to Trash.
+    ///
+    /// If the message is already in the Trash folder, only the flag is applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// or a protocol error if the server rejects the command.
+    pub async fn delete_message(
+        &self,
+        folder: &str,
+        uid: crate::types::Uid,
+        trash_folder: &str,
+    ) -> Result<crate::ops::delete::DeleteResult, Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let has_move = self.has_move_capability();
+        let has_uidplus = self.has_uidplus_capability();
+        let result = crate::time::with_timeout("delete_message", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
+            crate::ops::folders::select(session, folder, false).await?;
+            crate::ops::delete::delete_message(
+                session,
+                uid,
+                folder,
+                trash_folder,
+                has_move,
+                has_uidplus,
+            )
+            .await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// Expunge all `\Deleted` messages from `folder`.
+    ///
+    /// Returns `(deleted_uids, expunged_count)` — the UIDs found by
+    /// `UID SEARCH DELETED` before the expunge, and the count from the
+    /// EXPUNGE response.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// or a protocol error if the server rejects the command.
+    pub async fn expunge(&self, folder: &str) -> Result<(Vec<crate::types::Uid>, u32), Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("expunge", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
+            let deleted_uids = crate::ops::expunge::count_deleted(session, folder).await?;
+            crate::ops::folders::select(session, folder, false).await?;
+            let count = crate::ops::expunge::expunge(session).await?;
+            Ok((deleted_uids, count))
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// Create a new IMAP folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidInput` for invalid names, `Error::ConnectionLost`
+    /// or `Error::Timeout` on transport failure, or a protocol error if the
+    /// server rejects the command.
+    pub async fn create_folder(&self, name: &str) -> Result<(), Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("create_folder", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
+            crate::ops::folder_mgmt::create_folder(session, name).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// Rename an IMAP folder.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidInput` for an invalid `new_name`,
+    /// `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// or a protocol error if the server rejects the command.
+    pub async fn rename_folder(&self, old_name: &str, new_name: &str) -> Result<(), Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("rename_folder", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
+            crate::ops::folder_mgmt::rename_folder(session, old_name, new_name).await
+        })
+        .await;
+        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
+    /// Delete an IMAP folder and all its contents.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// or a protocol error if the server rejects the command.
+    pub async fn delete_folder(&self, name: &str) -> Result<(), Error> {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout("delete_folder", dur, async {
+            let mut guard = self.session().await?;
+            let session = guard
+                .as_mut()
+                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
+                    "session invariant violated: guard is None after session()".to_string(),
+                )))?;
+            crate::ops::folder_mgmt::delete_folder(session, name).await
         })
         .await;
         if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
 use rimap_authz::DispatchGuard;
+use rimap_authz::FolderGuard;
 use rimap_authz::breaker::SystemClock;
 use rimap_config::validate::ValidatedConfig;
 use rimap_core::tool::ToolName;
@@ -18,16 +19,12 @@ use rimap_imap::Connection;
 use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, ErrorCode as McpCode, ErrorData, Implementation,
+    ListToolsResult, PaginatedRequestParams, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 
 /// Core MCP server. Owns every resource the handler methods need.
-#[expect(
-    dead_code,
-    reason = "config/audit/download_dir used by tool handlers in later tasks"
-)]
 pub struct ImapMcpServer {
     /// Validated configuration snapshot.
     pub(crate) config: ValidatedConfig,
@@ -36,9 +33,12 @@ pub struct ImapMcpServer {
     /// Posture + circuit breaker + rate limiter guard.
     pub(crate) guard: DispatchGuard<SystemClock>,
     /// Append-only audit writer.
+    #[expect(dead_code, reason = "used by audit logging in later sprint")]
     pub(crate) audit: AuditWriter,
     /// Directory for attachment downloads.
     pub(crate) download_dir: PathBuf,
+    /// Folder safety guard (protected folders + expunge allowlist).
+    pub(crate) folder_guard: FolderGuard,
 }
 
 impl ServerHandler for ImapMcpServer {
@@ -69,6 +69,17 @@ impl ServerHandler for ImapMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let tool_name = ToolName::from_str(&request.name)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        // Reject tools that have no definition (not yet implemented).
+        // This prevents unimplemented v2 tools from consuming rate
+        // limiter tokens and producing misleading INTERNAL_ERROR.
+        if tool_definition(tool_name).is_none() {
+            return Err(ErrorData::new(
+                McpCode::RESOURCE_NOT_FOUND,
+                format!("tool `{}` is not available", request.name),
+                None,
+            ));
+        }
 
         if let Err(e) = crate::dispatch::pre_call_guards(&self.guard, tool_name) {
             return Err(crate::mcp_error::to_mcp_error(&e));
@@ -137,6 +148,30 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::create_draft::handle(self, input)).await
             }
+            ToolName::SendEmail => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::send_email::handle(self, input)).await
+            }
+            ToolName::DeleteMessage => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::delete_message::handle(self, input)).await
+            }
+            ToolName::Expunge => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::expunge::handle(self, input)).await
+            }
+            ToolName::CreateFolder => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::folder_mgmt::handle_create(self, input)).await
+            }
+            ToolName::RenameFolder => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::folder_mgmt::handle_rename(self, input)).await
+            }
+            ToolName::DeleteFolder => {
+                let input = parse_args(args)?;
+                Box::pin(crate::tools::folder_mgmt::handle_delete(self, input)).await
+            }
         }
     }
 }
@@ -169,13 +204,26 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
 /// (e.g. `SearchAdvanced` and `FetchMessageHtml` are gated
 /// sub-capabilities, not separate MCP tools).
 fn tool_definition(name: ToolName) -> Option<Tool> {
+    let (tool_name, description, schema) = tool_spec_v1(name).or_else(|| tool_spec_v2(name))?;
+    Some(Tool::new(tool_name, description, Arc::new(schema)))
+}
+
+/// Type alias for tool spec tuples.
+type ToolSpec = (
+    &'static str,
+    &'static str,
+    serde_json::Map<String, serde_json::Value>,
+);
+
+/// Return (name, description, schema) for v1 read/organize tools.
+fn tool_spec_v1(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
         create_draft::CreateDraftInput, download_attachment::DownloadAttachmentInput,
         fetch_message::FetchMessageInput, flags::FlagInput, list_attachments::ListAttachmentsInput,
         move_message::MoveInput, search::SearchInput,
     };
 
-    let (tool_name, description, schema): (&str, &str, serde_json::Map<_, _>) = match name {
+    let tuple = match name {
         ToolName::ListFolders => (
             "list_folders",
             "List all IMAP folders",
@@ -186,7 +234,6 @@ fn tool_definition(name: ToolName) -> Option<Tool> {
             "Search messages with structured query",
             schema_map::<SearchInput>(),
         ),
-        ToolName::SearchAdvanced | ToolName::FetchMessageHtml => return None,
         ToolName::FetchMessage => (
             "fetch_message",
             "Fetch message metadata and text body",
@@ -232,9 +279,54 @@ fn tool_definition(name: ToolName) -> Option<Tool> {
             "Create a draft email with $PendingReview flag",
             schema_map::<CreateDraftInput>(),
         ),
+        _ => return None,
+    };
+    Some(tuple)
+}
+
+/// Return (name, description, schema) for v2 write/management tools.
+fn tool_spec_v2(name: ToolName) -> Option<ToolSpec> {
+    use crate::tools::{
+        delete_message::DeleteMessageInput,
+        expunge::ExpungeInput,
+        folder_mgmt::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
+        send_email::SendEmailInput,
     };
 
-    Some(Tool::new(tool_name, description, Arc::new(schema)))
+    let tuple = match name {
+        ToolName::SendEmail => (
+            "send_email",
+            "Send an email via SMTP",
+            schema_map::<SendEmailInput>(),
+        ),
+        ToolName::DeleteMessage => (
+            "delete_message",
+            "Delete a message (move to Trash)",
+            schema_map::<DeleteMessageInput>(),
+        ),
+        ToolName::Expunge => (
+            "expunge",
+            "Permanently remove deleted messages from a folder",
+            schema_map::<ExpungeInput>(),
+        ),
+        ToolName::CreateFolder => (
+            "create_folder",
+            "Create a new IMAP folder",
+            schema_map::<CreateFolderInput>(),
+        ),
+        ToolName::RenameFolder => (
+            "rename_folder",
+            "Rename an IMAP folder",
+            schema_map::<RenameFolderInput>(),
+        ),
+        ToolName::DeleteFolder => (
+            "delete_folder",
+            "Delete an IMAP folder and all its contents",
+            schema_map::<DeleteFolderInput>(),
+        ),
+        _ => return None,
+    };
+    Some(tuple)
 }
 
 #[cfg(test)]
@@ -249,8 +341,8 @@ mod tests {
             .into_iter()
             .filter_map(tool_definition)
             .collect();
-        // 13 capabilities minus 2 sub-capabilities = 11 MCP tools
-        assert_eq!(defs.len(), 11);
+        // 19 tool variants minus 2 sub-capabilities = 17
+        assert_eq!(defs.len(), 17);
     }
 
     #[test]

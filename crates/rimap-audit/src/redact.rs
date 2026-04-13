@@ -158,12 +158,15 @@ impl<'a> Redactor<'a> {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json::to_vec(Value) is infallible"
+    )]
     fn salted_hash(&self, value: &Value) -> Value {
         // Canonicalize via `serde_json::to_vec`; equal values hash to the same
         // bytes within a process because `serde_json` preserves Map insertion
         // order (BTreeMap in our inputs).
-        let bytes = serde_json::to_vec(value)
-            .unwrap_or_else(|_| unreachable!("serde_json::to_vec of Value is infallible"));
+        let bytes = serde_json::to_vec(value).expect("serde_json::to_vec of Value is infallible");
         let mut hasher = Sha256::new();
         hasher.update(self.salt.as_bytes());
         hasher.update(&bytes);
@@ -180,9 +183,13 @@ impl<'a> Redactor<'a> {
 /// Computes `sha256(serde_json::to_vec(args))` on the *unredacted* arguments
 /// for the `arguments_hash_sha256` audit field.
 #[must_use]
+#[expect(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "serde_json::to_vec(Value) is infallible"
+)]
 pub fn hash_arguments(args: &Value) -> String {
-    let bytes = serde_json::to_vec(args)
-        .unwrap_or_else(|_| unreachable!("serde_json::to_vec of Value is infallible"));
+    let bytes = serde_json::to_vec(args).expect("serde_json::to_vec of Value is infallible");
     let digest = Sha256::digest(&bytes);
     hex::encode(digest)
 }
@@ -199,6 +206,7 @@ pub fn hash_arguments(args: &Value) -> String {
 pub fn schemas() -> Vec<RedactionSchema> {
     let mut out = read_tool_schemas();
     out.extend(write_tool_schemas());
+    out.extend(v2_tool_schemas());
     out
 }
 
@@ -354,6 +362,79 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
                 ("subject", RedactString),
                 ("body_text", RedactString),
                 ("body_html", RedactString),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+    ]
+}
+
+/// Schemas for v2 tools: `send_email` through `delete_folder`.
+fn v2_tool_schemas() -> Vec<RedactionSchema> {
+    use FieldPolicy::{Forbidden, RedactString, SaltedHash, Verbatim};
+
+    vec![
+        RedactionSchema::new(
+            "send_email",
+            &[
+                ("to", SaltedHash),
+                ("cc", SaltedHash),
+                ("bcc", SaltedHash),
+                ("subject", RedactString),
+                ("body", RedactString),
+                ("in_reply_to", Verbatim),
+                ("references", Verbatim),
+                ("message_id", Verbatim),
+                ("smtp_response", RedactString),
+                ("sent_copy_uid", Verbatim),
+                ("folder", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "delete_message",
+            &[
+                ("folder", Verbatim),
+                ("uid", Verbatim),
+                ("message_id", Verbatim),
+                ("destination", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "expunge",
+            &[
+                ("folder", Verbatim),
+                ("expunged_count", Verbatim),
+                ("expunged_uids", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "create_folder",
+            &[
+                ("name", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "rename_folder",
+            &[
+                ("old_name", Verbatim),
+                ("new_name", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "delete_folder",
+            &[
+                ("name", Verbatim),
+                ("message_count", Verbatim),
                 ("password", Forbidden),
                 ("token", Forbidden),
             ],
@@ -547,6 +628,100 @@ mod tests {
         assert_eq!(
             schema.policies.get("body").copied(),
             Some(FieldPolicy::RedactString),
+        );
+    }
+
+    #[test]
+    fn send_email_schema_matches_spec_field_names() {
+        let table = crate::redact::schemas();
+        let schema = table
+            .iter()
+            .find(|s| s.tool == "send_email")
+            .expect("send_email schema exists");
+        assert_eq!(
+            schema.policies.get("in_reply_to").copied(),
+            Some(FieldPolicy::Verbatim),
+            "in_reply_to should be Verbatim per spec",
+        );
+        assert_eq!(
+            schema.policies.get("references").copied(),
+            Some(FieldPolicy::Verbatim),
+            "references should be Verbatim per spec",
+        );
+        assert_eq!(
+            schema.policies.get("message_id").copied(),
+            Some(FieldPolicy::Verbatim),
+            "message_id result field should be Verbatim",
+        );
+        assert_eq!(
+            schema.policies.get("smtp_response").copied(),
+            Some(FieldPolicy::RedactString),
+            "smtp_response should be RedactString",
+        );
+        assert_eq!(
+            schema.policies.get("sent_copy_uid").copied(),
+            Some(FieldPolicy::Verbatim),
+            "sent_copy_uid should be Verbatim",
+        );
+        assert_eq!(
+            schema.policies.get("folder").copied(),
+            Some(FieldPolicy::Verbatim),
+            "folder (Sent) should be Verbatim",
+        );
+        assert!(
+            !schema.policies.contains_key("in_reply_to_uid"),
+            "in_reply_to_uid is not a spec field",
+        );
+        assert!(
+            !schema.policies.contains_key("in_reply_to_folder"),
+            "in_reply_to_folder is not a spec field",
+        );
+    }
+
+    #[test]
+    fn delete_message_schema_has_result_fields() {
+        let table = crate::redact::schemas();
+        let schema = table
+            .iter()
+            .find(|s| s.tool == "delete_message")
+            .expect("delete_message schema exists");
+        assert_eq!(
+            schema.policies.get("message_id").copied(),
+            Some(FieldPolicy::Verbatim),
+        );
+        assert_eq!(
+            schema.policies.get("destination").copied(),
+            Some(FieldPolicy::Verbatim),
+        );
+    }
+
+    #[test]
+    fn expunge_schema_has_result_fields() {
+        let table = crate::redact::schemas();
+        let schema = table
+            .iter()
+            .find(|s| s.tool == "expunge")
+            .expect("expunge schema exists");
+        assert_eq!(
+            schema.policies.get("expunged_count").copied(),
+            Some(FieldPolicy::Verbatim),
+        );
+        assert_eq!(
+            schema.policies.get("expunged_uids").copied(),
+            Some(FieldPolicy::Verbatim),
+        );
+    }
+
+    #[test]
+    fn delete_folder_schema_has_result_fields() {
+        let table = crate::redact::schemas();
+        let schema = table
+            .iter()
+            .find(|s| s.tool == "delete_folder")
+            .expect("delete_folder schema exists");
+        assert_eq!(
+            schema.policies.get("message_count").copied(),
+            Some(FieldPolicy::Verbatim),
         );
     }
 }

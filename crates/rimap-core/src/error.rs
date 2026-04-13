@@ -21,6 +21,8 @@ pub enum ErrorCode {
     NotFound,
     /// IMAP server misbehaved.
     ImapProtocol,
+    /// SMTP server rejected message or command.
+    SmtpProtocol,
     /// TLS handshake or cert verification failed.
     Tls,
     /// Authentication rejected.
@@ -31,6 +33,10 @@ pub enum ErrorCode {
     Timeout,
     /// Attachment exceeded cap.
     AttachmentTooLarge,
+    /// Operation blocked because the folder is in `protected_folders`.
+    ProtectedFolder,
+    /// Expunge or `delete_folder` blocked because folder is not in `expunge_folders`.
+    ExpungeDenied,
     /// Startup-time configuration error.
     Config,
     /// Bug, invariant violation, or audit failure.
@@ -48,11 +54,14 @@ impl ErrorCode {
             Self::CircuitOpen => "ERR_CIRCUIT_OPEN",
             Self::NotFound => "ERR_NOT_FOUND",
             Self::ImapProtocol => "ERR_IMAP_PROTOCOL",
+            Self::SmtpProtocol => "ERR_SMTP_PROTOCOL",
             Self::Tls => "ERR_TLS",
             Self::Auth => "ERR_AUTH",
             Self::ConnectionLost => "ERR_CONNECTION_LOST",
             Self::Timeout => "ERR_TIMEOUT",
             Self::AttachmentTooLarge => "ERR_ATTACHMENT_TOO_LARGE",
+            Self::ProtectedFolder => "ERR_PROTECTED_FOLDER",
+            Self::ExpungeDenied => "ERR_EXPUNGE_DENIED",
             Self::Config => "ERR_CONFIG",
             Self::Internal => "ERR_INTERNAL",
         }
@@ -90,6 +99,17 @@ pub enum RimapError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     },
+    /// SMTP-layer failure (connection, auth, TLS, rejection, timeout).
+    #[error("{code}: {message}")]
+    Smtp {
+        /// Stable error code.
+        code: ErrorCode,
+        /// Human-readable message (redacted — no server banners).
+        message: String,
+        /// Underlying source error, if any.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    },
     /// Audit log failure. Carries both the stable code (open-time errors
     /// map to `ErrorCode::Config`, runtime errors to `ErrorCode::Internal`)
     /// and the original `AuditError` via the source chain. `message` is
@@ -119,7 +139,10 @@ impl RimapError {
     #[must_use]
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Authz { code, .. } | Self::Imap { code, .. } | Self::Audit { code, .. } => *code,
+            Self::Authz { code, .. }
+            | Self::Imap { code, .. }
+            | Self::Smtp { code, .. }
+            | Self::Audit { code, .. } => *code,
             Self::Config(_) => ErrorCode::Config,
             Self::Internal(_) => ErrorCode::Internal,
         }
@@ -139,11 +162,14 @@ mod tests {
             (ErrorCode::CircuitOpen, "ERR_CIRCUIT_OPEN"),
             (ErrorCode::NotFound, "ERR_NOT_FOUND"),
             (ErrorCode::ImapProtocol, "ERR_IMAP_PROTOCOL"),
+            (ErrorCode::SmtpProtocol, "ERR_SMTP_PROTOCOL"),
             (ErrorCode::Tls, "ERR_TLS"),
             (ErrorCode::Auth, "ERR_AUTH"),
             (ErrorCode::ConnectionLost, "ERR_CONNECTION_LOST"),
             (ErrorCode::Timeout, "ERR_TIMEOUT"),
             (ErrorCode::AttachmentTooLarge, "ERR_ATTACHMENT_TOO_LARGE"),
+            (ErrorCode::ProtectedFolder, "ERR_PROTECTED_FOLDER"),
+            (ErrorCode::ExpungeDenied, "ERR_EXPUNGE_DENIED"),
             (ErrorCode::Config, "ERR_CONFIG"),
             (ErrorCode::Internal, "ERR_INTERNAL"),
         ];

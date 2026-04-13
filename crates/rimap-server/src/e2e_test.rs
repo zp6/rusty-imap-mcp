@@ -208,12 +208,13 @@ impl CredentialStore for StaticCreds {
         Ok(Some(self.0.clone()))
     }
 
+    #[expect(clippy::panic, clippy::panic_in_result_fn, reason = "test stub")]
     fn set_password(
         &self,
         _account: &str,
         _password: &str,
     ) -> Result<(), rimap_config::ConfigError> {
-        unreachable!("tests do not write credentials")
+        panic!("tests do not write credentials")
     }
 }
 
@@ -245,6 +246,10 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     let guard = test_guard(&config);
 
     let server = ImapMcpServer {
+        folder_guard: rimap_authz::FolderGuard::new(
+            &config.config.security.protected_folders,
+            &config.config.security.expunge_folders,
+        ),
         config,
         imap,
         guard,
@@ -271,6 +276,7 @@ fn test_config(harness: &DovecotHarness, audit_dir: &TempDir) -> ValidatedConfig
                 connect_timeout_seconds: 10,
                 command_timeout_seconds: 30,
             },
+            smtp: None,
             security: SecurityConfig {
                 posture: Posture::DraftSafe,
                 ..SecurityConfig::default()
@@ -313,6 +319,7 @@ fn test_guard(config: &ValidatedConfig) -> DispatchGuard<SystemClock> {
     let governor = Governor::new(
         config.config.limits.commands_per_second,
         config.config.limits.drafts_per_minute,
+        config.config.limits.sends_per_minute,
     )
     .expect("governor");
     DispatchGuard::new(matrix, breaker, governor)

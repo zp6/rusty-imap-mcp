@@ -33,10 +33,16 @@ pub fn to_mcp_error(err: &RimapError) -> ErrorData {
         ErrorCode::InvalidInput => ErrorData::invalid_params(message, None),
         ErrorCode::NotFound => ErrorData::new(McpCode::RESOURCE_NOT_FOUND, message, None),
         ErrorCode::PostureDenied => ErrorData::new(POSTURE_DENIED, message, None),
+        ErrorCode::ProtectedFolder | ErrorCode::ExpungeDenied => ErrorData::new(
+            POSTURE_DENIED,
+            "operation denied for this folder".to_string(),
+            None,
+        ),
         ErrorCode::RateLimited => ErrorData::new(RATE_LIMITED, message, None),
         ErrorCode::CircuitOpen => ErrorData::new(CIRCUIT_OPEN, message, None),
         ErrorCode::AttachmentTooLarge => ErrorData::new(ATTACHMENT_TOO_LARGE, message, None),
         ErrorCode::ImapProtocol
+        | ErrorCode::SmtpProtocol
         | ErrorCode::Tls
         | ErrorCode::Auth
         | ErrorCode::ConnectionLost
@@ -97,5 +103,31 @@ mod tests {
         let err = authz_error(ErrorCode::RateLimited, "slow down");
         let mcp = to_mcp_error(&err);
         assert!(mcp.message.contains("slow down"));
+    }
+
+    #[test]
+    fn protected_folder_uses_opaque_message() {
+        let err = authz_error(
+            ErrorCode::ProtectedFolder,
+            "folder `INBOX` is protected and cannot be deleted",
+        );
+        let mcp = to_mcp_error(&err);
+        assert_eq!(mcp.code, super::POSTURE_DENIED);
+        assert!(!mcp.message.contains("INBOX"));
+        assert!(!mcp.message.contains("protected_folders"));
+        assert_eq!(mcp.message, "operation denied for this folder");
+    }
+
+    #[test]
+    fn expunge_denied_uses_opaque_message() {
+        let err = authz_error(
+            ErrorCode::ExpungeDenied,
+            "expunge denied for folder `Sent`; add it to expunge_folders",
+        );
+        let mcp = to_mcp_error(&err);
+        assert_eq!(mcp.code, super::POSTURE_DENIED);
+        assert!(!mcp.message.contains("Sent"));
+        assert!(!mcp.message.contains("expunge_folders"));
+        assert_eq!(mcp.message, "operation denied for this folder");
     }
 }

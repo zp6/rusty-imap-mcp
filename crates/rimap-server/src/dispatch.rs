@@ -53,7 +53,7 @@ mod tests {
                 auth_max_cooldown: Duration::from_secs(600),
             },
         );
-        let governor = Governor::new(100, 5).expect("valid governor config");
+        let governor = Governor::new(100, 5, 3).expect("valid governor config");
         DispatchGuard::new(matrix, breaker, governor)
     }
 

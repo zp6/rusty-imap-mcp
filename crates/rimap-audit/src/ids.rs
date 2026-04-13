@@ -71,15 +71,20 @@ impl Timestamp {
     /// Construct from an [`OffsetDateTime`], truncating sub-millisecond
     /// precision so that the value round-trips cleanly through serde.
     #[must_use]
+    #[expect(
+        clippy::expect_used,
+        clippy::missing_panics_doc,
+        reason = "ms is always 0..=999_000_000, a valid nanosecond value"
+    )]
     pub fn from_offset(dt: OffsetDateTime) -> Self {
         // `OffsetDateTime::nanosecond()` can return up to 1_999_999_999 during
         // a positive leap second; clamp to the `replace_nanosecond` input range
         // (0..=999_999_999) so the let-else never fires.
         let clamped_ns = dt.nanosecond().min(999_999_999);
         let ms = clamped_ns / 1_000_000 * 1_000_000;
-        let Ok(truncated) = dt.replace_nanosecond(ms) else {
-            unreachable!("ms truncation produces a valid nanosecond value (0..=999_000_000)")
-        };
+        let truncated = dt
+            .replace_nanosecond(ms)
+            .expect("ms truncation produces a valid nanosecond value (0..=999_000_000)");
         Self(truncated)
     }
 

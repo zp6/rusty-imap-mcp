@@ -16,7 +16,7 @@ use rimap_core::tls::TlsFingerprint;
 use rimap_core::tool::ToolName;
 
 use crate::error::ConfigError;
-use crate::model::{Config, Verdict};
+use crate::model::{Config, SmtpEncryption, Verdict};
 
 /// Validated config: a `Config` plus the resolved per-tool override map
 /// keyed by `ToolName`, plus the parsed TLS fingerprint (if any).
@@ -39,7 +39,10 @@ pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     validate_limits(&config)?;
     validate_audit(&config)?;
     validate_paths(&config)?;
+    validate_folder_safety(&config)?;
     let tool_overrides = resolve_tool_overrides(&config)?;
+    validate_smtp_required(&config, &tool_overrides)?;
+    validate_smtp_encryption(&config)?;
     Ok(ValidatedConfig {
         config,
         tool_overrides,
@@ -80,6 +83,12 @@ fn validate_limits(config: &Config) -> Result<(), ConfigError> {
     if limits.drafts_per_minute == 0 {
         return Err(ConfigError::InvalidLimit {
             field: "limits.drafts_per_minute",
+            reason: "must be > 0".to_string(),
+        });
+    }
+    if limits.sends_per_minute == 0 {
+        return Err(ConfigError::InvalidLimit {
+            field: "limits.sends_per_minute",
             reason: "must be > 0".to_string(),
         });
     }
@@ -252,6 +261,59 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_folder_safety(config: &Config) -> Result<(), ConfigError> {
+    let mut protected: Vec<String> = config
+        .security
+        .protected_folders
+        .iter()
+        .map(|f| utf7_imap::decode_utf7_imap(f.clone()).to_lowercase())
+        .collect();
+    protected.push("inbox".to_string());
+
+    for folder in &config.security.expunge_folders {
+        let norm = utf7_imap::decode_utf7_imap(folder.clone()).to_lowercase();
+        if protected.contains(&norm) {
+            return Err(ConfigError::ConflictingFolders {
+                folder: folder.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_smtp_required(
+    config: &Config,
+    tool_overrides: &BTreeMap<ToolName, Verdict>,
+) -> Result<(), ConfigError> {
+    let posture = config.security.posture;
+    let send_email_base = rimap_core::base_allows(posture, ToolName::SendEmail);
+    let send_email_effective = match tool_overrides.get(&ToolName::SendEmail) {
+        Some(Verdict::Allow) => true,
+        Some(Verdict::Deny) => false,
+        None => send_email_base,
+    };
+    if send_email_effective && config.smtp.is_none() {
+        return Err(ConfigError::SmtpRequired {
+            posture: posture.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_smtp_encryption(config: &Config) -> Result<(), ConfigError> {
+    let Some(smtp) = &config.smtp else {
+        return Ok(());
+    };
+    if smtp.encryption == SmtpEncryption::None {
+        let host = &smtp.host;
+        let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "::1";
+        if !is_localhost {
+            return Err(ConfigError::SmtpPlaintextDenied { host: host.clone() });
+        }
+    }
+    Ok(())
+}
+
 fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
     let mut out = BTreeMap::new();
     for (name, verdict) in &config.security.tools {
@@ -265,12 +327,14 @@ fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>
 #[expect(clippy::unwrap_used, reason = "tests")]
 #[expect(clippy::panic, reason = "tests")]
 mod tests {
+    use rimap_core::posture::Posture;
     use rimap_core::tool::{ParseToolNameError, ToolName};
     use tempfile::TempDir;
 
     use crate::error::ConfigError;
     use crate::model::{
-        AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig, Verdict,
+        AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig,
+        SmtpEncryption, Verdict,
     };
     use crate::validate::validate;
 
@@ -284,6 +348,7 @@ mod tests {
                 command_timeout_seconds: 30,
                 connect_timeout_seconds: 10,
             },
+            smtp: None,
             security: SecurityConfig::default(),
             limits: LimitsConfig::default(),
             audit: AuditConfig {
@@ -339,17 +404,17 @@ mod tests {
     }
 
     #[test]
-    fn override_v2_tool_fails_with_v2_error() {
+    fn override_v2_tool_resolves_successfully() {
         let dir = TempDir::new().unwrap();
         let mut cfg = base_config(dir.path());
         cfg.security
             .tools
             .insert("delete_message".into(), Verdict::Allow);
-        let err = validate(cfg).unwrap_err();
-        assert!(matches!(
-            err,
-            ConfigError::ToolOverride(ParseToolNameError::V2(_))
-        ));
+        let v = validate(cfg).unwrap();
+        assert_eq!(
+            v.tool_overrides.get(&ToolName::DeleteMessage),
+            Some(&Verdict::Allow)
+        );
     }
 
     #[test]
@@ -510,6 +575,38 @@ mod tests {
     }
 
     #[test]
+    fn smtp_section_parses_from_toml() {
+        let toml_str = r#"
+[imap]
+host = "imap.example.com"
+port = 993
+username = "alice@example.com"
+
+[smtp]
+host = "smtp.example.com"
+port = 587
+encryption = "starttls"
+username = "alice@example.com"
+
+[audit]
+path = "/tmp/audit.jsonl"
+"#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let smtp = cfg.smtp.as_ref().unwrap();
+        assert_eq!(smtp.host, "smtp.example.com");
+        assert_eq!(smtp.port, 587);
+        assert_eq!(smtp.encryption, SmtpEncryption::Starttls);
+    }
+
+    #[test]
+    fn config_without_smtp_section_is_valid() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        assert!(cfg.smtp.is_none());
+        validate(cfg).unwrap();
+    }
+
+    #[test]
     fn audit_path_with_traversal_segments_is_canonicalized_before_containment() {
         let base = TempDir::new().unwrap();
         let nested = base.path().join("inner");
@@ -520,5 +617,132 @@ mod tests {
         cfg.audit.allowed_base_dir = Some(nested);
         let err = validate(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::AuditPathOutsideBase { .. }));
+    }
+
+    #[test]
+    fn smtp_required_when_send_email_enabled_by_posture() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::SmtpRequired { .. }));
+    }
+
+    #[test]
+    fn smtp_not_required_when_send_email_explicitly_denied() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        cfg.security
+            .tools
+            .insert("send_email".into(), Verdict::Deny);
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn smtp_not_required_for_draft_safe_posture() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn conflicting_folders_fails() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.protected_folders = vec!["Trash".into()];
+        cfg.security.expunge_folders = vec!["Trash".into()];
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::ConflictingFolders { .. }));
+    }
+
+    #[test]
+    fn non_overlapping_folders_passes() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.protected_folders = vec!["INBOX".into(), "Sent".into()];
+        cfg.security.expunge_folders = vec!["Trash".into()];
+        validate(cfg).unwrap();
+    }
+
+    #[test]
+    fn conflicting_folders_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.protected_folders = vec!["trash".into()];
+        cfg.security.expunge_folders = vec!["Trash".into()];
+        let err = validate(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::ConflictingFolders { .. }));
+    }
+
+    #[test]
+    fn zero_sends_per_minute_fails() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.limits.sends_per_minute = 0;
+        assert!(matches!(
+            validate(cfg).unwrap_err(),
+            ConfigError::InvalidLimit {
+                field: "limits.sends_per_minute",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn smtp_plaintext_rejected_for_remote_host() {
+        use crate::model::SmtpConfig;
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        cfg.smtp = Some(SmtpConfig {
+            host: "smtp.example.com".into(),
+            port: 587,
+            encryption: SmtpEncryption::None,
+            username: "user".into(),
+            command_timeout_seconds: 30,
+        });
+        let result = validate(cfg);
+        assert!(
+            matches!(result, Err(ConfigError::SmtpPlaintextDenied { .. })),
+            "expected SmtpPlaintextDenied, got {result:?}",
+        );
+    }
+
+    #[test]
+    fn smtp_plaintext_allowed_for_localhost() {
+        use crate::model::SmtpConfig;
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_config(dir.path());
+        cfg.security.posture = Posture::Full;
+        cfg.smtp = Some(SmtpConfig {
+            host: "127.0.0.1".into(),
+            port: 1025,
+            encryption: SmtpEncryption::None,
+            username: "user".into(),
+            command_timeout_seconds: 30,
+        });
+        let result = validate(cfg);
+        assert!(
+            result.is_ok(),
+            "localhost plaintext should be allowed: {result:?}",
+        );
+    }
+
+    #[test]
+    fn smtp_config_debug_redacts_username() {
+        use crate::model::{SmtpConfig, SmtpEncryption};
+        let cfg = SmtpConfig {
+            host: "smtp.example.com".into(),
+            port: 587,
+            encryption: SmtpEncryption::Starttls,
+            username: "secret_user@example.com".into(),
+            command_timeout_seconds: 30,
+        };
+        let debug = format!("{cfg:?}");
+        assert!(
+            !debug.contains("secret_user"),
+            "Debug output must not contain username: {debug}",
+        );
     }
 }

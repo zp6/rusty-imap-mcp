@@ -1,12 +1,13 @@
 [package]
-name = "rimap-authz"
+name = "rimap-smtp"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Posture-based authorization, rate limiting, and circuit breaker for rusty-imap-mcp."
+readme.workspace = true
+description = "SMTP client for rusty-imap-mcp — lettre wrapper with TLS and error mapping"
 
 [lints]
 workspace = true
@@ -14,14 +15,11 @@ workspace = true
 [dependencies]
 rimap-core = { path = "../rimap-core", version = "0.0.0" }
 rimap-config = { path = "../rimap-config", version = "0.0.0" }
-thiserror = { workspace = true }
-governor = { workspace = true }
-nonzero_ext = { workspace = true }
-parking_lot = { workspace = true }
-tracing = { workspace = true }
+
+lettre = { workspace = true }
 tokio = { workspace = true }
-utf7-imap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
-tokio = { workspace = true, features = ["test-util", "macros", "time"] }
+tokio = { workspace = true, features = ["test-util", "macros"] }

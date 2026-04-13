@@ -97,7 +97,7 @@ mod tests {
                 auth_max_cooldown: Duration::from_secs(600),
             },
         );
-        let governor = Governor::new(100, 5).unwrap();
+        let governor = Governor::new(100, 5, 3).unwrap();
         DispatchGuard::new(matrix, breaker, governor)
     }
 

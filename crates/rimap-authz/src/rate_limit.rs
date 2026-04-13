@@ -1,8 +1,9 @@
 //! Rate limiter wrapper around `governor`.
 //!
-//! Two buckets (design spec §9):
+//! Three buckets (design spec §9):
 //!   - Global: `limits.commands_per_second` with burst = 2× rate.
 //!   - Draft: `limits.drafts_per_minute`, only consulted on `create_draft`.
+//!   - Send: `limits.sends_per_minute`, only consulted on `send_email`.
 //!
 //! On exceed: return `AuthzError::RateLimited { retry_after_ms }`. The caller
 //! (dispatch guard) decides whether to wait or fail.
@@ -19,10 +20,11 @@ use crate::error::AuthzError;
 
 type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
-/// Combined global + draft rate limiter.
+/// Combined global + draft + send rate limiter.
 pub struct Governor {
     global: DirectLimiter,
     drafts: DirectLimiter,
+    sends: DirectLimiter,
     clock: DefaultClock,
 }
 
@@ -33,19 +35,27 @@ impl Governor {
     /// Returns `AuthzError::MatrixBuild` if either rate is zero (validation
     /// should have caught this already, but we refuse to build a degenerate
     /// limiter).
-    pub fn new(commands_per_second: u32, drafts_per_minute: u32) -> Result<Self, AuthzError> {
+    pub fn new(
+        commands_per_second: u32,
+        drafts_per_minute: u32,
+        sends_per_minute: u32,
+    ) -> Result<Self, AuthzError> {
         let cps = NonZeroU32::new(commands_per_second).ok_or_else(|| {
             AuthzError::MatrixBuild("commands_per_second must be > 0".to_string())
         })?;
         let dpm = NonZeroU32::new(drafts_per_minute)
             .ok_or_else(|| AuthzError::MatrixBuild("drafts_per_minute must be > 0".to_string()))?;
+        let spm = NonZeroU32::new(sends_per_minute)
+            .ok_or_else(|| AuthzError::MatrixBuild("sends_per_minute must be > 0".to_string()))?;
         let burst = NonZeroU32::new(commands_per_second.saturating_mul(2).max(1))
             .unwrap_or(NonZeroU32::MIN);
         let global_quota = Quota::per_second(cps).allow_burst(burst);
         let draft_quota = Quota::per_minute(dpm);
+        let send_quota = Quota::per_minute(spm);
         Ok(Self {
             global: RateLimiter::direct(global_quota),
             drafts: RateLimiter::direct(draft_quota),
+            sends: RateLimiter::direct(send_quota),
             clock: DefaultClock::default(),
         })
     }
@@ -60,8 +70,56 @@ impl Governor {
             retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
                 .unwrap_or(u64::MAX),
         })?;
-        if matches!(tool, ToolName::CreateDraft) {
+        let is_draft = match tool {
+            ToolName::CreateDraft => true,
+            ToolName::ListFolders
+            | ToolName::Search
+            | ToolName::SearchAdvanced
+            | ToolName::FetchMessage
+            | ToolName::FetchMessageHtml
+            | ToolName::ListAttachments
+            | ToolName::DownloadAttachment
+            | ToolName::MarkRead
+            | ToolName::MarkUnread
+            | ToolName::Flag
+            | ToolName::Unflag
+            | ToolName::MoveMessage
+            | ToolName::SendEmail
+            | ToolName::DeleteMessage
+            | ToolName::Expunge
+            | ToolName::CreateFolder
+            | ToolName::RenameFolder
+            | ToolName::DeleteFolder => false,
+        };
+        if is_draft {
             self.drafts.check().map_err(|nu| AuthzError::RateLimited {
+                retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
+                    .unwrap_or(u64::MAX),
+            })?;
+        }
+        let is_send = match tool {
+            ToolName::SendEmail => true,
+            ToolName::ListFolders
+            | ToolName::Search
+            | ToolName::SearchAdvanced
+            | ToolName::FetchMessage
+            | ToolName::FetchMessageHtml
+            | ToolName::ListAttachments
+            | ToolName::DownloadAttachment
+            | ToolName::MarkRead
+            | ToolName::MarkUnread
+            | ToolName::Flag
+            | ToolName::Unflag
+            | ToolName::MoveMessage
+            | ToolName::CreateDraft
+            | ToolName::DeleteMessage
+            | ToolName::Expunge
+            | ToolName::CreateFolder
+            | ToolName::RenameFolder
+            | ToolName::DeleteFolder => false,
+        };
+        if is_send {
+            self.sends.check().map_err(|nu| AuthzError::RateLimited {
                 retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
                     .unwrap_or(u64::MAX),
             })?;
@@ -80,19 +138,19 @@ mod tests {
 
     #[test]
     fn zero_rate_rejected_at_build() {
-        assert!(Governor::new(0, 5).is_err());
-        assert!(Governor::new(10, 0).is_err());
+        assert!(Governor::new(0, 5, 3).is_err());
+        assert!(Governor::new(10, 0, 3).is_err());
     }
 
     #[test]
     fn admits_first_call_in_bucket() {
-        let g = Governor::new(10, 5).unwrap();
+        let g = Governor::new(10, 5, 3).unwrap();
         assert!(g.check(ToolName::ListFolders).is_ok());
     }
 
     #[test]
     fn rejects_after_bucket_drains() {
-        let g = Governor::new(2, 5).unwrap(); // burst = 4
+        let g = Governor::new(2, 5, 3).unwrap(); // burst = 4
         for _ in 0..4 {
             let _ = g.check(ToolName::Search);
         }
@@ -108,13 +166,29 @@ mod tests {
 
     #[test]
     fn draft_bucket_is_separate() {
-        let g = Governor::new(1000, 5).unwrap(); // huge global, tight draft
+        let g = Governor::new(1000, 5, 3).unwrap(); // huge global, tight draft
         for _ in 0..5 {
             let _ = g.check(ToolName::CreateDraft);
         }
         let draft_err = g.check(ToolName::CreateDraft).unwrap_err();
         assert!(matches!(draft_err, AuthzError::RateLimited { .. }));
         assert!(g.check(ToolName::Search).is_ok());
+    }
+
+    #[test]
+    fn sends_bucket_is_separate() {
+        let g = Governor::new(1000, 5, 3).unwrap();
+        for _ in 0..3 {
+            let _ = g.check(ToolName::SendEmail);
+        }
+        let send_err = g.check(ToolName::SendEmail).unwrap_err();
+        assert!(matches!(send_err, AuthzError::RateLimited { .. }));
+        assert!(g.check(ToolName::Search).is_ok());
+    }
+
+    #[test]
+    fn zero_sends_per_minute_rejected_at_build() {
+        assert!(Governor::new(10, 5, 0).is_err());
     }
 
     use proptest::prelude::*;
@@ -128,7 +202,7 @@ mod tests {
             cps in 1u32..50u32,
             attempts in 1usize..200usize,
         ) {
-            let g = Governor::new(cps, 1).unwrap();
+            let g = Governor::new(cps, 1, 3).unwrap();
             let mut admitted = 0usize;
             for _ in 0..attempts {
                 if g.check(ToolName::Search).is_ok() {

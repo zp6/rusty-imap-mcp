@@ -18,7 +18,7 @@ pub use crate::loader::{CONFIG_ENV_VAR, load_from_path, resolve_config_path};
 pub use crate::login::{run_login, tty_prompt};
 pub use crate::model::{
     AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, LookalikeConfig,
-    SecurityConfig, Verdict,
+    SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
 };
 pub use crate::validate::{ValidatedConfig, validate};
 pub use rimap_core::tls::{FingerprintParseError, TlsFingerprint};

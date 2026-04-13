@@ -19,8 +19,9 @@ impl CredentialStore for EnvCreds {
     fn get_password(&self, _: &str) -> Result<Option<String>, rimap_config::ConfigError> {
         Ok(Some(self.0.clone()))
     }
+    #[expect(clippy::panic, clippy::panic_in_result_fn, reason = "test stub")]
     fn set_password(&self, _: &str, _: &str) -> Result<(), rimap_config::ConfigError> {
-        unreachable!()
+        panic!("tests do not write credentials")
     }
 }
 
