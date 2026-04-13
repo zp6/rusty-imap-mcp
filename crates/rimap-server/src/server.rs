@@ -16,7 +16,8 @@ use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ErrorCode as McpCode, ErrorData, Implementation,
-    ListToolsResult, PaginatedRequestParams, ServerInfo, Tool,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 
@@ -69,6 +70,77 @@ impl ServerHandler for ImapMcpServer {
         }
 
         Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let resources: Vec<Resource> = self
+            .registry
+            .accounts()
+            .values()
+            .map(|state| {
+                let name = state.id.as_str();
+                let desc = format!(
+                    "IMAP account: {} on {}",
+                    state.from_address,
+                    state.imap.host(),
+                );
+                Resource {
+                    raw: RawResource::new(format!("rimap://accounts/{name}"), name)
+                        .with_description(desc)
+                        .with_mime_type("application/json"),
+                    annotations: None,
+                }
+            })
+            .collect();
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let uri = &request.uri;
+        let account_name = uri.strip_prefix("rimap://accounts/").ok_or_else(|| {
+            ErrorData::new(
+                McpCode::INVALID_PARAMS,
+                format!("unsupported resource URI: {uri}"),
+                None,
+            )
+        })?;
+
+        let state = self
+            .registry
+            .resolve(Some(account_name))
+            .map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
+
+        let available_tools: Vec<String> = state
+            .guard
+            .matrix()
+            .advertised()
+            .iter()
+            .filter_map(|tn| tool_definition(*tn).map(|d| d.name.to_string()))
+            .collect();
+
+        let metadata = serde_json::json!({
+            "name": account_name,
+            "imap_host": state.imap.host(),
+            "posture": state.guard.matrix().posture().as_str(),
+            "smtp_configured": state.smtp.is_some(),
+            "available_tools": available_tools,
+        });
+
+        let text = serde_json::to_string_pretty(&metadata)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+
+        let contents =
+            ResourceContents::text(text, uri.as_str()).with_mime_type("application/json");
+
+        Ok(ReadResourceResult::new(vec![contents]))
     }
 
     async fn call_tool(
