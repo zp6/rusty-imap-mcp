@@ -14,9 +14,9 @@ use crate::error::AuthzError;
 
 /// Compile-time truth table. `true` = allowed by base posture.
 ///
-/// Layout: outer by [`ToolName`] (13 tools), inner `[readonly, draft_safe, full, destructive]`.
-/// NOTE: Destructive column is a placeholder until Task 6 expands the matrix fully.
-pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 4]); 13] = [
+/// Layout: outer by [`ToolName`] (19 tools),
+/// inner `[readonly, draft_safe, full, destructive]`.
+pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 4]); 19] = [
     (ToolName::ListFolders, [true, true, true, true]),
     (ToolName::Search, [true, true, true, true]),
     (ToolName::SearchAdvanced, [false, false, true, true]),
@@ -30,6 +30,13 @@ pub(crate) const POSTURE_MATRIX: [(ToolName, [bool; 4]); 13] = [
     (ToolName::Unflag, [false, true, true, true]),
     (ToolName::MoveMessage, [false, true, true, true]),
     (ToolName::CreateDraft, [false, true, true, true]),
+    // v2 tools:
+    (ToolName::SendEmail, [false, false, true, true]),
+    (ToolName::DeleteMessage, [false, false, true, true]),
+    (ToolName::CreateFolder, [false, false, true, true]),
+    (ToolName::RenameFolder, [false, false, true, true]),
+    (ToolName::Expunge, [false, false, false, true]),
+    (ToolName::DeleteFolder, [false, false, false, true]),
 ];
 
 fn posture_index(p: Posture) -> usize {
@@ -170,6 +177,12 @@ mod tests {
             ToolName::Unflag,
             ToolName::MoveMessage,
             ToolName::CreateDraft,
+            ToolName::SendEmail,
+            ToolName::DeleteMessage,
+            ToolName::Expunge,
+            ToolName::CreateFolder,
+            ToolName::RenameFolder,
+            ToolName::DeleteFolder,
         ] {
             assert!(!base_allows(Posture::Readonly, t), "{t} should be denied");
         }
@@ -177,11 +190,21 @@ mod tests {
 
     #[test]
     fn base_draft_safe_row_matches_spec() {
-        for t in [ToolName::SearchAdvanced, ToolName::FetchMessageHtml] {
-            assert!(!base_allows(Posture::DraftSafe, t));
+        let denied = [
+            ToolName::SearchAdvanced,
+            ToolName::FetchMessageHtml,
+            ToolName::SendEmail,
+            ToolName::DeleteMessage,
+            ToolName::Expunge,
+            ToolName::CreateFolder,
+            ToolName::RenameFolder,
+            ToolName::DeleteFolder,
+        ];
+        for t in &denied {
+            assert!(!base_allows(Posture::DraftSafe, *t), "{t} expected denied");
         }
         for t in ToolName::all() {
-            if matches!(t, ToolName::SearchAdvanced | ToolName::FetchMessageHtml) {
+            if denied.contains(&t) {
                 continue;
             }
             assert!(base_allows(Posture::DraftSafe, t), "{t} expected allowed");
@@ -189,9 +212,30 @@ mod tests {
     }
 
     #[test]
-    fn base_full_row_allows_everything() {
+    fn base_full_allows_except_destructive() {
+        let denied = [ToolName::Expunge, ToolName::DeleteFolder];
         for t in ToolName::all() {
-            assert!(base_allows(Posture::Full, t), "full should allow {t}");
+            if denied.contains(&t) {
+                assert!(
+                    !base_allows(Posture::Full, t),
+                    "{t} expected denied at full"
+                );
+            } else {
+                assert!(
+                    base_allows(Posture::Full, t),
+                    "{t} expected allowed at full"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn base_destructive_allows_everything() {
+        for t in ToolName::all() {
+            assert!(
+                base_allows(Posture::Destructive, t),
+                "destructive should allow {t}"
+            );
         }
     }
 
@@ -257,7 +301,7 @@ mod tests {
 
     #[test]
     fn rows_iterates_every_tool() {
-        let m = EffectiveMatrix::build(Posture::Full, &BTreeMap::new());
+        let m = EffectiveMatrix::build(Posture::Destructive, &BTreeMap::new());
         let rows: Vec<_> = m.rows().collect();
         assert_eq!(rows.len(), ToolName::all().len());
         assert!(rows.iter().all(|(_, allowed)| *allowed));
