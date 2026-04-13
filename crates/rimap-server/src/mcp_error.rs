@@ -42,6 +42,7 @@ pub fn to_mcp_error(err: &RimapError) -> ErrorData {
         ErrorCode::CircuitOpen => ErrorData::new(CIRCUIT_OPEN, message, None),
         ErrorCode::AttachmentTooLarge => ErrorData::new(ATTACHMENT_TOO_LARGE, message, None),
         ErrorCode::ImapProtocol
+        | ErrorCode::SmtpProtocol
         | ErrorCode::Tls
         | ErrorCode::Auth
         | ErrorCode::ConnectionLost

@@ -32,16 +32,21 @@ pub enum SmtpError {
 
 impl From<SmtpError> for RimapError {
     fn from(err: SmtpError) -> Self {
-        let code = match &err {
-            SmtpError::Connection(_) => ErrorCode::ConnectionLost,
-            SmtpError::Auth(_) => ErrorCode::Auth,
-            SmtpError::Tls(_) => ErrorCode::Tls,
-            SmtpError::Rejected { .. } => ErrorCode::ImapProtocol,
-            SmtpError::Timeout => ErrorCode::Timeout,
-            SmtpError::Transport(_) => ErrorCode::Internal,
+        let (code, message) = match &err {
+            SmtpError::Connection(_) => (
+                ErrorCode::ConnectionLost,
+                "SMTP connection failed".to_string(),
+            ),
+            SmtpError::Auth(_) => (ErrorCode::Auth, "SMTP authentication failed".to_string()),
+            SmtpError::Tls(_) => (ErrorCode::Tls, "SMTP TLS handshake failed".to_string()),
+            SmtpError::Rejected { .. } => (
+                ErrorCode::SmtpProtocol,
+                "SMTP server rejected the message".to_string(),
+            ),
+            SmtpError::Timeout => (ErrorCode::Timeout, "SMTP operation timed out".to_string()),
+            SmtpError::Transport(_) => (ErrorCode::Internal, "SMTP transport error".to_string()),
         };
-        let message = err.to_string();
-        RimapError::Imap {
+        RimapError::Smtp {
             code,
             message,
             source: Some(Box::new(err)),

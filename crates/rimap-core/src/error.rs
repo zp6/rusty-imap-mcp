@@ -21,6 +21,8 @@ pub enum ErrorCode {
     NotFound,
     /// IMAP server misbehaved.
     ImapProtocol,
+    /// SMTP server rejected message or command.
+    SmtpProtocol,
     /// TLS handshake or cert verification failed.
     Tls,
     /// Authentication rejected.
@@ -52,6 +54,7 @@ impl ErrorCode {
             Self::CircuitOpen => "ERR_CIRCUIT_OPEN",
             Self::NotFound => "ERR_NOT_FOUND",
             Self::ImapProtocol => "ERR_IMAP_PROTOCOL",
+            Self::SmtpProtocol => "ERR_SMTP_PROTOCOL",
             Self::Tls => "ERR_TLS",
             Self::Auth => "ERR_AUTH",
             Self::ConnectionLost => "ERR_CONNECTION_LOST",
@@ -96,6 +99,17 @@ pub enum RimapError {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     },
+    /// SMTP-layer failure (connection, auth, TLS, rejection, timeout).
+    #[error("{code}: {message}")]
+    Smtp {
+        /// Stable error code.
+        code: ErrorCode,
+        /// Human-readable message (redacted — no server banners).
+        message: String,
+        /// Underlying source error, if any.
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    },
     /// Audit log failure. Carries both the stable code (open-time errors
     /// map to `ErrorCode::Config`, runtime errors to `ErrorCode::Internal`)
     /// and the original `AuditError` via the source chain. `message` is
@@ -125,7 +139,10 @@ impl RimapError {
     #[must_use]
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Authz { code, .. } | Self::Imap { code, .. } | Self::Audit { code, .. } => *code,
+            Self::Authz { code, .. }
+            | Self::Imap { code, .. }
+            | Self::Smtp { code, .. }
+            | Self::Audit { code, .. } => *code,
             Self::Config(_) => ErrorCode::Config,
             Self::Internal(_) => ErrorCode::Internal,
         }
@@ -145,6 +162,7 @@ mod tests {
             (ErrorCode::CircuitOpen, "ERR_CIRCUIT_OPEN"),
             (ErrorCode::NotFound, "ERR_NOT_FOUND"),
             (ErrorCode::ImapProtocol, "ERR_IMAP_PROTOCOL"),
+            (ErrorCode::SmtpProtocol, "ERR_SMTP_PROTOCOL"),
             (ErrorCode::Tls, "ERR_TLS"),
             (ErrorCode::Auth, "ERR_AUTH"),
             (ErrorCode::ConnectionLost, "ERR_CONNECTION_LOST"),
