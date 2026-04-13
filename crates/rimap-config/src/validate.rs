@@ -262,14 +262,17 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
 }
 
 fn validate_folder_safety(config: &Config) -> Result<(), ConfigError> {
-    let protected: Vec<String> = config
+    let mut protected: Vec<String> = config
         .security
         .protected_folders
         .iter()
-        .map(|f| f.to_lowercase())
+        .map(|f| utf7_imap::decode_utf7_imap(f.clone()).to_lowercase())
         .collect();
+    protected.push("inbox".to_string());
+
     for folder in &config.security.expunge_folders {
-        if protected.contains(&folder.to_lowercase()) {
+        let norm = utf7_imap::decode_utf7_imap(folder.clone()).to_lowercase();
+        if protected.contains(&norm) {
             return Err(ConfigError::ConflictingFolders {
                 folder: folder.clone(),
             });
