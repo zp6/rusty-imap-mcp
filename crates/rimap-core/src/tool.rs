@@ -107,6 +107,15 @@ impl ToolName {
     pub fn all() -> Vec<Self> {
         Self::iter().collect()
     }
+
+    /// Whether this tool is an infrastructure tool that bypasses the
+    /// posture matrix (not gated by posture, rate limits, or circuit
+    /// breakers). Infrastructure tools are always available regardless
+    /// of security posture.
+    #[must_use]
+    pub fn is_infrastructure(self) -> bool {
+        matches!(self, Self::UseAccount | Self::ListAccounts)
+    }
 }
 
 impl fmt::Display for ToolName {
