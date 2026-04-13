@@ -30,7 +30,10 @@ pub const ATTACHMENT_TOO_LARGE: McpCode = McpCode(-32005);
 pub fn to_mcp_error(err: &RimapError) -> ErrorData {
     let message = err.to_string();
     match err.code() {
-        ErrorCode::InvalidInput => ErrorData::invalid_params(message, None),
+        ErrorCode::InvalidInput | ErrorCode::NoAccount | ErrorCode::UnknownAccount => {
+            ErrorData::invalid_params(message, None)
+        }
+
         ErrorCode::NotFound => ErrorData::new(McpCode::RESOURCE_NOT_FOUND, message, None),
         ErrorCode::PostureDenied => ErrorData::new(POSTURE_DENIED, message, None),
         ErrorCode::ProtectedFolder | ErrorCode::ExpungeDenied => ErrorData::new(

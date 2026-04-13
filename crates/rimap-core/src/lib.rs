@@ -2,6 +2,7 @@
 
 #![deny(missing_docs)]
 
+pub mod account;
 pub mod error;
 pub mod posture;
 pub mod posture_matrix;
