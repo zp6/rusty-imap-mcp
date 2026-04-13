@@ -31,6 +31,10 @@ pub enum ErrorCode {
     Timeout,
     /// Attachment exceeded cap.
     AttachmentTooLarge,
+    /// Operation blocked because the folder is in `protected_folders`.
+    ProtectedFolder,
+    /// Expunge or `delete_folder` blocked because folder is not in `expunge_folders`.
+    ExpungeDenied,
     /// Startup-time configuration error.
     Config,
     /// Bug, invariant violation, or audit failure.
@@ -53,6 +57,8 @@ impl ErrorCode {
             Self::ConnectionLost => "ERR_CONNECTION_LOST",
             Self::Timeout => "ERR_TIMEOUT",
             Self::AttachmentTooLarge => "ERR_ATTACHMENT_TOO_LARGE",
+            Self::ProtectedFolder => "ERR_PROTECTED_FOLDER",
+            Self::ExpungeDenied => "ERR_EXPUNGE_DENIED",
             Self::Config => "ERR_CONFIG",
             Self::Internal => "ERR_INTERNAL",
         }
@@ -144,6 +150,8 @@ mod tests {
             (ErrorCode::ConnectionLost, "ERR_CONNECTION_LOST"),
             (ErrorCode::Timeout, "ERR_TIMEOUT"),
             (ErrorCode::AttachmentTooLarge, "ERR_ATTACHMENT_TOO_LARGE"),
+            (ErrorCode::ProtectedFolder, "ERR_PROTECTED_FOLDER"),
+            (ErrorCode::ExpungeDenied, "ERR_EXPUNGE_DENIED"),
             (ErrorCode::Config, "ERR_CONFIG"),
             (ErrorCode::Internal, "ERR_INTERNAL"),
         ];

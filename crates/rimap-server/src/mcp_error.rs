@@ -32,7 +32,9 @@ pub fn to_mcp_error(err: &RimapError) -> ErrorData {
     match err.code() {
         ErrorCode::InvalidInput => ErrorData::invalid_params(message, None),
         ErrorCode::NotFound => ErrorData::new(McpCode::RESOURCE_NOT_FOUND, message, None),
-        ErrorCode::PostureDenied => ErrorData::new(POSTURE_DENIED, message, None),
+        ErrorCode::PostureDenied | ErrorCode::ProtectedFolder | ErrorCode::ExpungeDenied => {
+            ErrorData::new(POSTURE_DENIED, message, None)
+        }
         ErrorCode::RateLimited => ErrorData::new(RATE_LIMITED, message, None),
         ErrorCode::CircuitOpen => ErrorData::new(CIRCUIT_OPEN, message, None),
         ErrorCode::AttachmentTooLarge => ErrorData::new(ATTACHMENT_TOO_LARGE, message, None),
