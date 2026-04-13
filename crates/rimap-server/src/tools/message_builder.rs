@@ -160,13 +160,13 @@ pub(crate) fn build_message_headers<'a>(
         .text_body(input.body_text.as_str())
         .message_id(msg_id);
 
-    let builder = if let Some(cc) = &input.cc {
+    let builder = if let Some(cc) = input.cc.as_ref().filter(|v| !v.is_empty()) {
         builder.cc(addresses_to_builder(cc))
     } else {
         builder
     };
 
-    if let Some(bcc) = &input.bcc {
+    if let Some(bcc) = input.bcc.as_ref().filter(|v| !v.is_empty()) {
         builder.bcc(addresses_to_builder(bcc))
     } else {
         builder
@@ -652,5 +652,27 @@ mod tests {
         }]);
         input.body_text = "x".repeat(1_048_576);
         validate_compose_input(&input).unwrap();
+    }
+
+    #[test]
+    fn empty_cc_does_not_panic() {
+        let input = ComposeInput {
+            to: vec![AddressInput {
+                name: None,
+                address: "bob@example.com".into(),
+            }],
+            cc: Some(vec![]),
+            bcc: Some(vec![]),
+            subject: "Test".into(),
+            body_text: "body".into(),
+            in_reply_to_uid: None,
+            in_reply_to_folder: None,
+        };
+        validate_compose_input(&input).unwrap();
+        let builder = super::build_message_headers("alice@example.com", &input);
+        let raw = builder.write_to_vec().unwrap();
+        let parsed = mail_parser::MessageParser::new().parse(&raw).unwrap();
+        assert!(parsed.cc().is_none());
+        assert!(parsed.bcc().is_none());
     }
 }
