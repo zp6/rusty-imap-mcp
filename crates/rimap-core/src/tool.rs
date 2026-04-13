@@ -57,6 +57,12 @@ pub enum ToolName {
     RenameFolder,
     /// `delete_folder`
     DeleteFolder,
+    /// `use_account` — switch the active account context.
+    /// Bypasses posture/rate-limit checks.
+    UseAccount,
+    /// `list_accounts` — enumerate configured accounts.
+    /// Bypasses posture/rate-limit checks.
+    ListAccounts,
 }
 
 impl ToolName {
@@ -88,6 +94,8 @@ impl ToolName {
             Self::CreateFolder => "create_folder",
             Self::RenameFolder => "rename_folder",
             Self::DeleteFolder => "delete_folder",
+            Self::UseAccount => "use_account",
+            Self::ListAccounts => "list_accounts",
         }
     }
 
@@ -136,9 +144,9 @@ mod tests {
     use strum::IntoEnumIterator;
 
     #[test]
-    fn all_has_exactly_twenty_two_variants() {
-        assert_eq!(ToolName::all().len(), 22);
-        assert_eq!(ToolName::iter().count(), 22);
+    fn all_has_exactly_twenty_four_variants() {
+        assert_eq!(ToolName::all().len(), 24);
+        assert_eq!(ToolName::iter().count(), 24);
     }
 
     #[test]

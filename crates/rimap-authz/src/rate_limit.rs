@@ -92,7 +92,9 @@ impl Governor {
             | ToolName::Expunge
             | ToolName::CreateFolder
             | ToolName::RenameFolder
-            | ToolName::DeleteFolder => false,
+            | ToolName::DeleteFolder
+            | ToolName::UseAccount
+            | ToolName::ListAccounts => false,
         };
         if is_draft {
             self.drafts.check().map_err(|nu| AuthzError::RateLimited {
@@ -122,7 +124,9 @@ impl Governor {
             | ToolName::Expunge
             | ToolName::CreateFolder
             | ToolName::RenameFolder
-            | ToolName::DeleteFolder => false,
+            | ToolName::DeleteFolder
+            | ToolName::UseAccount
+            | ToolName::ListAccounts => false,
         };
         if is_send {
             self.sends.check().map_err(|nu| AuthzError::RateLimited {

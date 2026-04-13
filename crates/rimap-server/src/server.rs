@@ -184,6 +184,9 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::labels::handle_list_labels(self, input)).await
             }
+            ToolName::UseAccount | ToolName::ListAccounts => Err(rimap_core::RimapError::Internal(
+                "not yet implemented".into(),
+            )),
         }
     }
 }
