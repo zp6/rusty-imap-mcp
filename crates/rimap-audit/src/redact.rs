@@ -199,6 +199,7 @@ pub fn hash_arguments(args: &Value) -> String {
 pub fn schemas() -> Vec<RedactionSchema> {
     let mut out = read_tool_schemas();
     out.extend(write_tool_schemas());
+    out.extend(v2_tool_schemas());
     out
 }
 
@@ -354,6 +355,70 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
                 ("subject", RedactString),
                 ("body_text", RedactString),
                 ("body_html", RedactString),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+    ]
+}
+
+/// Schemas for v2 tools: `send_email` through `delete_folder`.
+fn v2_tool_schemas() -> Vec<RedactionSchema> {
+    use FieldPolicy::{Forbidden, RedactString, SaltedHash, Verbatim};
+
+    vec![
+        RedactionSchema::new(
+            "send_email",
+            &[
+                ("to", SaltedHash),
+                ("cc", SaltedHash),
+                ("bcc", SaltedHash),
+                ("subject", RedactString),
+                ("body_text", RedactString),
+                ("in_reply_to_uid", Verbatim),
+                ("in_reply_to_folder", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "delete_message",
+            &[
+                ("folder", Verbatim),
+                ("uid", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "expunge",
+            &[
+                ("folder", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "create_folder",
+            &[
+                ("name", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "rename_folder",
+            &[
+                ("old_name", Verbatim),
+                ("new_name", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            "delete_folder",
+            &[
+                ("name", Verbatim),
                 ("password", Forbidden),
                 ("token", Forbidden),
             ],
