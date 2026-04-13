@@ -83,6 +83,9 @@ impl Governor {
             | ToolName::MarkUnread
             | ToolName::Flag
             | ToolName::Unflag
+            | ToolName::AddLabel
+            | ToolName::RemoveLabel
+            | ToolName::ListLabels
             | ToolName::MoveMessage
             | ToolName::SendEmail
             | ToolName::DeleteMessage
@@ -110,6 +113,9 @@ impl Governor {
             | ToolName::MarkUnread
             | ToolName::Flag
             | ToolName::Unflag
+            | ToolName::AddLabel
+            | ToolName::RemoveLabel
+            | ToolName::ListLabels
             | ToolName::MoveMessage
             | ToolName::CreateDraft
             | ToolName::DeleteMessage

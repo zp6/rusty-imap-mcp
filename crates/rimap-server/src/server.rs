@@ -172,6 +172,9 @@ impl ImapMcpServer {
                 let input = parse_args(args)?;
                 Box::pin(crate::tools::folder_mgmt::handle_delete(self, input)).await
             }
+            ToolName::AddLabel | ToolName::RemoveLabel | ToolName::ListLabels => Err(
+                rimap_core::RimapError::Internal("label tools not yet implemented".into()),
+            ),
         }
     }
 }

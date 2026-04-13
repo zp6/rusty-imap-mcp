@@ -35,6 +35,12 @@ pub enum ToolName {
     Flag,
     /// `unflag`
     Unflag,
+    /// `add_label`
+    AddLabel,
+    /// `remove_label`
+    RemoveLabel,
+    /// `list_labels`
+    ListLabels,
     /// `move_message`
     MoveMessage,
     /// `create_draft` (appends to Drafts with `$PendingReview`).
@@ -71,6 +77,9 @@ impl ToolName {
             Self::MarkUnread => "mark_unread",
             Self::Flag => "flag",
             Self::Unflag => "unflag",
+            Self::AddLabel => "add_label",
+            Self::RemoveLabel => "remove_label",
+            Self::ListLabels => "list_labels",
             Self::MoveMessage => "move_message",
             Self::CreateDraft => "create_draft",
             Self::SendEmail => "send_email",
