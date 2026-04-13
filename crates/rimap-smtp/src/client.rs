@@ -94,7 +94,6 @@ mod tests {
             encryption: SmtpEncryption::None,
             username: "test@example.com".into(),
             command_timeout_seconds: 5,
-            connect_timeout_seconds: 5,
         }
     }
 

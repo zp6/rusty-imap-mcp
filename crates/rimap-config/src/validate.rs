@@ -701,7 +701,6 @@ path = "/tmp/audit.jsonl"
             encryption: SmtpEncryption::None,
             username: "user".into(),
             command_timeout_seconds: 30,
-            connect_timeout_seconds: 10,
         });
         let result = validate(cfg);
         assert!(
@@ -722,7 +721,6 @@ path = "/tmp/audit.jsonl"
             encryption: SmtpEncryption::None,
             username: "user".into(),
             command_timeout_seconds: 30,
-            connect_timeout_seconds: 10,
         });
         let result = validate(cfg);
         assert!(
@@ -740,7 +738,6 @@ path = "/tmp/audit.jsonl"
             encryption: SmtpEncryption::Starttls,
             username: "secret_user@example.com".into(),
             command_timeout_seconds: 30,
-            connect_timeout_seconds: 10,
         };
         let debug = format!("{cfg:?}");
         assert!(

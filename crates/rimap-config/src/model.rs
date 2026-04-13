@@ -89,9 +89,6 @@ pub struct SmtpConfig {
     /// Per-command timeout in seconds.
     #[serde(default = "default_command_timeout")]
     pub command_timeout_seconds: u32,
-    /// TCP + TLS handshake deadline.
-    #[serde(default = "default_connect_timeout")]
-    pub connect_timeout_seconds: u32,
 }
 
 impl core::fmt::Debug for SmtpConfig {
@@ -102,7 +99,6 @@ impl core::fmt::Debug for SmtpConfig {
             .field("encryption", &self.encryption)
             .field("username", &"[redacted]")
             .field("command_timeout_seconds", &self.command_timeout_seconds)
-            .field("connect_timeout_seconds", &self.connect_timeout_seconds)
             .finish()
     }
 }
