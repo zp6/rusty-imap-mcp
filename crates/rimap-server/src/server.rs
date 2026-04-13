@@ -19,8 +19,8 @@ use rimap_imap::Connection;
 use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ErrorData, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, ErrorCode as McpCode, ErrorData, Implementation,
+    ListToolsResult, PaginatedRequestParams, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 
@@ -72,6 +72,17 @@ impl ServerHandler for ImapMcpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let tool_name = ToolName::from_str(&request.name)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+
+        // Reject tools that have no definition (not yet implemented).
+        // This prevents unimplemented v2 tools from consuming rate
+        // limiter tokens and producing misleading INTERNAL_ERROR.
+        if tool_definition(tool_name).is_none() {
+            return Err(ErrorData::new(
+                McpCode::RESOURCE_NOT_FOUND,
+                format!("tool `{}` is not available", request.name),
+                None,
+            ));
+        }
 
         if let Err(e) = crate::dispatch::pre_call_guards(&self.guard, tool_name) {
             return Err(crate::mcp_error::to_mcp_error(&e));
@@ -146,7 +157,8 @@ impl ImapMcpServer {
             | ToolName::CreateFolder
             | ToolName::RenameFolder
             | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
-                "tool `{tool}` is not yet implemented"
+                "tool `{tool}` reached dispatch without a definition; \
+                 this is a bug"
             ))),
         }
     }
@@ -300,6 +312,26 @@ mod tests {
                 !schema.is_empty(),
                 "tool {} has empty input schema",
                 def.name,
+            );
+        }
+    }
+
+    #[test]
+    fn v2_tools_return_none_from_definition() {
+        use rimap_core::tool::ToolName;
+        let v2_tools = [
+            ToolName::SendEmail,
+            ToolName::DeleteMessage,
+            ToolName::Expunge,
+            ToolName::CreateFolder,
+            ToolName::RenameFolder,
+            ToolName::DeleteFolder,
+        ];
+        for tool in v2_tools {
+            assert!(
+                tool_definition(tool).is_none(),
+                "{} should not have a tool definition yet",
+                tool.as_str(),
             );
         }
     }
