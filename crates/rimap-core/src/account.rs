@@ -73,6 +73,7 @@ impl fmt::Display for AccountId {
 /// Error returned when an account name fails validation.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("invalid account name `{name}`: {reason}")]
+#[non_exhaustive]
 pub struct InvalidAccountName {
     /// The name that was rejected.
     pub name: String,
