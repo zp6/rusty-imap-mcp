@@ -263,11 +263,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     accounts.insert(id, state);
     let registry = crate::registry::AccountRegistry::new(accounts);
 
-    let server = ImapMcpServer {
-        registry,
-        audit,
-        download_dir: download_dir.path().to_path_buf(),
-    };
+    let server = ImapMcpServer::new(registry, audit, download_dir.path().to_path_buf());
 
     TestEnv {
         _harness: harness,

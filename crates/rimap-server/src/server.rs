@@ -6,11 +6,14 @@
 //! union across accounts) and `call_tool` (account resolution +
 //! dispatch pipeline).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
+use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
+use rimap_audit::redact::{RedactionSalt, RedactionSchema, Redactor, hash_arguments, schemas};
 use rimap_core::account::{AccountId, DEFAULT_ACCOUNT_NAME};
 use rimap_core::tool::ToolName;
 use rmcp::RoleServer;
@@ -29,10 +32,32 @@ pub struct ImapMcpServer {
     /// Account registry holding per-account state.
     pub(crate) registry: AccountRegistry,
     /// Append-only audit writer.
-    #[expect(dead_code, reason = "used by audit logging in later sprint")]
     pub(crate) audit: AuditWriter,
     /// Directory for attachment downloads.
     pub(crate) download_dir: PathBuf,
+    /// Per-process salt used when applying `Redactor` to tool arguments.
+    /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
+    pub(crate) redaction_salt: Arc<RedactionSalt>,
+    /// Redaction schemas keyed by tool name (matches `ToolName::as_str`).
+    /// Built once at construction from `rimap_audit::redact::schemas()`.
+    pub(crate) redaction_schemas: Arc<HashMap<&'static str, RedactionSchema>>,
+}
+
+impl ImapMcpServer {
+    /// Construct a new server. Builds the redaction salt and schema map
+    /// from [`rimap_audit::redact::schemas`].
+    #[must_use]
+    pub fn new(registry: AccountRegistry, audit: AuditWriter, download_dir: PathBuf) -> Self {
+        let schema_map: HashMap<&'static str, RedactionSchema> =
+            schemas().into_iter().map(|s| (s.tool, s)).collect();
+        Self {
+            registry,
+            audit,
+            download_dir,
+            redaction_salt: Arc::new(RedactionSalt::new_random()),
+            redaction_schemas: Arc::new(schema_map),
+        }
+    }
 }
 
 impl ServerHandler for ImapMcpServer {
@@ -205,7 +230,7 @@ impl ServerHandler for ImapMcpServer {
                     None,
                 ));
             }
-            return self.dispatch_infrastructure(tool_name, &args);
+            return Box::pin(self.dispatch_infrastructure(tool_name, &args)).await;
         }
 
         // Account resolution order: URI namespace > args["account"] >
@@ -220,11 +245,74 @@ impl ServerHandler for ImapMcpServer {
             .resolve(explicit_account.as_deref())
             .map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
 
+        // Compute the account field for audit records. Legacy single-account
+        // `"default"` records `None`; multi-account records the account name.
+        let audit_account: Option<String> =
+            if account.id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
+                None
+            } else {
+                Some(account.id.as_str().to_string())
+            };
+        let posture_str = account.guard.matrix().posture().as_str().to_string();
+
+        // Emit `tool_start` BEFORE the guard chain so guard failures also
+        // produce a matching `tool_end` record.
+        let args_value = serde_json::Value::Object(args.clone());
+        let redacted = self.redact_tool_args(tool_name.as_str(), &args_value);
+        let hash = hash_arguments(&args_value);
+        let tool_str = tool_name.as_str().to_string();
+
+        let start_seq = self
+            .emit_tool_start(
+                &tool_str,
+                audit_account.clone(),
+                posture_str.clone(),
+                redacted,
+                hash,
+            )
+            .await?;
+
+        let start_time = std::time::Instant::now();
+
         if let Err(e) = crate::dispatch::pre_call_guards(&account.guard, tool_name) {
+            let err_code = e.code().as_str().to_string();
+            let duration_ms = start_time
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX);
+            self.emit_tool_end(
+                start_seq,
+                tool_str.clone(),
+                audit_account.clone(),
+                ToolStatus::Error,
+                Some(err_code),
+                duration_ms,
+            )
+            .await;
             return Err(crate::mcp_error::to_mcp_error(&e));
         }
 
         let result = Box::pin(self.dispatch_tool(account, tool_name, &args)).await;
+
+        let duration_ms = start_time
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let (status, error_code) = match &result {
+            Ok(_) => (ToolStatus::Ok, None),
+            Err(e) => (ToolStatus::Error, Some(e.code().as_str().to_string())),
+        };
+        self.emit_tool_end(
+            start_seq,
+            tool_str,
+            audit_account,
+            status,
+            error_code,
+            duration_ms,
+        )
+        .await;
 
         match result {
             Ok(resp) => {
@@ -313,30 +401,75 @@ impl ImapMcpServer {
     }
 
     /// Handle infrastructure tools that bypass account resolution.
-    fn dispatch_infrastructure(
+    ///
+    /// Infrastructure tools are not scoped to an account, so their audit
+    /// records record `account: None` regardless of deployment mode.
+    async fn dispatch_infrastructure(
         &self,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, ErrorData> {
+        let args_value = serde_json::Value::Object(args.clone());
+        let redacted = self.redact_tool_args(tool.as_str(), &args_value);
+        let hash = hash_arguments(&args_value);
+        let tool_str = tool.as_str().to_string();
+        // Infrastructure tools have no per-account posture; record an
+        // explicit sentinel so log readers can distinguish these from
+        // per-account dispatches.
+        let posture_str = "infrastructure".to_string();
+
+        let start_seq = self
+            .emit_tool_start(&tool_str, None, posture_str, redacted, hash)
+            .await?;
+        let start_time = std::time::Instant::now();
+
         // Infrastructure tools bypass posture + breaker, but still
         // enforce a process-wide rate limit.
         if let Err(e) = self.registry.check_infrastructure_rate() {
+            let duration_ms = start_time
+                .elapsed()
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX);
+            let err_code = e.code().as_str().to_string();
+            self.emit_tool_end(
+                start_seq,
+                tool_str.clone(),
+                None,
+                ToolStatus::Error,
+                Some(err_code),
+                duration_ms,
+            )
+            .await;
             return Err(crate::mcp_error::to_mcp_error(&e));
         }
+
         let result = match tool {
             ToolName::UseAccount => {
-                let input: crate::tools::accounts::UseAccountInput =
-                    parse_args(args).map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
-                crate::tools::accounts::handle_use_account(&self.registry, &input)
+                match parse_args::<crate::tools::accounts::UseAccountInput>(args) {
+                    Ok(input) => crate::tools::accounts::handle_use_account(&self.registry, &input),
+                    Err(e) => Err(e),
+                }
             }
             ToolName::ListAccounts => crate::tools::accounts::handle_list_accounts(&self.registry),
-            _ => {
-                return Err(ErrorData::internal_error(
-                    format!("not an infrastructure tool: {}", tool.as_str(),),
-                    None,
-                ));
-            }
+            _ => Err(rimap_core::RimapError::Internal(format!(
+                "not an infrastructure tool: {}",
+                tool.as_str(),
+            ))),
         };
+
+        let duration_ms = start_time
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        let (status, error_code) = match &result {
+            Ok(_) => (ToolStatus::Ok, None),
+            Err(e) => (ToolStatus::Error, Some(e.code().as_str().to_string())),
+        };
+        self.emit_tool_end(start_seq, tool_str, None, status, error_code, duration_ms)
+            .await;
+
         match result {
             Ok(resp) => {
                 let value = serde_json::to_value(&resp)
@@ -344,6 +477,105 @@ impl ImapMcpServer {
                 Ok(CallToolResult::structured(value))
             }
             Err(e) => Err(crate::mcp_error::to_mcp_error(&e)),
+        }
+    }
+
+    /// Apply the registered [`rimap_audit::redact::Redactor`] schema for
+    /// `tool`. If no schema matches, returns an empty object and emits
+    /// a `warn!` — the schema registry is expected to cover every
+    /// advertised tool.
+    fn redact_tool_args(&self, tool: &str, args: &serde_json::Value) -> serde_json::Value {
+        if let Some(schema) = self.redaction_schemas.get(tool) {
+            Redactor::new(schema, self.redaction_salt.as_ref()).apply(args)
+        } else {
+            tracing::warn!(
+                tool,
+                "no redaction schema for tool; recording empty arguments_redacted",
+            );
+            serde_json::Value::Object(serde_json::Map::new())
+        }
+    }
+
+    /// Emit a `tool_start` audit record via `spawn_blocking`. Returns the
+    /// allocated `seq` on success; on audit failure emits a `warn!` and
+    /// returns a synthetic `Seq::FIRST` so the call can proceed.
+    ///
+    /// Errors bubble up only when `fail_open = false` AND the write fails:
+    /// in that case the tool call MUST fail because the audit trail is
+    /// broken. `fail_open = true` deployments swallow the error inside
+    /// the writer and return `Ok`.
+    async fn emit_tool_start(
+        &self,
+        tool: &str,
+        account: Option<String>,
+        posture: String,
+        redacted: serde_json::Value,
+        hash: String,
+    ) -> Result<rimap_audit::Seq, ErrorData> {
+        let audit = self.audit.clone();
+        let tool_owned = tool.to_string();
+        let join = tokio::task::spawn_blocking(move || {
+            audit.log_tool_start(&tool_owned, account.as_deref(), &posture, redacted, hash)
+        })
+        .await;
+        match join {
+            Ok(Ok(seq)) => Ok(seq),
+            Ok(Err(audit_err)) => {
+                tracing::error!(error = %audit_err, "tool_start audit write failed");
+                Err(ErrorData::internal_error(
+                    format!("audit write failed: {}", audit_err.code()),
+                    None,
+                ))
+            }
+            Err(join_err) => {
+                tracing::error!(error = %join_err, "tool_start join error");
+                Err(ErrorData::internal_error(join_err.to_string(), None))
+            }
+        }
+    }
+
+    /// Emit a `tool_end` audit record via `spawn_blocking`. Failures are
+    /// logged but not propagated — at end-of-call the tool has already
+    /// finished and the caller sees its original result.
+    async fn emit_tool_end(
+        &self,
+        start_seq: rimap_audit::Seq,
+        tool: String,
+        account: Option<String>,
+        status: ToolStatus,
+        error_code: Option<String>,
+        duration_ms: u64,
+    ) {
+        let audit = self.audit.clone();
+        // The provenance ring buffer is not yet wired for multi-account.
+        // Record an empty snapshot with the window placeholder until a
+        // per-account buffer lands.
+        let provenance = Provenance {
+            window_seconds: 60,
+            message_ids_recently_read: Vec::new(),
+        };
+        let summary = ResultSummary::default();
+        let join = tokio::task::spawn_blocking(move || {
+            audit.log_tool_end(
+                start_seq,
+                &tool,
+                account.as_deref(),
+                status,
+                error_code,
+                duration_ms,
+                summary,
+                provenance,
+            )
+        })
+        .await;
+        match join {
+            Ok(Ok(_)) => {}
+            Ok(Err(audit_err)) => {
+                tracing::error!(error = %audit_err, "tool_end audit write failed");
+            }
+            Err(join_err) => {
+                tracing::error!(error = %join_err, "tool_end join error");
+            }
         }
     }
 }
@@ -593,6 +825,7 @@ static TOOL_DEFS: std::sync::LazyLock<std::collections::HashMap<ToolName, Tool>>
     });
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rimap_core::tool::ToolName;
 
@@ -703,5 +936,60 @@ mod tests {
                 def.name,
             );
         }
+    }
+
+    #[tokio::test]
+    async fn infrastructure_tool_emits_tool_start_and_tool_end() {
+        use std::collections::BTreeMap;
+
+        use rimap_audit::{AuditOptions, AuditWriter, Seq};
+        use tempfile::TempDir;
+
+        use crate::registry::AccountRegistry;
+        use crate::server::ImapMcpServer;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let audit_path = tmp.path().join("audit.jsonl");
+        let audit = AuditWriter::open(&AuditOptions {
+            path: audit_path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .expect("audit open");
+
+        let registry = AccountRegistry::new(BTreeMap::new());
+        let server = ImapMcpServer::new(registry, audit, tmp.path().to_path_buf());
+
+        // list_accounts needs no args and no IMAP connection.
+        let args = serde_json::Map::new();
+        let _ = server
+            .dispatch_infrastructure(ToolName::ListAccounts, &args)
+            .await
+            .expect("list_accounts dispatch");
+
+        drop(server);
+
+        let contents = std::fs::read_to_string(&audit_path).expect("read audit log");
+        let records: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("parse record"))
+            .collect();
+
+        let start = records
+            .iter()
+            .find(|r| r["kind"] == "tool_start" && r["tool"] == "list_accounts")
+            .expect("tool_start record");
+        let end = records
+            .iter()
+            .find(|r| r["kind"] == "tool_end" && r["tool"] == "list_accounts")
+            .expect("tool_end record");
+
+        assert_eq!(start["seq"], end["start_seq"]);
+        assert_eq!(end["status"], "ok");
+        assert!(start["account"].is_null());
+        assert!(end["account"].is_null());
     }
 }

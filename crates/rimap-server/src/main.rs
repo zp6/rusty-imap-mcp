@@ -103,11 +103,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let registry = build_registry(&multi, &audit, &credentials)?;
 
     let audit_for_shutdown = audit.clone();
-    let mcp_server = server::ImapMcpServer {
-        registry,
-        audit,
-        download_dir,
-    };
+    let mcp_server = server::ImapMcpServer::new(registry, audit, download_dir);
 
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
     let mcp_result: anyhow::Result<()> = rt.block_on(async {
