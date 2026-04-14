@@ -41,6 +41,10 @@ pub enum ErrorCode {
     Config,
     /// Bug, invariant violation, or audit failure.
     Internal,
+    /// Multiple accounts configured but none selected.
+    NoAccount,
+    /// Named account not found in registry.
+    UnknownAccount,
 }
 
 impl ErrorCode {
@@ -64,6 +68,8 @@ impl ErrorCode {
             Self::ExpungeDenied => "ERR_EXPUNGE_DENIED",
             Self::Config => "ERR_CONFIG",
             Self::Internal => "ERR_INTERNAL",
+            Self::NoAccount => "ERR_NO_ACCOUNT",
+            Self::UnknownAccount => "ERR_UNKNOWN_ACCOUNT",
         }
     }
 }
@@ -132,6 +138,24 @@ pub enum RimapError {
     /// Bug / invariant violation.
     #[error("ERR_INTERNAL: {0}")]
     Internal(String),
+    /// Multiple accounts configured but none selected.
+    #[error(
+        "multiple accounts configured; call `use_account` or pass \
+         `account` parameter. Available: {}",
+        available.join(", ")
+    )]
+    NoAccount {
+        /// Names of the available accounts.
+        available: Vec<String>,
+    },
+    /// Named account not found in registry.
+    #[error("account '{name}' not found. Available: {}", available.join(", "))]
+    UnknownAccount {
+        /// The name that was looked up.
+        name: String,
+        /// Names of the available accounts.
+        available: Vec<String>,
+    },
 }
 
 impl RimapError {
@@ -145,6 +169,8 @@ impl RimapError {
             | Self::Audit { code, .. } => *code,
             Self::Config(_) => ErrorCode::Config,
             Self::Internal(_) => ErrorCode::Internal,
+            Self::NoAccount { .. } => ErrorCode::NoAccount,
+            Self::UnknownAccount { .. } => ErrorCode::UnknownAccount,
         }
     }
 }
@@ -172,6 +198,8 @@ mod tests {
             (ErrorCode::ExpungeDenied, "ERR_EXPUNGE_DENIED"),
             (ErrorCode::Config, "ERR_CONFIG"),
             (ErrorCode::Internal, "ERR_INTERNAL"),
+            (ErrorCode::NoAccount, "ERR_NO_ACCOUNT"),
+            (ErrorCode::UnknownAccount, "ERR_UNKNOWN_ACCOUNT"),
         ];
         for (code, expected) in cases {
             assert_eq!(code.as_str(), expected);

@@ -1,0 +1,206 @@
+# Multi-Account Support
+
+rusty-imap-mcp supports multiple IMAP/SMTP accounts in a single server
+process. Each account has its own IMAP connection, SMTP client, rate
+limiter, circuit breaker, and folder guard. There is no shared mutable
+state between accounts.
+
+## Configuration
+
+Define accounts with the `[[accounts]]` array in the config file:
+
+```toml
+[defaults.security]
+posture = "draft-safe"
+
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "127.0.0.1"
+port = 1143
+username = "user@proton.me"
+tls_fingerprint_sha256 = "ab:cd:..."
+
+[accounts.smtp]
+host = "127.0.0.1"
+port = 1025
+encryption = "starttls"
+username = "user@proton.me"
+
+[[accounts]]
+name = "personal"
+
+[accounts.imap]
+host = "imap.fastmail.com"
+port = 993
+username = "me@fastmail.com"
+
+[accounts.security]
+posture = "readonly"
+```
+
+See [configuration.md](configuration.md) for the full config reference.
+
+## Account discovery via MCP resources
+
+Agents discover accounts through the MCP resource protocol.
+`list_resources` returns one resource per configured account:
+
+```json
+[
+  {
+    "uri": "rimap://accounts/work",
+    "name": "work",
+    "description": "IMAP account: user@proton.me on 127.0.0.1",
+    "mimeType": "application/json"
+  },
+  {
+    "uri": "rimap://accounts/personal",
+    "name": "personal",
+    "description": "IMAP account: me@fastmail.com on imap.fastmail.com",
+    "mimeType": "application/json"
+  }
+]
+```
+
+Reading a resource returns account metadata:
+
+```json
+{
+  "name": "work",
+  "imap_host": "127.0.0.1",
+  "smtp_configured": true,
+  "available_tools": ["list_folders", "search", "fetch_message", "..."]
+}
+```
+
+No credentials, TLS fingerprints, passwords, or posture are exposed in
+resources. Posture is intentionally withheld so an injected prompt
+cannot discover which account has the most-permissive posture.
+
+## Account selection
+
+### `use_account` tool
+
+Sets the session-scoped default account:
+
+```json
+{ "account": "work" }
+```
+
+All subsequent tool calls use this account unless overridden per-call.
+`use_account` bypasses posture checks, rate limiting, and circuit
+breaker -- it is an infrastructure tool, not an IMAP operation.
+
+### Per-call `account` parameter
+
+Any tool call can include an `"account"` parameter to target a specific
+account for that call only:
+
+```json
+{ "account": "personal", "folder": "INBOX", "limit": 10 }
+```
+
+The per-call parameter does not change the session default.
+
+### Resolution order
+
+On every tool call (except `use_account` and `list_accounts`):
+
+1. If the tool arguments contain `"account": "<name>"` -- use that account.
+2. Else if `use_account` has been called -- use the session default.
+3. Else if exactly one account is configured -- auto-select it.
+4. Else -- return `ERR_NO_ACCOUNT` with a list of available accounts.
+
+### `list_accounts` tool
+
+Returns an array of account summaries:
+
+```json
+[
+  { "name": "work", "smtp_configured": true },
+  { "name": "personal", "smtp_configured": false }
+]
+```
+
+`imap_host` and `posture` are intentionally omitted to avoid leaking
+provider fingerprints or security-posture signals to injected prompts.
+
+`list_accounts` bypasses posture checks and is always available.
+
+## Per-account isolation
+
+Each account has independent:
+
+- IMAP connection
+- SMTP client (if configured)
+- Rate limiter (`commands_per_second`, `drafts_per_minute`,
+  `sends_per_minute`)
+- Circuit breaker
+- Folder guard (`protected_folders`, `expunge_folders`)
+- Security posture
+
+One account's rate limit or circuit breaker state does not affect
+another.
+
+## Backward compatibility
+
+A config with no `[[accounts]]` section and the existing flat `[imap]` /
+`[smtp]` / `[security]` / `[limits]` structure is treated as a single
+anonymous account named `"default"`. No config changes are required when
+upgrading from pre-1.0.
+
+Mixing flat top-level `[imap]` and `[[accounts]]` is a startup error
+(`MixedConfigFormat`).
+
+## Audit log
+
+All accounts share a single audit log file. Every record includes an
+`account` field identifying which account the operation targeted. The
+`audit merge --account <name>` flag filters records by account name.
+
+## Credential Resolution
+
+Each account resolves its IMAP (and SMTP) password via:
+
+1. **OS keyring** keyed by `<username>@<host>`, service `rusty-imap-mcp`.
+2. **Environment variable** `RUSTY_IMAP_MCP_PASSWORD` (single global value).
+3. Failure (`ERR_CONFIG`) if neither is set.
+
+### Keyring Collision (Multi-Account)
+
+The keyring key is `<username>@<host>`, NOT `<account>/<username>@<host>`. If two
+accounts share a `username@host` tuple (e.g., the same email configured for two
+logical accounts), they share a keyring entry — the last `rusty-imap-mcp login`
+wins.
+
+**Workaround:** Give each account a distinct IMAP username (include `+alias`
+suffixes if your provider supports them), or use the environment variable
+fallback for one of the two.
+
+### Env-var Fallback (Multi-Account)
+
+`RUSTY_IMAP_MCP_PASSWORD` is a single global fallback. In multi-account configs,
+if the keyring lookup fails for account A, every subsequent account falls back
+to the same env-var value. This can send account B's password to account A's
+server.
+
+**Recommendation:** In multi-account deployments, use the keyring for every
+account. Do not set `RUSTY_IMAP_MCP_PASSWORD` in production. The fallback exists
+for CI/test automation only.
+
+Tracking issues for per-account keyring namespacing and per-account env vars
+are linked in the v1.x roadmap.
+
+## Threat model
+
+Multi-account introduces a cross-account data exfiltration vector: a
+prompt-injected agent with access to multiple accounts could read from
+one account and send via another. Mitigations:
+
+- Per-account posture gates -- a `readonly` account cannot send even if
+  another account is `full`.
+- Per-account rate limiting and circuit breakers.
+- Audit log records include the account name on every operation for
+  forensic reconstruction.

@@ -1,15 +1,15 @@
 //! `list_folders` tool handler.
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Execute the `list_folders` tool.
-pub async fn handle(server: &ImapMcpServer) -> Result<ToolResponse, rimap_core::RimapError> {
-    let folders = server.imap.list_folders("*").await?;
+pub async fn handle(account: &AccountState) -> Result<ToolResponse, rimap_core::RimapError> {
+    let folders = account.imap.list_folders("*").await?;
 
     let mut folder_entries = Vec::with_capacity(folders.len());
     for folder in &folders {
-        let status = server
+        let status = account
             .imap
             .status(&folder.name, rimap_imap::types::StatusItems::all())
             .await?;

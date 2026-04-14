@@ -1,8 +1,8 @@
 //! `send_email` tool handler: compose and send via SMTP, then APPEND
 //! a copy to the Sent folder.
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 use crate::tools::message_builder::{self, ComposeInput};
 
 /// Input for `send_email` — identical fields to `create_draft`.
@@ -10,33 +10,23 @@ pub type SendEmailInput = ComposeInput;
 
 /// `send_email` handler.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: SendEmailInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     message_builder::validate_compose_input(&input)?;
 
-    let smtp_config = server.config.config.smtp.as_ref().ok_or_else(|| {
-        rimap_core::RimapError::Config("send_email requires [smtp] configuration".into())
+    let smtp = account.smtp.as_ref().ok_or_else(|| {
+        rimap_core::RimapError::Config("send_email requires SMTP configuration".into())
     })?;
 
-    let from_addr = &server.config.config.imap.username;
-    let raw_msg = message_builder::build_message(server, from_addr, &input).await?;
+    let from_addr = account.imap.username();
+    let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
     // Build SMTP envelope from the compose addresses
     let envelope = build_envelope(from_addr, &input)?;
 
-    // Resolve SMTP credential and build client
-    let password = rimap_config::resolve_credential(
-        &rimap_config::KeyringStore,
-        &smtp_config.username,
-        &smtp_config.host,
-    )
-    .map_err(|e| rimap_core::RimapError::Config(format!("SMTP credential: {e}")))?;
-
-    let client = rimap_smtp::SmtpClient::new(smtp_config, &password)?;
-
     // Send via SMTP using raw bytes
-    let smtp_response = client.send_raw(&envelope, &raw_msg).await?;
+    let smtp_response = smtp.send_raw(&envelope, &raw_msg).await?;
     tracing::info!(smtp_response, "send_email: SMTP send succeeded");
 
     // Extract Message-ID for the response
@@ -46,7 +36,7 @@ pub async fn handle(
 
     // Best-effort: APPEND copy to Sent folder
     let sent_folder = "Sent";
-    let (sent_uid, sent_copy_failed) = match server
+    let (sent_uid, sent_copy_failed) = match account
         .imap
         .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])
         .await

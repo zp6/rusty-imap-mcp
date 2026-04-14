@@ -10,7 +10,7 @@ use mail_builder::headers::message_id::MessageId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::server::ImapMcpServer;
+use crate::registry::AccountState;
 
 /// An email address with optional display name.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -212,7 +212,7 @@ pub(crate) fn cap_references(mut refs: Vec<String>) -> Vec<String> {
 
 /// Fetch referenced message and set In-Reply-To / References headers.
 pub(crate) async fn apply_threading_headers<'a>(
-    server: &ImapMcpServer,
+    account: &AccountState,
     builder: MessageBuilder<'a>,
     reply_uid: u32,
     in_reply_to_folder: Option<&str>,
@@ -224,7 +224,7 @@ pub(crate) async fn apply_threading_headers<'a>(
             message: "in_reply_to_uid must be non-zero".into(),
         })?;
 
-    let raw = server.imap.fetch_body(folder, uid).await?;
+    let raw = account.imap.fetch_body(folder, uid).await?;
     let parsed = mail_parser::MessageParser::new()
         .parse(&raw)
         .ok_or_else(|| {
@@ -261,7 +261,7 @@ pub(crate) async fn apply_threading_headers<'a>(
 /// Build raw RFC 5322 bytes from compose input, applying threading
 /// if `in_reply_to_uid` is set.
 pub(crate) async fn build_message(
-    server: &ImapMcpServer,
+    account: &AccountState,
     from_addr: &str,
     input: &ComposeInput,
 ) -> Result<Vec<u8>, rimap_core::RimapError> {
@@ -269,7 +269,7 @@ pub(crate) async fn build_message(
 
     let builder = if let Some(reply_uid) = input.in_reply_to_uid {
         Box::pin(apply_threading_headers(
-            server,
+            account,
             builder,
             reply_uid,
             input.in_reply_to_folder.as_deref(),

@@ -23,6 +23,7 @@ use rimap_audit::AuditWriter;
 use rimap_audit::record::Auth;
 use rimap_config::credential::{CredentialStore, resolve_credential};
 use rimap_core::TlsFingerprint;
+use secrecy::ExposeSecret;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -39,6 +40,10 @@ use crate::tls::{TlsConfigBundle, build_tls_config};
 /// value once at construction time.
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
+    /// Account name this connection belongs to. `None` for the legacy
+    /// single-account `"default"` deployment; `Some(name)` in multi-account
+    /// configs. Populated into `Auth` audit records.
+    pub account: Option<String>,
     /// IMAP server host.
     pub host: String,
     /// IMAP server port (typically 993 for IMAPS).
@@ -118,6 +123,13 @@ impl Connection {
         &self.inner.cfg.host
     }
 
+    /// Read the configured IMAP username. Typically the account's
+    /// email address, and suitable for use as the `From:` header.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.inner.cfg.username
+    }
+
     /// Acquire the session lock; lazy-connect if needed. The returned guard
     /// holds the tokio mutex; drop it before any other method on `Connection`.
     pub(crate) async fn session(
@@ -177,6 +189,7 @@ impl Connection {
 
         let observed = bundle.last_observed.get().copied();
         let ctx = AuthContext {
+            account: cfg.account.as_deref(),
             host: &cfg.host,
             port: cfg.port,
             username: &cfg.username,
@@ -313,7 +326,9 @@ impl Connection {
             })?;
 
         // Attempt LOGIN. On NO response the server rejected the credentials.
-        let mut session = match client.login(&cfg.username, &password).await {
+        // Expose the secret only at the moment of use; the borrow ends
+        // when `client.login` returns.
+        let mut session = match client.login(&cfg.username, password.expose_secret()).await {
             Ok(session) => session,
             Err((err, _client)) => {
                 return match err {

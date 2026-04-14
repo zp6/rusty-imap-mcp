@@ -25,6 +25,10 @@ pub struct Filter {
     pub kind: Option<String>,
     /// Required `process_id` (canonical ULID string).
     pub process: Option<String>,
+    /// If set, only records whose `account` field matches are returned.
+    /// Records without an account field (`process_start`, `process_end`,
+    /// `config`) pass through when this filter is set.
+    pub account: Option<String>,
 }
 
 impl Filter {
@@ -63,6 +67,20 @@ impl Filter {
             match got {
                 Some(name) if name == want => {}
                 Some(_) | None => return false,
+            }
+        }
+        if let Some(ref want) = self.account {
+            let got = match &record.payload {
+                Payload::Auth(a) => a.account.as_deref(),
+                Payload::ToolStart(t) => t.account.as_deref(),
+                Payload::ToolEnd(t) => t.account.as_deref(),
+                Payload::ProcessStart(_) | Payload::ProcessEnd(_) | Payload::Config(_) => None,
+            };
+            // Records that lack an account field pass through.
+            if let Some(name) = got
+                && name != want
+            {
+                return false;
             }
         }
         true
@@ -357,6 +375,7 @@ mod tests {
             ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
             process_id: pid,
             payload: Payload::ToolStart(ToolStart {
+                account: None,
                 tool: "read_email".to_string(),
                 posture_effective: "draft-safe".to_string(),
                 arguments_redacted: serde_json::json!({}),

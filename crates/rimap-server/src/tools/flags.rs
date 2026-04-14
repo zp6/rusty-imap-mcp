@@ -5,8 +5,8 @@ use rimap_imap::types::{Flag, FlagAction, Uid};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for flag mutation tools.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -21,11 +21,11 @@ pub struct FlagInput {
 
 /// `mark_read` handler.
 pub async fn handle_mark_read(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: FlagInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
-        server,
+        account,
         input,
         &[Flag::Seen],
         FlagAction::Add,
@@ -35,11 +35,11 @@ pub async fn handle_mark_read(
 
 /// `mark_unread` handler.
 pub async fn handle_mark_unread(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: FlagInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
-        server,
+        account,
         input,
         &[Flag::Seen],
         FlagAction::Remove,
@@ -49,11 +49,11 @@ pub async fn handle_mark_unread(
 
 /// `flag` handler.
 pub async fn handle_flag(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: FlagInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
-        server,
+        account,
         input,
         &[Flag::Flagged],
         FlagAction::Add,
@@ -63,11 +63,11 @@ pub async fn handle_flag(
 
 /// `unflag` handler.
 pub async fn handle_unflag(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: FlagInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
-        server,
+        account,
         input,
         &[Flag::Flagged],
         FlagAction::Remove,
@@ -76,13 +76,13 @@ pub async fn handle_unflag(
 }
 
 async fn handle_flag_op(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: FlagInput,
     flags: &[Flag],
     action: FlagAction,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uids = resolve_uids(input.uid, input.uids)?;
-    let updated = server
+    let updated = account
         .imap
         .store_flags(&input.folder, &uids, flags, action)
         .await?;

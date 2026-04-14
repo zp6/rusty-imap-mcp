@@ -9,9 +9,9 @@ use crate::tool::ToolName;
 
 /// Compile-time truth table. `true` = allowed by base posture.
 ///
-/// Layout: outer by [`ToolName`] (19 tools),
+/// Layout: outer by [`ToolName`] (22 tools),
 /// inner `[readonly, draft_safe, full, destructive]`.
-pub const POSTURE_MATRIX: [(ToolName, [bool; 4]); 19] = [
+pub const POSTURE_MATRIX: [(ToolName, [bool; 4]); 22] = [
     (ToolName::ListFolders, [true, true, true, true]),
     (ToolName::Search, [true, true, true, true]),
     (ToolName::SearchAdvanced, [false, false, true, true]),
@@ -23,6 +23,9 @@ pub const POSTURE_MATRIX: [(ToolName, [bool; 4]); 19] = [
     (ToolName::MarkUnread, [false, true, true, true]),
     (ToolName::Flag, [false, true, true, true]),
     (ToolName::Unflag, [false, true, true, true]),
+    (ToolName::AddLabel, [false, true, true, true]),
+    (ToolName::RemoveLabel, [false, true, true, true]),
+    (ToolName::ListLabels, [true, true, true, true]),
     (ToolName::MoveMessage, [false, true, true, true]),
     (ToolName::CreateDraft, [false, true, true, true]),
     // v2 tools:

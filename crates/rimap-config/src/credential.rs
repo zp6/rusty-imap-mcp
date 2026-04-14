@@ -5,6 +5,8 @@
 //!   2. Environment variable `RUSTY_IMAP_MCP_PASSWORD`.
 //!   3. Clear, actionable error naming both.
 
+use secrecy::{ExposeSecret, SecretString};
+
 use crate::error::ConfigError;
 
 /// Service name used for all keychain entries.
@@ -22,7 +24,7 @@ pub trait CredentialStore: Send + Sync {
     ///
     /// # Errors
     /// Returns `ConfigError::Keychain` on I/O or access errors.
-    fn get_password(&self, account: &str) -> Result<Option<String>, ConfigError>;
+    fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError>;
 
     /// Persist `password` for `account`, overwriting any existing entry.
     ///
@@ -51,17 +53,17 @@ pub fn resolve_credential(
     store: &dyn CredentialStore,
     username: &str,
     host: &str,
-) -> Result<String, ConfigError> {
+) -> Result<SecretString, ConfigError> {
     let account = account_key(username, host);
     if let Some(p) = store.get_password(&account)?
-        && !p.is_empty()
+        && !p.expose_secret().is_empty()
     {
         return Ok(p);
     }
     if let Ok(env) = std::env::var(PASSWORD_ENV_VAR)
         && !env.is_empty()
     {
-        return Ok(env);
+        return Ok(SecretString::from(env));
     }
     Err(ConfigError::NoCredential {
         account,
@@ -79,14 +81,14 @@ pub fn resolve_credential(
 pub struct KeyringStore;
 
 impl CredentialStore for KeyringStore {
-    fn get_password(&self, account: &str) -> Result<Option<String>, ConfigError> {
+    fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
         let entry =
             keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| ConfigError::Keychain {
                 account: account.to_string(),
                 source: Box::new(e),
             })?;
         match entry.get_password() {
-            Ok(p) => Ok(Some(p)),
+            Ok(p) => Ok(Some(SecretString::from(p))),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(e) => Err(ConfigError::Keychain {
                 account: account.to_string(),
@@ -116,6 +118,8 @@ impl CredentialStore for KeyringStore {
 mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    use secrecy::{ExposeSecret, SecretString};
 
     use crate::credential::{CredentialStore, PASSWORD_ENV_VAR, account_key, resolve_credential};
     use crate::error::ConfigError;
@@ -147,14 +151,20 @@ mod tests {
     }
 
     impl CredentialStore for MockStore {
-        fn get_password(&self, account: &str) -> Result<Option<String>, ConfigError> {
+        fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
             if self.fail_on_get {
                 return Err(ConfigError::Keychain {
                     account: account.to_string(),
                     source: "simulated failure".into(),
                 });
             }
-            Ok(self.entries.lock().unwrap().get(account).cloned())
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .get(account)
+                .cloned()
+                .map(SecretString::from))
         }
 
         fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
@@ -179,7 +189,7 @@ mod tests {
         let store = MockStore::with(&[("alice@host", "from_keychain")]);
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
             let got = resolve_credential(&store, "alice", "host").unwrap();
-            assert_eq!(got, "from_keychain");
+            assert_eq!(got.expose_secret(), "from_keychain");
         });
     }
 
@@ -188,7 +198,7 @@ mod tests {
         let store = MockStore::default();
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
             let got = resolve_credential(&store, "alice", "host").unwrap();
-            assert_eq!(got, "from_env");
+            assert_eq!(got.expose_secret(), "from_env");
         });
     }
 
@@ -222,9 +232,18 @@ mod tests {
         let store = MockStore::with(&[("alice@host", "")]);
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
             assert_eq!(
-                resolve_credential(&store, "alice", "host").unwrap(),
+                resolve_credential(&store, "alice", "host")
+                    .unwrap()
+                    .expose_secret(),
                 "from_env"
             );
         });
+    }
+
+    #[test]
+    fn resolved_credential_debug_does_not_leak() {
+        let p = SecretString::from("hunter2".to_string());
+        let formatted = format!("{p:?}");
+        assert!(!formatted.contains("hunter2"));
     }
 }

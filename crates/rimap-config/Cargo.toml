@@ -12,7 +12,7 @@ description = "Configuration loading, validation, and credential resolution for 
 workspace = true
 
 [dependencies]
-rimap-core = { path = "../rimap-core", version = "0.0.0" }
+rimap-core = { path = "../rimap-core", version = "1.0.0" }
 utf7-imap = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -20,6 +20,7 @@ toml = { workspace = true }
 directories = { workspace = true }
 keyring = { workspace = true }
 rpassword = { workspace = true }
+secrecy = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

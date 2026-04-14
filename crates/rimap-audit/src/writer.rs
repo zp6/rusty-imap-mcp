@@ -351,6 +351,79 @@ impl AuditWriter {
 }
 
 impl AuditWriter {
+    /// Build a `tool_start` record, allocate a seq, and write it. Returns
+    /// the allocated `seq` — the caller should retain this value and pass
+    /// it back to [`AuditWriter::log_tool_end`] as `start_seq` so the two
+    /// records can be paired.
+    ///
+    /// `tool_start` is NOT fsynced per existing policy; see [`needs_fsync`].
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_tool_start(
+        &self,
+        tool: &str,
+        account: Option<&str>,
+        posture_effective: &str,
+        arguments_redacted: serde_json::Value,
+        arguments_hash_sha256: String,
+    ) -> Result<crate::ids::Seq, AuditError> {
+        let seq = self.allocate_seq()?;
+        let record = crate::record::AuditRecord {
+            seq,
+            ts: crate::ids::Timestamp::now(),
+            process_id: self.process_id,
+            payload: crate::record::Payload::ToolStart(crate::record::ToolStart {
+                account: account.map(str::to_string),
+                tool: tool.to_string(),
+                posture_effective: posture_effective.to_string(),
+                arguments_redacted,
+                arguments_hash_sha256,
+            }),
+        };
+        self.write_record(&record)?;
+        Ok(seq)
+    }
+
+    /// Build a `tool_end` record, allocate a seq, and write it. `start_seq`
+    /// must be the seq returned by the paired [`AuditWriter::log_tool_start`].
+    ///
+    /// `tool_end` is NOT fsynced per existing policy; see [`needs_fsync`].
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    #[expect(clippy::too_many_arguments, reason = "record schema is fixed")]
+    pub fn log_tool_end(
+        &self,
+        start_seq: crate::ids::Seq,
+        tool: &str,
+        account: Option<&str>,
+        status: crate::record::ToolStatus,
+        error_code: Option<String>,
+        duration_ms: u64,
+        result_summary: crate::record::ResultSummary,
+        provenance: crate::record::Provenance,
+    ) -> Result<crate::ids::Seq, AuditError> {
+        let seq = self.allocate_seq()?;
+        let record = crate::record::AuditRecord {
+            seq,
+            ts: crate::ids::Timestamp::now(),
+            process_id: self.process_id,
+            payload: crate::record::Payload::ToolEnd(crate::record::ToolEnd {
+                account: account.map(str::to_string),
+                start_seq,
+                tool: tool.to_string(),
+                status,
+                error_code,
+                duration_ms,
+                result_summary,
+                provenance,
+            }),
+        };
+        self.write_record(&record)?;
+        Ok(seq)
+    }
+
     /// Build a `process_end` record, allocate a seq, and write it.
     /// Stamps the record with the writer's stable `process_id` and
     /// `Timestamp::now()`. Returns the allocated `seq` on success.
@@ -388,8 +461,10 @@ pub struct ProcessStartInputs {
     /// Git commit SHA at build time. Empty string until `vergen` lands in
     /// Sprint 5.
     pub git_commit: String,
-    /// Effective base posture at startup.
-    pub posture: String,
+    /// Effective base posture at startup (single-account mode).
+    pub posture: Option<String>,
+    /// Per-account summaries (multi-account mode).
+    pub accounts: Option<Vec<crate::record::AccountSummary>>,
     /// Absolute path of the loaded config file.
     pub config_path: std::path::PathBuf,
     /// SHA-256 of the config file contents at load time, hex-encoded.
@@ -421,6 +496,7 @@ impl AuditWriter {
             version: inputs.version,
             git_commit: inputs.git_commit,
             posture: inputs.posture,
+            accounts: inputs.accounts,
             config_path: inputs.config_path,
             config_hash_sha256: inputs.config_hash_sha256,
             previous_last_seq: inputs.trailing.last_seq,
@@ -861,6 +937,7 @@ mod tests {
 
         let seq = writer
             .log_auth(Auth {
+                account: None,
                 result: AuthResult::Success,
                 host: "127.0.0.1".to_string(),
                 port: 993,
@@ -902,6 +979,7 @@ mod tests {
         let pid = writer.process_id();
 
         let make = || Auth {
+            account: None,
             result: AuthResult::Failure,
             host: "h".into(),
             port: 1,
@@ -947,7 +1025,8 @@ mod tests {
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
-            posture: "draft-safe".to_string(),
+            posture: Some("draft-safe".to_string()),
+            accounts: None,
             config_path: std::path::PathBuf::from("/tmp/config.toml"),
             config_hash_sha256: "ab".repeat(32),
             trailing: TrailingState {
@@ -1045,7 +1124,8 @@ mod tests {
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
-            posture: "draft-safe".to_string(),
+            posture: Some("draft-safe".to_string()),
+            accounts: None,
             config_path: std::path::PathBuf::from("/tmp/c.toml"),
             config_hash_sha256: "00".repeat(32),
             trailing: TrailingState {

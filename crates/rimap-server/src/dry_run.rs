@@ -23,8 +23,7 @@ use std::path::Path;
 use anyhow::Context;
 use rimap_audit::{AuditOptions, AuditWriter};
 use rimap_authz::matrix::EffectiveMatrix;
-use rimap_config::loader::load_from_path;
-use rimap_config::validate::validate;
+use rimap_config::loader::load_and_validate;
 
 /// Load `path`, validate, acquire an exclusive audit lock, build the effective
 /// matrix, print to `out`, and return. The audit lock is held for the duration
@@ -34,31 +33,33 @@ use rimap_config::validate::validate;
 /// Propagates config load/validate errors, audit lock acquisition errors, and
 /// I/O errors from the writer.
 pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
-    let raw = load_from_path(path).with_context(|| format!("loading config {}", path.display()))?;
-    let validated = validate(raw).context("validating config")?;
+    let multi =
+        load_and_validate(path).with_context(|| format!("loading config {}", path.display()))?;
 
-    let audit_path = validated.config.audit.path.clone();
-    let rotate_bytes = validated.config.audit.rotate_bytes;
-    let rotate_keep = validated.config.audit.rotate_keep;
-    let retention_seconds = validated.config.audit.retention_seconds;
+    let audit_path = multi.audit.path.clone();
     // dry-run is a one-shot diagnostic path that exits immediately after
     // printing the matrix. Chain-of-history continuation (trailing state) is
     // not useful here; Seq::FIRST is correct.
     let _audit_writer = AuditWriter::open(&AuditOptions {
         path: audit_path.clone(),
-        rotate_bytes,
-        rotate_keep,
-        retention_seconds,
-        fail_open: validated.config.audit.fail_open,
+        rotate_bytes: multi.audit.rotate_bytes,
+        rotate_keep: multi.audit.rotate_keep,
+        retention_seconds: multi.audit.retention_seconds,
+        fail_open: multi.audit.fail_open,
         initial_seq: rimap_audit::Seq::FIRST,
     })
     .with_context(|| format!("opening audit log at {}", audit_path.display()))?;
 
-    let matrix = EffectiveMatrix::from_validated(&validated);
-    writeln!(out, "Effective matrix (posture = {})", matrix.posture())?;
-    for (tool, allowed) in matrix.rows() {
-        let tag = if allowed { "[ok ]" } else { "[deny]" };
-        writeln!(out, "  {tag} {tool}")?;
+    for (id, acfg) in &multi.accounts {
+        let matrix = EffectiveMatrix::build(acfg.security.posture, &acfg.tool_overrides);
+        if multi.accounts.len() > 1 {
+            writeln!(out, "Account: {}", id.as_str())?;
+        }
+        writeln!(out, "Effective matrix (posture = {})", matrix.posture())?;
+        for (tool, allowed) in matrix.rows() {
+            let tag = if allowed { "[ok ]" } else { "[deny]" };
+            writeln!(out, "  {tag} {tool}")?;
+        }
     }
     Ok(())
 }

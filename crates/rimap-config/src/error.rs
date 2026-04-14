@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use rimap_core::account::InvalidAccountName;
 use rimap_core::posture::UnknownPosture;
 use rimap_core::tool::ParseToolNameError;
 use thiserror::Error;
@@ -131,4 +132,23 @@ pub enum ConfigError {
         /// The configured SMTP host.
         host: String,
     },
+    /// Two accounts share the same name.
+    #[error("duplicate account name `{name}`")]
+    DuplicateAccountName {
+        /// The duplicated name.
+        name: String,
+    },
+    /// Config file contains both legacy `[imap]` and multi-account
+    /// `[[accounts]]` sections.
+    #[error(
+        "config contains both [imap] and [[accounts]]; \
+         use one format or the other, not both"
+    )]
+    MixedConfigFormat,
+    /// Account name failed validation.
+    #[error(transparent)]
+    InvalidAccountName(#[from] InvalidAccountName),
+    /// Multi-account config has an empty `[[accounts]]` array.
+    #[error("no accounts defined in [[accounts]] array")]
+    NoAccounts,
 }

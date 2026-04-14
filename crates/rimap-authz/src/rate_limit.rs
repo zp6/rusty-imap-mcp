@@ -83,13 +83,18 @@ impl Governor {
             | ToolName::MarkUnread
             | ToolName::Flag
             | ToolName::Unflag
+            | ToolName::AddLabel
+            | ToolName::RemoveLabel
+            | ToolName::ListLabels
             | ToolName::MoveMessage
             | ToolName::SendEmail
             | ToolName::DeleteMessage
             | ToolName::Expunge
             | ToolName::CreateFolder
             | ToolName::RenameFolder
-            | ToolName::DeleteFolder => false,
+            | ToolName::DeleteFolder
+            | ToolName::UseAccount
+            | ToolName::ListAccounts => false,
         };
         if is_draft {
             self.drafts.check().map_err(|nu| AuthzError::RateLimited {
@@ -110,13 +115,18 @@ impl Governor {
             | ToolName::MarkUnread
             | ToolName::Flag
             | ToolName::Unflag
+            | ToolName::AddLabel
+            | ToolName::RemoveLabel
+            | ToolName::ListLabels
             | ToolName::MoveMessage
             | ToolName::CreateDraft
             | ToolName::DeleteMessage
             | ToolName::Expunge
             | ToolName::CreateFolder
             | ToolName::RenameFolder
-            | ToolName::DeleteFolder => false,
+            | ToolName::DeleteFolder
+            | ToolName::UseAccount
+            | ToolName::ListAccounts => false,
         };
         if is_send {
             self.sends.check().map_err(|nu| AuthzError::RateLimited {

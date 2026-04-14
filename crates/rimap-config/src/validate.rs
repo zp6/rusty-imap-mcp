@@ -12,11 +12,15 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use rimap_core::account::AccountId;
 use rimap_core::tls::TlsFingerprint;
 use rimap_core::tool::ToolName;
 
 use crate::error::ConfigError;
-use crate::model::{Config, SmtpEncryption, Verdict};
+use crate::model::{
+    AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, MultiAccountConfig,
+    SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
+};
 
 /// Validated config: a `Config` plus the resolved per-tool override map
 /// keyed by `ToolName`, plus the parsed TLS fingerprint (if any).
@@ -36,6 +40,10 @@ pub struct ValidatedConfig {
 /// Returns `ConfigError` on any validation failure.
 pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     let tls_fingerprint = parse_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
+    validate_imap_username(&config.imap.username)?;
+    if let Some(ref smtp) = config.smtp {
+        validate_smtp_username(&smtp.username)?;
+    }
     validate_limits(&config)?;
     validate_audit(&config)?;
     validate_paths(&config)?;
@@ -50,6 +58,157 @@ pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     })
 }
 
+/// Validated per-account config with resolved overrides and fingerprint.
+#[derive(Debug, Clone)]
+pub struct ValidatedAccountConfig {
+    /// Account identity.
+    pub id: AccountId,
+    /// IMAP connection settings.
+    pub imap: ImapConfig,
+    /// SMTP connection settings (if configured).
+    pub smtp: Option<SmtpConfig>,
+    /// Security posture and folder lists.
+    pub security: SecurityConfig,
+    /// Numeric limits.
+    pub limits: LimitsConfig,
+    /// Resolved per-tool overrides.
+    pub tool_overrides: BTreeMap<ToolName, Verdict>,
+    /// Parsed pinned TLS fingerprint.
+    pub tls_fingerprint: Option<TlsFingerprint>,
+}
+
+/// Validated multi-account config — the canonical output of config loading.
+#[derive(Debug, Clone)]
+pub struct ValidatedMultiConfig {
+    /// Per-account validated configs, keyed by account id.
+    pub accounts: BTreeMap<AccountId, ValidatedAccountConfig>,
+    /// Global audit log settings.
+    pub audit: AuditConfig,
+    /// Global attachment download settings.
+    pub attachments: AttachmentsConfig,
+}
+
+/// Validate a multi-account config.
+///
+/// # Errors
+/// Returns `ConfigError` on any validation failure.
+pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig, ConfigError> {
+    if config.accounts.is_empty() {
+        return Err(ConfigError::NoAccounts);
+    }
+
+    let mut accounts = BTreeMap::new();
+    for raw in config.accounts {
+        let id = AccountId::new(&raw.name)?;
+        if accounts.contains_key(&id) {
+            return Err(ConfigError::DuplicateAccountName { name: raw.name });
+        }
+
+        let security = raw
+            .security
+            .unwrap_or_else(|| config.defaults.security.clone());
+        let limits = raw.limits.unwrap_or_else(|| config.defaults.limits.clone());
+
+        let validated = validate_account(id.clone(), raw.imap, raw.smtp, security, limits)?;
+        accounts.insert(id, validated);
+    }
+
+    validate_audit_config(&config.audit)?;
+    validate_paths_multi(&config.audit, &config.attachments)?;
+
+    Ok(ValidatedMultiConfig {
+        accounts,
+        audit: config.audit,
+        attachments: config.attachments,
+    })
+}
+
+/// Convert a legacy flat config into a `ValidatedMultiConfig` with a
+/// single account named "default".
+///
+/// # Errors
+/// Returns `ConfigError` on any validation failure.
+pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, ConfigError> {
+    let validated = validate(config)?;
+    let id = AccountId::default_account();
+
+    let account = ValidatedAccountConfig {
+        id: id.clone(),
+        imap: validated.config.imap,
+        smtp: validated.config.smtp,
+        security: validated.config.security,
+        limits: validated.config.limits,
+        tool_overrides: validated.tool_overrides,
+        tls_fingerprint: validated.tls_fingerprint,
+    };
+
+    let mut accounts = BTreeMap::new();
+    accounts.insert(id, account);
+
+    Ok(ValidatedMultiConfig {
+        accounts,
+        audit: validated.config.audit,
+        attachments: validated.config.attachments,
+    })
+}
+
+/// Validate a single account's worth of config fields.
+fn validate_account(
+    id: AccountId,
+    imap: ImapConfig,
+    smtp: Option<SmtpConfig>,
+    security: SecurityConfig,
+    limits: LimitsConfig,
+) -> Result<ValidatedAccountConfig, ConfigError> {
+    let tls_fingerprint = parse_fingerprint(imap.tls_fingerprint_sha256.as_deref())?;
+    validate_imap_username(&imap.username)?;
+    if let Some(ref smtp_cfg) = smtp {
+        validate_smtp_username(&smtp_cfg.username)?;
+    }
+    validate_limits_fields(&limits)?;
+    validate_folder_safety_fields(&security)?;
+    let tool_overrides = resolve_tool_overrides_fields(&security)?;
+    validate_smtp_required_fields(&security, &tool_overrides, smtp.as_ref())?;
+    validate_smtp_encryption_fields(smtp.as_ref())?;
+
+    Ok(ValidatedAccountConfig {
+        id,
+        imap,
+        smtp,
+        security,
+        limits,
+        tool_overrides,
+        tls_fingerprint,
+    })
+}
+
+fn validate_imap_username(username: &str) -> Result<(), ConfigError> {
+    validate_username_field(username, "imap.username")
+}
+
+fn validate_smtp_username(username: &str) -> Result<(), ConfigError> {
+    validate_username_field(username, "smtp.username")
+}
+
+fn validate_username_field(username: &str, field: &'static str) -> Result<(), ConfigError> {
+    if username.is_empty() {
+        return Err(ConfigError::InvalidLimit {
+            field,
+            reason: "username must not be empty".to_string(),
+        });
+    }
+    if username
+        .chars()
+        .any(|c| c == '\r' || c == '\n' || c == '\0')
+    {
+        return Err(ConfigError::InvalidLimit {
+            field,
+            reason: "username must not contain CR, LF, or NUL".to_string(),
+        });
+    }
+    Ok(())
+}
+
 fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, ConfigError> {
     let Some(raw) = maybe_fp else {
         return Ok(None);
@@ -61,7 +220,11 @@ fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, C
 }
 
 fn validate_audit(config: &Config) -> Result<(), ConfigError> {
-    if config.audit.retention_seconds == Some(0) {
+    validate_audit_config(&config.audit)
+}
+
+fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
+    if audit.retention_seconds == Some(0) {
         return Err(ConfigError::InvalidLimit {
             field: "audit.retention_seconds",
             reason: "must be > 0 (use None / omit the field to disable \
@@ -73,7 +236,10 @@ fn validate_audit(config: &Config) -> Result<(), ConfigError> {
 }
 
 fn validate_limits(config: &Config) -> Result<(), ConfigError> {
-    let limits = &config.limits;
+    validate_limits_fields(&config.limits)
+}
+
+fn validate_limits_fields(limits: &LimitsConfig) -> Result<(), ConfigError> {
     if limits.commands_per_second == 0 {
         return Err(ConfigError::InvalidLimit {
             field: "limits.commands_per_second",
@@ -141,26 +307,28 @@ fn validate_limits(config: &Config) -> Result<(), ConfigError> {
 }
 
 fn validate_paths(config: &Config) -> Result<(), ConfigError> {
-    let audit_parent = config
-        .audit
+    validate_paths_multi(&config.audit, &config.attachments)
+}
+
+fn validate_paths_multi(
+    audit: &AuditConfig,
+    attachments: &AttachmentsConfig,
+) -> Result<(), ConfigError> {
+    let audit_parent = audit
         .path
         .parent()
         .ok_or_else(|| ConfigError::PathNotWritable {
-            path: config.audit.path.clone(),
+            path: audit.path.clone(),
             reason: "audit path has no parent directory".to_string(),
         })?;
     require_writable_dir(audit_parent)?;
-    enforce_audit_containment(config)?;
-    if !config.attachments.download_dir.is_empty() {
-        require_writable_dir(Path::new(&config.attachments.download_dir))?;
+    enforce_audit_containment_fields(audit)?;
+    if !attachments.download_dir.is_empty() {
+        require_writable_dir(Path::new(&attachments.download_dir))?;
     }
     Ok(())
 }
 
-/// Compute the default audit base when `audit.allowed_base_dir` is unset.
-/// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
-/// `directories::ProjectDirs` resolves; returns `None` otherwise (which
-/// causes the containment check to fail with a clear error).
 /// Compute the default audit base when `audit.allowed_base_dir` is unset.
 /// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
 /// `directories::ProjectDirs` resolves; returns `None` otherwise (which
@@ -192,8 +360,8 @@ fn default_audit_base() -> Option<PathBuf> {
 /// exist. The parent is canonicalized first (not the path itself, which
 /// may not exist yet), then joined with the file name to produce the
 /// canonical audit path.
-fn enforce_audit_containment(config: &Config) -> Result<(), ConfigError> {
-    let audit_path = &config.audit.path;
+fn enforce_audit_containment_fields(audit: &AuditConfig) -> Result<(), ConfigError> {
+    let audit_path = &audit.path;
     let parent = audit_path
         .parent()
         .ok_or_else(|| ConfigError::PathNotWritable {
@@ -212,8 +380,7 @@ fn enforce_audit_containment(config: &Config) -> Result<(), ConfigError> {
         })?;
     let canon_path = canon_parent.join(file_name);
 
-    let base = config
-        .audit
+    let base = audit
         .allowed_base_dir
         .clone()
         .or_else(default_audit_base)
@@ -262,15 +429,18 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
 }
 
 fn validate_folder_safety(config: &Config) -> Result<(), ConfigError> {
-    let mut protected: Vec<String> = config
-        .security
+    validate_folder_safety_fields(&config.security)
+}
+
+fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), ConfigError> {
+    let mut protected: Vec<String> = security
         .protected_folders
         .iter()
         .map(|f| utf7_imap::decode_utf7_imap(f.clone()).to_lowercase())
         .collect();
     protected.push("inbox".to_string());
 
-    for folder in &config.security.expunge_folders {
+    for folder in &security.expunge_folders {
         let norm = utf7_imap::decode_utf7_imap(folder.clone()).to_lowercase();
         if protected.contains(&norm) {
             return Err(ConfigError::ConflictingFolders {
@@ -285,14 +455,22 @@ fn validate_smtp_required(
     config: &Config,
     tool_overrides: &BTreeMap<ToolName, Verdict>,
 ) -> Result<(), ConfigError> {
-    let posture = config.security.posture;
+    validate_smtp_required_fields(&config.security, tool_overrides, config.smtp.as_ref())
+}
+
+fn validate_smtp_required_fields(
+    security: &SecurityConfig,
+    tool_overrides: &BTreeMap<ToolName, Verdict>,
+    smtp: Option<&SmtpConfig>,
+) -> Result<(), ConfigError> {
+    let posture = security.posture;
     let send_email_base = rimap_core::base_allows(posture, ToolName::SendEmail);
     let send_email_effective = match tool_overrides.get(&ToolName::SendEmail) {
         Some(Verdict::Allow) => true,
         Some(Verdict::Deny) => false,
         None => send_email_base,
     };
-    if send_email_effective && config.smtp.is_none() {
+    if send_email_effective && smtp.is_none() {
         return Err(ConfigError::SmtpRequired {
             posture: posture.to_string(),
         });
@@ -301,7 +479,11 @@ fn validate_smtp_required(
 }
 
 fn validate_smtp_encryption(config: &Config) -> Result<(), ConfigError> {
-    let Some(smtp) = &config.smtp else {
+    validate_smtp_encryption_fields(config.smtp.as_ref())
+}
+
+fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), ConfigError> {
+    let Some(smtp) = smtp else {
         return Ok(());
     };
     if smtp.encryption == SmtpEncryption::None {
@@ -315,8 +497,14 @@ fn validate_smtp_encryption(config: &Config) -> Result<(), ConfigError> {
 }
 
 fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
+    resolve_tool_overrides_fields(&config.security)
+}
+
+fn resolve_tool_overrides_fields(
+    security: &SecurityConfig,
+) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
     let mut out = BTreeMap::new();
-    for (name, verdict) in &config.security.tools {
+    for (name, verdict) in &security.tools {
         let tool = ToolName::from_str(name)?;
         out.insert(tool, *verdict);
     }
@@ -744,5 +932,253 @@ path = "/tmp/audit.jsonl"
             !debug.contains("secret_user"),
             "Debug output must not contain username: {debug}",
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-account validation tests
+    // -----------------------------------------------------------------------
+
+    use crate::model::{DefaultsConfig, MultiAccountConfig, RawAccountConfig};
+    use crate::validate::{validate_legacy_as_multi, validate_multi};
+    use rimap_core::account::AccountId;
+
+    fn base_multi_config(
+        audit_dir: &std::path::Path,
+        accounts: Vec<RawAccountConfig>,
+    ) -> MultiAccountConfig {
+        MultiAccountConfig {
+            defaults: DefaultsConfig::default(),
+            accounts,
+            audit: AuditConfig {
+                path: audit_dir.join("audit.jsonl"),
+                rotate_bytes: 10_485_760,
+                rotate_keep: 5,
+                retention_seconds: None,
+                provenance_window_seconds: 60,
+                fail_open: false,
+                allowed_base_dir: Some(audit_dir.to_path_buf()),
+            },
+            attachments: AttachmentsConfig::default(),
+        }
+    }
+
+    fn raw_account(name: &str) -> RawAccountConfig {
+        RawAccountConfig {
+            name: name.to_string(),
+            imap: ImapConfig {
+                host: "127.0.0.1".into(),
+                port: 1143,
+                username: format!("{name}@example.test"),
+                tls_fingerprint_sha256: None,
+                command_timeout_seconds: 30,
+                connect_timeout_seconds: 10,
+            },
+            smtp: None,
+            security: None,
+            limits: None,
+        }
+    }
+
+    #[test]
+    fn multi_two_accounts_parsed() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(
+            dir.path(),
+            vec![raw_account("work"), raw_account("personal")],
+        );
+        let v = validate_multi(cfg).unwrap();
+        assert_eq!(v.accounts.len(), 2);
+        assert!(v.accounts.contains_key(&AccountId::new("work").unwrap()));
+        assert!(
+            v.accounts
+                .contains_key(&AccountId::new("personal").unwrap())
+        );
+    }
+
+    #[test]
+    fn multi_toml_two_accounts() {
+        let dir = TempDir::new().unwrap();
+        let toml_str = format!(
+            r#"
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "imap.work.com"
+port = 993
+username = "alice@work.com"
+
+[[accounts]]
+name = "personal"
+
+[accounts.imap]
+host = "imap.personal.com"
+port = 993
+username = "alice@personal.com"
+
+[audit]
+path = "{}/audit.jsonl"
+allowed_base_dir = "{}"
+"#,
+            dir.path().display(),
+            dir.path().display(),
+        );
+        let cfg: MultiAccountConfig = toml::from_str(&toml_str).unwrap();
+        let v = validate_multi(cfg).unwrap();
+        assert_eq!(v.accounts.len(), 2);
+    }
+
+    #[test]
+    fn legacy_wraps_as_default_account() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        let v = validate_legacy_as_multi(cfg).unwrap();
+        assert_eq!(v.accounts.len(), 1);
+        let id = AccountId::default_account();
+        assert!(v.accounts.contains_key(&id));
+        assert_eq!(v.accounts[&id].id, id);
+    }
+
+    #[test]
+    fn duplicate_account_name_rejected() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(dir.path(), vec![raw_account("work"), raw_account("work")]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::DuplicateAccountName { ref name } if name == "work"),
+            "expected DuplicateAccountName, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn no_accounts_rejected() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(dir.path(), vec![]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::NoAccounts));
+    }
+
+    #[test]
+    fn invalid_account_name_rejected() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(dir.path(), vec![raw_account("bad name")]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidAccountName(_)));
+    }
+
+    #[test]
+    fn defaults_inherited_when_account_omits() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_multi_config(dir.path(), vec![raw_account("work")]);
+        cfg.defaults.limits.commands_per_second = 42;
+        cfg.defaults.security.posture = Posture::Readonly;
+        let v = validate_multi(cfg).unwrap();
+        let acct = &v.accounts[&AccountId::new("work").unwrap()];
+        assert_eq!(acct.limits.commands_per_second, 42);
+        assert_eq!(acct.security.posture, Posture::Readonly);
+    }
+
+    #[test]
+    fn account_overrides_defaults() {
+        let dir = TempDir::new().unwrap();
+        let mut acct = raw_account("work");
+        acct.limits = Some(LimitsConfig {
+            commands_per_second: 99,
+            ..LimitsConfig::default()
+        });
+        let mut cfg = base_multi_config(dir.path(), vec![acct]);
+        cfg.defaults.limits.commands_per_second = 42;
+        let v = validate_multi(cfg).unwrap();
+        let validated_acct = &v.accounts[&AccountId::new("work").unwrap()];
+        assert_eq!(validated_acct.limits.commands_per_second, 99);
+    }
+
+    #[test]
+    fn per_account_smtp_required_still_works() {
+        let dir = TempDir::new().unwrap();
+        let mut acct = raw_account("work");
+        acct.security = Some(SecurityConfig {
+            posture: Posture::Full,
+            ..SecurityConfig::default()
+        });
+        let cfg = base_multi_config(dir.path(), vec![acct]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::SmtpRequired { .. }));
+    }
+
+    #[test]
+    fn per_account_conflicting_folders_still_works() {
+        let dir = TempDir::new().unwrap();
+        let mut acct = raw_account("work");
+        acct.security = Some(SecurityConfig {
+            protected_folders: vec!["Trash".into()],
+            expunge_folders: vec!["Trash".into()],
+            ..SecurityConfig::default()
+        });
+        let cfg = base_multi_config(dir.path(), vec![acct]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(matches!(err, ConfigError::ConflictingFolders { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Username validation tests (CR/LF/NUL rejection)
+    // -----------------------------------------------------------------------
+
+    use crate::validate::{validate_imap_username, validate_smtp_username};
+
+    #[test]
+    fn username_with_crlf_rejected() {
+        assert!(validate_imap_username("a@b\r\nX-Injected: 1").is_err());
+    }
+
+    #[test]
+    fn username_with_cr_rejected() {
+        assert!(validate_imap_username("a@b\rX").is_err());
+    }
+
+    #[test]
+    fn username_with_lf_rejected() {
+        assert!(validate_imap_username("a@b\nX").is_err());
+    }
+
+    #[test]
+    fn username_with_null_rejected() {
+        assert!(validate_imap_username("a@b\0c").is_err());
+    }
+
+    #[test]
+    fn normal_username_accepted() {
+        assert!(validate_imap_username("user@example.com").is_ok());
+    }
+
+    #[test]
+    fn empty_username_rejected() {
+        assert!(validate_imap_username("").is_err());
+    }
+
+    #[test]
+    fn smtp_username_crlf_rejected() {
+        assert!(validate_smtp_username("a@b\r\nX-Injected: 1").is_err());
+    }
+
+    #[test]
+    fn smtp_username_normal_accepted() {
+        assert!(validate_smtp_username("user@example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_multi_rejects_crlf_username() {
+        let dir = TempDir::new().unwrap();
+        let mut acct = raw_account("work");
+        acct.imap.username = "a@b\r\nX-Injected: 1".into();
+        let cfg = base_multi_config(dir.path(), vec![acct]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidLimit {
+                field: "imap.username",
+                ..
+            }
+        ));
     }
 }

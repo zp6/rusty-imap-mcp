@@ -3,8 +3,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for `create_folder`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -31,10 +31,10 @@ pub struct DeleteFolderInput {
 
 /// `create_folder` handler.
 pub async fn handle_create(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: CreateFolderInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    server
+    account
         .folder_guard
         .check_protected(&input.name, "create")
         .map_err(|e| rimap_core::RimapError::Authz {
@@ -42,7 +42,7 @@ pub async fn handle_create(
             message: e.to_string(),
         })?;
 
-    server.imap.create_folder(&input.name).await?;
+    account.imap.create_folder(&input.name).await?;
 
     Ok(ToolResponse {
         meta: serde_json::json!({
@@ -56,10 +56,10 @@ pub async fn handle_create(
 
 /// `rename_folder` handler.
 pub async fn handle_rename(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: RenameFolderInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    server
+    account
         .folder_guard
         .check_rename(&input.old_name, &input.new_name)
         .map_err(|e| rimap_core::RimapError::Authz {
@@ -67,7 +67,7 @@ pub async fn handle_rename(
             message: e.to_string(),
         })?;
 
-    server
+    account
         .imap
         .rename_folder(&input.old_name, &input.new_name)
         .await?;
@@ -85,10 +85,10 @@ pub async fn handle_rename(
 
 /// `delete_folder` handler.
 pub async fn handle_delete(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: DeleteFolderInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    server
+    account
         .folder_guard
         .check_protected(&input.name, "delete")
         .map_err(|e| rimap_core::RimapError::Authz {
@@ -96,7 +96,7 @@ pub async fn handle_delete(
             message: e.to_string(),
         })?;
 
-    server
+    account
         .folder_guard
         .check_expunge(&input.name)
         .map_err(|e| rimap_core::RimapError::Authz {
@@ -104,7 +104,7 @@ pub async fn handle_delete(
             message: e.to_string(),
         })?;
 
-    let status = server
+    let status = account
         .imap
         .status(
             &input.name,
@@ -119,7 +119,7 @@ pub async fn handle_delete(
         .await?;
     let message_count = status.messages.unwrap_or(0);
 
-    server.imap.delete_folder(&input.name).await?;
+    account.imap.delete_folder(&input.name).await?;
 
     Ok(ToolResponse {
         meta: serde_json::json!({

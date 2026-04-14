@@ -328,3 +328,54 @@ pub struct AttachmentsConfig {
     #[serde(default)]
     pub download_dir: String,
 }
+
+// ---------------------------------------------------------------------------
+// Multi-account config format
+// ---------------------------------------------------------------------------
+
+/// Multi-account configuration format with `[[accounts]]` array.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultiAccountConfig {
+    /// Default security/limits inherited by accounts that omit them.
+    #[serde(default)]
+    pub defaults: DefaultsConfig,
+    /// One or more account definitions.
+    pub accounts: Vec<RawAccountConfig>,
+    /// Global audit log settings.
+    pub audit: AuditConfig,
+    /// Global attachment download settings.
+    #[serde(default)]
+    pub attachments: AttachmentsConfig,
+}
+
+/// `[defaults]` block — shared settings inherited by accounts.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DefaultsConfig {
+    /// Default security posture and overrides.
+    #[serde(default)]
+    pub security: SecurityConfig,
+    /// Default numeric limits.
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+/// A single account entry in `[[accounts]]`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawAccountConfig {
+    /// Human-readable account name (validated as `AccountId`).
+    pub name: String,
+    /// IMAP connection settings (required per account).
+    pub imap: ImapConfig,
+    /// SMTP connection settings (optional per account).
+    #[serde(default)]
+    pub smtp: Option<SmtpConfig>,
+    /// Per-account security overrides; `None` inherits from `[defaults]`.
+    #[serde(default)]
+    pub security: Option<SecurityConfig>,
+    /// Per-account limit overrides; `None` inherits from `[defaults]`.
+    #[serde(default)]
+    pub limits: Option<LimitsConfig>,
+}

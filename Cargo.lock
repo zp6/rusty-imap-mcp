@@ -106,6 +106,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
+name = "arc-swap"
+version = "1.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "assert_cmd"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2071,7 +2080,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "rimap-audit"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "fs4",
  "hex",
@@ -2091,7 +2100,7 @@ dependencies = [
 
 [[package]]
 name = "rimap-authz"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "governor",
  "nonzero_ext",
@@ -2107,12 +2116,13 @@ dependencies = [
 
 [[package]]
 name = "rimap-config"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "directories",
  "keyring",
  "rimap-core",
  "rpassword",
+ "secrecy",
  "serde",
  "temp-env",
  "tempfile",
@@ -2124,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "rimap-content"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "addr",
  "ammonia",
@@ -2151,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "rimap-core"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "hex",
  "serde",
@@ -2164,7 +2174,7 @@ dependencies = [
 
 [[package]]
 name = "rimap-imap"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-imap",
@@ -2174,6 +2184,7 @@ dependencies = [
  "rimap-config",
  "rimap-core",
  "rustls",
+ "secrecy",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -2186,11 +2197,13 @@ dependencies = [
 
 [[package]]
 name = "rimap-server"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "assert_cmd",
  "clap",
+ "governor",
  "hex",
  "infer",
  "lettre",
@@ -2206,6 +2219,7 @@ dependencies = [
  "rimap-smtp",
  "rmcp",
  "schemars",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2",
@@ -2218,7 +2232,7 @@ dependencies = [
 
 [[package]]
 name = "rimap-smtp"
-version = "0.0.0"
+version = "1.0.0"
 dependencies = [
  "lettre",
  "rimap-config",
@@ -2423,6 +2437,15 @@ dependencies = [
  "precomputed-hash",
  "selectors",
  "tendril 0.5.0",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
 ]
 
 [[package]]

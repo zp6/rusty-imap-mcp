@@ -14,9 +14,9 @@ workspace = true
 
 [dependencies]
 # Internal — direct path + explicit version to satisfy cargo-deny's wildcard ban.
-rimap-core = { path = "../rimap-core", version = "0.0.0" }
-rimap-config = { path = "../rimap-config", version = "0.0.0" }
-rimap-audit = { path = "../rimap-audit", version = "0.0.0" }
+rimap-core = { path = "../rimap-core", version = "1.0.0" }
+rimap-config = { path = "../rimap-config", version = "1.0.0" }
+rimap-audit = { path = "../rimap-audit", version = "1.0.0" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -28,6 +28,9 @@ futures-util = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 webpki-roots = { workspace = true }
+
+# Credentials (SecretString exposure at call site)
+secrecy = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }

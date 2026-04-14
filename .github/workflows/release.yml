@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  BINARY_NAME: rusty-imap-mcp
+
+jobs:
+  build-linux-x86_64:
+    name: build (x86_64-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: stable) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: stable
+      - name: Install cargo-auditable
+        run: cargo install cargo-auditable --locked --version 0.7.4
+      - run: cargo auditable build --release --locked
+      - name: Rename binary
+        run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu
+          path: ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu
+
+  build-linux-aarch64:
+    name: build (aarch64-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: stable) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: stable
+          targets: aarch64-unknown-linux-gnu
+      - name: Install cross
+        run: cargo install cross --locked --version 0.2.5
+      # TODO: embed SBOM via cargo-auditable for cross builds. Requires
+      # installing cargo-auditable inside the cross container (e.g. via a
+      # Cross.toml pre-build hook or custom image). Tracked as follow-up.
+      - run: cross build --release --locked --target aarch64-unknown-linux-gnu
+      - name: Rename binary
+        run: cp target/aarch64-unknown-linux-gnu/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-aarch64-unknown-linux-gnu
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ env.BINARY_NAME }}-aarch64-unknown-linux-gnu
+          path: ${{ env.BINARY_NAME }}-aarch64-unknown-linux-gnu
+
+  build-macos-aarch64:
+    name: build (aarch64-apple-darwin)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: stable) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: stable
+      - name: Install cargo-auditable
+        run: cargo install cargo-auditable --locked --version 0.7.4
+      - run: cargo auditable build --release --locked
+      - name: Rename binary
+        run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-aarch64-apple-darwin
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ env.BINARY_NAME }}-aarch64-apple-darwin
+          path: ${{ env.BINARY_NAME }}-aarch64-apple-darwin
+
+  build-linux-ppc64le:
+    name: build (powerpc64le-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
+        with:
+          platforms: linux/ppc64le
+      - name: Build in ppc64le container
+        # rust:1.88.0-bookworm as of 2026-04-13
+        run: |
+          docker run --rm --platform linux/ppc64le \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 \
+            bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo install cargo-auditable --locked --version 0.7.4 && cargo auditable build --release --locked"
+      - name: Rename binary
+        run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-powerpc64le-unknown-linux-gnu
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ env.BINARY_NAME }}-powerpc64le-unknown-linux-gnu
+          path: ${{ env.BINARY_NAME }}-powerpc64le-unknown-linux-gnu
+
+  build-linux-s390x:
+    name: build (s390x-unknown-linux-gnu)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a  # v4.0.0
+        with:
+          platforms: linux/s390x
+      - name: Build in s390x container
+        # rust:1.88.0-bookworm as of 2026-04-13
+        run: |
+          docker run --rm --platform linux/s390x \
+            -v "${{ github.workspace }}:/workspace" \
+            -w /workspace \
+            rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 \
+            bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo install cargo-auditable --locked --version 0.7.4 && cargo auditable build --release --locked"
+      - name: Rename binary
+        run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-s390x-unknown-linux-gnu
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ env.BINARY_NAME }}-s390x-unknown-linux-gnu
+          path: ${{ env.BINARY_NAME }}-s390x-unknown-linux-gnu
+
+  release:
+    name: Create GitHub Release
+    needs:
+      - build-linux-x86_64
+      - build-linux-aarch64
+      - build-macos-aarch64
+      - build-linux-ppc64le
+      - build-linux-s390x
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate SHA256 checksums
+        run: |
+          cd artifacts
+          sha256sum ${{ env.BINARY_NAME }}-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
+        with:
+          subject-path: |
+            artifacts/rusty-imap-mcp-*
+            artifacts/SHA256SUMS.txt
+      - name: Extract release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          awk "/^## \\[${VERSION}\\]/,/^## \\[[^\\]]+\\]/" CHANGELOG.md \
+            | head -n -1 > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "Warning: no release notes extracted for ${TAG}"
+            cp CHANGELOG.md RELEASE_NOTES.md
+          fi
+          head -20 RELEASE_NOTES.md
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" \
+            --draft \
+            --title "$TAG_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            artifacts/${{ env.BINARY_NAME }}-* \
+            artifacts/SHA256SUMS.txt

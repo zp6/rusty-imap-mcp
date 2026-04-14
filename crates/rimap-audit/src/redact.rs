@@ -207,6 +207,8 @@ pub fn schemas() -> Vec<RedactionSchema> {
     let mut out = read_tool_schemas();
     out.extend(write_tool_schemas());
     out.extend(v2_tool_schemas());
+    out.extend(label_tool_schemas());
+    out.extend(account_tool_schemas());
     out
 }
 
@@ -439,6 +441,45 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
                 ("token", Forbidden),
             ],
         ),
+    ]
+}
+
+/// Schemas for v3 label tools: `add_label`, `remove_label`,
+/// `list_labels`.
+fn label_tool_schemas() -> Vec<RedactionSchema> {
+    use FieldPolicy::Verbatim;
+
+    vec![
+        RedactionSchema::new(
+            "add_label",
+            &[
+                ("folder", Verbatim),
+                ("uid", Verbatim),
+                ("uids", Verbatim),
+                ("label", Verbatim),
+            ],
+        ),
+        RedactionSchema::new(
+            "remove_label",
+            &[
+                ("folder", Verbatim),
+                ("uid", Verbatim),
+                ("uids", Verbatim),
+                ("label", Verbatim),
+            ],
+        ),
+        RedactionSchema::new("list_labels", &[("folder", Verbatim), ("uid", Verbatim)]),
+    ]
+}
+
+/// Schemas for infrastructure account tools: `use_account`,
+/// `list_accounts`.
+fn account_tool_schemas() -> Vec<RedactionSchema> {
+    use FieldPolicy::Verbatim;
+
+    vec![
+        RedactionSchema::new("use_account", &[("account", Verbatim)]),
+        RedactionSchema::new("list_accounts", &[]),
     ]
 }
 

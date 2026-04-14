@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 
 use crate::error::ConfigError;
-use crate::model::Config;
+use crate::model::{Config, MultiAccountConfig};
+use crate::validate::{ValidatedMultiConfig, validate_legacy_as_multi, validate_multi};
 
 /// Organization qualifiers for `directories::ProjectDirs`.
 const QUALIFIER: &str = "";
@@ -57,6 +58,54 @@ pub fn load_from_path(path: &Path) -> Result<Config, ConfigError> {
     })
 }
 
+/// Load a config file and validate it, producing a `ValidatedMultiConfig`.
+///
+/// Detects format by scanning for `[[accounts]]` (multi-account) vs `[imap]`
+/// (legacy). Both present is an error. Parses the appropriate struct and
+/// runs validation.
+///
+/// # Errors
+/// Returns `ConfigError` on read, parse, or validation failure.
+pub fn load_and_validate(path: &Path) -> Result<ValidatedMultiConfig, ConfigError> {
+    let contents = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    // Parse once into `toml::Table` to classify the format. A TOML document
+    // is always a table at the top level, so `toml::from_str::<Table>` will
+    // succeed for any syntactically valid TOML. Format-specific deserialization
+    // is a second pass below — still cheaper and more correct than a
+    // substring match over the raw text.
+    let table: toml::Table = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
+
+    let has_accounts = table.get("accounts").and_then(|v| v.as_array()).is_some();
+    let has_flat_imap = table.contains_key("imap");
+
+    if has_accounts && has_flat_imap {
+        return Err(ConfigError::MixedConfigFormat);
+    }
+
+    if has_accounts {
+        let config = toml::from_str::<MultiAccountConfig>(&contents).map_err(|source| {
+            ConfigError::Parse {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+        validate_multi(config)
+    } else {
+        let config = toml::from_str::<Config>(&contents).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        validate_legacy_as_multi(config)
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
@@ -65,7 +114,10 @@ mod tests {
     use rimap_core::posture::Posture;
     use tempfile::TempDir;
 
-    use crate::loader::{CONFIG_ENV_VAR, load_from_path, resolve_config_path};
+    use rimap_core::account::AccountId;
+
+    use crate::error::ConfigError;
+    use crate::loader::{CONFIG_ENV_VAR, load_and_validate, load_from_path, resolve_config_path};
     use crate::model::Verdict;
 
     fn write_config(dir: &TempDir, name: &str, contents: &str) -> PathBuf {
@@ -165,5 +217,102 @@ search = "allow"
                 assert!(path.ends_with("config.toml"));
             }
         });
+    }
+
+    // -----------------------------------------------------------------------
+    // load_and_validate format detection tests
+    // -----------------------------------------------------------------------
+
+    fn legacy_toml(audit_dir: &std::path::Path) -> String {
+        format!(
+            r#"
+[imap]
+host = "127.0.0.1"
+port = 1143
+username = "alice@example.test"
+
+[audit]
+path = "{dir}/audit.jsonl"
+allowed_base_dir = "{dir}"
+"#,
+            dir = audit_dir.display(),
+        )
+    }
+
+    fn multi_toml(audit_dir: &std::path::Path) -> String {
+        format!(
+            r#"
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "imap.work.com"
+port = 993
+username = "alice@work.com"
+
+[[accounts]]
+name = "personal"
+
+[accounts.imap]
+host = "imap.personal.com"
+port = 993
+username = "alice@personal.com"
+
+[audit]
+path = "{dir}/audit.jsonl"
+allowed_base_dir = "{dir}"
+"#,
+            dir = audit_dir.display(),
+        )
+    }
+
+    #[test]
+    fn load_and_validate_legacy_format() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(&dir, "config.toml", &legacy_toml(dir.path()));
+        let v = load_and_validate(&path).unwrap();
+        assert_eq!(v.accounts.len(), 1);
+        assert!(v.accounts.contains_key(&AccountId::default_account()));
+    }
+
+    #[test]
+    fn load_and_validate_multi_format() {
+        let dir = TempDir::new().unwrap();
+        let path = write_config(&dir, "config.toml", &multi_toml(dir.path()));
+        let v = load_and_validate(&path).unwrap();
+        assert_eq!(v.accounts.len(), 2);
+        assert!(v.accounts.contains_key(&AccountId::new("work").unwrap()));
+        assert!(
+            v.accounts
+                .contains_key(&AccountId::new("personal").unwrap())
+        );
+    }
+
+    #[test]
+    fn load_and_validate_mixed_format_rejected() {
+        let dir = TempDir::new().unwrap();
+        let mixed = format!(
+            r#"
+[imap]
+host = "127.0.0.1"
+port = 1143
+username = "alice@example.test"
+
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "imap.work.com"
+port = 993
+username = "alice@work.com"
+
+[audit]
+path = "{dir}/audit.jsonl"
+"#,
+            dir = dir.path().display(),
+        );
+        let path = write_config(&dir, "config.toml", &mixed);
+        let err = load_and_validate(&path).unwrap_err();
+        assert!(matches!(err, ConfigError::MixedConfigFormat));
     }
 }

@@ -106,14 +106,18 @@ mod tests {
     use crate::matrix::{EffectiveMatrix, base_allows};
 
     #[test]
-    fn matrix_covers_every_tool_variant_exactly_once() {
+    fn matrix_covers_every_non_infrastructure_tool_variant() {
         use std::collections::BTreeSet;
         let mut seen = BTreeSet::new();
         for (tool, _) in POSTURE_MATRIX {
             assert!(seen.insert(tool), "duplicate row for {tool}");
         }
-        assert_eq!(seen.len(), ToolName::all().len());
-        for t in ToolName::all() {
+        let non_infra: Vec<_> = ToolName::all()
+            .into_iter()
+            .filter(|t| !t.is_infrastructure())
+            .collect();
+        assert_eq!(seen.len(), non_infra.len());
+        for t in non_infra {
             assert!(seen.contains(&t), "missing row for {t}");
         }
     }
@@ -126,6 +130,7 @@ mod tests {
             ToolName::FetchMessage,
             ToolName::ListAttachments,
             ToolName::DownloadAttachment,
+            ToolName::ListLabels,
         ] {
             assert!(base_allows(Posture::Readonly, t), "{t} should be allowed");
         }
@@ -136,6 +141,8 @@ mod tests {
             ToolName::MarkUnread,
             ToolName::Flag,
             ToolName::Unflag,
+            ToolName::AddLabel,
+            ToolName::RemoveLabel,
             ToolName::MoveMessage,
             ToolName::CreateDraft,
             ToolName::SendEmail,
@@ -165,7 +172,7 @@ mod tests {
             assert!(!base_allows(Posture::DraftSafe, *t), "{t} expected denied");
         }
         for t in ToolName::all() {
-            if denied.contains(&t) {
+            if denied.contains(&t) || t.is_infrastructure() {
                 continue;
             }
             assert!(base_allows(Posture::DraftSafe, t), "{t} expected allowed");
@@ -176,7 +183,12 @@ mod tests {
     fn base_full_allows_except_destructive() {
         let denied = [ToolName::Expunge, ToolName::DeleteFolder];
         for t in ToolName::all() {
-            if denied.contains(&t) {
+            if t.is_infrastructure() {
+                assert!(
+                    !base_allows(Posture::Full, t),
+                    "{t} infrastructure tool should not be in posture matrix"
+                );
+            } else if denied.contains(&t) {
                 assert!(
                     !base_allows(Posture::Full, t),
                     "{t} expected denied at full"
@@ -191,12 +203,19 @@ mod tests {
     }
 
     #[test]
-    fn base_destructive_allows_everything() {
+    fn base_destructive_allows_all_non_infrastructure() {
         for t in ToolName::all() {
-            assert!(
-                base_allows(Posture::Destructive, t),
-                "destructive should allow {t}"
-            );
+            if t.is_infrastructure() {
+                assert!(
+                    !base_allows(Posture::Destructive, t),
+                    "{t} infrastructure tool should not be in posture matrix"
+                );
+            } else {
+                assert!(
+                    base_allows(Posture::Destructive, t),
+                    "destructive should allow {t}"
+                );
+            }
         }
     }
 
@@ -256,6 +275,7 @@ mod tests {
                 ToolName::FetchMessage,
                 ToolName::ListAttachments,
                 ToolName::DownloadAttachment,
+                ToolName::ListLabels,
             ]
         );
     }
@@ -265,7 +285,16 @@ mod tests {
         let m = EffectiveMatrix::build(Posture::Destructive, &BTreeMap::new());
         let rows: Vec<_> = m.rows().collect();
         assert_eq!(rows.len(), ToolName::all().len());
-        assert!(rows.iter().all(|(_, allowed)| *allowed));
+        for (tool, allowed) in &rows {
+            if tool.is_infrastructure() {
+                assert!(
+                    !allowed,
+                    "{tool} infrastructure tool should be denied in matrix"
+                );
+            } else {
+                assert!(allowed, "{tool} should be allowed at destructive");
+            }
+        }
     }
 
     #[test]

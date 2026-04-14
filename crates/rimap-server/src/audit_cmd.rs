@@ -29,6 +29,7 @@ pub fn run(
     tool: Option<&str>,
     kind: Option<&str>,
     process: Option<&str>,
+    account: Option<&str>,
 ) -> anyhow::Result<()> {
     let filter = Filter {
         since: since
@@ -42,6 +43,7 @@ pub fn run(
         tool: tool.map(str::to_string),
         kind: kind.map(str::to_string),
         process: process.map(str::to_string),
+        account: account.map(str::to_string),
     };
 
     let mut stdout = std::io::stdout().lock();

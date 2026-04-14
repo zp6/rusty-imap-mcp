@@ -3,8 +3,8 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::registry::AccountState;
 use crate::response::ToolResponse;
-use crate::server::ImapMcpServer;
 
 /// Input for `delete_message`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -17,7 +17,7 @@ pub struct DeleteMessageInput {
 
 /// `delete_message` handler.
 pub async fn handle(
-    server: &ImapMcpServer,
+    account: &AccountState,
     input: DeleteMessageInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uid =
@@ -27,7 +27,7 @@ pub async fn handle(
         })?;
 
     let trash_folder = "Trash";
-    let result = server
+    let result = account
         .imap
         .delete_message(&input.folder, uid, trash_folder)
         .await?;

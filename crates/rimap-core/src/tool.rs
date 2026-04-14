@@ -35,6 +35,12 @@ pub enum ToolName {
     Flag,
     /// `unflag`
     Unflag,
+    /// `add_label`
+    AddLabel,
+    /// `remove_label`
+    RemoveLabel,
+    /// `list_labels`
+    ListLabels,
     /// `move_message`
     MoveMessage,
     /// `create_draft` (appends to Drafts with `$PendingReview`).
@@ -51,6 +57,12 @@ pub enum ToolName {
     RenameFolder,
     /// `delete_folder`
     DeleteFolder,
+    /// `use_account` — switch the active account context.
+    /// Bypasses posture/rate-limit checks.
+    UseAccount,
+    /// `list_accounts` — enumerate configured accounts.
+    /// Bypasses posture/rate-limit checks.
+    ListAccounts,
 }
 
 impl ToolName {
@@ -71,6 +83,9 @@ impl ToolName {
             Self::MarkUnread => "mark_unread",
             Self::Flag => "flag",
             Self::Unflag => "unflag",
+            Self::AddLabel => "add_label",
+            Self::RemoveLabel => "remove_label",
+            Self::ListLabels => "list_labels",
             Self::MoveMessage => "move_message",
             Self::CreateDraft => "create_draft",
             Self::SendEmail => "send_email",
@@ -79,6 +94,8 @@ impl ToolName {
             Self::CreateFolder => "create_folder",
             Self::RenameFolder => "rename_folder",
             Self::DeleteFolder => "delete_folder",
+            Self::UseAccount => "use_account",
+            Self::ListAccounts => "list_accounts",
         }
     }
 
@@ -89,6 +106,15 @@ impl ToolName {
     #[must_use]
     pub fn all() -> Vec<Self> {
         Self::iter().collect()
+    }
+
+    /// Whether this tool is an infrastructure tool that bypasses the
+    /// posture matrix (not gated by posture, rate limits, or circuit
+    /// breakers). Infrastructure tools are always available regardless
+    /// of security posture.
+    #[must_use]
+    pub fn is_infrastructure(self) -> bool {
+        matches!(self, Self::UseAccount | Self::ListAccounts)
     }
 }
 
@@ -127,9 +153,9 @@ mod tests {
     use strum::IntoEnumIterator;
 
     #[test]
-    fn all_has_exactly_nineteen_variants() {
-        assert_eq!(ToolName::all().len(), 19);
-        assert_eq!(ToolName::iter().count(), 19);
+    fn all_has_exactly_twenty_four_variants() {
+        assert_eq!(ToolName::all().len(), 24);
+        assert_eq!(ToolName::iter().count(), 24);
     }
 
     #[test]
