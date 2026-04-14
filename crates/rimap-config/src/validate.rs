@@ -40,6 +40,10 @@ pub struct ValidatedConfig {
 /// Returns `ConfigError` on any validation failure.
 pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     let tls_fingerprint = parse_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
+    validate_imap_username(&config.imap.username)?;
+    if let Some(ref smtp) = config.smtp {
+        validate_smtp_username(&smtp.username)?;
+    }
     validate_limits(&config)?;
     validate_audit(&config)?;
     validate_paths(&config)?;
@@ -157,6 +161,10 @@ fn validate_account(
     limits: LimitsConfig,
 ) -> Result<ValidatedAccountConfig, ConfigError> {
     let tls_fingerprint = parse_fingerprint(imap.tls_fingerprint_sha256.as_deref())?;
+    validate_imap_username(&imap.username)?;
+    if let Some(ref smtp_cfg) = smtp {
+        validate_smtp_username(&smtp_cfg.username)?;
+    }
     validate_limits_fields(&limits)?;
     validate_folder_safety_fields(&security)?;
     let tool_overrides = resolve_tool_overrides_fields(&security)?;
@@ -172,6 +180,33 @@ fn validate_account(
         tool_overrides,
         tls_fingerprint,
     })
+}
+
+fn validate_imap_username(username: &str) -> Result<(), ConfigError> {
+    validate_username_field(username, "imap.username")
+}
+
+fn validate_smtp_username(username: &str) -> Result<(), ConfigError> {
+    validate_username_field(username, "smtp.username")
+}
+
+fn validate_username_field(username: &str, field: &'static str) -> Result<(), ConfigError> {
+    if username.is_empty() {
+        return Err(ConfigError::InvalidLimit {
+            field,
+            reason: "username must not be empty".to_string(),
+        });
+    }
+    if username
+        .chars()
+        .any(|c| c == '\r' || c == '\n' || c == '\0')
+    {
+        return Err(ConfigError::InvalidLimit {
+            field,
+            reason: "username must not contain CR, LF, or NUL".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, ConfigError> {
@@ -1087,5 +1122,67 @@ allowed_base_dir = "{}"
         let cfg = base_multi_config(dir.path(), vec![acct]);
         let err = validate_multi(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::ConflictingFolders { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Username validation tests (CR/LF/NUL rejection)
+    // -----------------------------------------------------------------------
+
+    use crate::validate::{validate_imap_username, validate_smtp_username};
+
+    #[test]
+    fn username_with_crlf_rejected() {
+        assert!(validate_imap_username("a@b\r\nX-Injected: 1").is_err());
+    }
+
+    #[test]
+    fn username_with_cr_rejected() {
+        assert!(validate_imap_username("a@b\rX").is_err());
+    }
+
+    #[test]
+    fn username_with_lf_rejected() {
+        assert!(validate_imap_username("a@b\nX").is_err());
+    }
+
+    #[test]
+    fn username_with_null_rejected() {
+        assert!(validate_imap_username("a@b\0c").is_err());
+    }
+
+    #[test]
+    fn normal_username_accepted() {
+        assert!(validate_imap_username("user@example.com").is_ok());
+    }
+
+    #[test]
+    fn empty_username_rejected() {
+        assert!(validate_imap_username("").is_err());
+    }
+
+    #[test]
+    fn smtp_username_crlf_rejected() {
+        assert!(validate_smtp_username("a@b\r\nX-Injected: 1").is_err());
+    }
+
+    #[test]
+    fn smtp_username_normal_accepted() {
+        assert!(validate_smtp_username("user@example.com").is_ok());
+    }
+
+    #[test]
+    fn validate_multi_rejects_crlf_username() {
+        let dir = TempDir::new().unwrap();
+        let mut acct = raw_account("work");
+        acct.imap.username = "a@b\r\nX-Injected: 1".into();
+        let cfg = base_multi_config(dir.path(), vec![acct]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::InvalidLimit {
+                field: "imap.username",
+                ..
+            }
+        ));
     }
 }
