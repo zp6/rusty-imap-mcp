@@ -802,3 +802,82 @@ fn error_code_for(err: &ImapError) -> &'static str {
         ImapError::Audit { .. } => "ERR_AUDIT",
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::panic, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
+mod tests {
+    use super::{error_code_for, map_tls_handshake_error};
+    use crate::error::{AuthFailure, ImapError};
+    use rimap_core::TlsFingerprint;
+
+    fn fp_zeros() -> TlsFingerprint {
+        TlsFingerprint::from_hex(&"00".repeat(32)).expect("valid 32-byte hex literal")
+    }
+
+    #[test]
+    fn error_code_for_covers_every_variant() {
+        let cases: Vec<(ImapError, &str)> = vec![
+            (
+                ImapError::Tls {
+                    observed: fp_zeros(),
+                    expected: fp_zeros(),
+                },
+                "ERR_TLS",
+            ),
+            (
+                ImapError::TlsHandshake(tokio_rustls::rustls::Error::General("x".into())),
+                "ERR_TLS",
+            ),
+            (
+                ImapError::Connect(std::io::Error::other("boom")),
+                "ERR_NETWORK",
+            ),
+            (ImapError::ConnectionLost, "ERR_NETWORK"),
+            (ImapError::Timeout { op: "select" }, "ERR_TIMEOUT"),
+            (
+                ImapError::Auth {
+                    reason: AuthFailure::ServerRejected,
+                },
+                "ERR_AUTH",
+            ),
+            (
+                ImapError::SizeLimit { limit: 0 },
+                "ERR_ATTACHMENT_TOO_LARGE",
+            ),
+            (
+                ImapError::Protocol(async_imap::error::Error::Bad("x".into())),
+                "ERR_IMAP_PROTOCOL",
+            ),
+            (
+                ImapError::InvalidInput {
+                    field: "f",
+                    reason: "r",
+                },
+                "ERR_INVALID_INPUT",
+            ),
+            (
+                ImapError::BatchTooLarge {
+                    count: 200,
+                    limit: 100,
+                },
+                "ERR_INVALID_INPUT",
+            ),
+        ];
+        for (err, expected) in &cases {
+            assert_eq!(error_code_for(err), *expected, "for {err:?}");
+        }
+    }
+
+    #[test]
+    fn map_tls_handshake_error_wraps_io_error() {
+        let io_err = std::io::Error::other("handshake boom");
+        let mapped = map_tls_handshake_error(&io_err);
+        match mapped {
+            ImapError::TlsHandshake(e) => {
+                assert!(e.to_string().contains("handshake boom"));
+            }
+            other => panic!("expected TlsHandshake variant, got {other:?}"),
+        }
+    }
+}

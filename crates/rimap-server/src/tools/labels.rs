@@ -93,6 +93,13 @@ pub struct ListLabelsInput {
 
 /// `add_label` handler — STORE +FLAGS with a custom keyword.
 /// See the module-level doc for the UIDVALIDITY limitation.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` for invalid
+/// labels (empty, control chars, atom-specials, system-flag collisions,
+/// zero UID, batch over 100). Returns `RimapError::Imap { ... }` for
+/// IMAP-layer failures.
 pub async fn handle_add_label(
     account: &AccountState,
     input: LabelInput,
@@ -123,6 +130,11 @@ pub async fn handle_add_label(
 
 /// `remove_label` handler — STORE -FLAGS with a custom keyword.
 /// See the module-level doc for the UIDVALIDITY limitation.
+///
+/// # Errors
+///
+/// Same shape as [`handle_add_label`]: `Authz { InvalidInput }` for shape
+/// errors and `Imap { ... }` for IMAP-layer failures.
 pub async fn handle_remove_label(
     account: &AccountState,
     input: LabelInput,
@@ -153,6 +165,12 @@ pub async fn handle_remove_label(
 
 /// `list_labels` handler — FETCH FLAGS and return keyword entries.
 /// See the module-level doc for the UIDVALIDITY limitation.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput }` for zero UID,
+/// `Authz { code: NotFound }` if the message UID is missing in the
+/// folder, and `Imap { ... }` for IMAP-layer failures.
 pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,

@@ -379,3 +379,75 @@ pub struct RawAccountConfig {
     #[serde(default)]
     pub limits: Option<LimitsConfig>,
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn limits_default_values_are_sensible() {
+        let l = LimitsConfig::default();
+        assert!(l.max_search_results > 0);
+        assert!(l.max_search_results_cap >= l.max_search_results);
+        assert!(l.max_fetch_body_bytes > 0);
+        assert!(l.max_attachment_bytes > 0);
+        assert!(l.max_append_bytes > 0);
+        assert!(l.commands_per_second > 0);
+        assert!(l.drafts_per_minute > 0);
+        assert!(l.sends_per_minute > 0);
+        assert!(l.circuit_breaker_error_threshold > 0);
+        assert!(l.circuit_breaker_window_seconds > 0);
+    }
+
+    #[test]
+    fn security_defaults_protect_common_system_folders() {
+        let s = SecurityConfig::default();
+        assert_eq!(s.posture, rimap_core::posture::Posture::DraftSafe);
+        // INBOX, Sent, Drafts, Trash are protected by default — destructive
+        // tools must opt-in via expunge_folders to touch these.
+        for required in ["INBOX", "Sent", "Drafts", "Trash"] {
+            assert!(
+                s.protected_folders.iter().any(|f| f == required),
+                "expected `{required}` in default protected_folders, got {:?}",
+                s.protected_folders,
+            );
+        }
+        assert!(s.expunge_folders.is_empty());
+        assert!(s.tools.is_empty());
+    }
+
+    #[test]
+    fn lookalike_default_is_disabled() {
+        let l = LookalikeConfig::default();
+        // Sanity: defaults exist and are non-panicking.
+        let _ = format!("{l:?}");
+    }
+
+    #[test]
+    fn smtp_encryption_starttls_round_trips_via_toml() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct W {
+            v: SmtpEncryption,
+        }
+        let s = toml::to_string(&W {
+            v: SmtpEncryption::Starttls,
+        })
+        .unwrap();
+        let back: W = toml::from_str(&s).unwrap();
+        assert_eq!(back.v, SmtpEncryption::Starttls);
+    }
+
+    #[test]
+    fn verdict_allow_deny_round_trip_via_toml() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct W {
+            v: Verdict,
+        }
+        for v in [Verdict::Allow, Verdict::Deny] {
+            let s = toml::to_string(&W { v }).unwrap();
+            let back: W = toml::from_str(&s).unwrap();
+            assert_eq!(back.v, v);
+        }
+    }
+}

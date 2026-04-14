@@ -22,6 +22,12 @@ pub struct MoveInput {
 }
 
 /// Execute the `move_message` tool.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// `uid`/`uids` (zero, both/neither set, batch over 100). Returns
+/// `RimapError::Imap { ... }` for IMAP-layer failures.
 pub async fn handle(
     account: &AccountState,
     input: MoveInput,

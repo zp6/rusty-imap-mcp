@@ -21,6 +21,15 @@ pub struct FetchMessageInput {
 }
 
 /// Execute the `fetch_message` tool.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`.
+/// Returns `RimapError::Imap { ... }` for IMAP-layer failures (network,
+/// timeout, protocol, attachment-too-large). Returns `RimapError::Internal`
+/// when the body cannot be parsed by `rimap-content`. The upstream
+/// `pre_call_guards` layer may also return `Authz { code: PostureDenied }`
+/// for `FetchMessageHtml` when `include_html=true` and posture forbids it.
 pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
@@ -129,4 +138,57 @@ fn truncate_string(s: &mut String, max: usize) {
         end -= 1;
     }
     s.truncate(end);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_string;
+
+    #[test]
+    fn truncate_below_max_is_noop() {
+        let mut s = String::from("hello");
+        truncate_string(&mut s, 100);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn truncate_at_exact_max_is_noop() {
+        let mut s = String::from("hello");
+        truncate_string(&mut s, 5);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn truncate_lops_off_trailing_bytes() {
+        let mut s = String::from("hello world");
+        truncate_string(&mut s, 5);
+        assert_eq!(s, "hello");
+    }
+
+    #[test]
+    fn truncate_respects_utf8_char_boundary() {
+        // "héllo" — 'é' is 2 bytes (UTF-8: 0xc3 0xa9). Truncating to byte 2
+        // would slice through the multibyte char, so the helper must back up
+        // to byte 1 ("h").
+        let mut s = String::from("héllo");
+        truncate_string(&mut s, 2);
+        assert_eq!(s, "h");
+        assert!(s.is_char_boundary(s.len()));
+    }
+
+    #[test]
+    fn truncate_to_zero_yields_empty_string() {
+        let mut s = String::from("anything");
+        truncate_string(&mut s, 0);
+        assert_eq!(s, "");
+    }
+
+    #[test]
+    fn truncate_keeps_full_multibyte_char_when_possible() {
+        // "ab中cd" — '中' is 3 bytes (0xe4 0xb8 0xad). max=5 should keep
+        // "ab中" (bytes 0..5), since byte 5 IS a char boundary.
+        let mut s = String::from("ab中cd");
+        truncate_string(&mut s, 5);
+        assert_eq!(s, "ab中");
+    }
 }
