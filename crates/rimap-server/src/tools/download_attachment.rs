@@ -74,11 +74,7 @@ pub async fn handle(
             })
     })
     .await
-    .unwrap_or_else(|e| {
-        Err(rimap_core::RimapError::Internal(format!(
-            "spawn_blocking panicked: {e}"
-        )))
-    })?;
+    .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))?;
 
     let (part_body, declared_type, original_filename) = find_part_by_id(&parsed, &input.part_id)?;
 

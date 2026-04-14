@@ -104,11 +104,7 @@ pub async fn resolve_dest_dir_async(
         resolve_dest_dir(dest_dir.as_deref(), &allowed_root, &fallback_dir)
     })
     .await
-    .unwrap_or_else(|e| {
-        Err(RimapError::Internal(format!(
-            "spawn_blocking panicked: {e}"
-        )))
-    })
+    .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))
 }
 
 /// Async wrapper around [`write_attachment`] that runs on a
@@ -125,14 +121,7 @@ pub async fn write_attachment_async(
 ) -> Result<PathBuf, RimapError> {
     tokio::task::spawn_blocking(move || write_attachment(&dir, &filename, &data))
         .await
-        .unwrap_or_else(|e| Err(spawn_blocking_panic_error(&e)))
-}
-
-/// Render a `tokio::task::JoinError` from `spawn_blocking` as
-/// `RimapError::Internal`. Panics in the blocking threadpool are
-/// genuine bugs, so the `Internal` mapping is correct.
-fn spawn_blocking_panic_error(err: &tokio::task::JoinError) -> RimapError {
-    RimapError::Internal(format!("spawn_blocking panicked: {err}"))
+        .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))
 }
 
 /// MIME-sniff `data` using magic bytes.

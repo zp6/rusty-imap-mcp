@@ -5,3 +5,11 @@ pub(crate) mod download;
 pub(crate) mod error;
 pub(crate) mod response;
 pub(crate) mod server;
+
+/// Render a `tokio::task::JoinError` from `spawn_blocking` as
+/// `RimapError::Internal`. Shared by every `mcp/*` async wrapper so
+/// panics in the blocking threadpool always surface with the same code
+/// and message prefix — infrastructure failure, not user input.
+pub(crate) fn spawn_blocking_panic_error(err: &tokio::task::JoinError) -> rimap_core::RimapError {
+    rimap_core::RimapError::Internal(format!("spawn_blocking panicked: {err}"))
+}

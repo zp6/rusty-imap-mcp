@@ -45,16 +45,7 @@ pub async fn handle(
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
     let raw_size = raw.len();
 
-    let content = crate::mcp::content::parse_message_async(raw)
-        .await
-        .map_err(|e| {
-            // Malformed input and cap-exceeded are caller-side problems;
-            // surface them as INVALID_PARAMS via the InvalidInput code so
-            // MCP clients see accurate guidance. Only genuine parser bugs
-            // (if any) would fall through to Internal — none exist today
-            // because ContentError has no Internal variant.
-            rimap_core::RimapError::invalid_input(e.to_string())
-        })?;
+    let content = crate::mcp::content::parse_message_async(raw).await?;
 
     let mut body_text = content.untrusted.body_text;
     let mut body_html = if include_html {
