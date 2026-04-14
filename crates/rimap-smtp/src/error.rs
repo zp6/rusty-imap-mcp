@@ -51,3 +51,42 @@ impl From<SmtpError> for RimapError {
         }
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::panic, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_maps_to_smtp_protocol_code() {
+        let err = SmtpError::Rejected {
+            reason: "550 blocked".to_string(),
+        };
+        let mapped: RimapError = err.into();
+        match mapped {
+            RimapError::Smtp { code, message, .. } => {
+                assert_eq!(code, ErrorCode::SmtpProtocol);
+                assert!(message.contains("550 blocked"));
+            }
+            other => panic!("expected Smtp variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeout_maps_to_timeout_code() {
+        let err = SmtpError::Timeout;
+        let mapped: RimapError = err.into();
+        match mapped {
+            RimapError::Smtp { code, .. } => assert_eq!(code, ErrorCode::Timeout),
+            other => panic!("expected Smtp variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejected_display_includes_reason() {
+        let err = SmtpError::Rejected {
+            reason: "user unknown".into(),
+        };
+        assert!(err.to_string().contains("user unknown"));
+    }
+}

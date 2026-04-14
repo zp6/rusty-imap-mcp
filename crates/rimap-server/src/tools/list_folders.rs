@@ -4,6 +4,12 @@ use crate::registry::AccountState;
 use crate::response::ToolResponse;
 
 /// Execute the `list_folders` tool.
+///
+/// # Errors
+///
+/// Returns `RimapError::Imap { ... }` if the server rejects LIST or any
+/// of the per-folder STATUS calls. The upstream
+/// `DispatchGuard::pre_dispatch` gate may also return `PostureDenied`.
 pub async fn handle(account: &AccountState) -> Result<ToolResponse, rimap_core::RimapError> {
     let folders = account.imap.list_folders("*").await?;
 

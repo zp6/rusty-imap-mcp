@@ -1,5 +1,12 @@
 //! Flag mutation tool handlers: `mark_read`, `mark_unread`, `flag`,
 //! `unflag`.
+//!
+//! # Errors (applies to all four handlers)
+//!
+//! Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+//! `uid`/`uids` input (zero, both/neither set, batch over 100). Returns
+//! `RimapError::Imap { ... }` for IMAP-layer failures. The upstream
+//! `DispatchGuard::pre_dispatch` gate may return `PostureDenied`.
 
 use rimap_imap::types::{Flag, FlagAction, Uid};
 use schemars::JsonSchema;

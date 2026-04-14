@@ -9,6 +9,15 @@ use crate::tools::message_builder::{self, ComposeInput};
 pub type SendEmailInput = ComposeInput;
 
 /// `send_email` handler.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// recipient addresses or compose-input violations. Returns
+/// `RimapError::Config` if no SMTP is configured for the account.
+/// Returns `RimapError::Smtp { ... }` on SMTP failure. The copy-to-Sent
+/// APPEND is best-effort; an IMAP failure there surfaces via
+/// `sent_copy_failed` in the response, not as an error.
 pub async fn handle(
     account: &AccountState,
     input: SendEmailInput,

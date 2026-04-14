@@ -28,6 +28,14 @@ pub struct DeleteMessageInput {
 const TRASH_FOLDER: &str = "Trash";
 
 /// `delete_message` handler.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`.
+/// Returns `RimapError::Imap { ... }` for IMAP-layer failures (server
+/// rejects the MOVE/COPY/STORE or the source folder is missing). The
+/// upstream `DispatchGuard::pre_dispatch` gate may return
+/// `PostureDenied`.
 pub async fn handle(
     account: &AccountState,
     input: DeleteMessageInput,

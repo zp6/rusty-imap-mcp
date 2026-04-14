@@ -148,15 +148,15 @@ impl AccountRegistry {
     /// Returns [`RimapError::UnknownAccount`] if `name` does not
     /// match any configured account.
     pub fn set_active(&self, name: &str) -> Result<Option<String>, RimapError> {
-        let id = self
-            .accounts
-            .keys()
-            .find(|k| k.as_str() == name)
+        // Parse into AccountId first so the O(log n) BTreeMap lookup does
+        // typed comparison; falls back to `UnknownAccount` either way.
+        let id = AccountId::new(name)
+            .ok()
+            .filter(|id| self.accounts.contains_key(id))
             .ok_or_else(|| RimapError::UnknownAccount {
                 name: name.to_string(),
                 available: self.account_name_strings(),
-            })?
-            .clone();
+            })?;
 
         let prev = self.active.swap(Some(Arc::new(id)));
         Ok(prev.as_deref().map(ToString::to_string))
@@ -176,12 +176,12 @@ impl AccountRegistry {
         &self.accounts
     }
 
-    /// Look up an account by its string name.
+    /// Look up an account by its string name. Parses into `AccountId`
+    /// first so the `BTreeMap` lookup is O(log n) typed equality rather
+    /// than O(n) string scanning.
     fn find_by_name(&self, name: &str) -> Option<&AccountState> {
-        self.accounts
-            .iter()
-            .find(|(k, _)| k.as_str() == name)
-            .map(|(_, v)| v)
+        let id = AccountId::new(name).ok()?;
+        self.accounts.get(&id)
     }
 }
 

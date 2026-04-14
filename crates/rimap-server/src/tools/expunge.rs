@@ -14,6 +14,13 @@ pub struct ExpungeInput {
 }
 
 /// `expunge` handler.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: ExpungeDenied }` when the folder
+/// is not in `expunge_folders`. Returns `RimapError::Imap { ... }` for
+/// IMAP-layer failures. The upstream `DispatchGuard::pre_dispatch` gate
+/// may also return `PostureDenied`.
 pub async fn handle(
     account: &AccountState,
     input: ExpungeInput,

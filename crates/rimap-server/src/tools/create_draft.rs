@@ -9,6 +9,14 @@ use crate::tools::message_builder::{self, ComposeInput};
 pub type CreateDraftInput = ComposeInput;
 
 /// `create_draft` handler.
+///
+/// # Errors
+///
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// recipient addresses, subject/body size violations, or bad threading
+/// headers. Returns `RimapError::Imap { ... }` on APPEND failure. The
+/// upstream `DispatchGuard::pre_dispatch` gate returns
+/// `Authz { code: PostureDenied }` when posture forbids draft creation.
 pub async fn handle(
     account: &AccountState,
     input: CreateDraftInput,
