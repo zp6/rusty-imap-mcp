@@ -12,9 +12,9 @@ use crate::tools::flags::resolve_uids;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MoveMessageInput {
     /// Source folder.
-    pub source_folder: String,
+    pub folder: String,
     /// Destination folder.
-    pub dest_folder: String,
+    pub destination: String,
     /// Single UID.
     pub uid: Option<u32>,
     /// Batch of UIDs (max 100).
@@ -46,7 +46,7 @@ pub async fn handle(
     let uids = resolve_uids(input.uid, input.uids)?;
     let outcome = account
         .imap
-        .move_messages(&input.source_folder, &input.dest_folder, &uids)
+        .move_messages(&input.folder, &input.destination, &uids)
         .await?;
 
     let moves: Vec<serde_json::Value> = outcome
@@ -73,8 +73,8 @@ pub async fn handle(
 
     Ok(ToolResponse {
         meta: serde_json::json!({
-            "source_folder": input.source_folder,
-            "dest_folder": input.dest_folder,
+            "folder": input.folder,
+            "destination": input.destination,
             "moves": moves,
         }),
         untrusted: None,
