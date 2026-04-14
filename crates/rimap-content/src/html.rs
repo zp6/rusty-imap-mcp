@@ -462,23 +462,7 @@ fn extract_text(
     let body_selector = compile_selector("body");
     if let Some(body_el) = document.select(&body_selector).next() {
         let mut counter: usize = 0;
-        let mut after_cdata = false;
-        for child in body_el.children() {
-            if let Some(child_el) = scraper::ElementRef::wrap(child) {
-                after_cdata = false;
-                walk_element(child_el, hidden_indices, &mut buf, &mut counter);
-            } else if child
-                .value()
-                .as_comment()
-                .is_some_and(|c| c.starts_with("[CDATA["))
-            {
-                after_cdata = true;
-            } else if let Some(text) = child.value().as_text()
-                && !after_cdata
-            {
-                push_text(&mut buf, text);
-            }
-        }
+        walk_children(body_el, hidden_indices, &mut buf, &mut counter);
     }
     let normalized = normalize_whitespace(&buf);
     crate::unicode::sanitize(
@@ -487,6 +471,36 @@ fn extract_text(
         MAX_HTML_BYTES,
         "body:html",
     )
+}
+
+/// Walk `children` of an element, recursing into each element child via
+/// [`walk_element`] and appending plain text. CDATA comments suppress
+/// the next adjacent text node so CDATA marker bookkeeping does not
+/// leak into the output. Shared between the body-root loop and the
+/// recursive element walker to keep counting semantics identical.
+fn walk_children(
+    parent: scraper::ElementRef<'_>,
+    hidden_indices: &HashSet<ElementIndex>,
+    out: &mut String,
+    counter: &mut usize,
+) {
+    let mut after_cdata = false;
+    for child in parent.children() {
+        if let Some(child_el) = scraper::ElementRef::wrap(child) {
+            after_cdata = false;
+            walk_element(child_el, hidden_indices, out, counter);
+        } else if child
+            .value()
+            .as_comment()
+            .is_some_and(|c| c.starts_with("[CDATA["))
+        {
+            after_cdata = true;
+        } else if let Some(text) = child.value().as_text()
+            && !after_cdata
+        {
+            push_text(out, text);
+        }
+    }
 }
 
 /// Recursive helper for [`extract_text`].
@@ -510,23 +524,7 @@ fn collect_visible_text(
     ) {
         return;
     }
-    let mut after_cdata = false;
-    for child in el.children() {
-        if let Some(child_el) = scraper::ElementRef::wrap(child) {
-            after_cdata = false;
-            walk_element(child_el, hidden_indices, out, counter);
-        } else if child
-            .value()
-            .as_comment()
-            .is_some_and(|c| c.starts_with("[CDATA["))
-        {
-            after_cdata = true;
-        } else if let Some(text) = child.value().as_text()
-            && !after_cdata
-        {
-            push_text(out, text);
-        }
-    }
+    walk_children(el, hidden_indices, out, counter);
 }
 
 /// Increment the counter for `child_el`, skip if hidden, otherwise
