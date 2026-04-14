@@ -12,7 +12,7 @@ use crate::tools::flags::resolve_uids;
 /// IMAP atom specials (RFC 3501 §9) plus backslash. Any of these
 /// inside a keyword would break the STORE command or collide with
 /// the system-flag namespace.
-const ATOM_SPECIALS: &[char] = &['(', ')', '{', ' ', '%', '*', '"', ']', '\\'];
+const ATOM_SPECIALS: &[char] = &['(', ')', '{', ' ', '%', '*', '"', '[', ']', '\\'];
 
 /// System flag names that must not be used as custom keywords.
 const SYSTEM_FLAGS: &[&str] = &["seen", "answered", "flagged", "deleted", "draft", "recent"];
@@ -24,6 +24,9 @@ const MAX_LABEL_BYTES: usize = 256;
 pub fn validate_label(label: &str) -> Result<(), rimap_core::RimapError> {
     if label.is_empty() {
         return Err(invalid_input("label must not be empty"));
+    }
+    if !label.is_ascii() {
+        return Err(invalid_input("label must be ASCII (RFC 3501 atom syntax)"));
     }
     if label.len() > MAX_LABEL_BYTES {
         return Err(invalid_input(&format!(
@@ -269,6 +272,19 @@ mod tests {
         validate_label("project/alpha").unwrap();
         validate_label("my-label").unwrap();
         validate_label("Label_123").unwrap();
+    }
+
+    #[test]
+    fn non_ascii_label_rejected() {
+        assert!(validate_label("résumé").is_err());
+        assert!(validate_label("Urgеnt").is_err()); // Cyrillic 'е'
+        assert!(validate_label("\u{202E}evil").is_err()); // RTL override
+        assert!(validate_label("foo\u{200B}bar").is_err()); // zero-width space
+    }
+
+    #[test]
+    fn left_bracket_rejected() {
+        assert!(validate_label("foo[bar").is_err());
     }
 
     #[test]
