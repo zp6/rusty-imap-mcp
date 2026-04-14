@@ -52,8 +52,8 @@ impl ServerHandler for ImapMcpServer {
 
         // Infrastructure tools — always advertised, never namespaced.
         for name in [ToolName::UseAccount, ToolName::ListAccounts] {
-            if let Some(def) = tool_definition(name) {
-                tools.push(def);
+            if let Some(def) = TOOL_DEFS.get(&name) {
+                tools.push(def.clone());
             }
         }
 
@@ -62,7 +62,7 @@ impl ServerHandler for ImapMcpServer {
 
         for (id, state) in accounts {
             for &tn in &state.guard.matrix().advertised() {
-                let Some(base_def) = tool_definition(tn) else {
+                let Some(base_def) = TOOL_DEFS.get(&tn) else {
                     continue;
                 };
                 let tool_name = if use_bare_names {
@@ -144,7 +144,7 @@ impl ServerHandler for ImapMcpServer {
             .matrix()
             .advertised()
             .iter()
-            .filter_map(|tn| tool_definition(*tn).map(|d| d.name.to_string()))
+            .filter_map(|tn| TOOL_DEFS.get(tn).map(|d| d.name.to_string()))
             .collect();
 
         let metadata = serde_json::json!({
@@ -177,7 +177,7 @@ impl ServerHandler for ImapMcpServer {
         // Reject tools that have no definition (not yet implemented).
         // This prevents unimplemented v2 tools from consuming rate
         // limiter tokens and producing misleading INTERNAL_ERROR.
-        if tool_definition(tool_name).is_none() {
+        if TOOL_DEFS.get(&tool_name).is_none() {
             return Err(ErrorData::new(
                 McpCode::RESOURCE_NOT_FOUND,
                 format!("tool `{}` is not available", request.name),
@@ -396,18 +396,6 @@ fn is_valid_account_prefix(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// Build an rmcp `Tool` definition for a `ToolName`. Returns `None`
-/// for sub-capabilities that share an MCP tool name with a parent
-/// (e.g. `SearchAdvanced` and `FetchMessageHtml` are gated
-/// sub-capabilities, not separate MCP tools).
-fn tool_definition(name: ToolName) -> Option<Tool> {
-    let (tool_name, description, schema) = tool_spec_v1(name)
-        .or_else(|| tool_spec_v2(name))
-        .or_else(|| tool_spec_v3(name))
-        .or_else(|| tool_spec_infra(name))?;
-    Some(Tool::new(tool_name, description, Arc::new(schema)))
-}
-
 /// Type alias for tool spec tuples.
 type ToolSpec = (
     &'static str,
@@ -415,14 +403,22 @@ type ToolSpec = (
     serde_json::Map<String, serde_json::Value>,
 );
 
-/// Return (name, description, schema) for v1 read/organize tools.
-fn tool_spec_v1(name: ToolName) -> Option<ToolSpec> {
+/// Return (name, description, schema) for the given `ToolName`, or
+/// `None` for sub-capabilities that share an MCP tool name with a
+/// parent (e.g. `SearchAdvanced`, `FetchMessageHtml`).
+fn tool_spec(name: ToolName) -> Option<ToolSpec> {
+    tool_spec_read(name)
+        .or_else(|| tool_spec_write(name))
+        .or_else(|| tool_spec_labels(name))
+        .or_else(|| tool_spec_infra(name))
+}
+
+fn tool_spec_read(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
         create_draft::CreateDraftInput, download_attachment::DownloadAttachmentInput,
         fetch_message::FetchMessageInput, flags::FlagInput, list_attachments::ListAttachmentsInput,
         move_message::MoveInput, search::SearchInput,
     };
-
     let tuple = match name {
         ToolName::ListFolders => (
             "list_folders",
@@ -484,15 +480,13 @@ fn tool_spec_v1(name: ToolName) -> Option<ToolSpec> {
     Some(tuple)
 }
 
-/// Return (name, description, schema) for v2 write/management tools.
-fn tool_spec_v2(name: ToolName) -> Option<ToolSpec> {
+fn tool_spec_write(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
         delete_message::DeleteMessageInput,
         expunge::ExpungeInput,
         folder_mgmt::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
         send_email::SendEmailInput,
     };
-
     let tuple = match name {
         ToolName::SendEmail => (
             "send_email",
@@ -529,10 +523,8 @@ fn tool_spec_v2(name: ToolName) -> Option<ToolSpec> {
     Some(tuple)
 }
 
-/// Return (name, description, schema) for v3 label tools.
-fn tool_spec_v3(name: ToolName) -> Option<ToolSpec> {
+fn tool_spec_labels(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::labels::{LabelInput, ListLabelsInput};
-
     let tuple = match name {
         ToolName::AddLabel => (
             "add_label",
@@ -554,10 +546,8 @@ fn tool_spec_v3(name: ToolName) -> Option<ToolSpec> {
     Some(tuple)
 }
 
-/// Return (name, description, schema) for infrastructure tools.
 fn tool_spec_infra(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::accounts::UseAccountInput;
-
     let tuple = match name {
         ToolName::UseAccount => (
             "use_account",
@@ -574,11 +564,25 @@ fn tool_spec_infra(name: ToolName) -> Option<ToolSpec> {
     Some(tuple)
 }
 
+/// Memoized MCP tool definitions. Built once at first access; each
+/// `list_tools` call reuses the same `Arc<JsonObject>` for schemas.
+static TOOL_DEFS: std::sync::LazyLock<std::collections::HashMap<ToolName, Tool>> =
+    std::sync::LazyLock::new(|| {
+        let mut map = std::collections::HashMap::new();
+        for tn in ToolName::all() {
+            let Some((name, description, schema)) = tool_spec(tn) else {
+                continue;
+            };
+            map.insert(tn, Tool::new(name, description, Arc::new(schema)));
+        }
+        map
+    });
+
 #[cfg(test)]
 mod tests {
     use rimap_core::tool::ToolName;
 
-    use super::{split_tool_name, tool_definition};
+    use super::{TOOL_DEFS, split_tool_name};
 
     #[test]
     fn split_tool_name_bare() {
@@ -627,7 +631,7 @@ mod tests {
     fn tool_definition_covers_all_mcp_tools() {
         let defs: Vec<_> = ToolName::all()
             .into_iter()
-            .filter_map(tool_definition)
+            .filter_map(|tn| TOOL_DEFS.get(&tn))
             .collect();
         // 24 tool variants minus 2 sub-capabilities = 22
         assert_eq!(defs.len(), 22);
@@ -635,13 +639,16 @@ mod tests {
 
     #[test]
     fn sub_capabilities_return_none() {
-        assert!(tool_definition(ToolName::SearchAdvanced).is_none());
-        assert!(tool_definition(ToolName::FetchMessageHtml).is_none());
+        assert!(TOOL_DEFS.get(&ToolName::SearchAdvanced).is_none());
+        assert!(TOOL_DEFS.get(&ToolName::FetchMessageHtml).is_none());
     }
 
     #[test]
     fn tool_names_are_snake_case() {
-        for def in ToolName::all().into_iter().filter_map(tool_definition) {
+        for def in ToolName::all()
+            .into_iter()
+            .filter_map(|tn| TOOL_DEFS.get(&tn))
+        {
             assert!(
                 def.name.chars().all(|c| c.is_ascii_lowercase() || c == '_'),
                 "tool name {} is not snake_case",
@@ -652,7 +659,10 @@ mod tests {
 
     #[test]
     fn tool_definitions_have_non_empty_schemas() {
-        for def in ToolName::all().into_iter().filter_map(tool_definition) {
+        for def in ToolName::all()
+            .into_iter()
+            .filter_map(|tn| TOOL_DEFS.get(&tn))
+        {
             // list_folders and list_accounts have no input — empty
             // schema is expected.
             if def.name == "list_folders" || def.name == "list_accounts" {
@@ -669,7 +679,10 @@ mod tests {
 
     #[test]
     fn every_tool_has_a_description() {
-        for def in ToolName::all().into_iter().filter_map(tool_definition) {
+        for def in ToolName::all()
+            .into_iter()
+            .filter_map(|tn| TOOL_DEFS.get(&tn))
+        {
             assert!(
                 def.description.is_some(),
                 "tool {} missing description",
