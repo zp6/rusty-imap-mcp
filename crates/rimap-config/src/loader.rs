@@ -72,10 +72,20 @@ pub fn load_and_validate(path: &Path) -> Result<ValidatedMultiConfig, ConfigErro
         source,
     })?;
 
-    let has_accounts = contains_toml_key(&contents, "[[accounts]]");
-    let has_imap = contains_toml_key(&contents, "[imap]");
+    // Parse once into `toml::Table` to classify the format. A TOML document
+    // is always a table at the top level, so `toml::from_str::<Table>` will
+    // succeed for any syntactically valid TOML. Format-specific deserialization
+    // is a second pass below — still cheaper and more correct than a
+    // substring match over the raw text.
+    let table: toml::Table = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
 
-    if has_accounts && has_imap {
+    let has_accounts = table.get("accounts").and_then(|v| v.as_array()).is_some();
+    let has_flat_imap = table.contains_key("imap");
+
+    if has_accounts && has_flat_imap {
         return Err(ConfigError::MixedConfigFormat);
     }
 
@@ -94,17 +104,6 @@ pub fn load_and_validate(path: &Path) -> Result<ValidatedMultiConfig, ConfigErro
         })?;
         validate_legacy_as_multi(config)
     }
-}
-
-/// Check whether a TOML key/header marker appears in the raw text.
-/// Matches only outside of strings by looking for lines that start with the
-/// pattern (after optional whitespace). This is intentionally simple — it
-/// does not parse TOML, but false positives are harmless (they would trigger
-/// a parse error, not silent misconfiguration).
-fn contains_toml_key(contents: &str, marker: &str) -> bool {
-    contents
-        .lines()
-        .any(|line| line.trim_start().starts_with(marker))
 }
 
 #[cfg(test)]
