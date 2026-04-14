@@ -66,8 +66,8 @@ pub fn normalize_nfkc(input: &str) -> String {
 /// string alongside per-class strip counts.
 ///
 /// The strip set covers:
-/// - Zero-width formatting codepoints ([`ZERO_WIDTH`])
-/// - Bidi overrides and isolates ([`BIDI_OVERRIDE`])
+/// - Zero-width formatting codepoints (see the private `ZERO_WIDTH` table)
+/// - Bidi overrides and isolates (see the private `BIDI_OVERRIDE` table)
 /// - C0 controls (U+0000..U+001F) except `\t` (U+0009) and `\n` (U+000A)
 /// - C1 controls (U+0080..U+009F)
 ///

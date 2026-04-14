@@ -8,6 +8,8 @@ repository.workspace = true
 authors.workspace = true
 readme.workspace = true
 description = "SMTP client for rusty-imap-mcp — lettre wrapper with TLS and error mapping"
+categories = ["email", "network-programming"]
+keywords = ["smtp", "email", "mcp"]
 
 [lints]
 workspace = true
