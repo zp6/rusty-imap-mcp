@@ -132,8 +132,16 @@ fn compute_config_hash(path: &Path) -> String {
     // Intentional: if the config file disappears between load and hash,
     // record an empty hash rather than panic. The config was already
     // successfully loaded earlier in the boot sequence; this is a startup
-    // hot path, not user-facing input validation.
-    let bytes = std::fs::read(path).unwrap_or_default();
+    // hot path, not user-facing input validation. Log the failure so an
+    // operator investigating an empty hash can see why.
+    let bytes = std::fs::read(path).unwrap_or_else(|e| {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to read config for hash; audit record will have empty hash",
+        );
+        Vec::new()
+    });
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
     hex::encode(hasher.finalize())
