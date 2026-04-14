@@ -124,31 +124,31 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
 }
 
 /// Convert a legacy flat config into a `ValidatedMultiConfig` with a
-/// single account named "default".
+/// single account named "default". Production paths take this route;
+/// the older `validate` (returning `ValidatedConfig`) is retained for
+/// the test suite that exercises the per-field invariants directly.
 ///
 /// # Errors
 /// Returns `ConfigError` on any validation failure.
 pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, ConfigError> {
-    let validated = validate(config)?;
     let id = AccountId::default_account();
-
-    let account = ValidatedAccountConfig {
-        id: id.clone(),
-        imap: validated.config.imap,
-        smtp: validated.config.smtp,
-        security: validated.config.security,
-        limits: validated.config.limits,
-        tool_overrides: validated.tool_overrides,
-        tls_fingerprint: validated.tls_fingerprint,
-    };
+    let account = validate_account(
+        id.clone(),
+        config.imap,
+        config.smtp,
+        config.security,
+        config.limits,
+    )?;
+    validate_audit_config(&config.audit)?;
+    validate_paths_multi(&config.audit, &config.attachments)?;
 
     let mut accounts = BTreeMap::new();
     accounts.insert(id, account);
 
     Ok(ValidatedMultiConfig {
         accounts,
-        audit: validated.config.audit,
-        attachments: validated.config.attachments,
+        audit: config.audit,
+        attachments: config.attachments,
     })
 }
 
