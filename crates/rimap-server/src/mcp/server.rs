@@ -258,9 +258,9 @@ impl ServerHandler for ImapMcpServer {
             } else {
                 Some(account.id.as_str().to_string())
             };
-        let posture_str = account.guard.matrix().posture().as_str().to_string();
+        let posture = PostureContext::Account(account.guard.matrix().posture());
 
-        self.run_with_audit_envelope(tool_name, audit_account, posture_str, &args, async {
+        self.run_with_audit_envelope(tool_name, audit_account, posture, &args, async {
             account.guard.pre_dispatch(tool_name)?;
             let result = Box::pin(self.dispatch_tool(account, tool_name, &args)).await;
             match &result {
@@ -274,6 +274,27 @@ impl ServerHandler for ImapMcpServer {
             result
         })
         .await
+    }
+}
+
+/// Posture context recorded in audit envelope headers.
+///
+/// Per-account dispatches use the account's effective posture; the
+/// infrastructure tools (`list_accounts`, `use_account`) bypass posture
+/// gating by design and record the dedicated `Infrastructure` variant so
+/// log readers can distinguish them from per-account dispatches.
+#[derive(Debug, Clone, Copy)]
+enum PostureContext {
+    Account(rimap_core::Posture),
+    Infrastructure,
+}
+
+impl PostureContext {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Account(p) => p.as_str(),
+            Self::Infrastructure => "infrastructure",
+        }
     }
 }
 
@@ -304,7 +325,7 @@ impl ImapMcpServer {
         &self,
         tool: ToolName,
         audit_account: Option<String>,
-        posture: String,
+        posture: PostureContext,
         args: &serde_json::Map<String, serde_json::Value>,
         body: F,
     ) -> Result<CallToolResult, ErrorData>
@@ -362,7 +383,8 @@ impl ImapMcpServer {
     ) -> Result<crate::mcp::response::ToolResponse, rimap_core::RimapError> {
         use crate::tools::{
             create_draft, delete_message, download_attachment, expunge, fetch_message, flags,
-            folder_mgmt, labels, list_attachments, list_folders, move_message, search, send_email,
+            folder_management, labels, list_attachments, list_folders, move_message, search,
+            send_email,
         };
         match tool {
             ToolName::ListFolders => Box::pin(list_folders::handle(account)).await,
@@ -404,13 +426,13 @@ impl ImapMcpServer {
             }
             ToolName::Expunge => Box::pin(expunge::handle(account, parse_args(args)?)).await,
             ToolName::CreateFolder => {
-                Box::pin(folder_mgmt::handle_create(account, parse_args(args)?)).await
+                Box::pin(folder_management::handle_create(account, parse_args(args)?)).await
             }
             ToolName::RenameFolder => {
-                Box::pin(folder_mgmt::handle_rename(account, parse_args(args)?)).await
+                Box::pin(folder_management::handle_rename(account, parse_args(args)?)).await
             }
             ToolName::DeleteFolder => {
-                Box::pin(folder_mgmt::handle_delete(account, parse_args(args)?)).await
+                Box::pin(folder_management::handle_delete(account, parse_args(args)?)).await
             }
             ToolName::AddLabel => {
                 Box::pin(labels::handle_add_label(account, parse_args(args)?)).await
@@ -439,7 +461,7 @@ impl ImapMcpServer {
         // Infrastructure tools have no per-account posture; record an
         // explicit sentinel so log readers can distinguish these from
         // per-account dispatches.
-        self.run_with_audit_envelope(tool, None, "infrastructure".to_string(), args, async {
+        self.run_with_audit_envelope(tool, None, PostureContext::Infrastructure, args, async {
             // Infrastructure tools bypass posture + breaker, but still
             // enforce a process-wide rate limit.
             self.registry.check_infrastructure_rate()?;
@@ -488,14 +510,15 @@ impl ImapMcpServer {
         &self,
         tool: ToolName,
         account: Option<String>,
-        posture: String,
+        posture: PostureContext,
         redacted: serde_json::Value,
         hash: String,
     ) -> Result<rimap_audit::Seq, ErrorData> {
         let audit = self.audit.clone();
         let tool_name = tool.as_str();
+        let posture_str = posture.as_str();
         let join = tokio::task::spawn_blocking(move || {
-            audit.log_tool_start(tool_name, account.as_deref(), &posture, redacted, hash)
+            audit.log_tool_start(tool_name, account.as_deref(), posture_str, redacted, hash)
         })
         .await;
         match join {
@@ -710,7 +733,7 @@ fn tool_spec_write(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
         delete_message::DeleteMessageInput,
         expunge::ExpungeInput,
-        folder_mgmt::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
+        folder_management::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
         send_email::SendEmailInput,
     };
     let tuple = match name {

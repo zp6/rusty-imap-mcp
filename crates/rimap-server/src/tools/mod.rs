@@ -7,7 +7,7 @@ pub mod download_attachment;
 pub mod expunge;
 pub mod fetch_message;
 pub mod flags;
-pub mod folder_mgmt;
+pub mod folder_management;
 pub mod labels;
 pub mod list_attachments;
 pub mod list_folders;
