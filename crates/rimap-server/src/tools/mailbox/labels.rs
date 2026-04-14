@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
-use crate::tools::flags::resolve_uids;
+use crate::tools::mailbox::flags::resolve_uids;
 
 /// IMAP atom specials (RFC 3501 §9) plus backslash. Any of these
 /// inside a keyword would break the STORE command or collide with

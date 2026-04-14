@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
-use crate::tools::message_builder::{self, ComposeInput};
+use crate::tools::compose::message_builder::{self, ComposeInput};
 
 /// Input for `send_email` — identical fields to `create_draft`.
 pub type SendEmailInput = ComposeInput;
@@ -117,7 +117,7 @@ fn build_envelope(from_addr: &str, input: &ComposeInput) -> rimap_smtp::SendEnve
 #[cfg(test)]
 mod tests {
     use super::build_envelope;
-    use crate::tools::message_builder::{AddressInput, ComposeInput};
+    use crate::tools::compose::message_builder::{AddressInput, ComposeInput};
 
     fn addr(address: &str) -> AddressInput {
         AddressInput {

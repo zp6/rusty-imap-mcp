@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
-use crate::tools::flags::resolve_uids;
+use crate::tools::mailbox::flags::resolve_uids;
 
 /// Input for `move_message`.
 ///

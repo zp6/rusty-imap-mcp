@@ -393,10 +393,13 @@ impl ImapMcpServer {
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, rimap_core::RimapError> {
-        use crate::tools::{
-            create_draft, delete_message, download_attachment, expunge, fetch_message, flags,
-            folder_management, labels, list_attachments, list_folders, move_message, search,
-            send_email,
+        use crate::tools::admin::list_folders;
+        use crate::tools::compose::{create_draft, send_email};
+        use crate::tools::mailbox::{
+            delete_message, expunge, flags, folder_management, labels, move_message,
+        };
+        use crate::tools::retrieval::{
+            download_attachment, fetch_message, list_attachments, search,
         };
         let resp = match tool {
             ToolName::ListFolders => ser(Box::pin(list_folders::handle(account)).await?)?,
@@ -492,11 +495,14 @@ impl ImapMcpServer {
             self.registry.check_infrastructure_rate()?;
             match tool {
                 ToolName::UseAccount => {
-                    let input = parse_args::<crate::tools::accounts::UseAccountInput>(args)?;
-                    ser(crate::tools::accounts::handle_use_account(&self.registry, input).await?)
+                    let input = parse_args::<crate::tools::admin::accounts::UseAccountInput>(args)?;
+                    ser(
+                        crate::tools::admin::accounts::handle_use_account(&self.registry, input)
+                            .await?,
+                    )
                 }
                 ToolName::ListAccounts => {
-                    ser(crate::tools::accounts::handle_list_accounts(&self.registry).await?)
+                    ser(crate::tools::admin::accounts::handle_list_accounts(&self.registry).await?)
                 }
                 ToolName::ListFolders
                 | ToolName::Search
@@ -743,21 +749,21 @@ type ToolSpec = (&'static str, serde_json::Map<String, serde_json::Value>);
 /// for sub-capabilities that share an MCP tool name with a parent
 /// (e.g. `SearchAdvanced`, `FetchMessageHtml`).
 fn tool_spec(name: ToolName) -> Option<ToolSpec> {
-    use crate::tools::{
-        accounts::UseAccountInput,
-        create_draft::CreateDraftInput,
-        delete_message::DeleteMessageInput,
-        download_attachment::DownloadAttachmentInput,
-        expunge::ExpungeInput,
-        fetch_message::FetchMessageInput,
-        flags::FlagInput,
-        folder_management::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
-        labels::{LabelInput, ListLabelsInput},
-        list_attachments::ListAttachmentsInput,
-        move_message::MoveMessageInput,
-        search::SearchInput,
-        send_email::SendEmailInput,
+    use crate::tools::admin::accounts::UseAccountInput;
+    use crate::tools::compose::create_draft::CreateDraftInput;
+    use crate::tools::compose::send_email::SendEmailInput;
+    use crate::tools::mailbox::delete_message::DeleteMessageInput;
+    use crate::tools::mailbox::expunge::ExpungeInput;
+    use crate::tools::mailbox::flags::FlagInput;
+    use crate::tools::mailbox::folder_management::{
+        CreateFolderInput, DeleteFolderInput, RenameFolderInput,
     };
+    use crate::tools::mailbox::labels::{LabelInput, ListLabelsInput};
+    use crate::tools::mailbox::move_message::MoveMessageInput;
+    use crate::tools::retrieval::download_attachment::DownloadAttachmentInput;
+    use crate::tools::retrieval::fetch_message::FetchMessageInput;
+    use crate::tools::retrieval::list_attachments::ListAttachmentsInput;
+    use crate::tools::retrieval::search::SearchInput;
     let tuple = match name {
         ToolName::ListFolders => ("List all IMAP folders", serde_json::Map::new()),
         ToolName::Search => (

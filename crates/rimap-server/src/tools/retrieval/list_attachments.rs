@@ -98,7 +98,7 @@ pub async fn handle(
     .with_untrusted(ListAttachmentsUntrusted { attachments }))
 }
 
-use crate::tools::part_walker::walk_body_structure;
+use crate::tools::retrieval::part_walker::walk_body_structure;
 
 /// Walk the `BodyStructure` tree and collect non-inline-text parts.
 fn collect_attachments(bs: &BodyStructure, out: &mut Vec<AttachmentInfo>) {

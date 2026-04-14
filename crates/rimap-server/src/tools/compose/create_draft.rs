@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
-use crate::tools::message_builder::{self, ComposeInput};
+use crate::tools::compose::message_builder::{self, ComposeInput};
 
 /// Input for `create_draft` — identical to shared `ComposeInput`.
 pub type CreateDraftInput = ComposeInput;

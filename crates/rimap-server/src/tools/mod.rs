@@ -4,16 +4,11 @@
 //! - [`mailbox`]: server-side mutations (flags, labels, moves, deletes)
 //! - [`retrieval`]: search, fetch, attachments
 //!
-//! The submodules are re-exported with `pub use` so existing callers that
-//! reference `crate::tools::<module>::...` keep compiling after the split.
+//! Callers must reference the subdir path (`crate::tools::retrieval::fetch_message`);
+//! no wildcard facade is provided so the partition stays meaningful.
 
-pub mod admin;
-pub mod compose;
-pub mod mailbox;
-pub mod retrieval;
+pub(crate) mod admin;
+pub(crate) mod compose;
+pub(crate) mod mailbox;
+pub(crate) mod retrieval;
 pub(crate) mod support;
-
-pub use admin::*;
-pub use compose::*;
-pub use mailbox::*;
-pub use retrieval::*;
