@@ -163,26 +163,7 @@ fn check_sniff_mismatch(declared: &str, sniffed: Option<&str>) -> Vec<serde_json
 /// Maximum recursion depth for BODYSTRUCTURE tree walking.
 const MAX_BS_DEPTH: u32 = 64;
 
-/// Compute the IMAP part ID for a leaf or message node.
-/// Root-level nodes get "1"; nested nodes keep their prefix.
-fn leaf_part_id(prefix: &str) -> String {
-    if prefix.is_empty() {
-        "1".to_string()
-    } else {
-        prefix.to_string()
-    }
-}
-
-/// Compute the IMAP part ID for a child of a multipart node.
-/// Root-level children are "1", "2", etc.; nested children
-/// are "prefix.1", "prefix.2", etc.
-fn child_part_id(prefix: &str, index: usize) -> String {
-    if prefix.is_empty() {
-        index.to_string()
-    } else {
-        format!("{prefix}.{index}")
-    }
-}
+use crate::tools::mime_part_id::{child_part_id, leaf_part_id};
 
 /// Look up a part's declared MIME type from a `BodyStructure` tree by
 /// IMAP-style part ID (e.g. "2", "1.2").

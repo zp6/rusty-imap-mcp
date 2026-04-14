@@ -24,18 +24,18 @@ pub struct FetchMessageInput {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`.
-/// Returns `RimapError::Imap { ... }` for IMAP-layer failures (network,
-/// timeout, protocol, attachment-too-large). Returns `RimapError::Internal`
-/// when the body cannot be parsed by `rimap-content`. The upstream
-/// `pre_call_guards` layer may also return `Authz { code: PostureDenied }`
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`
+/// or when the body fails `rimap-content` parse/limits (malformed, MIME
+/// depth/parts cap). Returns `RimapError::Imap { ... }` for IMAP-layer
+/// failures (network, timeout, protocol, attachment-too-large). The upstream
+/// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`
 /// for `FetchMessageHtml` when `include_html=true` and posture forbids it.
 pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     // The `FetchMessageHtml` posture check happens upstream in
-    // `refine_tool_name` + `pre_call_guards`; this handler just reads
+    // `refine_tool_name` + `DispatchGuard::pre_dispatch`; this handler just reads
     // the include_html flag.
     let include_html = input.include_html.unwrap_or(false);
 
@@ -47,7 +47,14 @@ pub async fn handle(
 
     let content = crate::content::parse_message_async(raw)
         .await
-        .map_err(|e| rimap_core::RimapError::Internal(e.to_string()))?;
+        .map_err(|e| {
+            // Malformed input and cap-exceeded are caller-side problems;
+            // surface them as INVALID_PARAMS via the InvalidInput code so
+            // MCP clients see accurate guidance. Only genuine parser bugs
+            // (if any) would fall through to Internal — none exist today
+            // because ContentError has no Internal variant.
+            rimap_core::RimapError::invalid_input(e.to_string())
+        })?;
 
     let mut body_text = content.untrusted.body_text;
     let mut body_html = if include_html {

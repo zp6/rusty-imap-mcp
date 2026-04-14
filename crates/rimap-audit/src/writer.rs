@@ -183,13 +183,21 @@ impl AuditWriter {
     /// Returns `AuditError::Write` if the internal mutex is poisoned.
     #[must_use = "the seq value should be stored in the audit record"]
     pub fn allocate_seq(&self) -> Result<crate::ids::Seq, AuditError> {
-        let mut guard = self.inner.lock().map_err(|_| AuditError::Write {
-            path: self.path.clone(),
-            source: std::io::Error::other("audit mutex poisoned"),
-        })?;
+        let mut guard = self.lock_inner()?;
         let seq = guard.next_seq;
         guard.next_seq = seq.next();
         Ok(seq)
+    }
+
+    /// Acquire the inner mutex, translating poisoning into a typed
+    /// `AuditError::Write`. The poisoned-path message is deliberately
+    /// generic — the mutex guards both the sequence counter and the
+    /// write buffer, so "poisoned" is the only meaningful signal.
+    fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, Inner>, AuditError> {
+        self.inner.lock().map_err(|_| AuditError::Write {
+            path: self.path.clone(),
+            source: std::io::Error::other("audit mutex poisoned"),
+        })
     }
 
     /// Allocate a seq, build an `AuditRecord` wrapping `payload`, stamp it
@@ -271,10 +279,7 @@ impl AuditWriter {
         let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
         bytes.push(b'\n');
 
-        let mut guard = self.inner.lock().map_err(|_| AuditError::Write {
-            path: self.path.clone(),
-            source: std::io::Error::other("audit mutex poisoned"),
-        })?;
+        let mut guard = self.lock_inner()?;
 
         // Rotation check happens inside the same critical section as the write.
         // This prevents two clones of AuditWriter from both observing "needs
@@ -328,10 +333,7 @@ impl AuditWriter {
     /// # Errors
     /// Returns `AuditError::Write` if the internal mutex is poisoned.
     pub fn bytes_written(&self) -> Result<u64, AuditError> {
-        let guard = self.inner.lock().map_err(|_| AuditError::Write {
-            path: self.path.clone(),
-            source: std::io::Error::other("audit mutex poisoned"),
-        })?;
+        let guard = self.lock_inner()?;
         Ok(guard.bytes_written)
     }
 
@@ -340,10 +342,7 @@ impl AuditWriter {
     /// # Errors
     /// I/O error from `metadata()`.
     pub fn on_disk_len(&self) -> Result<u64, AuditError> {
-        let guard = self.inner.lock().map_err(|_| AuditError::Write {
-            path: self.path.clone(),
-            source: std::io::Error::other("audit mutex poisoned"),
-        })?;
+        let guard = self.lock_inner()?;
         let meta = guard
             .buf
             .get_ref()
@@ -362,7 +361,7 @@ impl AuditWriter {
     /// it back to [`AuditWriter::log_tool_end`] as `start_seq` so the two
     /// records can be paired.
     ///
-    /// `tool_start` is NOT fsynced per existing policy; see [`needs_fsync`].
+    /// `tool_start` is NOT fsynced per existing policy; see the private `needs_fsync` helper.
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.
@@ -388,7 +387,7 @@ impl AuditWriter {
     /// Build a `tool_end` record, allocate a seq, and write it. `start_seq`
     /// must be the seq returned by the paired [`AuditWriter::log_tool_start`].
     ///
-    /// `tool_end` is NOT fsynced per existing policy; see [`needs_fsync`].
+    /// `tool_end` is NOT fsynced per existing policy; see the private `needs_fsync` helper.
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.

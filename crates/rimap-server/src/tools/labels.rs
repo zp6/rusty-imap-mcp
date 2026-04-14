@@ -104,28 +104,7 @@ pub async fn handle_add_label(
     account: &AccountState,
     input: LabelInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    validate_label(&input.label)?;
-    let uids = resolve_uids(input.uid, input.uids)?;
-    let updated = account
-        .imap
-        .store_flags(
-            &input.folder,
-            &uids,
-            &[Flag::Keyword(input.label.clone())],
-            FlagAction::Add,
-        )
-        .await?;
-
-    let updated_ids: Vec<u32> = updated.iter().map(|u| u.get()).collect();
-    Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "label": input.label,
-            "uids_updated": updated_ids,
-        }),
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    handle_label_op(account, input, FlagAction::Add).await
 }
 
 /// `remove_label` handler — STORE -FLAGS with a custom keyword.
@@ -139,6 +118,16 @@ pub async fn handle_remove_label(
     account: &AccountState,
     input: LabelInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
+    handle_label_op(account, input, FlagAction::Remove).await
+}
+
+/// Shared body for `add_label` / `remove_label`: validate the label,
+/// resolve UIDs, issue a STORE ±FLAGS, return the per-UID result summary.
+async fn handle_label_op(
+    account: &AccountState,
+    input: LabelInput,
+    action: FlagAction,
+) -> Result<ToolResponse, rimap_core::RimapError> {
     validate_label(&input.label)?;
     let uids = resolve_uids(input.uid, input.uids)?;
     let updated = account
@@ -147,7 +136,7 @@ pub async fn handle_remove_label(
             &input.folder,
             &uids,
             &[Flag::Keyword(input.label.clone())],
-            FlagAction::Remove,
+            action,
         )
         .await?;
 

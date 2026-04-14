@@ -1,7 +1,8 @@
 //! MIME parsing, Unicode-safe sanitization, and look-alike detection for rusty-imap-mcp.
 //!
-//! Sprint 4a delivers the parse + unicode + output foundation. HTML
-//! sanitization and look-alike detection are reserved for Sprint 4b.
+//! Modules: `parse` (MIME + body extraction), `unicode` (scrubbing),
+//! `output` (response shapes), `html` (ammonia-based sanitization),
+//! `lookalike` (confusables-backed spoofing detection), `error`.
 
 #![deny(missing_docs)]
 

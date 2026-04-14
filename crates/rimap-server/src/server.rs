@@ -207,7 +207,7 @@ impl ServerHandler for ImapMcpServer {
 
         let tool_name = ToolName::from_str(bare_name)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        // Refine the tool name based on argument shape BEFORE pre_call_guards
+        // Refine the tool name based on argument shape BEFORE DispatchGuard::pre_dispatch
         // so the posture check covers sub-capabilities (FetchMessageHtml vs
         // FetchMessage, SearchAdvanced vs Search) at a single seam rather
         // than being re-checked inside every handler.

@@ -633,13 +633,19 @@ impl Connection {
         source_folder: &str,
         dest_folder: &str,
         uids: &[crate::types::Uid],
-    ) -> Result<crate::ops::move_msg::MoveOutcome, ImapError> {
+    ) -> Result<crate::ops::move_message::MoveOutcome, ImapError> {
         let has_move = self.has_move_capability();
         let has_uidplus = self.has_uidplus_capability();
         self.with_session("move", async |session| {
             crate::ops::folders::select(session, source_folder, false).await?;
-            crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move, has_uidplus)
-                .await
+            crate::ops::move_message::move_messages(
+                session,
+                dest_folder,
+                uids,
+                has_move,
+                has_uidplus,
+            )
+            .await
         })
         .await
     }

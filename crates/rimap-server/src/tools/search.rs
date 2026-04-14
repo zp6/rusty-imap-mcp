@@ -46,7 +46,7 @@ pub struct SearchInput {
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
 /// `since`/`before` dates or control bytes in `advanced_query`. Returns
 /// `RimapError::Imap { ... }` for IMAP-layer failures. The upstream
-/// `pre_call_guards` layer may also return `Authz { code: PostureDenied }`
+/// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`
 /// for `SearchAdvanced` when `advanced_query` is set and posture forbids it.
 pub async fn handle(
     account: &AccountState,
@@ -98,7 +98,7 @@ pub async fn handle(
 }
 
 /// Build a `SearchQuery` from the input. The `SearchAdvanced` posture
-/// check happens upstream in `refine_tool_name` + `pre_call_guards`.
+/// check happens upstream in `refine_tool_name` + `DispatchGuard::pre_dispatch`.
 fn build_query(
     _account: &AccountState,
     input: &SearchInput,
