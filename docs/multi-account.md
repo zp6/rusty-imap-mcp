@@ -119,10 +119,13 @@ Returns an array of account summaries:
 
 ```json
 [
-  { "name": "work", "imap_host": "127.0.0.1", "posture": "full", "smtp_configured": true },
-  { "name": "personal", "imap_host": "imap.fastmail.com", "posture": "readonly", "smtp_configured": false }
+  { "name": "work", "smtp_configured": true },
+  { "name": "personal", "smtp_configured": false }
 ]
 ```
+
+`imap_host` and `posture` are intentionally omitted to avoid leaking
+provider fingerprints or security-posture signals to injected prompts.
 
 `list_accounts` bypasses posture checks and is always available.
 

@@ -40,7 +40,6 @@ pub fn handle_list_accounts(
     for state in registry.accounts().values() {
         accounts.push(serde_json::json!({
             "name": state.id.as_str(),
-            "imap_host": state.imap.host(),
             "smtp_configured": state.smtp.is_some(),
         }));
     }
