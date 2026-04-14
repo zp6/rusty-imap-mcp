@@ -27,6 +27,7 @@ pub const ATTACHMENT_TOO_LARGE: McpCode = McpCode(-32005);
 /// Maps each `ErrorCode` variant to the closest JSON-RPC / MCP
 /// error code. Application-specific codes use the JSON-RPC
 /// "server error" range (-32000 to -32099).
+#[must_use]
 pub fn to_mcp_error(err: &RimapError) -> ErrorData {
     let message = err.to_string();
     match err.code() {

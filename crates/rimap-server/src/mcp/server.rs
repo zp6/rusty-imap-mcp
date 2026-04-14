@@ -30,7 +30,8 @@ use crate::boot::registry::{AccountRegistry, AccountState};
 /// Core MCP server. Owns every resource the handler methods need.
 pub struct ImapMcpServer {
     /// Account registry holding per-account state.
-    pub(crate) registry: AccountRegistry,
+    #[doc(hidden)]
+    pub registry: AccountRegistry,
     /// Append-only audit writer.
     pub(crate) audit: AuditWriter,
     /// Directory for attachment downloads.
@@ -385,7 +386,8 @@ impl ImapMcpServer {
     /// Dispatch to the tool handler for `tool`. Each arm serializes its
     /// typed response to `serde_json::Value` before returning, so the
     /// audit envelope works with a single future type.
-    pub(crate) async fn dispatch_tool(
+    #[doc(hidden)]
+    pub async fn dispatch_tool(
         &self,
         account: &AccountState,
         tool: ToolName,

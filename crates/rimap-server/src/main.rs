@@ -2,16 +2,10 @@
 
 #![deny(missing_docs)]
 
-mod boot;
 mod cli;
-mod mcp;
-mod tools;
 
-use crate::boot::{audit_init, logging, registry};
-use crate::mcp::server;
-
-#[cfg(test)]
-mod e2e_test;
+use rimap_server::boot::{audit_init, logging, registry};
+use rimap_server::mcp::server;
 
 use std::io::Write;
 use std::path::PathBuf;

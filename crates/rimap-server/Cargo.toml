@@ -11,6 +11,10 @@ description = "Rusty IMAP MCP server: security-first MCP server for IMAP email a
 [lints]
 workspace = true
 
+[lib]
+name = "rimap_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rusty-imap-mcp"
 path = "src/main.rs"

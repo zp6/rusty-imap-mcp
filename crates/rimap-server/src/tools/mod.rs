@@ -1,18 +1,18 @@
-//! MCP tool handlers.
+//! MCP tool handlers, grouped by concern:
+//! - [`admin`]: account and folder discovery
+//! - [`compose`]: outgoing message construction (send, draft)
+//! - [`mailbox`]: server-side mutations (flags, labels, moves, deletes)
+//! - [`retrieval`]: search, fetch, attachments
+//!
+//! The submodules are re-exported with `pub use` so existing callers that
+//! reference `crate::tools::<module>::...` keep compiling after the split.
 
-pub mod accounts;
-pub mod create_draft;
-pub mod delete_message;
-pub mod download_attachment;
-pub mod expunge;
-pub mod fetch_message;
-pub mod flags;
-pub mod folder_management;
-pub mod labels;
-pub mod list_attachments;
-pub mod list_folders;
-pub(crate) mod message_builder;
-pub mod move_message;
-pub(crate) mod part_walker;
-pub mod search;
-pub mod send_email;
+pub mod admin;
+pub mod compose;
+pub mod mailbox;
+pub mod retrieval;
+
+pub use admin::*;
+pub use compose::*;
+pub use mailbox::*;
+pub use retrieval::*;

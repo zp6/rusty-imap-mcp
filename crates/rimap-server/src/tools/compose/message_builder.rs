@@ -14,7 +14,7 @@ use crate::boot::registry::AccountState;
 
 /// An email address with optional display name.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct AddressInput {
+pub struct AddressInput {
     /// Display name (optional).
     pub name: Option<String>,
     /// Email address.
@@ -28,7 +28,7 @@ pub(crate) const MAX_REFERENCES: usize = 50;
 
 /// Common input fields shared by `create_draft` and `send_email`.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct ComposeInput {
+pub struct ComposeInput {
     /// Recipient addresses.
     pub to: Vec<AddressInput>,
     /// CC addresses.

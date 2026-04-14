@@ -1,10 +1,10 @@
 //! MCP runtime: server handler, response/error types, content parsing, attachment download.
 
-pub(crate) mod content;
-pub(crate) mod download;
-pub(crate) mod error;
-pub(crate) mod response;
-pub(crate) mod server;
+pub mod content;
+pub mod download;
+pub mod error;
+pub mod response;
+pub mod server;
 
 /// Render a `tokio::task::JoinError` from `spawn_blocking` as
 /// `RimapError::Internal`. Shared by every `mcp/*` async wrapper so

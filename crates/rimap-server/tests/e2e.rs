@@ -27,7 +27,7 @@ use rimap_core::posture::Posture;
 use rimap_imap::{Connection, ConnectionConfig};
 use tempfile::TempDir;
 
-use crate::mcp::server::ImapMcpServer;
+use rimap_server::mcp::server::ImapMcpServer;
 
 // ── Container harness (adapted from rimap-imap) ─────────────────────
 
@@ -251,7 +251,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         &account_cfg.security.expunge_folders,
     );
     let id = account_cfg.id.clone();
-    let state = crate::boot::registry::AccountState {
+    let state = rimap_server::boot::registry::AccountState {
         id: id.clone(),
         imap,
         smtp: None,
@@ -260,7 +260,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     };
     let mut accounts = BTreeMap::new();
     accounts.insert(id, state);
-    let registry = crate::boot::registry::AccountRegistry::new(accounts);
+    let registry = rimap_server::boot::registry::AccountRegistry::new(accounts);
 
     let server = ImapMcpServer::new(registry, audit, download_dir.path().to_path_buf());
 
