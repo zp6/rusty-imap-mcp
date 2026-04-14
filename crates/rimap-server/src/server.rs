@@ -260,11 +260,10 @@ impl ServerHandler for ImapMcpServer {
         let args_value = serde_json::Value::Object(args.clone());
         let redacted = self.redact_tool_args(tool_name.as_str(), &args_value);
         let hash = hash_arguments(&args_value);
-        let tool_str = tool_name.as_str().to_string();
 
         let start_seq = self
             .emit_tool_start(
-                &tool_str,
+                tool_name,
                 audit_account.clone(),
                 posture_str.clone(),
                 redacted,
@@ -274,7 +273,11 @@ impl ServerHandler for ImapMcpServer {
 
         let start_time = std::time::Instant::now();
 
-        if let Err(e) = crate::dispatch::pre_call_guards(&account.guard, tool_name) {
+        if let Err(e) = account
+            .guard
+            .pre_dispatch(tool_name)
+            .map_err(rimap_core::RimapError::from)
+        {
             let err_code = e.code().as_str().to_string();
             let duration_ms = start_time
                 .elapsed()
@@ -283,7 +286,7 @@ impl ServerHandler for ImapMcpServer {
                 .unwrap_or(u64::MAX);
             self.emit_tool_end(
                 start_seq,
-                tool_str.clone(),
+                tool_name,
                 audit_account.clone(),
                 ToolStatus::Error,
                 Some(err_code),
@@ -306,7 +309,7 @@ impl ServerHandler for ImapMcpServer {
         };
         self.emit_tool_end(
             start_seq,
-            tool_str,
+            tool_name,
             audit_account,
             status,
             error_code,
@@ -412,14 +415,13 @@ impl ImapMcpServer {
         let args_value = serde_json::Value::Object(args.clone());
         let redacted = self.redact_tool_args(tool.as_str(), &args_value);
         let hash = hash_arguments(&args_value);
-        let tool_str = tool.as_str().to_string();
         // Infrastructure tools have no per-account posture; record an
         // explicit sentinel so log readers can distinguish these from
         // per-account dispatches.
         let posture_str = "infrastructure".to_string();
 
         let start_seq = self
-            .emit_tool_start(&tool_str, None, posture_str, redacted, hash)
+            .emit_tool_start(tool, None, posture_str, redacted, hash)
             .await?;
         let start_time = std::time::Instant::now();
 
@@ -434,7 +436,7 @@ impl ImapMcpServer {
             let err_code = e.code().as_str().to_string();
             self.emit_tool_end(
                 start_seq,
-                tool_str.clone(),
+                tool,
                 None,
                 ToolStatus::Error,
                 Some(err_code),
@@ -447,12 +449,14 @@ impl ImapMcpServer {
         let result = match tool {
             ToolName::UseAccount => {
                 match parse_args::<crate::tools::accounts::UseAccountInput>(args) {
-                    Ok(input) => crate::tools::accounts::handle_use_account(&self.registry, &input),
+                    Ok(input) => {
+                        crate::tools::accounts::handle_use_account(&self.registry, input).await
+                    }
                     Err(e) => Err(e),
                 }
             }
             ToolName::ListAccounts => {
-                Ok(crate::tools::accounts::handle_list_accounts(&self.registry))
+                crate::tools::accounts::handle_list_accounts(&self.registry).await
             }
             _ => Err(rimap_core::RimapError::Internal(format!(
                 "not an infrastructure tool: {}",
@@ -469,7 +473,7 @@ impl ImapMcpServer {
             Ok(_) => (ToolStatus::Ok, None),
             Err(e) => (ToolStatus::Error, Some(e.code().as_str().to_string())),
         };
-        self.emit_tool_end(start_seq, tool_str, None, status, error_code, duration_ms)
+        self.emit_tool_end(start_seq, tool, None, status, error_code, duration_ms)
             .await;
 
         match result {
@@ -508,16 +512,16 @@ impl ImapMcpServer {
     /// the writer and return `Ok`.
     async fn emit_tool_start(
         &self,
-        tool: &str,
+        tool: ToolName,
         account: Option<String>,
         posture: String,
         redacted: serde_json::Value,
         hash: String,
     ) -> Result<rimap_audit::Seq, ErrorData> {
         let audit = self.audit.clone();
-        let tool_owned = tool.to_string();
+        let tool_name = tool.as_str();
         let join = tokio::task::spawn_blocking(move || {
-            audit.log_tool_start(&tool_owned, account.as_deref(), &posture, redacted, hash)
+            audit.log_tool_start(tool_name, account.as_deref(), &posture, redacted, hash)
         })
         .await;
         match join {
@@ -542,13 +546,14 @@ impl ImapMcpServer {
     async fn emit_tool_end(
         &self,
         start_seq: rimap_audit::Seq,
-        tool: String,
+        tool: ToolName,
         account: Option<String>,
         status: ToolStatus,
         error_code: Option<String>,
         duration_ms: u64,
     ) {
         let audit = self.audit.clone();
+        let tool_str = tool.as_str();
         // The provenance ring buffer is not yet wired for multi-account.
         // Record an empty snapshot with the window placeholder until a
         // per-account buffer lands.
@@ -560,7 +565,7 @@ impl ImapMcpServer {
         let join = tokio::task::spawn_blocking(move || {
             audit.log_tool_end(
                 start_seq,
-                &tool,
+                tool_str,
                 account.as_deref(),
                 status,
                 error_code,
@@ -587,7 +592,7 @@ fn parse_args<T: serde::de::DeserializeOwned>(
     args: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, rimap_core::RimapError> {
     serde_json::from_value(serde_json::Value::Object(args.clone()))
-        .map_err(|e| rimap_core::RimapError::Internal(format!("invalid arguments: {e}")))
+        .map_err(|e| rimap_core::RimapError::invalid_input(format!("invalid arguments: {e}")))
 }
 
 /// Convert a `schemars::JsonSchema` type into a JSON object map
@@ -644,12 +649,10 @@ fn is_valid_account_prefix(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// Type alias for tool spec tuples.
-type ToolSpec = (
-    &'static str,
-    &'static str,
-    serde_json::Map<String, serde_json::Value>,
-);
+/// Type alias for tool spec tuples — `(description, schema)`. The wire
+/// name comes from `ToolName::as_str()` so there is a single source of
+/// truth for tool names.
+type ToolSpec = (&'static str, serde_json::Map<String, serde_json::Value>);
 
 /// Return (name, description, schema) for the given `ToolName`, or
 /// `None` for sub-capabilities that share an MCP tool name with a
@@ -668,58 +671,35 @@ fn tool_spec_read(name: ToolName) -> Option<ToolSpec> {
         move_message::MoveInput, search::SearchInput,
     };
     let tuple = match name {
-        ToolName::ListFolders => (
-            "list_folders",
-            "List all IMAP folders",
-            serde_json::Map::new(),
-        ),
+        ToolName::ListFolders => ("List all IMAP folders", serde_json::Map::new()),
         ToolName::Search => (
-            "search",
             "Search messages with structured query",
             schema_map::<SearchInput>(),
         ),
         ToolName::FetchMessage => (
-            "fetch_message",
             "Fetch message metadata and text body",
             schema_map::<FetchMessageInput>(),
         ),
         ToolName::ListAttachments => (
-            "list_attachments",
             "List attachments on a message",
             schema_map::<ListAttachmentsInput>(),
         ),
         ToolName::DownloadAttachment => (
-            "download_attachment",
             "Download an attachment to the sandbox directory",
             schema_map::<DownloadAttachmentInput>(),
         ),
-        ToolName::MarkRead => (
-            "mark_read",
-            "Mark messages as read",
-            schema_map::<FlagInput>(),
-        ),
-        ToolName::MarkUnread => (
-            "mark_unread",
-            "Mark messages as unread",
-            schema_map::<FlagInput>(),
-        ),
+        ToolName::MarkRead => ("Mark messages as read", schema_map::<FlagInput>()),
+        ToolName::MarkUnread => ("Mark messages as unread", schema_map::<FlagInput>()),
         ToolName::Flag => (
-            "flag",
             "Add the flagged flag to messages",
             schema_map::<FlagInput>(),
         ),
         ToolName::Unflag => (
-            "unflag",
             "Remove the flagged flag from messages",
             schema_map::<FlagInput>(),
         ),
-        ToolName::MoveMessage => (
-            "move_message",
-            "Move messages to another folder",
-            schema_map::<MoveInput>(),
-        ),
+        ToolName::MoveMessage => ("Move messages to another folder", schema_map::<MoveInput>()),
         ToolName::CreateDraft => (
-            "create_draft",
             "Create a draft email with $PendingReview flag",
             schema_map::<CreateDraftInput>(),
         ),
@@ -736,33 +716,21 @@ fn tool_spec_write(name: ToolName) -> Option<ToolSpec> {
         send_email::SendEmailInput,
     };
     let tuple = match name {
-        ToolName::SendEmail => (
-            "send_email",
-            "Send an email via SMTP",
-            schema_map::<SendEmailInput>(),
-        ),
+        ToolName::SendEmail => ("Send an email via SMTP", schema_map::<SendEmailInput>()),
         ToolName::DeleteMessage => (
-            "delete_message",
             "Delete a message (move to Trash)",
             schema_map::<DeleteMessageInput>(),
         ),
         ToolName::Expunge => (
-            "expunge",
             "Permanently remove deleted messages from a folder",
             schema_map::<ExpungeInput>(),
         ),
         ToolName::CreateFolder => (
-            "create_folder",
             "Create a new IMAP folder",
             schema_map::<CreateFolderInput>(),
         ),
-        ToolName::RenameFolder => (
-            "rename_folder",
-            "Rename an IMAP folder",
-            schema_map::<RenameFolderInput>(),
-        ),
+        ToolName::RenameFolder => ("Rename an IMAP folder", schema_map::<RenameFolderInput>()),
         ToolName::DeleteFolder => (
-            "delete_folder",
             "Delete an IMAP folder and all its contents",
             schema_map::<DeleteFolderInput>(),
         ),
@@ -775,17 +743,14 @@ fn tool_spec_labels(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::labels::{LabelInput, ListLabelsInput};
     let tuple = match name {
         ToolName::AddLabel => (
-            "add_label",
             "Add a keyword label to messages",
             schema_map::<LabelInput>(),
         ),
         ToolName::RemoveLabel => (
-            "remove_label",
             "Remove a keyword label from messages",
             schema_map::<LabelInput>(),
         ),
         ToolName::ListLabels => (
-            "list_labels",
             "List keyword labels on a message",
             schema_map::<ListLabelsInput>(),
         ),
@@ -798,15 +763,10 @@ fn tool_spec_infra(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::accounts::UseAccountInput;
     let tuple = match name {
         ToolName::UseAccount => (
-            "use_account",
             "Set the active account for subsequent tool calls",
             schema_map::<UseAccountInput>(),
         ),
-        ToolName::ListAccounts => (
-            "list_accounts",
-            "List all configured email accounts",
-            serde_json::Map::new(),
-        ),
+        ToolName::ListAccounts => ("List all configured email accounts", serde_json::Map::new()),
         _ => return None,
     };
     Some(tuple)
@@ -818,10 +778,10 @@ static TOOL_DEFS: std::sync::LazyLock<std::collections::HashMap<ToolName, Tool>>
     std::sync::LazyLock::new(|| {
         let mut map = std::collections::HashMap::new();
         for tn in ToolName::all() {
-            let Some((name, description, schema)) = tool_spec(tn) else {
+            let Some((description, schema)) = tool_spec(tn) else {
                 continue;
             };
-            map.insert(tn, Tool::new(name, description, Arc::new(schema)));
+            map.insert(tn, Tool::new(tn.as_str(), description, Arc::new(schema)));
         }
         map
     });

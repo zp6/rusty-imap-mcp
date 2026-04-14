@@ -94,9 +94,7 @@ fn build_envelope(
 }
 
 fn parse_lettre_addr(addr: &str) -> Result<lettre::Address, rimap_core::RimapError> {
-    addr.parse::<lettre::Address>()
-        .map_err(|_| rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "invalid email address in recipient list".into(),
-        })
+    addr.parse::<lettre::Address>().map_err(|_| {
+        rimap_core::RimapError::invalid_input("invalid email address in recipient list")
+    })
 }

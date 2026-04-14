@@ -38,16 +38,13 @@ pub async fn handle(
     input: DownloadAttachmentInput,
     download_dir: &std::path::Path,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    let uid = Uid::new(input.uid).ok_or_else(|| rimap_core::RimapError::Authz {
-        code: rimap_core::error::ErrorCode::InvalidInput,
-        message: "UID must be non-zero".to_string(),
-    })?;
+    let uid = Uid::new(input.uid)
+        .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
 
     if input.part_id.is_empty() {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "part_id must not be empty".to_string(),
-        });
+        return Err(rimap_core::RimapError::invalid_input(
+            "part_id must not be empty",
+        ));
     }
 
     let dest = download::resolve_dest_dir_async(

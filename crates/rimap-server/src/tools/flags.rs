@@ -109,40 +109,29 @@ pub fn resolve_uids(
 ) -> Result<Vec<Uid>, rimap_core::RimapError> {
     match (uid, uids) {
         (Some(u), None) => {
-            let uid = Uid::new(u).ok_or_else(|| rimap_core::RimapError::Authz {
-                code: rimap_core::error::ErrorCode::InvalidInput,
-                message: "UID must be non-zero".into(),
-            })?;
+            let uid = Uid::new(u)
+                .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
             Ok(vec![uid])
         }
         (None, Some(us)) => {
             if us.len() > MAX_BATCH_UIDS {
-                return Err(rimap_core::RimapError::Authz {
-                    code: rimap_core::error::ErrorCode::InvalidInput,
-                    message: format!(
-                        "uids batch size {} exceeds maximum of {MAX_BATCH_UIDS}",
-                        us.len()
-                    ),
-                });
+                return Err(rimap_core::RimapError::invalid_input(format!(
+                    "uids batch size {} exceeds maximum of {MAX_BATCH_UIDS}",
+                    us.len()
+                )));
             }
             let mut result = Vec::with_capacity(us.len());
             for u in us {
-                let uid = Uid::new(u).ok_or_else(|| rimap_core::RimapError::Authz {
-                    code: rimap_core::error::ErrorCode::InvalidInput,
-                    message: "UID must be non-zero".into(),
-                })?;
+                let uid = Uid::new(u)
+                    .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
                 result.push(uid);
             }
             Ok(result)
         }
-        (Some(_), Some(_)) => Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "provide uid or uids, not both".into(),
-        }),
-        (None, None) => Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "provide uid or uids".into(),
-        }),
+        (Some(_), Some(_)) => Err(rimap_core::RimapError::invalid_input(
+            "provide uid or uids, not both",
+        )),
+        (None, None) => Err(rimap_core::RimapError::invalid_input("provide uid or uids")),
     }
 }
 

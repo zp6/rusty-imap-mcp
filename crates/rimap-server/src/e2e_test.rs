@@ -323,7 +323,7 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
 }
 
 fn test_guard(config: &ValidatedConfig) -> DispatchGuard<SystemClock> {
-    let matrix = EffectiveMatrix::from_validated(config);
+    let matrix = EffectiveMatrix::build(config.config.security.posture, &config.tool_overrides);
     let breaker = CircuitBreaker::new(SystemClock::new(), BreakerConfig::default_spec());
     let governor = Governor::new(
         config.config.limits.commands_per_second,
@@ -347,7 +347,10 @@ async fn call_tool(
 
     let account = server.registry.resolve(None)?;
 
-    crate::dispatch::pre_call_guards(&account.guard, tool)?;
+    account
+        .guard
+        .pre_dispatch(tool)
+        .map_err(rimap_core::RimapError::from)?;
 
     let args_map = match args {
         serde_json::Value::Object(m) => m,

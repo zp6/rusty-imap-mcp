@@ -20,11 +20,8 @@ pub async fn handle(
     account: &AccountState,
     input: DeleteMessageInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    let uid =
-        rimap_imap::types::Uid::new(input.uid).ok_or_else(|| rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "uid must be non-zero".into(),
-        })?;
+    let uid = rimap_imap::types::Uid::new(input.uid)
+        .ok_or_else(|| rimap_core::RimapError::invalid_input("uid must be non-zero"))?;
 
     let trash_folder = "Trash";
     let result = account

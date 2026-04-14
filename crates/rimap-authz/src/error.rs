@@ -1,7 +1,7 @@
 //! Authorization-layer error type. Converts into `RimapError::Authz` with the
 //! appropriate error code.
 
-use rimap_core::error::ErrorCode;
+use rimap_core::error::{ErrorCode, RimapError};
 use rimap_core::tool::ToolName;
 use thiserror::Error;
 
@@ -72,11 +72,35 @@ impl AuthzError {
     }
 }
 
+impl From<AuthzError> for RimapError {
+    fn from(err: AuthzError) -> Self {
+        RimapError::Authz {
+            code: err.code(),
+            message: err.to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
+#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use crate::error::AuthzError;
-    use rimap_core::error::ErrorCode;
+    use rimap_core::error::{ErrorCode, RimapError};
     use rimap_core::tool::ToolName;
+
+    #[test]
+    fn from_impl_preserves_code_and_message() {
+        let err = AuthzError::RateLimited { retry_after_ms: 42 };
+        let msg = err.to_string();
+        let mapped: RimapError = err.into();
+        match mapped {
+            RimapError::Authz { code, message } => {
+                assert_eq!(code, ErrorCode::RateLimited);
+                assert_eq!(message, msg);
+            }
+            other => panic!("expected Authz variant, got {other:?}"),
+        }
+    }
 
     #[test]
     fn error_codes_match_spec() {

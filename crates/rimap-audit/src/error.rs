@@ -8,6 +8,7 @@ use thiserror::Error;
 
 /// Errors produced by `rimap-audit`.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum AuditError {
     /// The audit file could not be opened for read+write.
     #[error("failed to open audit file `{path}`: {source}")]

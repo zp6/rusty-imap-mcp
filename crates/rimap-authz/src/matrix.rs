@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 
 use rimap_config::model::Verdict;
-use rimap_config::validate::ValidatedConfig;
 use rimap_core::posture::Posture;
 use rimap_core::tool::ToolName;
 
@@ -47,12 +46,6 @@ impl EffectiveMatrix {
             allowed.insert(tool, effective);
         }
         Self { allowed, posture }
-    }
-
-    /// Build from a validated config.
-    #[must_use]
-    pub fn from_validated(cfg: &ValidatedConfig) -> Self {
-        Self::build(cfg.config.security.posture, &cfg.tool_overrides)
     }
 
     /// Base posture used for construction (for logging / display only).

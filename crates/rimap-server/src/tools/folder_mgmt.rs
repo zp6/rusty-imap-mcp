@@ -37,10 +37,7 @@ pub async fn handle_create(
     account
         .folder_guard
         .check_protected(&input.name, "create")
-        .map_err(|e| rimap_core::RimapError::Authz {
-            code: e.code(),
-            message: e.to_string(),
-        })?;
+        .map_err(rimap_core::RimapError::from)?;
 
     account.imap.create_folder(&input.name).await?;
 
@@ -62,10 +59,7 @@ pub async fn handle_rename(
     account
         .folder_guard
         .check_rename(&input.old_name, &input.new_name)
-        .map_err(|e| rimap_core::RimapError::Authz {
-            code: e.code(),
-            message: e.to_string(),
-        })?;
+        .map_err(rimap_core::RimapError::from)?;
 
     account
         .imap
@@ -91,18 +85,12 @@ pub async fn handle_delete(
     account
         .folder_guard
         .check_protected(&input.name, "delete")
-        .map_err(|e| rimap_core::RimapError::Authz {
-            code: e.code(),
-            message: e.to_string(),
-        })?;
+        .map_err(rimap_core::RimapError::from)?;
 
     account
         .folder_guard
         .check_expunge(&input.name)
-        .map_err(|e| rimap_core::RimapError::Authz {
-            code: e.code(),
-            message: e.to_string(),
-        })?;
+        .map_err(rimap_core::RimapError::from)?;
 
     let status = account
         .imap

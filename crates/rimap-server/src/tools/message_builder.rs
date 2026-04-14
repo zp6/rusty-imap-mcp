@@ -48,43 +48,32 @@ pub(crate) struct ComposeInput {
 /// Validate all user-supplied fields in a compose input.
 pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_core::RimapError> {
     if input.to.is_empty() {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "at least one To recipient is required".into(),
-        });
+        return Err(rimap_core::RimapError::invalid_input(
+            "at least one To recipient is required",
+        ));
     }
 
     let total_recipients = input.to.len()
         + input.cc.as_ref().map_or(0, Vec::len)
         + input.bcc.as_ref().map_or(0, Vec::len);
     if total_recipients > MAX_RECIPIENTS {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: format!(
-                "too many recipients ({total_recipients}); \
-                 max is {MAX_RECIPIENTS}"
-            ),
-        });
+        return Err(rimap_core::RimapError::invalid_input(format!(
+            "too many recipients ({total_recipients}); max is {MAX_RECIPIENTS}"
+        )));
     }
 
     if input.subject.len() > MAX_SUBJECT_LEN {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: format!(
-                "subject too long ({} bytes); max is {MAX_SUBJECT_LEN}",
-                input.subject.len()
-            ),
-        });
+        return Err(rimap_core::RimapError::invalid_input(format!(
+            "subject too long ({} bytes); max is {MAX_SUBJECT_LEN}",
+            input.subject.len()
+        )));
     }
 
     if input.body_text.len() > MAX_BODY_BYTES {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: format!(
-                "body_text too large ({} bytes); max is {MAX_BODY_BYTES}",
-                input.body_text.len()
-            ),
-        });
+        return Err(rimap_core::RimapError::invalid_input(format!(
+            "body_text too large ({} bytes); max is {MAX_BODY_BYTES}",
+            input.body_text.len()
+        )));
     }
 
     validate_addresses("To", &input.to)?;
@@ -99,17 +88,13 @@ pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_c
         .bytes()
         .any(|b| matches!(b, b'\r' | b'\n' | b'\0'))
     {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "subject contains forbidden characters".into(),
-        });
+        return Err(rimap_core::RimapError::invalid_input(
+            "subject contains forbidden characters",
+        ));
     }
     if let Some(folder) = &input.in_reply_to_folder {
         rimap_authz::folder_name::FolderName::new(folder).map_err(|e| {
-            rimap_core::RimapError::Authz {
-                code: e.code(),
-                message: format!("in_reply_to_folder: {e}"),
-            }
+            rimap_core::RimapError::invalid_input(format!("in_reply_to_folder: {e}"))
         })?;
     }
     Ok(())
@@ -121,10 +106,9 @@ pub(crate) fn validate_header_text(field: &str, value: &str) -> Result<(), rimap
         .bytes()
         .any(|b| matches!(b, b'\r' | b'\n' | b'\0' | b'<' | b'>'))
     {
-        return Err(rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: format!("{field} contains forbidden characters"),
-        });
+        return Err(rimap_core::RimapError::invalid_input(format!(
+            "{field} contains forbidden characters"
+        )));
     }
     Ok(())
 }
@@ -218,11 +202,8 @@ pub(crate) async fn apply_threading_headers<'a>(
     in_reply_to_folder: Option<&str>,
 ) -> Result<MessageBuilder<'a>, rimap_core::RimapError> {
     let folder = in_reply_to_folder.unwrap_or("INBOX");
-    let uid =
-        rimap_imap::types::Uid::new(reply_uid).ok_or_else(|| rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::InvalidInput,
-            message: "in_reply_to_uid must be non-zero".into(),
-        })?;
+    let uid = rimap_imap::types::Uid::new(reply_uid)
+        .ok_or_else(|| rimap_core::RimapError::invalid_input("in_reply_to_uid must be non-zero"))?;
 
     let raw = account.imap.fetch_body(folder, uid).await?;
     let parsed = mail_parser::MessageParser::new()

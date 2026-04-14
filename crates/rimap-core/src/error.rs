@@ -159,6 +159,18 @@ pub enum RimapError {
 }
 
 impl RimapError {
+    /// Construct an `Authz { code: InvalidInput, ... }` for caller-side
+    /// argument validation failures. Use this instead of hand-rolling the
+    /// struct form — the `Authz` variant is the canonical envelope for
+    /// codes that surface to MCP as `INVALID_PARAMS`.
+    #[must_use]
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::Authz {
+            code: ErrorCode::InvalidInput,
+            message: message.into(),
+        }
+    }
+
     /// The stable error code carried by this error.
     #[must_use]
     pub fn code(&self) -> ErrorCode {

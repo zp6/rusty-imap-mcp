@@ -1,5 +1,13 @@
 //! Label (custom keyword) tool handlers: `add_label`, `remove_label`,
 //! `list_labels`.
+//!
+//! # UIDVALIDITY limitation
+//!
+//! All handlers in this module accept UIDs but do not return or cross-check
+//! UIDVALIDITY. If the folder's UID namespace rotates between the caller's
+//! UID acquisition and the call, the operation may affect unintended
+//! messages. This is consistent with other flag tools (`mark_read`, `flag`,
+//! etc.) and will be addressed in a future release.
 
 use rimap_imap::types::{FetchSpec, Flag, FlagAction};
 use schemars::JsonSchema;
@@ -58,10 +66,7 @@ pub fn validate_label(label: &str) -> Result<(), rimap_core::RimapError> {
 }
 
 fn invalid_input(message: &str) -> rimap_core::RimapError {
-    rimap_core::RimapError::Authz {
-        code: rimap_core::error::ErrorCode::InvalidInput,
-        message: message.to_string(),
-    }
+    rimap_core::RimapError::invalid_input(message)
 }
 
 /// Input for `add_label` and `remove_label` tools.
@@ -87,14 +92,7 @@ pub struct ListLabelsInput {
 }
 
 /// `add_label` handler — STORE +FLAGS with a custom keyword.
-///
-/// # Limitations
-///
-/// The response does not include UIDVALIDITY. If the folder's UID namespace
-/// rotates between the caller's UID acquisition and this call, labels may
-/// be applied to unintended messages. This is consistent with other flag
-/// tools (`mark_read`, `flag`, etc.) and will be addressed in a future
-/// release.
+/// See the module-level doc for the UIDVALIDITY limitation.
 pub async fn handle_add_label(
     account: &AccountState,
     input: LabelInput,
@@ -124,14 +122,7 @@ pub async fn handle_add_label(
 }
 
 /// `remove_label` handler — STORE -FLAGS with a custom keyword.
-///
-/// # Limitations
-///
-/// The response does not include UIDVALIDITY. If the folder's UID namespace
-/// rotates between the caller's UID acquisition and this call, labels may
-/// be removed from unintended messages. This is consistent with other flag
-/// tools (`mark_read`, `flag`, etc.) and will be addressed in a future
-/// release.
+/// See the module-level doc for the UIDVALIDITY limitation.
 pub async fn handle_remove_label(
     account: &AccountState,
     input: LabelInput,
@@ -161,14 +152,7 @@ pub async fn handle_remove_label(
 }
 
 /// `list_labels` handler — FETCH FLAGS and return keyword entries.
-///
-/// # Limitations
-///
-/// The response does not include UIDVALIDITY. If the folder's UID namespace
-/// rotates between the caller's UID acquisition and this call, the returned
-/// labels may belong to an unintended message. This is consistent with other
-/// flag tools (`mark_read`, `flag`, etc.) and will be addressed in a future
-/// release.
+/// See the module-level doc for the UIDVALIDITY limitation.
 pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,

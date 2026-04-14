@@ -8,8 +8,8 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum SmtpError {
     /// Cannot reach the SMTP server.
-    #[error("SMTP connection failed: {0}")]
-    Connection(String),
+    #[error("SMTP connection failed")]
+    Connection(#[source] lettre::transport::smtp::Error),
     /// SMTP authentication failed.
     #[error("SMTP authentication failed")]
     Auth(#[source] lettre::transport::smtp::Error),
@@ -32,19 +32,17 @@ pub enum SmtpError {
 
 impl From<SmtpError> for RimapError {
     fn from(err: SmtpError) -> Self {
-        let (code, message) = match &err {
-            SmtpError::Connection(_) => (
-                ErrorCode::ConnectionLost,
-                "SMTP connection failed".to_string(),
-            ),
-            SmtpError::Auth(_) => (ErrorCode::Auth, "SMTP authentication failed".to_string()),
-            SmtpError::Tls(_) => (ErrorCode::Tls, "SMTP TLS handshake failed".to_string()),
-            SmtpError::Rejected { .. } => (
-                ErrorCode::SmtpProtocol,
-                "SMTP server rejected the message".to_string(),
-            ),
-            SmtpError::Timeout => (ErrorCode::Timeout, "SMTP operation timed out".to_string()),
-            SmtpError::Transport(_) => (ErrorCode::Internal, "SMTP transport error".to_string()),
+        // Preserve Display detail (includes the lettre reason) so the
+        // top-level message is not a generic placeholder; source chain
+        // is still attached for callers that walk it.
+        let message = err.to_string();
+        let code = match &err {
+            SmtpError::Connection(_) => ErrorCode::ConnectionLost,
+            SmtpError::Auth(_) => ErrorCode::Auth,
+            SmtpError::Tls(_) => ErrorCode::Tls,
+            SmtpError::Rejected { .. } => ErrorCode::SmtpProtocol,
+            SmtpError::Timeout => ErrorCode::Timeout,
+            SmtpError::Transport(_) => ErrorCode::Internal,
         };
         RimapError::Smtp {
             code,

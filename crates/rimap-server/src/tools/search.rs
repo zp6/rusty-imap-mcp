@@ -1,6 +1,5 @@
 //! `search` tool handler.
 
-use rimap_core::error::ErrorCode;
 use rimap_core::tool::ToolName;
 use rimap_imap::types::{
     Address, FetchSpec, FetchedMessage, Flag, SearchQuery, StructuredQuery, Uid,
@@ -102,15 +101,11 @@ fn build_query(
             .guard
             .matrix()
             .check(ToolName::SearchAdvanced)
-            .map_err(|e| rimap_core::RimapError::Authz {
-                code: e.code(),
-                message: e.to_string(),
-            })?;
+            .map_err(rimap_core::RimapError::from)?;
         if raw.bytes().any(|b| b == b'\r' || b == b'\n' || b == b'\0') {
-            return Err(rimap_core::RimapError::Authz {
-                code: ErrorCode::InvalidInput,
-                message: "advanced_query contains forbidden control bytes".into(),
-            });
+            return Err(rimap_core::RimapError::invalid_input(
+                "advanced_query contains forbidden control bytes",
+            ));
         }
         return Ok(SearchQuery::Raw(raw.clone()));
     }
@@ -132,10 +127,8 @@ fn build_query(
 /// Parse an ISO 8601 date string ("YYYY-MM-DD") into a `time::Date`.
 fn parse_iso_date(s: &str) -> Result<time::Date, rimap_core::RimapError> {
     let format = time::format_description::well_known::Iso8601::DATE;
-    time::Date::parse(s, &format).map_err(|e| rimap_core::RimapError::Authz {
-        code: ErrorCode::InvalidInput,
-        message: format!("invalid date '{s}': {e}"),
-    })
+    time::Date::parse(s, &format)
+        .map_err(|e| rimap_core::RimapError::invalid_input(format!("invalid date '{s}': {e}")))
 }
 
 /// Strip control characters and Unicode tag/bidi characters from

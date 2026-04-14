@@ -26,11 +26,11 @@ impl SmtpClient {
 
         let builder = match config.encryption {
             SmtpEncryption::Tls => AsyncSmtpTransport::<Tokio1Executor>::relay(&config.host)
-                .map_err(|e| SmtpError::Connection(e.to_string()))?
+                .map_err(SmtpError::Connection)?
                 .port(config.port),
             SmtpEncryption::Starttls => {
                 AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&config.host)
-                    .map_err(|e| SmtpError::Connection(e.to_string()))?
+                    .map_err(SmtpError::Connection)?
                     .port(config.port)
             }
             SmtpEncryption::None => {
@@ -103,7 +103,7 @@ fn classify_smtp_error(err: lettre::transport::smtp::Error) -> SmtpError {
             reason: err.to_string(),
         }
     } else if err.is_client() {
-        SmtpError::Connection(err.to_string())
+        SmtpError::Connection(err)
     } else {
         SmtpError::Transport(err)
     }

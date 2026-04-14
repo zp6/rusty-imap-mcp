@@ -44,13 +44,13 @@ pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
     if let Some(ref smtp) = config.smtp {
         validate_smtp_username(&smtp.username)?;
     }
-    validate_limits(&config)?;
-    validate_audit(&config)?;
-    validate_paths(&config)?;
-    validate_folder_safety(&config)?;
-    let tool_overrides = resolve_tool_overrides(&config)?;
-    validate_smtp_required(&config, &tool_overrides)?;
-    validate_smtp_encryption(&config)?;
+    validate_limits_fields(&config.limits)?;
+    validate_audit_config(&config.audit)?;
+    validate_paths_multi(&config.audit, &config.attachments)?;
+    validate_folder_safety_fields(&config.security)?;
+    let tool_overrides = resolve_tool_overrides_fields(&config.security)?;
+    validate_smtp_required_fields(&config.security, &tool_overrides, config.smtp.as_ref())?;
+    validate_smtp_encryption_fields(config.smtp.as_ref())?;
     Ok(ValidatedConfig {
         config,
         tool_overrides,
@@ -219,10 +219,6 @@ fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, C
     Ok(Some(fp))
 }
 
-fn validate_audit(config: &Config) -> Result<(), ConfigError> {
-    validate_audit_config(&config.audit)
-}
-
 fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
     if audit.retention_seconds == Some(0) {
         return Err(ConfigError::InvalidLimit {
@@ -235,46 +231,40 @@ fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_limits(config: &Config) -> Result<(), ConfigError> {
-    validate_limits_fields(&config.limits)
-}
+/// Accessor for one field on `LimitsConfig` for the zero-check table.
+type LimitAccessor = fn(&LimitsConfig) -> u64;
 
 fn validate_limits_fields(limits: &LimitsConfig) -> Result<(), ConfigError> {
-    if limits.commands_per_second == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.commands_per_second",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.drafts_per_minute == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.drafts_per_minute",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.sends_per_minute == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.sends_per_minute",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.circuit_breaker_error_threshold == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.circuit_breaker_error_threshold",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.circuit_breaker_window_seconds == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.circuit_breaker_window_seconds",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.max_search_results == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_search_results",
-            reason: "must be > 0".to_string(),
-        });
+    /// Table of `(field_name, accessor)` for zero-value checks. New limits
+    /// that must be `> 0` get added here rather than as another `if` block.
+    const ZERO_CHECKS: &[(&str, LimitAccessor)] = &[
+        ("limits.commands_per_second", |l| {
+            u64::from(l.commands_per_second)
+        }),
+        ("limits.drafts_per_minute", |l| {
+            u64::from(l.drafts_per_minute)
+        }),
+        ("limits.sends_per_minute", |l| u64::from(l.sends_per_minute)),
+        ("limits.circuit_breaker_error_threshold", |l| {
+            u64::from(l.circuit_breaker_error_threshold)
+        }),
+        ("limits.circuit_breaker_window_seconds", |l| {
+            u64::from(l.circuit_breaker_window_seconds)
+        }),
+        ("limits.max_search_results", |l| {
+            u64::from(l.max_search_results)
+        }),
+        ("limits.max_fetch_body_bytes", |l| l.max_fetch_body_bytes),
+        ("limits.max_attachment_bytes", |l| l.max_attachment_bytes),
+        ("limits.max_append_bytes", |l| l.max_append_bytes),
+    ];
+    for (field, accessor) in ZERO_CHECKS {
+        if accessor(limits) == 0 {
+            return Err(ConfigError::InvalidLimit {
+                field,
+                reason: "must be > 0".to_string(),
+            });
+        }
     }
     if limits.max_search_results > limits.max_search_results_cap {
         return Err(ConfigError::InvalidLimit {
@@ -285,29 +275,7 @@ fn validate_limits_fields(limits: &LimitsConfig) -> Result<(), ConfigError> {
             ),
         });
     }
-    if limits.max_fetch_body_bytes == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_fetch_body_bytes",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.max_attachment_bytes == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_attachment_bytes",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.max_append_bytes == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_append_bytes",
-            reason: "must be > 0".to_string(),
-        });
-    }
     Ok(())
-}
-
-fn validate_paths(config: &Config) -> Result<(), ConfigError> {
-    validate_paths_multi(&config.audit, &config.attachments)
 }
 
 fn validate_paths_multi(
@@ -428,10 +396,6 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_folder_safety(config: &Config) -> Result<(), ConfigError> {
-    validate_folder_safety_fields(&config.security)
-}
-
 fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), ConfigError> {
     let mut protected: Vec<String> = security
         .protected_folders
@@ -449,13 +413,6 @@ fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), Config
         }
     }
     Ok(())
-}
-
-fn validate_smtp_required(
-    config: &Config,
-    tool_overrides: &BTreeMap<ToolName, Verdict>,
-) -> Result<(), ConfigError> {
-    validate_smtp_required_fields(&config.security, tool_overrides, config.smtp.as_ref())
 }
 
 fn validate_smtp_required_fields(
@@ -478,10 +435,6 @@ fn validate_smtp_required_fields(
     Ok(())
 }
 
-fn validate_smtp_encryption(config: &Config) -> Result<(), ConfigError> {
-    validate_smtp_encryption_fields(config.smtp.as_ref())
-}
-
 fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), ConfigError> {
     let Some(smtp) = smtp else {
         return Ok(());
@@ -494,10 +447,6 @@ fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), Conf
         }
     }
     Ok(())
-}
-
-fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
-    resolve_tool_overrides_fields(&config.security)
 }
 
 fn resolve_tool_overrides_fields(
