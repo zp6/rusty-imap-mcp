@@ -151,6 +151,22 @@ impl SecurityWarning {
             location,
         }
     }
+
+    /// Construct a warning with both `detail` and `location` populated.
+    ///
+    /// This is the common shape for pipeline-emitted warnings: every
+    /// call site in the content pipeline supplies both a structured
+    /// `detail` string (see [`WarningCode`] docs for the per-variant
+    /// key=value format) and a logical `location` naming the site in
+    /// the message where the warning was raised.
+    #[must_use]
+    pub fn at(code: WarningCode, detail: impl Into<String>, location: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: Some(detail.into()),
+            location: Some(location.into()),
+        }
+    }
 }
 
 /// Re-exported so existing `rimap_content::WarningCode` paths keep

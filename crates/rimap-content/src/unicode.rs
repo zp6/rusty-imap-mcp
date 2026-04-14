@@ -208,25 +208,25 @@ pub fn sanitize(
 fn build_warnings(result: &FilterResult, location: &str) -> Vec<SecurityWarning> {
     let mut warnings = Vec::new();
     if result.zero_width_stripped > 0 {
-        warnings.push(SecurityWarning {
-            code: WarningCode::UnicodeZeroWidthStripped,
-            detail: Some(format!("count={}", result.zero_width_stripped)),
-            location: Some(location.to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::UnicodeZeroWidthStripped,
+            format!("count={}", result.zero_width_stripped),
+            location,
+        ));
     }
     if result.bidi_stripped > 0 {
-        warnings.push(SecurityWarning {
-            code: WarningCode::UnicodeBidiOverrideStripped,
-            detail: Some(format!("count={}", result.bidi_stripped)),
-            location: Some(location.to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::UnicodeBidiOverrideStripped,
+            format!("count={}", result.bidi_stripped),
+            location,
+        ));
     }
     if result.c0_c1_stripped > 0 {
-        warnings.push(SecurityWarning {
-            code: WarningCode::UnicodeC0C1Stripped,
-            detail: Some(format!("count={}", result.c0_c1_stripped)),
-            location: Some(location.to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::UnicodeC0C1Stripped,
+            format!("count={}", result.c0_c1_stripped),
+            location,
+        ));
     }
     warnings
 }

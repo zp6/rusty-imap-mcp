@@ -630,43 +630,43 @@ pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, C
     let (hidden_hits, hidden_overflow) = detect_hidden(&document);
     let mut warnings: Vec<SecurityWarning> = Vec::new();
     for (_idx, method) in &hidden_hits {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlHiddenContentDetected,
-            detail: Some(format!("method={}", method.as_detail())),
-            location: Some("body:html".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlHiddenContentDetected,
+            format!("method={}", method.as_detail()),
+            "body:html",
+        ));
     }
     if hidden_overflow > 0 {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlHiddenContentDetected,
-            detail: Some(format!("method=mixed,additional_hits={hidden_overflow}")),
-            location: Some("body:html".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlHiddenContentDetected,
+            format!("method=mixed,additional_hits={hidden_overflow}"),
+            "body:html",
+        ));
     }
     let (mismatches, mismatch_overflow, unparsable_hrefs) = detect_mismatches(&document);
     for hit in &mismatches {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
-            detail: Some(format!(
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlLinkTextHrefMismatch,
+            format!(
                 "text_domain={},href_domain={}",
                 hit.text_domain, hit.href_domain
-            )),
-            location: Some("html:anchor".to_string()),
-        });
+            ),
+            "html:anchor",
+        ));
     }
     if mismatch_overflow > 0 {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlLinkTextHrefMismatch,
-            detail: Some(format!("additional_hits={mismatch_overflow}")),
-            location: Some("html:anchor".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlLinkTextHrefMismatch,
+            format!("additional_hits={mismatch_overflow}"),
+            "html:anchor",
+        ));
     }
     for (href, text) in &unparsable_hrefs {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlAnchorUnparsableHref,
-            detail: Some(format!("href={href},text={text}")),
-            location: Some("body_html:anchor".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlAnchorUnparsableHref,
+            format!("href={href},text={text}"),
+            "body_html:anchor",
+        ));
     }
     let hidden_indices: HashSet<ElementIndex> = hidden_hits.iter().map(|(idx, _)| *idx).collect();
     let (body_text, mut text_warnings) = extract_text(&document, &hidden_indices);
@@ -713,25 +713,25 @@ fn sanitize_body(document: &Html, decoded: &str, warnings: &mut Vec<SecurityWarn
     let remote_img_count = count_img_with_src(document);
     let body_html = AMMONIA_BUILDER.clean(decoded).to_string();
     if script_count > 0 {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlScriptStripped,
-            detail: Some(format!("count={script_count}")),
-            location: Some("body:html".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlScriptStripped,
+            format!("count={script_count}"),
+            "body:html",
+        ));
     }
     if style_count > 0 {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlStyleStripped,
-            detail: Some(format!("count={style_count}")),
-            location: Some("body:html".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlStyleStripped,
+            format!("count={style_count}"),
+            "body:html",
+        ));
     }
     if remote_img_count > 0 {
-        warnings.push(SecurityWarning {
-            code: crate::output::WarningCode::HtmlRemoteImageStripped,
-            detail: Some(format!("count={remote_img_count}")),
-            location: Some("body:html".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            crate::output::WarningCode::HtmlRemoteImageStripped,
+            format!("count={remote_img_count}"),
+            "body:html",
+        ));
     }
     body_html
 }

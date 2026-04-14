@@ -260,18 +260,18 @@ fn emit_classification(domain: &str, location: &str, out: &mut Vec<SecurityWarni
         return;
     };
     if c.mixed_script {
-        out.push(SecurityWarning {
-            code: WarningCode::LookalikeMixedScript,
-            detail: Some(format!("domain={},unicode={}", c.ascii, c.unicode)),
-            location: Some(location.to_string()),
-        });
+        out.push(SecurityWarning::at(
+            WarningCode::LookalikeMixedScript,
+            format!("domain={},unicode={}", c.ascii, c.unicode),
+            location,
+        ));
     }
     if c.was_punycode {
-        out.push(SecurityWarning {
-            code: WarningCode::LookalikeIdnPunycode,
-            detail: Some(format!("domain={},ulabel={}", c.ascii, c.unicode)),
-            location: Some(location.to_string()),
-        });
+        out.push(SecurityWarning::at(
+            WarningCode::LookalikeIdnPunycode,
+            format!("domain={},ulabel={}", c.ascii, c.unicode),
+            location,
+        ));
     }
 }
 

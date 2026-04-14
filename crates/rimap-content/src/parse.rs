@@ -140,11 +140,11 @@ fn enforce_header_count(
 ) -> Result<(), ContentError> {
     let header_count = message.headers().len();
     if header_count > MAX_HEADER_COUNT {
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseHeaderCountExceeded,
-            detail: Some(format!("count={header_count} limit={MAX_HEADER_COUNT}")),
-            location: Some("headers".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseHeaderCountExceeded,
+            format!("count={header_count} limit={MAX_HEADER_COUNT}"),
+            "headers",
+        ));
         return Err(ContentError::LimitExceeded {
             kind: "header_count",
             limit: MAX_HEADER_COUNT,
@@ -328,11 +328,11 @@ fn extract_bodies(
 ) -> Result<BodyExtraction, ContentError> {
     let part_count = message.parts.len();
     if part_count > MAX_MIME_PARTS {
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseMimePartCountExceeded,
-            detail: Some(format!("count={part_count} limit={MAX_MIME_PARTS}")),
-            location: Some("mime".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseMimePartCountExceeded,
+            format!("count={part_count} limit={MAX_MIME_PARTS}"),
+            "mime",
+        ));
         return Err(ContentError::LimitExceeded {
             kind: "mime_parts",
             limit: MAX_MIME_PARTS,
@@ -372,14 +372,11 @@ fn extract_bodies(
         }
         if state.total_bytes >= MAX_TOTAL_BODY_BYTES {
             state.body_truncated = true;
-            warnings.push(SecurityWarning {
-                code: WarningCode::ParseBodyTruncated,
-                detail: Some(format!(
-                    "total={} limit={MAX_TOTAL_BODY_BYTES}",
-                    state.total_bytes
-                )),
-                location: Some("body:aggregate".to_string()),
-            });
+            warnings.push(SecurityWarning::at(
+                WarningCode::ParseBodyTruncated,
+                format!("total={} limit={MAX_TOTAL_BODY_BYTES}", state.total_bytes),
+                "body:aggregate",
+            ));
             break;
         }
     }
@@ -418,15 +415,11 @@ fn process_text_part(
 ) {
     if raw_bytes.len() > MAX_BODY_BYTES {
         state.body_truncated = true;
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseBodyTruncated,
-            detail: Some(format!(
-                "original={} limit={}",
-                raw_bytes.len(),
-                MAX_BODY_BYTES
-            )),
-            location: Some(format!("body:text[{idx}]")),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseBodyTruncated,
+            format!("original={} limit={}", raw_bytes.len(), MAX_BODY_BYTES),
+            format!("body:text[{idx}]"),
+        ));
     }
     let location = format!("body:text[{idx}]");
     let charset = part_charset(part);
@@ -472,14 +465,11 @@ fn process_html_part(
         }
         Err(ContentError::LimitExceeded { kind, limit }) => {
             state.body_truncated = true;
-            warnings.push(SecurityWarning {
-                code: WarningCode::ParseBodyTruncated,
-                detail: Some(format!(
-                    "original={} limit={limit} kind={kind}",
-                    raw_bytes.len()
-                )),
-                location: Some("body:html".to_string()),
-            });
+            warnings.push(SecurityWarning::at(
+                WarningCode::ParseBodyTruncated,
+                format!("original={} limit={limit} kind={kind}", raw_bytes.len()),
+                "body:html",
+            ));
             Ok(())
         }
         Err(err) => Err(err),
@@ -500,11 +490,11 @@ fn check_mime_depth(
 ) -> Result<(), ContentError> {
     let depth = compute_max_depth(message);
     if depth > MAX_MIME_DEPTH {
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseMimeDepthExceeded,
-            detail: Some(format!("depth={depth} limit={MAX_MIME_DEPTH}")),
-            location: Some("mime".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseMimeDepthExceeded,
+            format!("depth={depth} limit={MAX_MIME_DEPTH}"),
+            "mime",
+        ));
         return Err(ContentError::LimitExceeded {
             kind: "mime_depth",
             limit: MAX_MIME_DEPTH,
@@ -594,11 +584,11 @@ fn scrub_header_smuggling(raw: &[u8], warnings: &mut Vec<SecurityWarning>) -> Ve
         } else {
             format!("count={dropped} names=[{}]", dropped_names.join(","))
         };
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseHeaderSmugglingBlocked,
-            detail: Some(detail),
-            location: Some("headers".to_string()),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseHeaderSmugglingBlocked,
+            detail,
+            "headers",
+        ));
     }
     kept.extend_from_slice(body);
     kept
@@ -749,28 +739,22 @@ fn build_attachment_meta(
     let body = part_bytes(part);
     let sniffed = sniff_content_types(body);
     if sniffed.len() > 1 {
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseAttachmentPolyglot,
-            detail: Some(format!(
-                "declared={declared_ct} sniffed={}",
-                sniffed.join(",")
-            )),
-            location: Some(format!("attachment[{idx}]")),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseAttachmentPolyglot,
+            format!("declared={declared_ct} sniffed={}", sniffed.join(",")),
+            format!("attachment[{idx}]"),
+        ));
     }
     if !sniffed.is_empty() {
         let mismatch = !sniffed
             .iter()
             .any(|s| content_types_compatible(&declared_ct, s));
         if mismatch {
-            warnings.push(SecurityWarning {
-                code: WarningCode::ParseMimeTypeMismatch,
-                detail: Some(format!(
-                    "declared={declared_ct} sniffed={}",
-                    sniffed.join(",")
-                )),
-                location: Some(format!("attachment[{idx}]")),
-            });
+            warnings.push(SecurityWarning::at(
+                WarningCode::ParseMimeTypeMismatch,
+                format!("declared={declared_ct} sniffed={}", sniffed.join(",")),
+                format!("attachment[{idx}]"),
+            ));
         }
     }
 
@@ -820,21 +804,21 @@ fn sanitize_attachment_filename(
     warnings: &mut Vec<SecurityWarning>,
 ) -> String {
     if contains_bidi_override(name) {
-        warnings.push(SecurityWarning {
-            code: WarningCode::LookalikeFilenameExtensionSpoof,
-            detail: Some(format!("raw={name:?},contains_bidi_override=true")),
-            location: Some(format!("attachment[{idx}]:filename")),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::LookalikeFilenameExtensionSpoof,
+            format!("raw={name:?},contains_bidi_override=true"),
+            format!("attachment[{idx}]:filename"),
+        ));
     }
     if let Some((penult, final_ext)) = detect_double_extension(name) {
-        warnings.push(SecurityWarning {
-            code: WarningCode::LookalikeFilenameExtensionSpoof,
-            detail: Some(format!(
+        warnings.push(SecurityWarning::at(
+            WarningCode::LookalikeFilenameExtensionSpoof,
+            format!(
                 "reason=double_extension,visible=.{penult},\
                  declared=.{penult}.{final_ext}"
-            )),
-            location: Some(format!("attachment[{idx}]:filename")),
-        });
+            ),
+            format!("attachment[{idx}]:filename"),
+        ));
     }
     let (unicode_clean, mut ws) = unicode::sanitize(
         name.as_bytes(),
@@ -845,11 +829,11 @@ fn sanitize_attachment_filename(
     warnings.append(&mut ws);
     let (safe, rewritten) = sanitize_filename(&unicode_clean, idx);
     if rewritten {
-        warnings.push(SecurityWarning {
-            code: WarningCode::ParseAttachmentFilenameRewritten,
-            detail: Some(format!("original={unicode_clean:?}")),
-            location: Some(format!("attachment[{idx}]:filename")),
-        });
+        warnings.push(SecurityWarning::at(
+            WarningCode::ParseAttachmentFilenameRewritten,
+            format!("original={unicode_clean:?}"),
+            format!("attachment[{idx}]:filename"),
+        ));
     }
     safe
 }
@@ -1169,11 +1153,11 @@ fn audit_domain_bidi_prestrip(
         return;
     }
     let ascii = idna::domain_to_ascii(raw_domain.trim()).unwrap_or_else(|_| "invalid".to_string());
-    warnings.push(SecurityWarning {
-        code: WarningCode::LookalikeHomographDomain,
-        detail: Some(format!("domain={ascii},reason=bidi_pre_strip")),
-        location: Some(location.to_string()),
-    });
+    warnings.push(SecurityWarning::at(
+        WarningCode::LookalikeHomographDomain,
+        format!("domain={ascii},reason=bidi_pre_strip"),
+        location,
+    ));
 }
 
 /// Extract the domain from a `mail_parser::Addr` and run the
