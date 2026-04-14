@@ -41,9 +41,7 @@ pub async fn handle(
     tracing::info!(smtp_response, "send_email: SMTP send succeeded");
 
     // Extract Message-ID for the response
-    let generated_msg_id = mail_parser::MessageParser::new()
-        .parse(&raw_msg)
-        .and_then(|m| m.message_id().map(ToString::to_string));
+    let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
     // Best-effort: APPEND copy to Sent folder
     let sent_folder = "Sent";

@@ -36,9 +36,7 @@ pub async fn handle(
         )
         .await?;
 
-    let generated_msg_id = mail_parser::MessageParser::new()
-        .parse(&raw_msg)
-        .and_then(|m| m.message_id().map(ToString::to_string));
+    let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
     Ok(ToolResponse {
         meta: serde_json::json!({
