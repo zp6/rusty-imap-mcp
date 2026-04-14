@@ -121,7 +121,7 @@ pub fn rotate_file(
 fn prune_rotated_siblings(active: &Path, keep: u32, retention_seconds: Option<u64>) {
     let parent = match active.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
-        _ => return,
+        Some(_) | None => return,
     };
     let Some(active_name) = active.file_name().and_then(|s| s.to_str()) else {
         return;

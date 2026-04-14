@@ -39,7 +39,12 @@ pub fn extract_threading_headers(raw: &[u8]) -> ThreadingHeaders {
         .map(|id| sanitize_msg_id(id, "header:message_id"));
     let in_reply_to = match parsed.in_reply_to() {
         mail_parser::HeaderValue::Text(t) => Some(sanitize_msg_id(t, "header:in_reply_to")),
-        _ => None,
+        mail_parser::HeaderValue::TextList(_)
+        | mail_parser::HeaderValue::Address(_)
+        | mail_parser::HeaderValue::DateTime(_)
+        | mail_parser::HeaderValue::ContentType(_)
+        | mail_parser::HeaderValue::Received(_)
+        | mail_parser::HeaderValue::Empty => None,
     };
 
     let mut references = Vec::new();
@@ -52,7 +57,11 @@ pub fn extract_threading_headers(raw: &[u8]) -> ThreadingHeaders {
                 references.push(sanitize_msg_id(r, "header:references"));
             }
         }
-        _ => {}
+        mail_parser::HeaderValue::Address(_)
+        | mail_parser::HeaderValue::DateTime(_)
+        | mail_parser::HeaderValue::ContentType(_)
+        | mail_parser::HeaderValue::Received(_)
+        | mail_parser::HeaderValue::Empty => {}
     }
 
     ThreadingHeaders {
@@ -69,7 +78,7 @@ pub fn extract_threading_headers(raw: &[u8]) -> ThreadingHeaders {
 fn sanitize_msg_id(id: &str, location: &str) -> String {
     let stripped: String = id
         .chars()
-        .filter(|c| !matches!(c, '\r' | '\n' | '\0' | '<' | '>'))
+        .filter(|c| *c != '\r' && *c != '\n' && *c != '\0' && *c != '<' && *c != '>')
         .collect();
     let (clean, _warnings) = unicode::sanitize(
         stripped.as_bytes(),

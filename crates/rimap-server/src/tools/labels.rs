@@ -221,7 +221,12 @@ pub async fn handle_list_labels(
                 .iter()
                 .filter_map(|f| match f {
                     Flag::Keyword(kw) => Some(kw.clone()),
-                    _ => None,
+                    Flag::Seen
+                    | Flag::Answered
+                    | Flag::Flagged
+                    | Flag::Deleted
+                    | Flag::Draft
+                    | Flag::Recent => None,
                 })
                 .collect()
         })

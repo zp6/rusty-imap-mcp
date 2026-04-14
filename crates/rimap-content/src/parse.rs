@@ -245,7 +245,7 @@ fn format_addr(addr: &mail_parser::Addr<'_>) -> String {
     let email = addr.address.as_deref().unwrap_or("");
     match addr.name.as_deref() {
         Some(name) if !name.is_empty() => format!("{name} <{email}>"),
-        _ => email.to_string(),
+        Some(_) | None => email.to_string(),
     }
 }
 
@@ -259,7 +259,11 @@ fn header_value_first_text(
     let raw = match value {
         HeaderValue::Text(s) => s.as_ref().to_string(),
         HeaderValue::TextList(list) => list.first()?.as_ref().to_string(),
-        _ => return None,
+        HeaderValue::Address(_)
+        | HeaderValue::DateTime(_)
+        | HeaderValue::ContentType(_)
+        | HeaderValue::Received(_)
+        | HeaderValue::Empty => return None,
     };
     let (text, mut new_warnings) =
         unicode::sanitize(raw.as_bytes(), Some("utf-8"), MAX_HEADER_BYTES, location);
@@ -276,7 +280,11 @@ fn header_value_all_text(
     let raws: Vec<String> = match value {
         HeaderValue::Text(s) => vec![s.as_ref().to_string()],
         HeaderValue::TextList(list) => list.iter().map(|s| s.as_ref().to_string()).collect(),
-        _ => return Vec::new(),
+        HeaderValue::Address(_)
+        | HeaderValue::DateTime(_)
+        | HeaderValue::ContentType(_)
+        | HeaderValue::Received(_)
+        | HeaderValue::Empty => return Vec::new(),
     };
     raws.into_iter()
         .map(|raw| {
@@ -345,9 +353,6 @@ fn extract_bodies(
         let Some(part) = message.parts.get(part_id as usize) else {
             continue;
         };
-        if matches!(part.body, PartType::Message(_)) {
-            continue;
-        }
         match &part.body {
             PartType::Text(s) => {
                 let raw_bytes = s.as_bytes();
@@ -360,7 +365,10 @@ fn extract_bodies(
                 }
                 process_html_part(part, cow.as_bytes(), &mut state, warnings)?;
             }
-            _ => continue,
+            PartType::Message(_)
+            | PartType::Binary(_)
+            | PartType::InlineBinary(_)
+            | PartType::Multipart(_) => continue,
         }
         if state.total_bytes >= MAX_TOTAL_BODY_BYTES {
             state.body_truncated = true;
@@ -533,7 +541,9 @@ fn depth_recursive(message: &Message<'_>, part_id: usize, current: usize) -> usi
             .max()
             .unwrap_or(current),
         PartType::Message(_) => current + 1,
-        _ => current,
+        PartType::Text(_) | PartType::Html(_) | PartType::Binary(_) | PartType::InlineBinary(_) => {
+            current
+        }
     }
 }
 
@@ -900,12 +910,16 @@ fn part_bytes<'a>(part: &'a mail_parser::MessagePart<'_>) -> &'a [u8] {
 /// `PartType::InlineBinary` variant or an explicit `Content-Disposition:
 /// inline` header.
 fn is_inline(part: &mail_parser::MessagePart<'_>) -> bool {
-    if matches!(part.body, PartType::InlineBinary(_)) {
-        return true;
-    }
-    match part.content_disposition() {
-        Some(cd) => cd.is_inline(),
-        None => false,
+    match &part.body {
+        PartType::InlineBinary(_) => true,
+        PartType::Text(_)
+        | PartType::Html(_)
+        | PartType::Binary(_)
+        | PartType::Message(_)
+        | PartType::Multipart(_) => match part.content_disposition() {
+            Some(cd) => cd.is_inline(),
+            None => false,
+        },
     }
 }
 
@@ -1021,7 +1035,10 @@ fn sanitize_header_value(
             })
             .collect::<Vec<_>>()
             .join(", "),
-        _ => return None,
+        HeaderValue::DateTime(_)
+        | HeaderValue::ContentType(_)
+        | HeaderValue::Received(_)
+        | HeaderValue::Empty => return None,
     };
     if raw.is_empty() {
         return None;
@@ -1058,33 +1075,7 @@ fn sanitize_filename(name: &str, idx: usize) -> (String, bool) {
         .to_string();
     let lowered = trimmed.to_ascii_lowercase();
     let reserved_stem = lowered.split('.').next().unwrap_or("");
-    let reserved = matches!(
-        reserved_stem,
-        "con"
-            | "prn"
-            | "aux"
-            | "nul"
-            | "com0"
-            | "com1"
-            | "com2"
-            | "com3"
-            | "com4"
-            | "com5"
-            | "com6"
-            | "com7"
-            | "com8"
-            | "com9"
-            | "lpt0"
-            | "lpt1"
-            | "lpt2"
-            | "lpt3"
-            | "lpt4"
-            | "lpt5"
-            | "lpt6"
-            | "lpt7"
-            | "lpt8"
-            | "lpt9"
-    );
+    let reserved = RESERVED_WINDOWS_STEMS.contains(&reserved_stem);
     let prefixed = if reserved {
         format!("_{trimmed}")
     } else {
@@ -1104,24 +1095,32 @@ fn sanitize_filename(name: &str, idx: usize) -> (String, bool) {
 /// These characters never appear in legitimate filenames or domains;
 /// their presence is a strong adversarial signal.
 fn contains_bidi_override(s: &str) -> bool {
+    // Non-enum input (`char`); the set of bidi-override codepoints is closed.
+    // Explicit disjunction avoids `matches!` (banned by project style) and
+    // the wildcard arm that `match { pat => true, _ => false }` would need.
     s.chars().any(|c| {
-        matches!(
-            c,
-            '\u{202A}'
-                | '\u{202B}'
-                | '\u{202C}'
-                | '\u{202D}'
-                | '\u{202E}'
-                | '\u{2066}'
-                | '\u{2067}'
-                | '\u{2068}'
-                | '\u{2069}'
-        )
+        c == '\u{202A}'
+            || c == '\u{202B}'
+            || c == '\u{202C}'
+            || c == '\u{202D}'
+            || c == '\u{202E}'
+            || c == '\u{2066}'
+            || c == '\u{2067}'
+            || c == '\u{2068}'
+            || c == '\u{2069}'
     })
 }
 
 const DOCUMENT_EXTENSIONS: &[&str] = &[
     "pdf", "doc", "docx", "xls", "xlsx", "png", "jpg", "jpeg", "gif", "txt", "csv", "rtf",
+];
+
+/// Reserved Windows filename stems (case-insensitive). Used by
+/// [`sanitize_filename`]. Non-enum input means we identify membership
+/// via a named slice rather than a `matches!` pattern.
+const RESERVED_WINDOWS_STEMS: &[&str] = &[
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 const EXECUTABLE_EXTENSIONS: &[&str] = &[

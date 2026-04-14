@@ -115,7 +115,34 @@ impl ToolName {
     /// of security posture.
     #[must_use]
     pub fn is_infrastructure(self) -> bool {
-        matches!(self, Self::UseAccount | Self::ListAccounts)
+        // Explicit list of infrastructure variants; remaining variants are all
+        // posture-gated. New variants default to non-infrastructure, which is
+        // the safer behavior (they will be subject to the posture matrix).
+        match self {
+            Self::UseAccount | Self::ListAccounts => true,
+            Self::ListFolders
+            | Self::Search
+            | Self::SearchAdvanced
+            | Self::FetchMessage
+            | Self::FetchMessageHtml
+            | Self::ListAttachments
+            | Self::DownloadAttachment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Flag
+            | Self::Unflag
+            | Self::AddLabel
+            | Self::RemoveLabel
+            | Self::ListLabels
+            | Self::MoveMessage
+            | Self::CreateDraft
+            | Self::SendEmail
+            | Self::DeleteMessage
+            | Self::Expunge
+            | Self::CreateFolder
+            | Self::RenameFolder
+            | Self::DeleteFolder => false,
+        }
     }
 }
 

@@ -658,11 +658,13 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
             map.remove("title");
             map
         }
-        Ok(serde_json::Value::Null
-        | serde_json::Value::Bool(_)
-        | serde_json::Value::Number(_)
-        | serde_json::Value::String(_)
-        | serde_json::Value::Array(_))
+        Ok(
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_)
+            | serde_json::Value::Array(_),
+        )
         | Err(_) => serde_json::Map::new(),
     }
 }

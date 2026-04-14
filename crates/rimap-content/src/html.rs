@@ -226,7 +226,7 @@ fn parse_translate_px(val: &str) -> Option<f64> {
             match min {
                 Some(current) if px_val < current => min = Some(px_val),
                 None => min = Some(px_val),
-                _ => {}
+                Some(_) => {}
             }
         }
     }
@@ -259,7 +259,10 @@ impl StyleHints {
     }
 
     fn is_offscreen(&self) -> bool {
-        let positioned = matches!(self.position.as_deref(), Some("absolute" | "fixed"));
+        let positioned = self
+            .position
+            .as_deref()
+            .is_some_and(|p| p == "absolute" || p == "fixed");
         if !positioned {
             return false;
         }
@@ -270,10 +273,10 @@ impl StyleHints {
     }
 
     fn is_color_match(&self) -> bool {
-        matches!(
-            (self.color.as_ref(), self.bg_color.as_ref()),
-            (Some(c), Some(bg)) if c == bg
-        )
+        match (self.color.as_ref(), self.bg_color.as_ref()) {
+            (Some(c), Some(bg)) => c == bg,
+            (Some(_) | None, None) | (None, Some(_)) => false,
+        }
     }
 }
 
@@ -518,14 +521,17 @@ fn collect_visible_text(
     counter: &mut usize,
 ) {
     let tag = el.value().name();
-    if matches!(
-        tag,
-        "script" | "style" | "noscript" | "template" | "head" | "title"
-    ) {
+    if NON_CONTENT_TAGS.contains(&tag) {
         return;
     }
     walk_children(el, hidden_indices, out, counter);
 }
+
+/// HTML tags whose contents are not considered user-visible body text
+/// and are therefore skipped during hidden-text extraction. Named slice
+/// avoids both `matches!` (banned by project style) and a wildcard
+/// match arm against a non-enum `&str` input.
+const NON_CONTENT_TAGS: &[&str] = &["script", "style", "noscript", "template", "head", "title"];
 
 /// Increment the counter for `child_el`, skip if hidden, otherwise
 /// recurse via [`collect_visible_text`]. Extracted so the body-root

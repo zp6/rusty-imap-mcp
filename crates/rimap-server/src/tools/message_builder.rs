@@ -86,7 +86,7 @@ pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_c
     if input
         .subject
         .bytes()
-        .any(|b| matches!(b, b'\r' | b'\n' | b'\0'))
+        .any(|b| b == b'\r' || b == b'\n' || b == b'\0')
     {
         return Err(rimap_core::RimapError::invalid_input(
             "subject contains forbidden characters",
@@ -104,7 +104,7 @@ pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_c
 pub(crate) fn validate_header_text(field: &str, value: &str) -> Result<(), rimap_core::RimapError> {
     if value
         .bytes()
-        .any(|b| matches!(b, b'\r' | b'\n' | b'\0' | b'<' | b'>'))
+        .any(|b| b == b'\r' || b == b'\n' || b == b'\0' || b == b'<' || b == b'>')
     {
         return Err(rimap_core::RimapError::invalid_input(format!(
             "{field} contains forbidden characters"
