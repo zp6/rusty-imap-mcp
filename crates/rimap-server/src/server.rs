@@ -150,7 +150,6 @@ impl ServerHandler for ImapMcpServer {
         let metadata = serde_json::json!({
             "name": account_name,
             "imap_host": state.imap.host(),
-            "posture": state.guard.matrix().posture().as_str(),
             "smtp_configured": state.smtp.is_some(),
             "available_tools": available_tools,
         });

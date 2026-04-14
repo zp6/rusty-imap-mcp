@@ -70,16 +70,14 @@ Reading a resource returns account metadata:
 {
   "name": "work",
   "imap_host": "127.0.0.1",
-  "imap_port": 1143,
-  "imap_username": "user@proton.me",
-  "posture": "draft-safe",
   "smtp_configured": true,
-  "protected_folders": ["INBOX", "Sent", "Drafts", "Trash"],
   "available_tools": ["list_folders", "search", "fetch_message", "..."]
 }
 ```
 
-No credentials, TLS fingerprints, or passwords are exposed in resources.
+No credentials, TLS fingerprints, passwords, or posture are exposed in
+resources. Posture is intentionally withheld so an injected prompt
+cannot discover which account has the most-permissive posture.
 
 ## Account selection
 
