@@ -25,19 +25,29 @@ pub struct DownloadAttachmentInput {
 /// Trusted metadata for a `download_attachment` response.
 #[derive(Debug, Serialize)]
 pub struct DownloadAttachmentMeta {
+    /// IMAP folder the message was fetched from.
     pub folder: String,
+    /// UID of the parent message.
     pub uid: u32,
+    /// IMAP part ID that was extracted.
     pub part_id: String,
+    /// Absolute path of the written attachment inside the sandbox.
     pub path: String,
+    /// Attachment body size in bytes (post-transfer-decoding).
     pub size_bytes: usize,
+    /// SHA-256 of the decoded bytes, hex-encoded.
     pub sha256: String,
+    /// `Content-Type` declared by the MIME part (`type/subtype`).
     pub mime_declared: String,
+    /// Magic-byte-sniffed MIME type, if any signature matched.
     pub mime_sniffed: Option<String>,
 }
 
 /// Untrusted payload for a `download_attachment` response.
 #[derive(Debug, Serialize)]
 pub struct DownloadAttachmentUntrusted {
+    /// Original filename from `Content-Disposition` / `Content-Type`
+    /// name parameter (sanitized).
     pub filename_original: Option<String>,
 }
 

@@ -180,18 +180,19 @@ fn parse_iso_date(s: &str) -> Result<time::Date, rimap_core::RimapError> {
 }
 
 /// Route a string destined for MCP search-result output through the
-/// shared `rimap_content::unicode::sanitize` pipeline. Strips C0/C1
-/// controls, zero-width codepoints, bidi overrides, and normalizes
-/// via NFKC. Warnings are dropped — envelope snippets do not surface
-/// per-field `SecurityWarning`.
+/// shared rimap-content sanitization sub-pipeline: NFKC, line-ending
+/// normalization, disallowed-codepoint filtering, grapheme truncation.
+/// Skips the `decode` and warning-aggregation steps of the full
+/// `unicode::sanitize` entry point — the input is already valid
+/// UTF-8 and envelope snippets do not surface `SecurityWarning`.
 fn sanitize_for_output(s: &str) -> String {
-    let (clean, _warnings) = rimap_content::unicode::sanitize(
-        s.as_bytes(),
-        Some("utf-8"),
-        rimap_content::parse::MAX_HEADER_BYTES,
-        "search:envelope",
-    );
-    clean
+    use rimap_content::unicode::{
+        filter_codepoints, normalize_line_endings, normalize_nfkc, truncate_graphemes,
+    };
+    let normalized = normalize_nfkc(s);
+    let normalized = normalize_line_endings(&normalized);
+    let filtered = filter_codepoints(&normalized);
+    truncate_graphemes(&filtered.text, rimap_content::parse::MAX_HEADER_BYTES)
 }
 
 /// Format an address as `"name <mailbox@host>"` or `"mailbox@host"`.

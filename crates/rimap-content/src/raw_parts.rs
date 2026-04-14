@@ -1,9 +1,5 @@
-//! Expose `mail_parser` MIME part bodies without leaking the
-//! `mail_parser` type surface to downstream crates.
-//!
-//! Used by `download_attachment` to extract a single part by IMAP
-//! part ID. rimap-content owns all `mail_parser` usage so the tool
-//! layer does not import it.
+//! Expose MIME part bodies by IMAP RFC 3501 part ID without leaking
+//! the `mail_parser` type surface across the rimap-content boundary.
 
 use crate::error::ContentError;
 

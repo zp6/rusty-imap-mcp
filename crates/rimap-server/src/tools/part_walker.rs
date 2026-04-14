@@ -5,11 +5,6 @@
 //! message at the root is "1". A `message/rfc822` part surfaces its
 //! own part ID and the walker then descends into its body with a
 //! fresh prefix derived from that number.
-//!
-//! Consumed by `list_attachments` (collecting attachment metadata)
-//! and `download_attachment` (looking up a specific part's declared
-//! type for cross-validation). The `mail_parser` variant of this
-//! walk lives in `rimap_content::raw_parts`.
 
 use rimap_imap::types::BodyStructure;
 
