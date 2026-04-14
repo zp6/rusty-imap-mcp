@@ -1,7 +1,7 @@
 //! Folder management: CREATE, RENAME, DELETE.
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 
 const MAX_FOLDER_NAME_BYTES: usize = 255;
 
@@ -9,29 +9,29 @@ const MAX_FOLDER_NAME_BYTES: usize = 255;
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` for empty names, names exceeding
+/// Returns `ImapError::InvalidInput` for empty names, names exceeding
 /// 255 bytes, names containing control characters, or path traversal attempts.
-pub(crate) fn validate_folder_name(name: &str) -> Result<(), Error> {
+pub(crate) fn validate_folder_name(name: &str) -> Result<(), ImapError> {
     if name.is_empty() {
-        return Err(Error::InvalidInput {
+        return Err(ImapError::InvalidInput {
             field: "folder_name",
             reason: "folder name must not be empty",
         });
     }
     if name.len() > MAX_FOLDER_NAME_BYTES {
-        return Err(Error::InvalidInput {
+        return Err(ImapError::InvalidInput {
             field: "folder_name",
             reason: "folder name exceeds 255 bytes",
         });
     }
     if name.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return Err(Error::InvalidInput {
+        return Err(ImapError::InvalidInput {
             field: "folder_name",
             reason: "folder name contains control characters",
         });
     }
     if name.contains("..") {
-        return Err(Error::InvalidInput {
+        return Err(ImapError::InvalidInput {
             field: "folder_name",
             reason: "folder name contains path traversal",
         });
@@ -43,9 +43,9 @@ pub(crate) fn validate_folder_name(name: &str) -> Result<(), Error> {
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` for invalid names.
+/// Returns `ImapError::InvalidInput` for invalid names.
 /// Propagates protocol errors from async-imap.
-pub(crate) async fn create_folder(session: &mut ImapSession, name: &str) -> Result<(), Error> {
+pub(crate) async fn create_folder(session: &mut ImapSession, name: &str) -> Result<(), ImapError> {
     validate_folder_name(name)?;
     session
         .create(name)
@@ -58,13 +58,13 @@ pub(crate) async fn create_folder(session: &mut ImapSession, name: &str) -> Resu
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` for invalid `old_name` or `new_name`.
+/// Returns `ImapError::InvalidInput` for invalid `old_name` or `new_name`.
 /// Propagates protocol errors from async-imap.
 pub(crate) async fn rename_folder(
     session: &mut ImapSession,
     old_name: &str,
     new_name: &str,
-) -> Result<(), Error> {
+) -> Result<(), ImapError> {
     validate_folder_name(old_name)?;
     validate_folder_name(new_name)?;
     session
@@ -78,9 +78,9 @@ pub(crate) async fn rename_folder(
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` for invalid names.
+/// Returns `ImapError::InvalidInput` for invalid names.
 /// Propagates protocol errors from async-imap.
-pub(crate) async fn delete_folder(session: &mut ImapSession, name: &str) -> Result<(), Error> {
+pub(crate) async fn delete_folder(session: &mut ImapSession, name: &str) -> Result<(), ImapError> {
     validate_folder_name(name)?;
     session
         .delete(name)

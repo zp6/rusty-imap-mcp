@@ -3,10 +3,13 @@
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::types::{Folder, FolderStatus, SelectedFolder, StatusItems};
 
-pub(crate) async fn list(session: &mut ImapSession, pattern: &str) -> Result<Vec<Folder>, Error> {
+pub(crate) async fn list(
+    session: &mut ImapSession,
+    pattern: &str,
+) -> Result<Vec<Folder>, ImapError> {
     let mut stream = session
         .list(Some(""), Some(pattern))
         .await
@@ -31,7 +34,7 @@ pub(crate) async fn status(
     session: &mut ImapSession,
     folder: &str,
     items: StatusItems,
-) -> Result<FolderStatus, Error> {
+) -> Result<FolderStatus, ImapError> {
     let item_str = build_status_items(items);
     let mailbox = session.status(folder, &item_str).await.map_err(map_err)?;
     // STATUS response populates only the requested fields.
@@ -58,7 +61,7 @@ pub(crate) async fn select(
     session: &mut ImapSession,
     folder: &str,
     read_only: bool,
-) -> Result<SelectedFolder, Error> {
+) -> Result<SelectedFolder, ImapError> {
     let mailbox = if read_only {
         session.examine(folder).await.map_err(map_err)?
     } else {
@@ -94,7 +97,7 @@ fn build_status_items(items: StatusItems) -> String {
     format!("({})", parts.join(" "))
 }
 
-/// Classify an async-imap error into our Error taxonomy.
+/// Classify an async-imap error into our `ImapError` taxonomy.
 ///
 /// Walks the `std::error::Error::source()` chain looking for a
 /// `std::io::Error` whose `ErrorKind` indicates a dead TCP connection
@@ -107,11 +110,11 @@ fn build_status_items(items: StatusItems) -> String {
 /// text, which missed async-imap's `Io(BrokenPipe)` formatting (the text
 /// "I/O error: Broken pipe" does not contain the word "connection") and
 /// left the session cached in a dead state. See #38 for the follow-up.
-pub(super) fn map_err(err: async_imap::error::Error) -> Error {
+pub(super) fn map_err(err: async_imap::error::Error) -> ImapError {
     if is_connection_lost(&err) {
-        Error::ConnectionLost
+        ImapError::ConnectionLost
     } else {
-        Error::Protocol(err)
+        ImapError::Protocol(err)
     }
 }
 
@@ -119,7 +122,7 @@ fn is_connection_lost(err: &async_imap::error::Error) -> bool {
     use std::error::Error as _;
 
     // Check the top-level error first — async-imap's `Io` variant wraps
-    // the `io::Error` directly.
+    // the `io::ImapError` directly.
     if let async_imap::error::Error::Io(io_err) = err
         && is_dead_tcp_kind(io_err.kind())
     {
@@ -127,7 +130,7 @@ fn is_connection_lost(err: &async_imap::error::Error) -> bool {
     }
 
     // Otherwise walk the source chain in case a future async-imap version
-    // wraps the io::Error more deeply.
+    // wraps the io::ImapError more deeply.
     let mut src: Option<&(dyn std::error::Error + 'static)> = err.source();
     while let Some(cause) = src {
         if let Some(io_err) = cause.downcast_ref::<std::io::Error>()

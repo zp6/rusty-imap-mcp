@@ -1,13 +1,13 @@
-//! `rimap_imap::Error` and conversion into `rimap_core::RimapError`.
+//! `rimap_imap::ImapError` and conversion into `rimap_core::RimapError`.
 
 use rimap_core::{ErrorCode, RimapError, TlsFingerprint};
 use thiserror::Error;
 
 /// Errors produced by `rimap-imap`. Each variant maps to a stable
-/// `ErrorCode` via `From<Error> for RimapError`.
+/// `ErrorCode` via `From<ImapError> for RimapError`.
 #[derive(Debug, Error)]
 #[non_exhaustive]
-pub enum Error {
+pub enum ImapError {
     /// TLS leaf-cert fingerprint did not match the configured pin.
     #[error("ERR_TLS: fingerprint mismatch (observed={observed}, expected={expected})")]
     Tls {
@@ -79,7 +79,7 @@ pub enum Error {
     },
 }
 
-/// Specific authentication failure mode for `Error::Auth`.
+/// Specific authentication failure mode for `ImapError::Auth`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AuthFailure {
@@ -110,17 +110,19 @@ impl std::fmt::Display for AuthFailure {
     }
 }
 
-impl From<Error> for RimapError {
-    fn from(err: Error) -> Self {
+impl From<ImapError> for RimapError {
+    fn from(err: ImapError) -> Self {
         let code = match &err {
-            Error::Tls { .. } | Error::TlsHandshake(_) => ErrorCode::Tls,
-            Error::Connect(_) | Error::ConnectionLost => ErrorCode::ConnectionLost,
-            Error::Timeout { .. } => ErrorCode::Timeout,
-            Error::Auth { .. } => ErrorCode::Auth,
-            Error::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
-            Error::Protocol(_) => ErrorCode::ImapProtocol,
-            Error::InvalidInput { .. } | Error::BatchTooLarge { .. } => ErrorCode::InvalidInput,
-            Error::Audit { .. } => ErrorCode::Internal,
+            ImapError::Tls { .. } | ImapError::TlsHandshake(_) => ErrorCode::Tls,
+            ImapError::Connect(_) | ImapError::ConnectionLost => ErrorCode::ConnectionLost,
+            ImapError::Timeout { .. } => ErrorCode::Timeout,
+            ImapError::Auth { .. } => ErrorCode::Auth,
+            ImapError::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
+            ImapError::Protocol(_) => ErrorCode::ImapProtocol,
+            ImapError::InvalidInput { .. } | ImapError::BatchTooLarge { .. } => {
+                ErrorCode::InvalidInput
+            }
+            ImapError::Audit { .. } => ErrorCode::Internal,
         };
         let message = err.to_string();
         RimapError::Imap {

@@ -4,7 +4,7 @@
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::ops::store;
 use crate::types::{Flag, FlagAction, MoveResult, Uid};
 
@@ -34,17 +34,17 @@ pub struct MoveOutcome {
 ///
 /// # Errors
 ///
-/// Returns `Error::BatchTooLarge` if `uids.len() > MAX_BATCH`.
+/// Returns `ImapError::BatchTooLarge` if `uids.len() > MAX_BATCH`.
 /// Propagates connection-lost or protocol errors from async-imap.
-pub async fn move_messages(
+pub(crate) async fn move_messages(
     session: &mut ImapSession,
     dest_folder: &str,
     uids: &[Uid],
     has_move: bool,
     has_uidplus: bool,
-) -> Result<MoveOutcome, Error> {
+) -> Result<MoveOutcome, ImapError> {
     if uids.len() > MAX_BATCH {
-        return Err(Error::BatchTooLarge {
+        return Err(ImapError::BatchTooLarge {
             count: uids.len(),
             limit: MAX_BATCH,
         });
@@ -87,7 +87,7 @@ async fn copy_delete_fallback(
     dest_folder: &str,
     uids: &[Uid],
     has_uidplus: bool,
-) -> Result<Vec<MoveResult>, Error> {
+) -> Result<Vec<MoveResult>, ImapError> {
     let uid_set = store::uid_set_string(uids);
 
     // Step 1: COPY to destination.

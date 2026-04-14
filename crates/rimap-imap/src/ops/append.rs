@@ -1,7 +1,7 @@
 //! IMAP APPEND: upload a message to a mailbox.
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::types::{AppendResult, Flag};
 
 /// Append a raw RFC 5322 message to `folder` with the given system
@@ -13,14 +13,14 @@ use crate::types::{AppendResult, Flag};
 /// # Errors
 ///
 /// Propagates connection-lost or protocol errors from async-imap.
-pub async fn append(
+pub(crate) async fn append(
     session: &mut ImapSession,
     folder: &str,
     message: &[u8],
     flags: &[Flag],
     keywords: &[&str],
     max_append_bytes: u64,
-) -> Result<AppendResult, Error> {
+) -> Result<AppendResult, ImapError> {
     check_append_size(message, max_append_bytes)?;
     let flag_str = build_flags_string(flags, keywords)?;
     let flags_arg = if flag_str.is_empty() {
@@ -38,10 +38,10 @@ pub async fn append(
 }
 
 /// Reject messages exceeding the configured byte limit.
-fn check_append_size(message: &[u8], max_append_bytes: u64) -> Result<(), Error> {
+fn check_append_size(message: &[u8], max_append_bytes: u64) -> Result<(), ImapError> {
     let len = u64::try_from(message.len()).unwrap_or(u64::MAX);
     if len > max_append_bytes {
-        return Err(Error::SizeLimit {
+        return Err(ImapError::SizeLimit {
             limit: max_append_bytes,
         });
     }
@@ -52,9 +52,9 @@ fn check_append_size(message: &[u8], max_append_bytes: u64) -> Result<(), Error>
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` if any keyword or `Flag::Keyword`
+/// Returns `ImapError::InvalidInput` if any keyword or `Flag::Keyword`
 /// content contains non-atom characters.
-fn build_flags_string(flags: &[Flag], keywords: &[&str]) -> Result<String, Error> {
+fn build_flags_string(flags: &[Flag], keywords: &[&str]) -> Result<String, ImapError> {
     use crate::ops::store;
     let mut s = store::flags_string(flags)?;
     for kw in keywords {
@@ -79,7 +79,7 @@ mod tests {
         let message = vec![b'X'; 101];
         let result = super::check_append_size(&message, limit);
         match result {
-            Err(Error::SizeLimit { limit: l }) => assert_eq!(l, 100),
+            Err(ImapError::SizeLimit { limit: l }) => assert_eq!(l, 100),
             other => panic!("expected SizeLimit, got {other:?}"),
         }
     }

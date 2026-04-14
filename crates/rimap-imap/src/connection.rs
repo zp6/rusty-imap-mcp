@@ -32,7 +32,7 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::auth::{AuthContext, auth_failure, auth_success};
-use crate::error::{AuthFailure, Error};
+use crate::error::{AuthFailure, ImapError};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
 /// Everything `Connection` needs to open a session, pulled out of
@@ -134,7 +134,7 @@ impl Connection {
     /// holds the tokio mutex; drop it before any other method on `Connection`.
     pub(crate) async fn session(
         &self,
-    ) -> Result<tokio::sync::MutexGuard<'_, Option<ImapSession>>, Error> {
+    ) -> Result<tokio::sync::MutexGuard<'_, Option<ImapSession>>, ImapError> {
         let mut guard = self.inner.session.lock().await;
         if guard.is_none() {
             let session = self.connect_inner().await?;
@@ -165,23 +165,23 @@ impl Connection {
 
     /// The full connect/handshake/login/CAPABILITY flow. Emits exactly one
     /// `Auth` audit record on every termination path.
-    async fn connect_inner(&self) -> Result<ImapSession, Error> {
+    async fn connect_inner(&self) -> Result<ImapSession, ImapError> {
         let cfg = &self.inner.cfg;
         let bundle = build_tls_config(cfg.pinned_fingerprint)?;
 
         // Run the connect flow. If it failed with a TLS handshake error AND
-        // we have a pinned fingerprint, enrich the error into Error::Tls
+        // we have a pinned fingerprint, enrich the error into ImapError::Tls
         // with the structured observed/expected fields by reading the
         // bundle's last_observed slot.
         let raw_outcome = self.connect_with_bundle(&bundle).await;
         let outcome = match raw_outcome {
             Ok(session) => Ok(session),
-            Err(Error::TlsHandshake(inner)) => {
+            Err(ImapError::TlsHandshake(inner)) => {
                 match (cfg.pinned_fingerprint, bundle.last_observed.get().copied()) {
                     (Some(expected), Some(observed)) if expected != observed => {
-                        Err(Error::Tls { observed, expected })
+                        Err(ImapError::Tls { observed, expected })
                     }
-                    (Some(_) | None, _) => Err(Error::TlsHandshake(inner)),
+                    (Some(_) | None, _) => Err(ImapError::TlsHandshake(inner)),
                 }
             }
             Err(other) => Err(other),
@@ -201,10 +201,10 @@ impl Connection {
             Ok(_) => self.emit_auth(auth_success(&ctx)).await?,
             Err(err) => {
                 // Deliberate: log but do NOT propagate emit_auth failures on
-                // the error branch. The ORIGINAL outcome (Error::Auth,
-                // Error::TlsHandshake, Error::Connect, ...) is what the
+                // the error branch. The ORIGINAL outcome (ImapError::Auth,
+                // ImapError::TlsHandshake, ImapError::Connect, ...) is what the
                 // caller and monitoring need to see. Replacing it with
-                // Error::Audit would mask brute-force signals from
+                // ImapError::Audit would mask brute-force signals from
                 // whatever observed ERR_AUTH before. Audit-write failures
                 // on this path are still visible via tracing; operators
                 // running fail_open=false will additionally see the
@@ -226,7 +226,10 @@ impl Connection {
         outcome
     }
 
-    async fn connect_with_bundle(&self, bundle: &TlsConfigBundle) -> Result<ImapSession, Error> {
+    async fn connect_with_bundle(
+        &self,
+        bundle: &TlsConfigBundle,
+    ) -> Result<ImapSession, ImapError> {
         let cfg = &self.inner.cfg;
         let total_deadline = cfg.connect_timeout;
         let started = std::time::Instant::now();
@@ -237,18 +240,19 @@ impl Connection {
             TcpStream::connect((cfg.host.as_str(), cfg.port)),
         )
         .await
-        .map_err(|_| Error::Timeout { op: "tcp_connect" })?
-        .map_err(Error::Connect)?;
+        .map_err(|_| ImapError::Timeout { op: "tcp_connect" })?
+        .map_err(ImapError::Connect)?;
 
         // Step 2: TLS handshake.
-        let server_name = ServerName::try_from(cfg.host.clone())
-            .map_err(|_| Error::Connect(std::io::Error::other("invalid server name for TLS")))?;
+        let server_name = ServerName::try_from(cfg.host.clone()).map_err(|_| {
+            ImapError::Connect(std::io::Error::other("invalid server name for TLS"))
+        })?;
         let connector = TlsConnector::from(bundle.config.clone());
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
         let tls_stream = timeout(remaining, connector.connect(server_name, tcp))
             .await
-            .map_err(|_| Error::Timeout {
+            .map_err(|_| ImapError::Timeout {
                 op: "tls_handshake",
             })?
             .map_err(|e| map_tls_handshake_error(&e))?;
@@ -258,7 +262,7 @@ impl Connection {
         let remaining = total_deadline.saturating_sub(elapsed);
         timeout(remaining, self.imap_login(tls_stream))
             .await
-            .map_err(|_| Error::Timeout { op: "imap_login" })?
+            .map_err(|_| ImapError::Timeout { op: "imap_login" })?
     }
 
     /// Run the IMAP greeting + CAPABILITY probe + LOGIN sequence.
@@ -272,7 +276,7 @@ impl Connection {
     ///      and drain the unsolicited channel for `Other(ResponseData)` items
     ///      containing `Response::Capabilities` data.
     ///   3. Call `client.login(user, pass)`.
-    async fn imap_login(&self, tls_stream: TlsStream<TcpStream>) -> Result<ImapSession, Error> {
+    async fn imap_login(&self, tls_stream: TlsStream<TcpStream>) -> Result<ImapSession, ImapError> {
         let mut client = async_imap::Client::new(tls_stream);
 
         // Read the server greeting. An absent greeting (EOF) or BYE status
@@ -280,8 +284,8 @@ impl Connection {
         let greeting = client
             .read_response()
             .await
-            .map_err(Error::Connect)?
-            .ok_or(Error::Auth {
+            .map_err(ImapError::Connect)?
+            .ok_or(ImapError::Auth {
                 reason: AuthFailure::ServerRejected,
             })?;
 
@@ -290,7 +294,7 @@ impl Connection {
             ..
         } = greeting.parsed()
         {
-            return Err(Error::Auth {
+            return Err(ImapError::Auth {
                 reason: AuthFailure::ServerRejected,
             });
         }
@@ -303,14 +307,14 @@ impl Connection {
         client
             .run_command_and_check_ok("CAPABILITY", Some(tx))
             .await
-            .map_err(Error::Protocol)?;
+            .map_err(ImapError::Protocol)?;
 
         // Drain whatever arrived on the channel (non-blocking; the command
         // has already completed). A `Response::Capabilities` list containing
         // LOGINDISABLED means LOGIN is prohibited.
         let logindisabled = drain_for_logindisabled(&rx);
         if logindisabled {
-            return Err(Error::Auth {
+            return Err(ImapError::Auth {
                 reason: AuthFailure::CapabilityMissing { needed: "LOGIN" },
             });
         }
@@ -321,7 +325,7 @@ impl Connection {
         // accurate.
         let cfg = &self.inner.cfg;
         let password = resolve_credential(&*self.inner.credentials, &cfg.username, &cfg.host)
-            .map_err(|e| Error::Auth {
+            .map_err(|e| ImapError::Auth {
                 reason: AuthFailure::CredentialUnavailable(e.to_string()),
             })?;
 
@@ -332,10 +336,10 @@ impl Connection {
             Ok(session) => session,
             Err((err, _client)) => {
                 return match err {
-                    async_imap::error::Error::No(_) => Err(Error::Auth {
+                    async_imap::error::Error::No(_) => Err(ImapError::Auth {
                         reason: AuthFailure::LoginRejected,
                     }),
-                    other => Err(Error::Protocol(other)),
+                    other => Err(ImapError::Protocol(other)),
                 };
             }
         };
@@ -374,20 +378,20 @@ impl Connection {
     /// cancellation). Callers that MUST know whether the write succeeded
     /// should not drop this future.
     ///
-    /// ## Error message sanitization
+    /// ## `ImapError` message sanitization
     ///
-    /// The `Error::Audit { message }` uses the short error code
+    /// The `ImapError::Audit { message }` uses the short error code
     /// (`audit_err.code()`) rather than the full `Display`, because
     /// `AuditError::Write` / `Fsync` / `Rotate` include the audit file
     /// path, which is operator-configured filesystem layout and should
     /// not propagate into MCP tool responses or client-visible error
     /// chains. The full error is still preserved in the `source` field
     /// for observability and log inspection.
-    async fn emit_auth(&self, record: Auth) -> Result<(), Error> {
+    async fn emit_auth(&self, record: Auth) -> Result<(), ImapError> {
         let audit = self.inner.audit.clone();
         let join_result = tokio::task::spawn_blocking(move || audit.log_auth(record)).await;
         match join_result {
-            Err(join_err) => Err(Error::Audit {
+            Err(join_err) => Err(ImapError::Audit {
                 op: "emit_auth",
                 message: "tokio join error during audit write".to_string(),
                 source: Box::new(join_err),
@@ -395,13 +399,13 @@ impl Connection {
             Ok(Err(audit_err)) => {
                 tracing::error!(
                     error = %audit_err,
-                    "audit log_auth failed; converting to Error::Audit",
+                    "audit log_auth failed; converting to ImapError::Audit",
                 );
                 // Sanitized message: use only the stable error code, not
                 // the Display (which may include the audit file path).
                 // The full error is preserved in source.
                 let message = format!("emit_auth: {}", audit_err.code());
-                Err(Error::Audit {
+                Err(ImapError::Audit {
                     op: "emit_auth",
                     message,
                     source: Box::new(audit_err),
@@ -411,84 +415,82 @@ impl Connection {
         }
     }
 
+    /// Run an IMAP operation with a command timeout and automatic session
+    /// invalidation on connection-level failures.
+    ///
+    /// The closure receives a mutable reference to the live `Session`.
+    /// If it returns `ImapError::ConnectionLost` or `ImapError::Timeout`, the
+    /// cached session is dropped so the next call lazy-reconnects.
+    async fn with_session<T, F>(&self, op_name: &'static str, body: F) -> Result<T, ImapError>
+    where
+        F: for<'s> AsyncFnOnce(&'s mut ImapSession) -> Result<T, ImapError>,
+    {
+        let dur = self.inner.cfg.command_timeout;
+        let result = crate::time::with_timeout(op_name, dur, async {
+            let mut guard = self.session().await?;
+            let session =
+                guard
+                    .as_mut()
+                    .ok_or(ImapError::Protocol(async_imap::error::Error::Bad(
+                        "session invariant violated: guard is None after session()".to_string(),
+                    )))?;
+            body(session).await
+        })
+        .await;
+        if let Err(ImapError::ConnectionLost | ImapError::Timeout { .. }) = &result {
+            self.invalidate().await;
+        }
+        result
+    }
+
     /// `LIST` against `pattern` (e.g. `"*"`, `"INBOX/*"`).
     ///
     /// Drops the cached session on `ConnectionLost` so the next call
     /// lazy-reconnects without auto-retrying the failed command.
     ///
     /// # Errors
-    /// Propagates any `Error` produced by `time::with_timeout` or the
+    /// Propagates any `ImapError` produced by `time::with_timeout` or the
     /// underlying `ops::folders::list` call.
-    pub async fn list_folders(&self, pattern: &str) -> Result<Vec<crate::types::Folder>, Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("list", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    pub async fn list_folders(
+        &self,
+        pattern: &str,
+    ) -> Result<Vec<crate::types::Folder>, ImapError> {
+        self.with_session("list", async |session| {
             crate::ops::folders::list(session, pattern).await
         })
-        .await;
-        if let Err(Error::ConnectionLost) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// `STATUS` for `folder` selecting the requested items.
     ///
     /// # Errors
-    /// Propagates any `Error` produced by `time::with_timeout` or the
+    /// Propagates any `ImapError` produced by `time::with_timeout` or the
     /// underlying `ops::folders::status` call.
     pub async fn status(
         &self,
         folder: &str,
         items: crate::types::StatusItems,
-    ) -> Result<crate::types::FolderStatus, Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("status", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    ) -> Result<crate::types::FolderStatus, ImapError> {
+        self.with_session("status", async |session| {
             crate::ops::folders::status(session, folder, items).await
         })
-        .await;
-        if let Err(Error::ConnectionLost) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// `SELECT` (or `EXAMINE` if `read_only`) the named folder.
     ///
     /// # Errors
-    /// Propagates any `Error` produced by `time::with_timeout` or the
+    /// Propagates any `ImapError` produced by `time::with_timeout` or the
     /// underlying `ops::folders::select` call.
     pub async fn select(
         &self,
         folder: &str,
         read_only: bool,
-    ) -> Result<crate::types::SelectedFolder, Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("select", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    ) -> Result<crate::types::SelectedFolder, ImapError> {
+        self.with_session("select", async |session| {
             crate::ops::folders::select(session, folder, read_only).await
         })
-        .await;
-        if let Err(Error::ConnectionLost) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// `SEARCH` against `folder`. Returns matching UIDs.
@@ -500,22 +502,11 @@ impl Connection {
         &self,
         folder: &str,
         query: crate::types::SearchQuery,
-    ) -> Result<Vec<crate::types::Uid>, Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("search", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    ) -> Result<Vec<crate::types::Uid>, ImapError> {
+        self.with_session("search", async |session| {
             crate::ops::search::search(session, folder, query).await
         })
-        .await;
-        if let Err(Error::ConnectionLost) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// `FETCH` for the given UIDs with the requested items. Does NOT include
@@ -529,22 +520,11 @@ impl Connection {
         folder: &str,
         uids: &[crate::types::Uid],
         spec: crate::types::FetchSpec,
-    ) -> Result<Vec<crate::types::FetchedMessage>, Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("fetch", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    ) -> Result<Vec<crate::types::FetchedMessage>, ImapError> {
+        self.with_session("fetch", async |session| {
             crate::ops::fetch::fetch(session, folder, uids, spec).await
         })
-        .await;
-        if let Err(Error::ConnectionLost) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Fetch the full `BODY[]` of `uid` from `folder`. Returns raw bytes
@@ -556,7 +536,7 @@ impl Connection {
     ///
     /// Before issuing `FETCH BODY.PEEK[]`, this method issues
     /// `UID FETCH <uid> (RFC822.SIZE)` and rejects with
-    /// `Error::SizeLimit` if the server-reported size exceeds
+    /// `ImapError::SizeLimit` if the server-reported size exceeds
     /// `max_fetch_body_bytes`. This prevents async-imap from buffering
     /// the full body into memory for oversize messages, at the cost of
     /// one extra IMAP round-trip.
@@ -566,19 +546,24 @@ impl Connection {
     /// `RFC822.SIZE`.
     ///
     /// # Errors
-    /// Propagates `Error::SizeLimit` if the body exceeds the configured
+    /// Propagates `ImapError::SizeLimit` if the body exceeds the configured
     /// `max_fetch_body_bytes`, plus the usual timeout / protocol /
     /// connection-lost errors.
-    pub async fn fetch_body(&self, folder: &str, uid: crate::types::Uid) -> Result<Vec<u8>, Error> {
+    pub async fn fetch_body(
+        &self,
+        folder: &str,
+        uid: crate::types::Uid,
+    ) -> Result<Vec<u8>, ImapError> {
         let dur = self.inner.cfg.command_timeout;
         let limit = self.inner.cfg.max_fetch_body_bytes;
         let result = crate::time::with_timeout("fetch_body", dur, async {
             let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+            let session =
+                guard
+                    .as_mut()
+                    .ok_or(ImapError::Protocol(async_imap::error::Error::Bad(
+                        "session invariant violated: guard is None after session()".to_string(),
+                    )))?;
             let server_size = crate::ops::fetch::preflight_fetch_size(session, folder, uid).await?;
             crate::ops::fetch::preflight_size_check(server_size, limit)?;
             crate::ops::fetch::fetch_body(session, folder, uid, limit).await
@@ -587,20 +572,20 @@ impl Connection {
         // Drop the cached session on EITHER ConnectionLost OR SizeLimit.
         // SizeLimit means we aborted mid-stream, so the IMAP response
         // state is half-consumed and the session cannot be reused.
-        // The match here lists every Error variant explicitly because
+        // The match here lists every ImapError variant explicitly because
         // workspace lints ban `_ =>` wildcards.
         let should_invalidate = match &result {
-            Err(Error::ConnectionLost | Error::SizeLimit { .. }) => true,
+            Err(ImapError::ConnectionLost | ImapError::SizeLimit { .. }) => true,
             Err(
-                Error::Tls { .. }
-                | Error::TlsHandshake(_)
-                | Error::Connect(_)
-                | Error::Timeout { .. }
-                | Error::Auth { .. }
-                | Error::Protocol(_)
-                | Error::InvalidInput { .. }
-                | Error::BatchTooLarge { .. }
-                | Error::Audit { .. },
+                ImapError::Tls { .. }
+                | ImapError::TlsHandshake(_)
+                | ImapError::Connect(_)
+                | ImapError::Timeout { .. }
+                | ImapError::Auth { .. }
+                | ImapError::Protocol(_)
+                | ImapError::InvalidInput { .. }
+                | ImapError::BatchTooLarge { .. }
+                | ImapError::Audit { .. },
             )
             | Ok(_) => false,
         };
@@ -615,7 +600,7 @@ impl Connection {
     /// Batch limit: 100 UIDs. Returns the UIDs the server confirmed.
     ///
     /// # Errors
-    /// Returns `Error::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn store_flags(
         &self,
@@ -623,23 +608,12 @@ impl Connection {
         uids: &[crate::types::Uid],
         flags: &[crate::types::Flag],
         action: crate::types::FlagAction,
-    ) -> Result<Vec<crate::types::Uid>, Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("store", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    ) -> Result<Vec<crate::types::Uid>, ImapError> {
+        self.with_session("store", async |session| {
             crate::ops::folders::select(session, folder, false).await?;
             crate::ops::store::store(session, uids, flags, action).await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Move messages from `source_folder` to `dest_folder`.
@@ -652,33 +626,22 @@ impl Connection {
     /// Batch limit: 100 UIDs.
     ///
     /// # Errors
-    /// Returns `Error::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn move_messages(
         &self,
         source_folder: &str,
         dest_folder: &str,
         uids: &[crate::types::Uid],
-    ) -> Result<crate::ops::move_msg::MoveOutcome, Error> {
-        let dur = self.inner.cfg.command_timeout;
+    ) -> Result<crate::ops::move_msg::MoveOutcome, ImapError> {
         let has_move = self.has_move_capability();
         let has_uidplus = self.has_uidplus_capability();
-        let result = crate::time::with_timeout("move", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+        self.with_session("move", async |session| {
             crate::ops::folders::select(session, source_folder, false).await?;
             crate::ops::move_msg::move_messages(session, dest_folder, uids, has_move, has_uidplus)
                 .await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// `APPEND` a raw RFC 5322 message to `folder` with the given
@@ -695,23 +658,12 @@ impl Connection {
         message: &[u8],
         flags: &[crate::types::Flag],
         keywords: &[&str],
-    ) -> Result<crate::types::AppendResult, Error> {
-        let dur = self.inner.cfg.command_timeout;
+    ) -> Result<crate::types::AppendResult, ImapError> {
         let limit = self.inner.cfg.max_append_bytes;
-        let result = crate::time::with_timeout("append", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+        self.with_session("append", async |session| {
             crate::ops::append::append(session, folder, message, flags, keywords, limit).await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Delete a message by flagging it as `\Deleted` and moving it to Trash.
@@ -720,24 +672,17 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// Returns `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
     pub async fn delete_message(
         &self,
         folder: &str,
         uid: crate::types::Uid,
         trash_folder: &str,
-    ) -> Result<crate::ops::delete::DeleteResult, Error> {
-        let dur = self.inner.cfg.command_timeout;
+    ) -> Result<crate::ops::delete::DeleteResult, ImapError> {
         let has_move = self.has_move_capability();
         let has_uidplus = self.has_uidplus_capability();
-        let result = crate::time::with_timeout("delete_message", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+        self.with_session("delete_message", async |session| {
             crate::ops::folders::select(session, folder, false).await?;
             crate::ops::delete::delete_message(
                 session,
@@ -749,11 +694,7 @@ impl Connection {
             )
             .await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Expunge all `\Deleted` messages from `folder`.
@@ -764,101 +705,57 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// Returns `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
-    pub async fn expunge(&self, folder: &str) -> Result<(Vec<crate::types::Uid>, u32), Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("expunge", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    pub async fn expunge(&self, folder: &str) -> Result<(Vec<crate::types::Uid>, u32), ImapError> {
+        self.with_session("expunge", async |session| {
             let deleted_uids = crate::ops::expunge::count_deleted(session, folder).await?;
             crate::ops::folders::select(session, folder, false).await?;
             let count = crate::ops::expunge::expunge(session).await?;
             Ok((deleted_uids, count))
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Create a new IMAP folder.
     ///
     /// # Errors
     ///
-    /// Returns `Error::InvalidInput` for invalid names, `Error::ConnectionLost`
-    /// or `Error::Timeout` on transport failure, or a protocol error if the
+    /// Returns `ImapError::InvalidInput` for invalid names, `ImapError::ConnectionLost`
+    /// or `ImapError::Timeout` on transport failure, or a protocol error if the
     /// server rejects the command.
-    pub async fn create_folder(&self, name: &str) -> Result<(), Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("create_folder", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    pub async fn create_folder(&self, name: &str) -> Result<(), ImapError> {
+        self.with_session("create_folder", async |session| {
             crate::ops::folder_mgmt::create_folder(session, name).await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Rename an IMAP folder.
     ///
     /// # Errors
     ///
-    /// Returns `Error::InvalidInput` for an invalid `new_name`,
-    /// `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// Returns `ImapError::InvalidInput` for an invalid `new_name`,
+    /// `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
-    pub async fn rename_folder(&self, old_name: &str, new_name: &str) -> Result<(), Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("rename_folder", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    pub async fn rename_folder(&self, old_name: &str, new_name: &str) -> Result<(), ImapError> {
+        self.with_session("rename_folder", async |session| {
             crate::ops::folder_mgmt::rename_folder(session, old_name, new_name).await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 
     /// Delete an IMAP folder and all its contents.
     ///
     /// # Errors
     ///
-    /// Returns `Error::ConnectionLost` or `Error::Timeout` on transport failure,
+    /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
-    pub async fn delete_folder(&self, name: &str) -> Result<(), Error> {
-        let dur = self.inner.cfg.command_timeout;
-        let result = crate::time::with_timeout("delete_folder", dur, async {
-            let mut guard = self.session().await?;
-            let session = guard
-                .as_mut()
-                .ok_or(Error::Protocol(async_imap::error::Error::Bad(
-                    "session invariant violated: guard is None after session()".to_string(),
-                )))?;
+    pub async fn delete_folder(&self, name: &str) -> Result<(), ImapError> {
+        self.with_session("delete_folder", async |session| {
             crate::ops::folder_mgmt::delete_folder(session, name).await
         })
-        .await;
-        if let Err(Error::ConnectionLost | Error::Timeout { .. }) = &result {
-            self.invalidate().await;
-        }
-        result
+        .await
     }
 }
 
@@ -885,23 +782,23 @@ fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) ->
     false
 }
 
-/// Map an `io::Error` from the TLS connect call to `Error::TlsHandshake`.
-/// `connect_inner` will enrich this into `Error::Tls { observed, expected }`
+/// Map an `io::ImapError` from the TLS connect call to `ImapError::TlsHandshake`.
+/// `connect_inner` will enrich this into `ImapError::Tls { observed, expected }`
 /// when the `TlsConfigBundle`'s `last_observed` slot shows a mismatch.
-fn map_tls_handshake_error(err: &std::io::Error) -> Error {
-    Error::TlsHandshake(tokio_rustls::rustls::Error::General(err.to_string()))
+fn map_tls_handshake_error(err: &std::io::Error) -> ImapError {
+    ImapError::TlsHandshake(tokio_rustls::rustls::Error::General(err.to_string()))
 }
 
 /// Map a connect/login error to its stable short error code for the audit log.
-fn error_code_for(err: &Error) -> &'static str {
+fn error_code_for(err: &ImapError) -> &'static str {
     match err {
-        Error::Tls { .. } | Error::TlsHandshake(_) => "ERR_TLS",
-        Error::Connect(_) | Error::ConnectionLost => "ERR_NETWORK",
-        Error::Timeout { .. } => "ERR_TIMEOUT",
-        Error::Auth { .. } => "ERR_AUTH",
-        Error::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
-        Error::Protocol(_) => "ERR_IMAP_PROTOCOL",
-        Error::InvalidInput { .. } | Error::BatchTooLarge { .. } => "ERR_INVALID_INPUT",
-        Error::Audit { .. } => "ERR_AUDIT",
+        ImapError::Tls { .. } | ImapError::TlsHandshake(_) => "ERR_TLS",
+        ImapError::Connect(_) | ImapError::ConnectionLost => "ERR_NETWORK",
+        ImapError::Timeout { .. } => "ERR_TIMEOUT",
+        ImapError::Auth { .. } => "ERR_AUTH",
+        ImapError::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
+        ImapError::Protocol(_) => "ERR_IMAP_PROTOCOL",
+        ImapError::InvalidInput { .. } | ImapError::BatchTooLarge { .. } => "ERR_INVALID_INPUT",
+        ImapError::Audit { .. } => "ERR_AUDIT",
     }
 }

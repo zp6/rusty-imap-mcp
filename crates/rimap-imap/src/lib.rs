@@ -13,4 +13,4 @@ pub mod tls;
 pub mod types;
 
 pub use crate::connection::{Connection, ConnectionConfig};
-pub use crate::error::{AuthFailure, Error};
+pub use crate::error::{AuthFailure, ImapError};

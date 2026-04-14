@@ -3,14 +3,14 @@
 use std::fmt::Write;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::types::{SearchQuery, StructuredQuery, Uid};
 
 pub(crate) async fn search(
     session: &mut ImapSession,
     folder: &str,
     query: SearchQuery,
-) -> Result<Vec<Uid>, Error> {
+) -> Result<Vec<Uid>, ImapError> {
     // Caller should have sent SELECT via the public API; this is a defensive
     // re-EXAMINE to keep the search scoped to the requested folder.
     session
@@ -30,7 +30,7 @@ pub(crate) async fn search(
     Ok(uids.into_iter().filter_map(Uid::new).collect())
 }
 
-fn structured_to_key(q: &StructuredQuery) -> Result<String, Error> {
+fn structured_to_key(q: &StructuredQuery) -> Result<String, ImapError> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(s) = &q.from {
         parts.push(format!("FROM {}", quote(s)?));
@@ -64,9 +64,9 @@ fn structured_to_key(q: &StructuredQuery) -> Result<String, Error> {
     Ok(parts.join(" "))
 }
 
-fn quote(s: &str) -> Result<String, Error> {
+fn quote(s: &str) -> Result<String, ImapError> {
     if s.bytes().any(|b| b == b'\r' || b == b'\n' || b == b'\0') {
-        return Err(Error::InvalidInput {
+        return Err(ImapError::InvalidInput {
             field: "search string",
             reason: "contains forbidden control bytes (CR/LF/NUL)",
         });
@@ -108,7 +108,7 @@ fn format_imap_date(d: ::time::Date) -> String {
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::{format_imap_date, quote, structured_to_key};
-    use crate::error::Error;
+    use crate::error::ImapError;
     use crate::types::StructuredQuery;
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     #[expect(clippy::panic, reason = "test failure path")]
     fn quote_rejects_embedded_newline() {
-        let Err(Error::InvalidInput { field, reason }) = quote("injected\r\nNOOP") else {
+        let Err(ImapError::InvalidInput { field, reason }) = quote("injected\r\nNOOP") else {
             panic!("expected InvalidInput error");
         };
         assert_eq!(field, "search string");

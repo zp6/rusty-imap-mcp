@@ -81,7 +81,7 @@ impl core::fmt::Display for ErrorCode {
 }
 
 /// Top-level tool error returned from dispatch. Library crates produce more
-/// specific errors (`AuthzError`, `ConfigError`, `rimap_imap::Error`,
+/// specific errors (`AuthzError`, `ConfigError`, `rimap_imap::ImapError`,
 /// `AuditError`, …) which map into this via `From` impls.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -101,7 +101,7 @@ pub enum RimapError {
         code: ErrorCode,
         /// Human-readable message.
         message: String,
-        /// Underlying source error from `rimap_imap::Error`, if any.
+        /// Underlying source error from `rimap_imap::ImapError`, if any.
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
     },

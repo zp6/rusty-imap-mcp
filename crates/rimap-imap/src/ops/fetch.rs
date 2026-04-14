@@ -4,7 +4,7 @@
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::types::{Address, BodyStructure, Envelope, FetchSpec, FetchedMessage, MessageId, Uid};
 
 /// Maximum BODYSTRUCTURE nesting depth before we refuse to descend.
@@ -77,7 +77,7 @@ pub(crate) async fn fetch(
     folder: &str,
     uids: &[Uid],
     spec: FetchSpec,
-) -> Result<Vec<FetchedMessage>, Error> {
+) -> Result<Vec<FetchedMessage>, ImapError> {
     session
         .examine(folder)
         .await
@@ -135,15 +135,15 @@ pub(crate) async fn fetch(
     Ok(out)
 }
 
-/// Fetch the full `BODY[]` of a single UID. Aborts with `Error::SizeLimit`
+/// Fetch the full `BODY[]` of a single UID. Aborts with `ImapError::SizeLimit`
 /// if the projected total would exceed `limit`. The caller MUST drop the
 /// session on overflow — the IMAP response state is half-consumed and
 /// cannot be reused.
 ///
 /// # Errors
-/// - `Error::SizeLimit { limit }` if the body exceeds `limit` bytes.
-/// - `Error::Protocol(_)` if the server returned no body data for the UID.
-/// - `Error::ConnectionLost` if the underlying transport tore down.
+/// - `ImapError::SizeLimit { limit }` if the body exceeds `limit` bytes.
+/// - `ImapError::Protocol(_)` if the server returned no body data for the UID.
+/// - `ImapError::ConnectionLost` if the underlying transport tore down.
 /// - Other `async-imap` errors propagated through `super::folders::map_err`.
 ///
 /// NOTE: This is the **defense-in-depth fallback**. The primary size
@@ -158,7 +158,7 @@ pub(crate) async fn fetch_body(
     folder: &str,
     uid: Uid,
     limit: u64,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Vec<u8>, ImapError> {
     session
         .examine(folder)
         .await
@@ -184,7 +184,7 @@ pub(crate) async fn fetch_body(
     }
 
     if !found {
-        return Err(Error::Protocol(async_imap::error::Error::Bad(
+        return Err(ImapError::Protocol(async_imap::error::Error::Bad(
             "FETCH BODY[] returned no body".to_string(),
         )));
     }
@@ -192,14 +192,14 @@ pub(crate) async fn fetch_body(
 }
 
 /// Projection helper: extend `total` by `chunk` and return the new total,
-/// or `Err(Error::SizeLimit { limit })` if it would exceed `limit`.
+/// or `Err(ImapError::SizeLimit { limit })` if it would exceed `limit`.
 /// Saturates `chunk` at `u64::MAX` to handle hypothetical platforms where
 /// `usize > u64`.
-fn project_size(total: u64, chunk: usize, limit: u64) -> Result<u64, Error> {
+fn project_size(total: u64, chunk: usize, limit: u64) -> Result<u64, ImapError> {
     let chunk_u64 = u64::try_from(chunk).unwrap_or(u64::MAX);
     let projected = total.saturating_add(chunk_u64);
     if projected > limit {
-        Err(Error::SizeLimit { limit })
+        Err(ImapError::SizeLimit { limit })
     } else {
         Ok(projected)
     }
@@ -207,13 +207,13 @@ fn project_size(total: u64, chunk: usize, limit: u64) -> Result<u64, Error> {
 
 /// Check whether a server-reported `RFC822.SIZE` exceeds `limit`.
 /// Returns `Ok(())` when the size is absent (server did not report it)
-/// or within the limit. Returns `Err(Error::SizeLimit)` when the
+/// or within the limit. Returns `Err(ImapError::SizeLimit)` when the
 /// reported size strictly exceeds `limit`.
-pub(crate) fn preflight_size_check(server_size: Option<u32>, limit: u64) -> Result<(), Error> {
+pub(crate) fn preflight_size_check(server_size: Option<u32>, limit: u64) -> Result<(), ImapError> {
     if let Some(size) = server_size
         && u64::from(size) > limit
     {
-        return Err(Error::SizeLimit { limit });
+        return Err(ImapError::SizeLimit { limit });
     }
     Ok(())
 }
@@ -224,7 +224,7 @@ pub(crate) async fn preflight_fetch_size(
     session: &mut ImapSession,
     folder: &str,
     uid: Uid,
-) -> Result<Option<u32>, Error> {
+) -> Result<Option<u32>, ImapError> {
     session
         .examine(folder)
         .await
@@ -414,7 +414,7 @@ mod tests {
         MAX_BODYSTRUCTURE_DEPTH, compress_uid_set, convert_bs_inner, preflight_size_check,
         project_size,
     };
-    use crate::error::Error;
+    use crate::error::ImapError;
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
         ContentEncoding, ContentType,
@@ -644,7 +644,7 @@ mod tests {
     fn project_size_over_limit_returns_size_limit_error() {
         let result = project_size(950, 51, 1000);
         match result {
-            Err(Error::SizeLimit { limit }) => assert_eq!(limit, 1000),
+            Err(ImapError::SizeLimit { limit }) => assert_eq!(limit, 1000),
             other => panic!("expected SizeLimit, got {other:?}"),
         }
     }
@@ -712,7 +712,7 @@ mod tests {
         let limit = 5_000_000;
         let result = preflight_size_check(Some(10_000_000), limit);
         match result {
-            Err(Error::SizeLimit { limit: l }) => assert_eq!(l, limit),
+            Err(ImapError::SizeLimit { limit: l }) => assert_eq!(l, limit),
             other => panic!("expected SizeLimit, got {other:?}"),
         }
     }

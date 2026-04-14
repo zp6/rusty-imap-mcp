@@ -3,7 +3,7 @@
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::ops::store;
 use crate::types::{Flag, FlagAction, Uid};
 
@@ -24,7 +24,7 @@ pub(crate) async fn delete_message(
     trash_folder: &str,
     has_move: bool,
     has_uidplus: bool,
-) -> Result<DeleteResult, Error> {
+) -> Result<DeleteResult, ImapError> {
     super::folder_mgmt::validate_folder_name(source_folder)?;
     super::folder_mgmt::validate_folder_name(trash_folder)?;
 

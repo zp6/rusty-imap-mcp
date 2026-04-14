@@ -3,7 +3,7 @@
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::types::Uid;
 
 /// Count of `\Deleted`-flagged messages before expunge, for audit logging.
@@ -16,7 +16,7 @@ use crate::types::Uid;
 pub(crate) async fn count_deleted(
     session: &mut ImapSession,
     folder: &str,
-) -> Result<Vec<Uid>, Error> {
+) -> Result<Vec<Uid>, ImapError> {
     super::folder_mgmt::validate_folder_name(folder)?;
     super::folders::select(session, folder, true).await?;
     let uids = session
@@ -36,7 +36,7 @@ pub(crate) async fn count_deleted(
 /// # Errors
 ///
 /// Propagates connection-lost or protocol errors.
-pub(crate) async fn expunge(session: &mut ImapSession) -> Result<u32, Error> {
+pub(crate) async fn expunge(session: &mut ImapSession) -> Result<u32, ImapError> {
     let stream = session.expunge().await.map_err(super::folders::map_err)?;
     futures_util::pin_mut!(stream);
     let mut count = 0u32;

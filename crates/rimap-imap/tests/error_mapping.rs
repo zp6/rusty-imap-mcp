@@ -1,5 +1,5 @@
-//! Round-trip tests for `From<rimap_imap::Error> for RimapError` — assert
-//! the source chain is preserved through `Error::source()`.
+//! Round-trip tests for `From<rimap_imap::ImapError> for RimapError` — assert
+//! the source chain is preserved through `ImapError::source()`.
 
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::expect_used, reason = "tests")]
@@ -7,7 +7,7 @@
 use std::error::Error as _;
 
 use rimap_core::{ErrorCode, RimapError, TlsFingerprint};
-use rimap_imap::error::{AuthFailure, Error};
+use rimap_imap::error::{AuthFailure, ImapError};
 
 const FP_HEX_A: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const FP_HEX_B: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
@@ -16,7 +16,7 @@ const FP_HEX_B: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba98
 fn tls_fingerprint_mismatch_maps_to_err_tls() {
     let observed = TlsFingerprint::from_hex(FP_HEX_A).unwrap();
     let expected = TlsFingerprint::from_hex(FP_HEX_B).unwrap();
-    let err = Error::Tls { observed, expected };
+    let err = ImapError::Tls { observed, expected };
     let rimap: RimapError = err.into();
     assert_eq!(rimap.code(), ErrorCode::Tls);
     assert!(rimap.source().is_some());
@@ -24,7 +24,7 @@ fn tls_fingerprint_mismatch_maps_to_err_tls() {
 
 #[test]
 fn auth_login_rejected_maps_to_err_auth() {
-    let err = Error::Auth {
+    let err = ImapError::Auth {
         reason: AuthFailure::LoginRejected,
     };
     let rimap: RimapError = err.into();
@@ -33,7 +33,7 @@ fn auth_login_rejected_maps_to_err_auth() {
 
 #[test]
 fn capability_missing_maps_to_err_auth() {
-    let err = Error::Auth {
+    let err = ImapError::Auth {
         reason: AuthFailure::CapabilityMissing { needed: "LOGIN" },
     };
     let rimap: RimapError = err.into();
@@ -44,14 +44,14 @@ fn capability_missing_maps_to_err_auth() {
 
 #[test]
 fn timeout_maps_to_err_timeout() {
-    let err = Error::Timeout { op: "fetch" };
+    let err = ImapError::Timeout { op: "fetch" };
     let rimap: RimapError = err.into();
     assert_eq!(rimap.code(), ErrorCode::Timeout);
 }
 
 #[test]
 fn size_limit_maps_to_err_attachment_too_large() {
-    let err = Error::SizeLimit { limit: 1024 };
+    let err = ImapError::SizeLimit { limit: 1024 };
     let rimap: RimapError = err.into();
     assert_eq!(rimap.code(), ErrorCode::AttachmentTooLarge);
     let chain = rimap.source().expect("source preserved");
@@ -60,7 +60,7 @@ fn size_limit_maps_to_err_attachment_too_large() {
 
 #[test]
 fn connection_lost_maps_to_err_connection_lost() {
-    let err = Error::ConnectionLost;
+    let err = ImapError::ConnectionLost;
     let rimap: RimapError = err.into();
     assert_eq!(rimap.code(), ErrorCode::ConnectionLost);
 }
@@ -68,14 +68,14 @@ fn connection_lost_maps_to_err_connection_lost() {
 #[test]
 fn connect_io_error_maps_to_err_connection_lost() {
     let io = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "nope");
-    let err = Error::Connect(io);
+    let err = ImapError::Connect(io);
     let rimap: RimapError = err.into();
     assert_eq!(rimap.code(), ErrorCode::ConnectionLost);
 }
 
 #[test]
 fn audit_variant_maps_to_internal_error_code() {
-    let err = Error::Audit {
+    let err = ImapError::Audit {
         op: "emit_auth",
         message: "disk full".to_string(),
         source: Box::new(std::io::Error::other("disk full")),
