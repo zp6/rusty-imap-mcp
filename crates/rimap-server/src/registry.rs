@@ -112,19 +112,12 @@ impl AccountRegistry {
     /// does not match any configured account, or
     /// [`RimapError::NoAccount`] if no account can be determined.
     pub fn resolve(&self, explicit: Option<&str>) -> Result<&AccountState, RimapError> {
-        let names = || {
-            self.accounts
-                .keys()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-        };
-
         if let Some(name) = explicit {
             return self
                 .find_by_name(name)
                 .ok_or_else(|| RimapError::UnknownAccount {
                     name: name.to_string(),
-                    available: names(),
+                    available: self.account_name_strings(),
                 });
         }
 
@@ -142,7 +135,9 @@ impl AccountRegistry {
             return Ok(state);
         }
 
-        Err(RimapError::NoAccount { available: names() })
+        Err(RimapError::NoAccount {
+            available: self.account_name_strings(),
+        })
     }
 
     /// Set the session-scoped active account, returning the previous
@@ -159,7 +154,7 @@ impl AccountRegistry {
             .find(|k| k.as_str() == name)
             .ok_or_else(|| RimapError::UnknownAccount {
                 name: name.to_string(),
-                available: self.accounts.keys().map(ToString::to_string).collect(),
+                available: self.account_name_strings(),
             })?
             .clone();
 
@@ -167,14 +162,12 @@ impl AccountRegistry {
         Ok(prev.as_deref().map(ToString::to_string))
     }
 
-    /// List all configured account names in sorted order.
+    /// List all configured account names as owned strings, in sorted
+    /// order. Used to populate the `available` field on
+    /// [`RimapError::NoAccount`] and [`RimapError::UnknownAccount`].
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "convenience accessor for future use")
-    )]
-    pub fn account_names(&self) -> Vec<&AccountId> {
-        self.accounts.keys().collect()
+    fn account_name_strings(&self) -> Vec<String> {
+        self.accounts.keys().map(ToString::to_string).collect()
     }
 
     /// Borrow the full accounts map.
@@ -223,9 +216,9 @@ mod tests {
     }
 
     #[test]
-    fn account_names_empty() {
+    fn account_name_strings_empty() {
         let reg = AccountRegistry::new(BTreeMap::new());
-        assert!(reg.account_names().is_empty());
+        assert!(reg.account_name_strings().is_empty());
     }
 
     #[test]

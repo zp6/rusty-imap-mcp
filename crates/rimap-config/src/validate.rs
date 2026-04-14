@@ -333,10 +333,6 @@ fn validate_paths_multi(
 /// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
 /// `directories::ProjectDirs` resolves; returns `None` otherwise (which
 /// causes the containment check to fail with a clear error).
-/// Compute the default audit base when `audit.allowed_base_dir` is unset.
-/// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
-/// `directories::ProjectDirs` resolves; returns `None` otherwise (which
-/// causes the containment check to fail with a clear error).
 ///
 /// ## macOS Time Machine caveat (LOCAL-PRI-06)
 ///
