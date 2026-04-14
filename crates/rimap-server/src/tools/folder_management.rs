@@ -1,7 +1,7 @@
 //! Folder management tool handlers: create, rename, delete.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -29,6 +29,37 @@ pub struct DeleteFolderInput {
     pub folder: String,
 }
 
+/// Trusted metadata for a `create_folder` response.
+#[derive(Debug, Serialize)]
+pub struct CreateFolderMeta {
+    /// Always `true` when the handler returns `Ok`.
+    pub created: bool,
+    /// Name of the created folder.
+    pub folder: String,
+}
+
+/// Trusted metadata for a `rename_folder` response.
+#[derive(Debug, Serialize)]
+pub struct RenameFolderMeta {
+    /// Always `true` when the handler returns `Ok`.
+    pub renamed: bool,
+    /// Previous folder name.
+    pub old_folder: String,
+    /// New folder name.
+    pub new_folder: String,
+}
+
+/// Trusted metadata for a `delete_folder` response.
+#[derive(Debug, Serialize)]
+pub struct DeleteFolderMeta {
+    /// Always `true` when the handler returns `Ok`.
+    pub deleted: bool,
+    /// Name of the deleted folder.
+    pub folder: String,
+    /// Number of messages that were in the folder before deletion.
+    pub message_count: u32,
+}
+
 /// `create_folder` handler.
 ///
 /// # Errors
@@ -41,7 +72,7 @@ pub struct DeleteFolderInput {
 pub async fn handle_create(
     account: &AccountState,
     input: CreateFolderInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<CreateFolderMeta>, rimap_core::RimapError> {
     account
         .folder_guard
         .check_protected(&input.folder, "create")?;
@@ -49,10 +80,10 @@ pub async fn handle_create(
     account.imap.create_folder(&input.folder).await?;
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "created": true,
-            "folder": input.folder,
-        }),
+        meta: CreateFolderMeta {
+            created: true,
+            folder: input.folder,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })
@@ -70,7 +101,7 @@ pub async fn handle_create(
 pub async fn handle_rename(
     account: &AccountState,
     input: RenameFolderInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<RenameFolderMeta>, rimap_core::RimapError> {
     account
         .folder_guard
         .check_rename(&input.folder, &input.new_folder)?;
@@ -81,11 +112,11 @@ pub async fn handle_rename(
         .await?;
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "renamed": true,
-            "old_folder": input.folder,
-            "new_folder": input.new_folder,
-        }),
+        meta: RenameFolderMeta {
+            renamed: true,
+            old_folder: input.folder,
+            new_folder: input.new_folder,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })
@@ -104,7 +135,7 @@ pub async fn handle_rename(
 pub async fn handle_delete(
     account: &AccountState,
     input: DeleteFolderInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<DeleteFolderMeta>, rimap_core::RimapError> {
     account
         .folder_guard
         .check_protected(&input.folder, "delete")?;
@@ -129,11 +160,11 @@ pub async fn handle_delete(
     account.imap.delete_folder(&input.folder).await?;
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "deleted": true,
-            "folder": input.folder,
-            "message_count": message_count,
-        }),
+        meta: DeleteFolderMeta {
+            deleted: true,
+            folder: input.folder,
+            message_count,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })

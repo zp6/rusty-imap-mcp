@@ -10,7 +10,7 @@
 
 use rimap_imap::types::{Flag, FlagAction, Uid};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -26,11 +26,20 @@ pub struct FlagInput {
     pub uids: Option<Vec<u32>>,
 }
 
+/// Trusted metadata for a flag mutation response.
+#[derive(Debug, Serialize)]
+pub struct FlagsMeta {
+    /// Folder the flags were updated in.
+    pub folder: String,
+    /// UIDs that were updated.
+    pub uids_updated: Vec<u32>,
+}
+
 /// `mark_read` handler.
 pub async fn handle_mark_read(
     account: &AccountState,
     input: FlagInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
         account,
         input,
@@ -44,7 +53,7 @@ pub async fn handle_mark_read(
 pub async fn handle_mark_unread(
     account: &AccountState,
     input: FlagInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
         account,
         input,
@@ -58,7 +67,7 @@ pub async fn handle_mark_unread(
 pub async fn handle_flag(
     account: &AccountState,
     input: FlagInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
         account,
         input,
@@ -72,7 +81,7 @@ pub async fn handle_flag(
 pub async fn handle_unflag(
     account: &AccountState,
     input: FlagInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
     Box::pin(handle_flag_op(
         account,
         input,
@@ -87,7 +96,7 @@ async fn handle_flag_op(
     input: FlagInput,
     flags: &[Flag],
     action: FlagAction,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
     let uids = resolve_uids(input.uid, input.uids)?;
     let updated = account
         .imap
@@ -97,10 +106,10 @@ async fn handle_flag_op(
     let updated_ids: Vec<u32> = updated.iter().map(|u| u.get()).collect();
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "uids_updated": updated_ids,
-        }),
+        meta: FlagsMeta {
+            folder: input.folder,
+            uids_updated: updated_ids,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })

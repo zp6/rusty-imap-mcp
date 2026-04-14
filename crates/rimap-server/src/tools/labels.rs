@@ -11,7 +11,7 @@
 
 use rimap_imap::types::{FetchSpec, Flag, FlagAction};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -91,6 +91,28 @@ pub struct ListLabelsInput {
     pub uid: u32,
 }
 
+/// Trusted metadata for `add_label` and `remove_label` responses.
+#[derive(Debug, Serialize)]
+pub struct LabelsMeta {
+    /// Folder the label was applied to.
+    pub folder: String,
+    /// Label that was added or removed.
+    pub label: String,
+    /// UIDs that were updated.
+    pub uids_updated: Vec<u32>,
+}
+
+/// Trusted metadata for a `list_labels` response.
+#[derive(Debug, Serialize)]
+pub struct ListLabelsMeta {
+    /// Folder the labels were fetched from.
+    pub folder: String,
+    /// UID of the message.
+    pub uid: u32,
+    /// Custom keyword labels on the message.
+    pub labels: Vec<String>,
+}
+
 /// `add_label` handler — STORE +FLAGS with a custom keyword.
 /// See the module-level doc for the UIDVALIDITY limitation.
 ///
@@ -103,7 +125,7 @@ pub struct ListLabelsInput {
 pub async fn handle_add_label(
     account: &AccountState,
     input: LabelInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<LabelsMeta>, rimap_core::RimapError> {
     handle_label_op(account, input, FlagAction::Add).await
 }
 
@@ -117,7 +139,7 @@ pub async fn handle_add_label(
 pub async fn handle_remove_label(
     account: &AccountState,
     input: LabelInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<LabelsMeta>, rimap_core::RimapError> {
     handle_label_op(account, input, FlagAction::Remove).await
 }
 
@@ -127,7 +149,7 @@ async fn handle_label_op(
     account: &AccountState,
     input: LabelInput,
     action: FlagAction,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<LabelsMeta>, rimap_core::RimapError> {
     validate_label(&input.label)?;
     let uids = resolve_uids(input.uid, input.uids)?;
     let updated = account
@@ -142,11 +164,11 @@ async fn handle_label_op(
 
     let updated_ids: Vec<u32> = updated.iter().map(|u| u.get()).collect();
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "label": input.label,
-            "uids_updated": updated_ids,
-        }),
+        meta: LabelsMeta {
+            folder: input.folder,
+            label: input.label,
+            uids_updated: updated_ids,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })
@@ -163,7 +185,7 @@ async fn handle_label_op(
 pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<ListLabelsMeta>, rimap_core::RimapError> {
     let uid = rimap_imap::types::Uid::new(input.uid)
         .ok_or_else(|| invalid_input("UID must be non-zero"))?;
 
@@ -184,14 +206,14 @@ pub async fn handle_list_labels(
             ),
         })?;
 
-    let labels: Vec<&str> = msg
+    let labels: Vec<String> = msg
         .flags
         .as_ref()
         .map(|flags| {
             flags
                 .iter()
                 .filter_map(|f| match f {
-                    Flag::Keyword(kw) => Some(kw.as_str()),
+                    Flag::Keyword(kw) => Some(kw.clone()),
                     _ => None,
                 })
                 .collect()
@@ -199,11 +221,11 @@ pub async fn handle_list_labels(
         .unwrap_or_default();
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "uid": input.uid,
-            "labels": labels,
-        }),
+        meta: ListLabelsMeta {
+            folder: input.folder,
+            uid: input.uid,
+            labels,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })
