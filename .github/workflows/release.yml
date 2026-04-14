@@ -92,11 +92,12 @@ jobs:
         with:
           platforms: linux/ppc64le
       - name: Build in ppc64le container
+        # rust:1.88.0-bookworm as of 2026-04-13
         run: |
           docker run --rm --platform linux/ppc64le \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
-            rust:1.88.0-bookworm \
+            rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 \
             bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo build --release --locked"
       - name: Rename binary
         run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-powerpc64le-unknown-linux-gnu
@@ -118,11 +119,12 @@ jobs:
         with:
           platforms: linux/s390x
       - name: Build in s390x container
+        # rust:1.88.0-bookworm as of 2026-04-13
         run: |
           docker run --rm --platform linux/s390x \
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
-            rust:1.88.0-bookworm \
+            rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 \
             bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo build --release --locked"
       - name: Rename binary
         run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-s390x-unknown-linux-gnu
