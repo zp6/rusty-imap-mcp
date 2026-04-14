@@ -330,9 +330,7 @@ impl ImapMcpServer {
         body: F,
     ) -> Result<CallToolResult, ErrorData>
     where
-        F: std::future::Future<
-                Output = Result<crate::mcp::response::ToolResponse, rimap_core::RimapError>,
-            >,
+        F: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
     {
         let args_value = serde_json::Value::Object(args.clone());
         let redacted = self.redact_tool_args(tool.as_str(), &args_value);
@@ -365,88 +363,93 @@ impl ImapMcpServer {
         .await;
 
         match result {
-            Ok(resp) => {
-                let value = serde_json::to_value(&resp)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::structured(value))
-            }
+            Ok(value) => Ok(CallToolResult::structured(value)),
             Err(e) => Err(crate::mcp::error::to_mcp_error(&e)),
         }
     }
 
-    /// Dispatch to the tool handler for `tool`.
+    /// Dispatch to the tool handler for `tool`. Each arm serializes its
+    /// typed response to `serde_json::Value` before returning, so the
+    /// audit envelope works with a single future type.
     pub(crate) async fn dispatch_tool(
         &self,
         account: &AccountState,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::mcp::response::ToolResponse, rimap_core::RimapError> {
+    ) -> Result<serde_json::Value, rimap_core::RimapError> {
         use crate::tools::{
             create_draft, delete_message, download_attachment, expunge, fetch_message, flags,
             folder_management, labels, list_attachments, list_folders, move_message, search,
             send_email,
         };
-        match tool {
-            ToolName::ListFolders => Box::pin(list_folders::handle(account)).await,
+        let resp = match tool {
+            ToolName::ListFolders => ser(Box::pin(list_folders::handle(account)).await?)?,
             ToolName::MarkRead => {
-                Box::pin(flags::handle_mark_read(account, parse_args(args)?)).await
+                ser(Box::pin(flags::handle_mark_read(account, parse_args(args)?)).await?)?
             }
             ToolName::MarkUnread => {
-                Box::pin(flags::handle_mark_unread(account, parse_args(args)?)).await
+                ser(Box::pin(flags::handle_mark_unread(account, parse_args(args)?)).await?)?
             }
-            ToolName::Flag => Box::pin(flags::handle_flag(account, parse_args(args)?)).await,
-            ToolName::Unflag => Box::pin(flags::handle_unflag(account, parse_args(args)?)).await,
+            ToolName::Flag => ser(Box::pin(flags::handle_flag(account, parse_args(args)?)).await?)?,
+            ToolName::Unflag => {
+                ser(Box::pin(flags::handle_unflag(account, parse_args(args)?)).await?)?
+            }
             ToolName::MoveMessage => {
-                Box::pin(move_message::handle(account, parse_args(args)?)).await
+                ser(Box::pin(move_message::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::Search | ToolName::SearchAdvanced => {
-                Box::pin(search::handle(account, parse_args(args)?)).await
+                ser(Box::pin(search::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::FetchMessage | ToolName::FetchMessageHtml => {
-                Box::pin(fetch_message::handle(account, parse_args(args)?)).await
+                ser(Box::pin(fetch_message::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::ListAttachments => {
-                Box::pin(list_attachments::handle(account, parse_args(args)?)).await
+                ser(Box::pin(list_attachments::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::DownloadAttachment => {
                 let input = parse_args(args)?;
-                Box::pin(download_attachment::handle(
+                ser(Box::pin(download_attachment::handle(
                     account,
                     input,
                     &self.download_dir,
                 ))
-                .await
+                .await?)?
             }
             ToolName::CreateDraft => {
-                Box::pin(create_draft::handle(account, parse_args(args)?)).await
+                ser(Box::pin(create_draft::handle(account, parse_args(args)?)).await?)?
             }
-            ToolName::SendEmail => Box::pin(send_email::handle(account, parse_args(args)?)).await,
+            ToolName::SendEmail => {
+                ser(Box::pin(send_email::handle(account, parse_args(args)?)).await?)?
+            }
             ToolName::DeleteMessage => {
-                Box::pin(delete_message::handle(account, parse_args(args)?)).await
+                ser(Box::pin(delete_message::handle(account, parse_args(args)?)).await?)?
             }
-            ToolName::Expunge => Box::pin(expunge::handle(account, parse_args(args)?)).await,
+            ToolName::Expunge => ser(Box::pin(expunge::handle(account, parse_args(args)?)).await?)?,
             ToolName::CreateFolder => {
-                Box::pin(folder_management::handle_create(account, parse_args(args)?)).await
+                ser(Box::pin(folder_management::handle_create(account, parse_args(args)?)).await?)?
             }
             ToolName::RenameFolder => {
-                Box::pin(folder_management::handle_rename(account, parse_args(args)?)).await
+                ser(Box::pin(folder_management::handle_rename(account, parse_args(args)?)).await?)?
             }
             ToolName::DeleteFolder => {
-                Box::pin(folder_management::handle_delete(account, parse_args(args)?)).await
+                ser(Box::pin(folder_management::handle_delete(account, parse_args(args)?)).await?)?
             }
             ToolName::AddLabel => {
-                Box::pin(labels::handle_add_label(account, parse_args(args)?)).await
+                ser(Box::pin(labels::handle_add_label(account, parse_args(args)?)).await?)?
             }
             ToolName::RemoveLabel => {
-                Box::pin(labels::handle_remove_label(account, parse_args(args)?)).await
+                ser(Box::pin(labels::handle_remove_label(account, parse_args(args)?)).await?)?
             }
             ToolName::ListLabels => {
-                Box::pin(labels::handle_list_labels(account, parse_args(args)?)).await
+                ser(Box::pin(labels::handle_list_labels(account, parse_args(args)?)).await?)?
             }
-            ToolName::UseAccount | ToolName::ListAccounts => Err(rimap_core::RimapError::Internal(
-                "infrastructure tools must not reach dispatch_tool".into(),
-            )),
-        }
+            ToolName::UseAccount | ToolName::ListAccounts => {
+                return Err(rimap_core::RimapError::Internal(
+                    "infrastructure tools must not reach dispatch_tool".into(),
+                ));
+            }
+        };
+        Ok(resp)
     }
 
     /// Handle infrastructure tools that bypass account resolution.
@@ -468,10 +471,10 @@ impl ImapMcpServer {
             match tool {
                 ToolName::UseAccount => {
                     let input = parse_args::<crate::tools::accounts::UseAccountInput>(args)?;
-                    crate::tools::accounts::handle_use_account(&self.registry, input).await
+                    ser(crate::tools::accounts::handle_use_account(&self.registry, input).await?)
                 }
                 ToolName::ListAccounts => {
-                    crate::tools::accounts::handle_list_accounts(&self.registry).await
+                    ser(crate::tools::accounts::handle_list_accounts(&self.registry).await?)
                 }
                 _ => Err(rimap_core::RimapError::Internal(format!(
                     "not an infrastructure tool: {}",
@@ -580,6 +583,17 @@ impl ImapMcpServer {
             }
         }
     }
+}
+
+/// Serialize a typed response to `serde_json::Value`.
+///
+/// Used in `dispatch_tool` and `dispatch_infrastructure` to unify
+/// concrete handler return types into a single `Value` before the
+/// audit envelope processes them.
+fn ser<T: serde::Serialize>(resp: T) -> Result<serde_json::Value, rimap_core::RimapError> {
+    serde_json::to_value(&resp).map_err(|e| {
+        rimap_core::RimapError::Internal(format!("response serialization failed: {e}"))
+    })
 }
 
 /// Deserialize tool arguments into a typed input struct.

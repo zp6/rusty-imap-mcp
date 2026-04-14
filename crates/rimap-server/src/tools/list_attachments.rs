@@ -2,7 +2,7 @@
 
 use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -17,12 +17,34 @@ pub struct ListAttachmentsInput {
 }
 
 /// Metadata for a single attachment discovered in the MIME tree.
-#[derive(Debug, serde::Serialize)]
-struct AttachmentInfo {
-    part_id: String,
-    mime_type: String,
-    size_bytes: u32,
-    filename: Option<String>,
+#[derive(Debug, Serialize)]
+pub struct AttachmentInfo {
+    /// IMAP part identifier (e.g. `"2"`, `"1.2"`).
+    pub part_id: String,
+    /// Full MIME type (e.g. `"application/pdf"`).
+    pub mime_type: String,
+    /// Size of the part in bytes as reported by `BODYSTRUCTURE`.
+    pub size_bytes: u32,
+    /// Filename from MIME content-type `name` or `filename` parameter.
+    pub filename: Option<String>,
+}
+
+/// Trusted metadata for a `list_attachments` response.
+#[derive(Debug, Serialize)]
+pub struct ListAttachmentsMeta {
+    /// IMAP folder the message was fetched from.
+    pub folder: String,
+    /// UID of the inspected message.
+    pub uid: u32,
+    /// Number of attachment parts found.
+    pub attachment_count: usize,
+}
+
+/// Untrusted payload for a `list_attachments` response.
+#[derive(Debug, Serialize)]
+pub struct ListAttachmentsUntrusted {
+    /// Attachment parts found in the MIME tree.
+    pub attachments: Vec<AttachmentInfo>,
 }
 
 /// Execute the `list_attachments` tool.
@@ -41,7 +63,7 @@ struct AttachmentInfo {
 pub async fn handle(
     account: &AccountState,
     input: ListAttachmentsInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<ListAttachmentsMeta, ListAttachmentsUntrusted>, rimap_core::RimapError> {
     let uid = Uid::new(input.uid)
         .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
 
@@ -66,27 +88,13 @@ pub async fn handle(
     let mut attachments = Vec::new();
     collect_attachments(&bodystructure, "", &mut attachments, 0);
 
-    let attachment_values: Vec<serde_json::Value> = attachments
-        .iter()
-        .map(|a| {
-            serde_json::json!({
-                "part_id": a.part_id,
-                "mime_type": a.mime_type,
-                "size_bytes": a.size_bytes,
-                "filename": a.filename,
-            })
-        })
-        .collect();
-
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "uid": input.uid,
-            "attachment_count": attachments.len(),
-        }),
-        untrusted: Some(serde_json::json!({
-            "attachments": attachment_values,
-        })),
+        meta: ListAttachmentsMeta {
+            folder: input.folder,
+            uid: input.uid,
+            attachment_count: attachments.len(),
+        },
+        untrusted: Some(ListAttachmentsUntrusted { attachments }),
         security_warnings: Vec::new(),
     })
 }

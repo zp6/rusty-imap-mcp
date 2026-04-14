@@ -340,7 +340,7 @@ async fn call_tool(
     server: &ImapMcpServer,
     tool_name: &str,
     args: serde_json::Value,
-) -> Result<crate::mcp::response::ToolResponse, rimap_core::RimapError> {
+) -> Result<serde_json::Value, rimap_core::RimapError> {
     let tool = std::str::FromStr::from_str(tool_name).map_err(
         |e: rimap_core::tool::ParseToolNameError| rimap_core::RimapError::Internal(e.to_string()),
     )?;
@@ -408,7 +408,7 @@ async fn assert_list_folders(server: &ImapMcpServer) {
     let result = call_tool(server, "list_folders", serde_json::json!({}))
         .await
         .expect("list_folders failed");
-    let folders = result.meta["folders"].as_array().expect("folders");
+    let folders = result["meta"]["folders"].as_array().expect("folders");
     let names: Vec<&str> = folders.iter().filter_map(|f| f["name"].as_str()).collect();
     assert!(names.contains(&"INBOX"), "INBOX not in {names:?}",);
 }
@@ -434,10 +434,10 @@ async fn assert_search(server: &ImapMcpServer) -> u32 {
     .await
     .expect("search failed");
 
-    let total = result.meta["total_matched"].as_u64().unwrap();
+    let total = result["meta"]["total_matched"].as_u64().unwrap();
     assert!(total >= 1, "expected at least one match");
 
-    let messages = result.untrusted.as_ref().unwrap()["messages"]
+    let messages = result["untrusted"]["messages"]
         .as_array()
         .expect("messages array");
     let uid = json_u32(&messages[0]["uid"]);
@@ -454,14 +454,14 @@ async fn assert_fetch(server: &ImapMcpServer, uid: u32) {
     .await
     .expect("fetch_message failed");
 
-    let body = result.untrusted.as_ref().unwrap()["body_text"]
+    let body = result["untrusted"]["body_text"]
         .as_str()
         .expect("body_text");
     assert!(
         body.contains("Hello from the e2e smoke test"),
         "unexpected body: {body}",
     );
-    assert_eq!(json_u32(&result.meta["uid"]), uid);
+    assert_eq!(json_u32(&result["meta"]["uid"]), uid);
 }
 
 async fn assert_mark_read(server: &ImapMcpServer, uid: u32) {
@@ -473,7 +473,7 @@ async fn assert_mark_read(server: &ImapMcpServer, uid: u32) {
     .await
     .expect("mark_read failed");
 
-    let updated = result.meta["uids_updated"]
+    let updated = result["meta"]["uids_updated"]
         .as_array()
         .expect("uids_updated");
     assert!(
@@ -497,8 +497,8 @@ async fn assert_create_draft(server: &ImapMcpServer, reply_uid: u32) {
     .await
     .expect("create_draft failed");
 
-    assert_eq!(result.meta["folder"].as_str().unwrap(), "Drafts",);
-    let keywords = result.meta["keywords"].as_array().expect("keywords");
+    assert_eq!(result["meta"]["folder"].as_str().unwrap(), "Drafts",);
+    let keywords = result["meta"]["keywords"].as_array().expect("keywords");
     assert!(
         keywords
             .iter()
@@ -520,7 +520,7 @@ async fn assert_move_and_gone(server: &ImapMcpServer, uid: u32) {
     .await
     .expect("move_message failed");
 
-    let moves = result.meta["moves"].as_array().expect("moves");
+    let moves = result["meta"]["moves"].as_array().expect("moves");
     assert_eq!(moves.len(), 1);
     assert_eq!(json_u32(&moves[0]["old_uid"]), uid);
 
@@ -536,7 +536,7 @@ async fn assert_move_and_gone(server: &ImapMcpServer, uid: u32) {
     .await
     .expect("post-move search failed");
     assert_eq!(
-        result.meta["total_matched"].as_u64().unwrap(),
+        result["meta"]["total_matched"].as_u64().unwrap(),
         0,
         "message should be gone from INBOX after move",
     );

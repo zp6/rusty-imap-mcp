@@ -2,7 +2,7 @@
 
 use rimap_imap::types::Uid;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -18,6 +18,60 @@ pub struct FetchMessageInput {
     pub include_html: Option<bool>,
     /// Truncate body text (and HTML if included) to this many bytes.
     pub max_body_bytes: Option<usize>,
+}
+
+/// Trusted metadata for a `fetch_message` response.
+#[derive(Debug, Serialize)]
+pub struct FetchMessageMeta {
+    /// IMAP folder the message was fetched from.
+    pub folder: String,
+    /// UID of the fetched message.
+    pub uid: u32,
+    /// RFC 2822 `Message-ID` header, if present.
+    pub message_id: Option<String>,
+    /// Raw size of the message body in bytes.
+    pub size: usize,
+    /// Whether the body was truncated to `max_body_bytes`.
+    pub truncated: bool,
+}
+
+/// Attachment summary within a `fetch_message` untrusted body.
+#[derive(Debug, Serialize)]
+pub struct FetchMessageAttachment {
+    /// Filename declared in the MIME part, if present.
+    pub filename: Option<String>,
+    /// Full MIME content type (e.g. `image/png`).
+    pub content_type: String,
+    /// Size of the attachment in bytes.
+    pub size_bytes: u64,
+    /// `Content-ID` header value, if present.
+    pub content_id: Option<String>,
+    /// Whether the MIME part is marked inline.
+    pub is_inline: bool,
+}
+
+/// Sanitized untrusted payload for a `fetch_message` response.
+#[derive(Debug, Serialize)]
+pub struct FetchMessageUntrusted {
+    /// Plain-text body (sanitized).
+    pub body_text: String,
+    /// Sanitized HTML body, present only when `include_html=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_html: Option<String>,
+    /// `Subject` header.
+    pub subject: Option<String>,
+    /// `From` header.
+    pub from: Option<String>,
+    /// `To` header recipients.
+    pub to: Vec<String>,
+    /// `Cc` header recipients.
+    pub cc: Vec<String>,
+    /// `Reply-To` header.
+    pub reply_to: Option<String>,
+    /// `Date` header.
+    pub date: Option<time::OffsetDateTime>,
+    /// MIME attachment parts found in the message.
+    pub attachments: Vec<FetchMessageAttachment>,
 }
 
 /// Execute the `fetch_message` tool.
@@ -36,7 +90,7 @@ pub struct FetchMessageInput {
 pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<FetchMessageMeta, FetchMessageUntrusted>, rimap_core::RimapError> {
     // The `FetchMessageHtml` posture check happens upstream in
     // `refine_tool_name` + `DispatchGuard::pre_dispatch`; this handler just reads
     // the include_html flag.
@@ -72,45 +126,38 @@ pub async fn handle(
         }
     }
 
-    let attachments: Vec<serde_json::Value> = content
+    let attachments: Vec<FetchMessageAttachment> = content
         .meta
         .attachments
         .iter()
-        .map(|a| {
-            serde_json::json!({
-                "filename": a.filename,
-                "content_type": a.content_type,
-                "size_bytes": a.size_bytes,
-                "content_id": a.content_id,
-                "is_inline": a.is_inline,
-            })
+        .map(|a| FetchMessageAttachment {
+            filename: a.filename.clone(),
+            content_type: a.content_type.clone(),
+            size_bytes: a.size_bytes,
+            content_id: a.content_id.clone(),
+            is_inline: a.is_inline,
         })
         .collect();
 
-    let mut untrusted = serde_json::json!({
-        "body_text": body_text,
-        "subject": content.meta.subject,
-        "from": content.meta.from,
-        "to": content.meta.to,
-        "cc": content.meta.cc,
-        "reply_to": content.meta.reply_to,
-        "date": content.meta.date,
-        "attachments": attachments,
-    });
-
-    if let Some(html) = body_html {
-        untrusted["body_html"] = serde_json::json!(html);
-    }
-
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "uid": input.uid,
-            "message_id": content.meta.message_id,
-            "size": raw_size,
-            "truncated": truncated,
+        meta: FetchMessageMeta {
+            folder: input.folder,
+            uid: input.uid,
+            message_id: content.meta.message_id,
+            size: raw_size,
+            truncated,
+        },
+        untrusted: Some(FetchMessageUntrusted {
+            body_text,
+            body_html,
+            subject: content.meta.subject,
+            from: content.meta.from,
+            to: content.meta.to,
+            cc: content.meta.cc,
+            reply_to: content.meta.reply_to,
+            date: content.meta.date,
+            attachments,
         }),
-        untrusted: Some(untrusted),
         security_warnings: content.security_warnings,
     })
 }
