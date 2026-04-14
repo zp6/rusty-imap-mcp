@@ -531,13 +531,14 @@ impl ImapMcpServer {
             Ok(Err(audit_err)) => {
                 tracing::error!(error = %audit_err, "tool_start audit write failed");
                 Err(ErrorData::internal_error(
-                    format!("audit write failed: {}", audit_err.code()),
+                    format!("audit write failed: {audit_err}"),
                     None,
                 ))
             }
             Err(join_err) => {
                 tracing::error!(error = %join_err, "tool_start join error");
-                Err(ErrorData::internal_error(join_err.to_string(), None))
+                let rimap_err = crate::mcp::spawn_blocking_panic_error(&join_err);
+                Err(crate::mcp::error::to_mcp_error(&rimap_err))
             }
         }
     }
@@ -582,7 +583,8 @@ impl ImapMcpServer {
                 tracing::error!(error = %audit_err, "tool_end audit write failed");
             }
             Err(join_err) => {
-                tracing::error!(error = %join_err, "tool_end join error");
+                let rimap_err = crate::mcp::spawn_blocking_panic_error(&join_err);
+                tracing::error!(error = %rimap_err, "tool_end join error");
             }
         }
     }
