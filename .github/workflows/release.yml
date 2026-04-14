@@ -149,6 +149,7 @@ jobs:
       - build-linux-ppc64le
       - build-linux-s390x
     runs-on: ubuntu-24.04
+    environment: release
     permissions:
       contents: write
       id-token: write
