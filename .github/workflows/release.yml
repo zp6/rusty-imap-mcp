@@ -171,6 +171,18 @@ jobs:
           subject-path: |
             artifacts/rusty-imap-mcp-*
             artifacts/SHA256SUMS.txt
+      - name: Extract release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          awk "/^## \\[${VERSION}\\]/,/^## \\[[^\\]]+\\]/" CHANGELOG.md \
+            | head -n -1 > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "Warning: no release notes extracted for ${TAG}"
+            cp CHANGELOG.md RELEASE_NOTES.md
+          fi
+          head -20 RELEASE_NOTES.md
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -179,6 +191,6 @@ jobs:
           gh release create "$TAG_NAME" \
             --draft \
             --title "$TAG_NAME" \
-            --notes-file CHANGELOG.md \
+            --notes-file RELEASE_NOTES.md \
             artifacts/${{ env.BINARY_NAME }}-* \
             artifacts/SHA256SUMS.txt
