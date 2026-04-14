@@ -25,15 +25,10 @@ pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
+    // The `FetchMessageHtml` posture check happens upstream in
+    // `refine_tool_name` + `pre_call_guards`; this handler just reads
+    // the include_html flag.
     let include_html = input.include_html.unwrap_or(false);
-    if include_html {
-        use rimap_core::tool::ToolName;
-        account
-            .guard
-            .matrix()
-            .check(ToolName::FetchMessageHtml)
-            .map_err(rimap_core::RimapError::from)?;
-    }
 
     let uid = Uid::new(input.uid)
         .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;

@@ -1,6 +1,5 @@
 //! `search` tool handler.
 
-use rimap_core::tool::ToolName;
 use rimap_imap::types::{
     Address, FetchSpec, FetchedMessage, Flag, SearchQuery, StructuredQuery, Uid,
 };
@@ -90,18 +89,13 @@ pub async fn handle(
     })
 }
 
-/// Build a `SearchQuery` from the input, checking posture for
-/// advanced queries.
+/// Build a `SearchQuery` from the input. The `SearchAdvanced` posture
+/// check happens upstream in `refine_tool_name` + `pre_call_guards`.
 fn build_query(
-    account: &AccountState,
+    _account: &AccountState,
     input: &SearchInput,
 ) -> Result<SearchQuery, rimap_core::RimapError> {
     if let Some(raw) = &input.advanced_query {
-        account
-            .guard
-            .matrix()
-            .check(ToolName::SearchAdvanced)
-            .map_err(rimap_core::RimapError::from)?;
         if raw.bytes().any(|b| b == b'\r' || b == b'\n' || b == b'\0') {
             return Err(rimap_core::RimapError::invalid_input(
                 "advanced_query contains forbidden control bytes",

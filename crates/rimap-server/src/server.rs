@@ -207,6 +207,11 @@ impl ServerHandler for ImapMcpServer {
 
         let tool_name = ToolName::from_str(bare_name)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        // Refine the tool name based on argument shape BEFORE pre_call_guards
+        // so the posture check covers sub-capabilities (FetchMessageHtml vs
+        // FetchMessage, SearchAdvanced vs Search) at a single seam rather
+        // than being re-checked inside every handler.
+        let tool_name = refine_tool_name(tool_name, request.arguments.as_ref());
 
         // Reject tools that have no definition (not yet implemented).
         // This prevents unimplemented v2 tools from consuming rate
@@ -571,6 +576,30 @@ fn is_legacy_single_account(
 /// Split a possibly-namespaced MCP tool name into `(account, tool)`.
 ///
 /// Preserves sub-capability tool names that contain dots (e.g.
+/// Promote a base `ToolName` to a sub-capability variant based on args.
+/// Keeps sub-capability posture checks at the dispatch seam rather than
+/// scattered across handlers.
+fn refine_tool_name(
+    base: ToolName,
+    args: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> ToolName {
+    let Some(args) = args else {
+        return base;
+    };
+    match base {
+        ToolName::FetchMessage
+            if args
+                .get("include_html")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true) =>
+        {
+            ToolName::FetchMessageHtml
+        }
+        ToolName::Search if args.get("advanced_query").is_some() => ToolName::SearchAdvanced,
+        other => other,
+    }
+}
+
 /// `search.advanced_query`): if the raw name parses as a `ToolName`
 /// directly, return it as bare.
 fn split_tool_name(raw: &str) -> (Option<&str>, &str) {
