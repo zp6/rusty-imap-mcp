@@ -131,7 +131,7 @@ impl ServerHandler for ImapMcpServer {
                 let name = state.id.as_str();
                 let desc = format!(
                     "IMAP account: {} on {}",
-                    state.from_address,
+                    state.imap.username(),
                     state.imap.host(),
                 );
                 Resource {

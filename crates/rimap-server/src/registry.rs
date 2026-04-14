@@ -28,8 +28,6 @@ type InfrastructureLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, 
 pub struct AccountState {
     /// Validated account identifier.
     pub id: AccountId,
-    /// Email address used as the From header (typically the IMAP username).
-    pub from_address: String,
     /// IMAP connection for this account.
     pub imap: Connection,
     /// Optional SMTP client (present when sending is configured).

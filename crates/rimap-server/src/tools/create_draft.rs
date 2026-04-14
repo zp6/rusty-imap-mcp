@@ -14,7 +14,7 @@ pub async fn handle(
     input: CreateDraftInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     message_builder::validate_compose_input(&input)?;
-    let from_addr = &account.from_address;
+    let from_addr = account.imap.username();
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
     let drafts_folder = "Drafts";

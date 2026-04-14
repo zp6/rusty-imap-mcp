@@ -19,7 +19,7 @@ pub async fn handle(
         rimap_core::RimapError::Config("send_email requires SMTP configuration".into())
     })?;
 
-    let from_addr = &account.from_address;
+    let from_addr = account.imap.username();
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
     // Build SMTP envelope from the compose addresses

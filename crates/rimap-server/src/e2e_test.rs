@@ -251,12 +251,9 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         &config.config.security.protected_folders,
         &config.config.security.expunge_folders,
     );
-    let from_address = config.config.imap.username.clone();
-
     let id = rimap_core::account::AccountId::default_account();
     let state = crate::registry::AccountState {
         id: id.clone(),
-        from_address,
         imap,
         smtp: None,
         guard,

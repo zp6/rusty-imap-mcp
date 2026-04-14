@@ -123,6 +123,13 @@ impl Connection {
         &self.inner.cfg.host
     }
 
+    /// Read the configured IMAP username. Typically the account's
+    /// email address, and suitable for use as the `From:` header.
+    #[must_use]
+    pub fn username(&self) -> &str {
+        &self.inner.cfg.username
+    }
+
     /// Acquire the session lock; lazy-connect if needed. The returned guard
     /// holds the tokio mutex; drop it before any other method on `Connection`.
     pub(crate) async fn session(

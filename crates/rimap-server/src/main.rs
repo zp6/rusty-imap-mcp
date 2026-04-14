@@ -166,7 +166,6 @@ fn build_registry(
 
         let state = registry::AccountState {
             id: id.clone(),
-            from_address: acfg.imap.username.clone(),
             imap,
             smtp,
             guard,
