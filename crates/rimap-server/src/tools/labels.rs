@@ -29,7 +29,7 @@ const SYSTEM_FLAGS: &[&str] = &["seen", "answered", "flagged", "deleted", "draft
 const MAX_LABEL_BYTES: usize = 256;
 
 /// Validate a custom keyword label for IMAP STORE safety.
-pub fn validate_label(label: &str) -> Result<(), rimap_core::RimapError> {
+pub(crate) fn validate_label(label: &str) -> Result<(), rimap_core::RimapError> {
     if label.is_empty() {
         return Err(invalid_input("label must not be empty"));
     }
