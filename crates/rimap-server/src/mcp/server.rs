@@ -262,9 +262,36 @@ impl ServerHandler for ImapMcpServer {
 
         self.run_with_audit_envelope(tool_name, audit_account, posture_str, &args, async {
             account.guard.pre_dispatch(tool_name)?;
-            Box::pin(self.dispatch_tool(account, tool_name, &args)).await
+            let result = Box::pin(self.dispatch_tool(account, tool_name, &args)).await;
+            match &result {
+                Ok(_) => account.guard.on_success(),
+                Err(e) => {
+                    if let Some(reason) = rimap_error_to_breaker_reason(e) {
+                        account.guard.on_failure(reason);
+                    }
+                }
+            }
+            result
         })
         .await
+    }
+}
+
+/// Map a [`RimapError`] to the breaker's [`FailureReason`], or `None`
+/// when the error represents a user/agent/policy failure (which the
+/// breaker must ignore per its contract).
+fn rimap_error_to_breaker_reason(
+    err: &rimap_core::RimapError,
+) -> Option<rimap_authz::breaker::FailureReason> {
+    use rimap_authz::breaker::FailureReason;
+    use rimap_core::ErrorCode;
+    match err.code() {
+        ErrorCode::ConnectionLost => Some(FailureReason::ConnectionLost),
+        ErrorCode::Auth => Some(FailureReason::Auth),
+        ErrorCode::Timeout => Some(FailureReason::Timeout),
+        ErrorCode::ImapProtocol | ErrorCode::SmtpProtocol => Some(FailureReason::Protocol),
+        ErrorCode::Tls => Some(FailureReason::Tls),
+        _ => None,
     }
 }
 
@@ -762,7 +789,53 @@ static TOOL_DEFS: std::sync::LazyLock<std::collections::HashMap<ToolName, Tool>>
 mod tests {
     use rimap_core::tool::ToolName;
 
-    use super::{TOOL_DEFS, split_tool_name};
+    use super::{TOOL_DEFS, rimap_error_to_breaker_reason, split_tool_name};
+
+    #[test]
+    fn breaker_reason_maps_service_failures() {
+        use rimap_authz::breaker::FailureReason;
+        use rimap_core::{ErrorCode, RimapError};
+        let err = RimapError::Imap {
+            code: ErrorCode::Timeout,
+            message: "x".into(),
+            source: None,
+        };
+        assert_eq!(
+            rimap_error_to_breaker_reason(&err),
+            Some(FailureReason::Timeout),
+        );
+        let auth = RimapError::Imap {
+            code: ErrorCode::Auth,
+            message: "x".into(),
+            source: None,
+        };
+        assert_eq!(
+            rimap_error_to_breaker_reason(&auth),
+            Some(FailureReason::Auth),
+        );
+        let tls = RimapError::Imap {
+            code: ErrorCode::Tls,
+            message: "x".into(),
+            source: None,
+        };
+        assert_eq!(
+            rimap_error_to_breaker_reason(&tls),
+            Some(FailureReason::Tls)
+        );
+    }
+
+    #[test]
+    fn breaker_reason_ignores_user_errors() {
+        use rimap_core::RimapError;
+        assert_eq!(
+            rimap_error_to_breaker_reason(&RimapError::invalid_input("bad")),
+            None,
+        );
+        assert_eq!(
+            rimap_error_to_breaker_reason(&RimapError::Internal("bug".into())),
+            None,
+        );
+    }
 
     #[test]
     fn split_tool_name_bare() {
