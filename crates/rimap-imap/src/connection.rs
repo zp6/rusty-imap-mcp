@@ -747,9 +747,11 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// Returns `ImapError::InvalidInput` for an invalid `new_name`,
-    /// `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
-    /// or a protocol error if the server rejects the command.
+    /// Returns `ImapError::InvalidInput` if either `old_name` or `new_name`
+    /// fails `validate_folder_name` (empty, too long, or containing forbidden
+    /// characters). Returns `ImapError::ConnectionLost` or
+    /// `ImapError::Timeout` on transport failure, or a protocol error if the
+    /// server rejects the command.
     pub async fn rename_folder(&self, old_name: &str, new_name: &str) -> Result<(), ImapError> {
         self.with_session("rename_folder", async |session| {
             crate::ops::folder_mgmt::rename_folder(session, old_name, new_name).await
@@ -761,8 +763,10 @@ impl Connection {
     ///
     /// # Errors
     ///
-    /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
-    /// or a protocol error if the server rejects the command.
+    /// Returns `ImapError::InvalidInput` if `name` fails
+    /// `validate_folder_name`. Returns `ImapError::ConnectionLost` or
+    /// `ImapError::Timeout` on transport failure, or a protocol error if
+    /// the server rejects the command.
     pub async fn delete_folder(&self, name: &str) -> Result<(), ImapError> {
         self.with_session("delete_folder", async |session| {
             crate::ops::folder_mgmt::delete_folder(session, name).await
@@ -801,18 +805,12 @@ fn map_tls_handshake_error(err: &std::io::Error) -> ImapError {
     ImapError::TlsHandshake(tokio_rustls::rustls::Error::General(err.to_string()))
 }
 
-/// Map a connect/login error to its stable short error code for the audit log.
+/// Map a connect/login error to its stable short error code for the
+/// audit log. Routes through [`ImapError::code`] so the string form
+/// always matches the canonical [`rimap_core::ErrorCode`] rather than
+/// one-off literals — keeps audit records in sync with the taxonomy.
 fn error_code_for(err: &ImapError) -> &'static str {
-    match err {
-        ImapError::Tls { .. } | ImapError::TlsHandshake(_) => "ERR_TLS",
-        ImapError::Connect(_) | ImapError::ConnectionLost => "ERR_NETWORK",
-        ImapError::Timeout { .. } => "ERR_TIMEOUT",
-        ImapError::Auth { .. } => "ERR_AUTH",
-        ImapError::SizeLimit { .. } => "ERR_ATTACHMENT_TOO_LARGE",
-        ImapError::Protocol(_) => "ERR_IMAP_PROTOCOL",
-        ImapError::InvalidInput { .. } | ImapError::BatchTooLarge { .. } => "ERR_INVALID_INPUT",
-        ImapError::Audit { .. } => "ERR_AUDIT",
-    }
+    err.code().as_str()
 }
 
 #[cfg(test)]
@@ -843,9 +841,9 @@ mod tests {
             ),
             (
                 ImapError::Connect(std::io::Error::other("boom")),
-                "ERR_NETWORK",
+                "ERR_CONNECTION_LOST",
             ),
-            (ImapError::ConnectionLost, "ERR_NETWORK"),
+            (ImapError::ConnectionLost, "ERR_CONNECTION_LOST"),
             (ImapError::Timeout { op: "select" }, "ERR_TIMEOUT"),
             (
                 ImapError::Auth {

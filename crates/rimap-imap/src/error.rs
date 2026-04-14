@@ -110,20 +110,29 @@ impl std::fmt::Display for AuthFailure {
     }
 }
 
+impl ImapError {
+    /// Map this error to the canonical [`ErrorCode`] used in audit
+    /// records and the top-level [`RimapError`] envelope. Audit code
+    /// strings flow through [`ErrorCode::as_str`] so they match the
+    /// taxonomy instead of drifting as ad-hoc literals.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            Self::Tls { .. } | Self::TlsHandshake(_) => ErrorCode::Tls,
+            Self::Connect(_) | Self::ConnectionLost => ErrorCode::ConnectionLost,
+            Self::Timeout { .. } => ErrorCode::Timeout,
+            Self::Auth { .. } => ErrorCode::Auth,
+            Self::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
+            Self::Protocol(_) => ErrorCode::ImapProtocol,
+            Self::InvalidInput { .. } | Self::BatchTooLarge { .. } => ErrorCode::InvalidInput,
+            Self::Audit { .. } => ErrorCode::Internal,
+        }
+    }
+}
+
 impl From<ImapError> for RimapError {
     fn from(err: ImapError) -> Self {
-        let code = match &err {
-            ImapError::Tls { .. } | ImapError::TlsHandshake(_) => ErrorCode::Tls,
-            ImapError::Connect(_) | ImapError::ConnectionLost => ErrorCode::ConnectionLost,
-            ImapError::Timeout { .. } => ErrorCode::Timeout,
-            ImapError::Auth { .. } => ErrorCode::Auth,
-            ImapError::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
-            ImapError::Protocol(_) => ErrorCode::ImapProtocol,
-            ImapError::InvalidInput { .. } | ImapError::BatchTooLarge { .. } => {
-                ErrorCode::InvalidInput
-            }
-            ImapError::Audit { .. } => ErrorCode::Internal,
-        };
+        let code = err.code();
         let message = err.to_string();
         RimapError::Imap {
             code,
