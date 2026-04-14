@@ -428,15 +428,21 @@ impl ImapMcpServer {
                 ser(Box::pin(delete_message::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::Expunge => ser(Box::pin(expunge::handle(account, parse_args(args)?)).await?)?,
-            ToolName::CreateFolder => {
-                ser(Box::pin(folder_management::handle_create(account, parse_args(args)?)).await?)?
-            }
-            ToolName::RenameFolder => {
-                ser(Box::pin(folder_management::handle_rename(account, parse_args(args)?)).await?)?
-            }
-            ToolName::DeleteFolder => {
-                ser(Box::pin(folder_management::handle_delete(account, parse_args(args)?)).await?)?
-            }
+            ToolName::CreateFolder => ser(Box::pin(folder_management::handle_create_folder(
+                account,
+                parse_args(args)?,
+            ))
+            .await?)?,
+            ToolName::RenameFolder => ser(Box::pin(folder_management::handle_rename_folder(
+                account,
+                parse_args(args)?,
+            ))
+            .await?)?,
+            ToolName::DeleteFolder => ser(Box::pin(folder_management::handle_delete_folder(
+                account,
+                parse_args(args)?,
+            ))
+            .await?)?,
             ToolName::AddLabel => {
                 ser(Box::pin(labels::handle_add_label(account, parse_args(args)?)).await?)?
             }

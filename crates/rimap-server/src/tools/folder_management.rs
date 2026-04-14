@@ -64,12 +64,17 @@ pub struct DeleteFolderMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if the name
-/// is protected (including INBOX). Returns `RimapError::Imap { code:
-/// InvalidInput, ... }` if the folder name fails
-/// `validate_folder_name` (empty, too long, forbidden chars).
-/// Propagates `RimapError::Imap { ... }` from the underlying CREATE.
-pub async fn handle_create(
+/// `FolderGuard::check_protected` runs before any IMAP traffic and is
+/// the first source of errors:
+/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+///   fails structural validation (empty, too long, forbidden chars).
+/// - `RimapError::Authz { code: ProtectedFolder, ... }` if the name is
+///   in the protected list or is INBOX.
+///
+/// After the guard passes, `RimapError::Imap { ... }` may be propagated
+/// from the underlying CREATE (e.g. LOGIN failures, server rejection,
+/// transport errors).
+pub async fn handle_create_folder(
     account: &AccountState,
     input: CreateFolderInput,
 ) -> Result<ToolResponse<CreateFolderMeta>, rimap_core::RimapError> {
@@ -93,12 +98,17 @@ pub async fn handle_create(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if either
-/// the source or destination name is protected (including INBOX).
-/// Returns `RimapError::Imap { code: InvalidInput, ... }` if either
-/// name fails `validate_folder_name`. Propagates `RimapError::Imap
-/// { ... }` from the underlying RENAME.
-pub async fn handle_rename(
+/// `FolderGuard::check_rename` runs before any IMAP traffic and is the
+/// first source of errors:
+/// - `RimapError::Authz { code: InvalidFolderName, ... }` if either the
+///   source or destination name fails structural validation.
+/// - `RimapError::Authz { code: ProtectedFolder, ... }` if either name
+///   is in the protected list or is INBOX.
+///
+/// After the guard passes, `RimapError::Imap { ... }` may be propagated
+/// from the underlying RENAME (e.g. LOGIN failures, server rejection,
+/// transport errors).
+pub async fn handle_rename_folder(
     account: &AccountState,
     input: RenameFolderInput,
 ) -> Result<ToolResponse<RenameFolderMeta>, rimap_core::RimapError> {
@@ -126,13 +136,20 @@ pub async fn handle_rename(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if the name
-/// is protected. Returns `RimapError::Authz { code: ExpungeDenied, ... }`
-/// if expunge is not permitted for the folder. Returns
-/// `RimapError::Imap { code: InvalidInput, ... }` if the folder name
-/// fails `validate_folder_name`. Propagates `RimapError::Imap { ... }`
-/// from STATUS and DELETE.
-pub async fn handle_delete(
+/// `FolderGuard` runs before any IMAP traffic and is the first source
+/// of errors:
+/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+///   fails structural validation (from `check_protected` or
+///   `check_expunge`).
+/// - `RimapError::Authz { code: ProtectedFolder, ... }` if the name is
+///   in the protected list or is INBOX.
+/// - `RimapError::Authz { code: ExpungeDenied, ... }` if the folder is
+///   not in the expunge allowlist.
+///
+/// After the guards pass, `RimapError::Imap { ... }` may be propagated
+/// from the underlying STATUS and DELETE (e.g. LOGIN failures, server
+/// rejection, transport errors).
+pub async fn handle_delete_folder(
     account: &AccountState,
     input: DeleteFolderInput,
 ) -> Result<ToolResponse<DeleteFolderMeta>, rimap_core::RimapError> {

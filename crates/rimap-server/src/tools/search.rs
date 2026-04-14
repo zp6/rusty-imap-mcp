@@ -1,4 +1,15 @@
 //! `search` tool handler.
+//!
+//! Search responses intentionally omit per-envelope `SecurityWarning`
+//! entries. `sanitize_for_output` runs a header-appropriate subset of
+//! the `rimap-content` Unicode pipeline (NFKC, line-ending
+//! normalization, disallowed-codepoint filtering, grapheme truncation)
+//! and skips the `decode` step that would surface warnings. Envelope
+//! snippets (subject, date, addresses, `Message-ID`) are bounded and
+//! already UTF-8, so no warnings are produced and the top-level
+//! `security_warnings` on a `search` response is always empty. Full
+//! warning propagation happens in `fetch_message`, where MIME bodies
+//! flow through `unicode::sanitize`.
 
 use rimap_imap::types::{
     Address, FetchSpec, FetchedMessage, Flag, SearchQuery, StructuredQuery, Uid,
