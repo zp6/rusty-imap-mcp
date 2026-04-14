@@ -9,6 +9,7 @@
 pub mod error;
 pub mod output;
 pub mod parse;
+pub mod raw_parts;
 pub mod threading;
 pub mod unicode;
 
@@ -21,6 +22,7 @@ pub use output::{
     WarningSeverity,
 };
 pub use parse::parse_message;
+pub use raw_parts::{RawPart, walk_attachment_parts};
 pub use threading::{ThreadingHeaders, extract_threading_headers};
 
 /// Extract the `Message-ID` header from raw RFC 5322 bytes.

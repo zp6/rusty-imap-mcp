@@ -1,9 +1,8 @@
 //! `download_attachment` tool handler.
 
-use mail_parser::MimeHeaders;
 use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::download;
@@ -21,6 +20,25 @@ pub struct DownloadAttachmentInput {
     /// Optional destination directory. Must be within the
     /// configured download root.
     pub dest_dir: Option<String>,
+}
+
+/// Trusted metadata for a `download_attachment` response.
+#[derive(Debug, Serialize)]
+pub struct DownloadAttachmentMeta {
+    pub folder: String,
+    pub uid: u32,
+    pub part_id: String,
+    pub path: String,
+    pub size_bytes: usize,
+    pub sha256: String,
+    pub mime_declared: String,
+    pub mime_sniffed: Option<String>,
+}
+
+/// Untrusted payload for a `download_attachment` response.
+#[derive(Debug, Serialize)]
+pub struct DownloadAttachmentUntrusted {
+    pub filename_original: Option<String>,
 }
 
 /// Execute the `download_attachment` tool.
@@ -44,7 +62,8 @@ pub async fn handle(
     account: &AccountState,
     input: DownloadAttachmentInput,
     download_dir: &std::path::Path,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<DownloadAttachmentMeta, DownloadAttachmentUntrusted>, rimap_core::RimapError>
+{
     let uid = Uid::new(input.uid)
         .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
 
@@ -63,20 +82,19 @@ pub async fn handle(
 
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
 
-    let parsed = tokio::task::spawn_blocking(move || {
-        mail_parser::MessageParser::new()
-            .parse(&raw)
-            .map(mail_parser::Message::into_owned)
-            .ok_or_else(|| {
-                rimap_core::RimapError::Internal(
-                    "failed to parse message for attachment extraction".into(),
-                )
-            })
-    })
-    .await
-    .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))?;
+    let parts = crate::mcp::content::walk_attachment_parts_async(raw).await?;
 
-    let (part_body, declared_type, original_filename) = find_part_by_id(&parsed, &input.part_id)?;
+    let part = parts
+        .into_iter()
+        .find(|p| p.part_id == input.part_id)
+        .ok_or_else(|| rimap_core::RimapError::Authz {
+            code: rimap_core::error::ErrorCode::NotFound,
+            message: format!("part_id {} not found in message", input.part_id),
+        })?;
+
+    let original_filename = part.filename;
+    let declared_type = part.content_type;
+    let part_body = part.body;
 
     let safe_filename = original_filename.as_deref().unwrap_or("attachment");
 
@@ -110,19 +128,19 @@ pub async fn handle(
     ));
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "uid": input.uid,
-            "part_id": input.part_id,
-            "path": path_str,
-            "size_bytes": size,
-            "sha256": sha256,
-            "mime_declared": declared_type,
-            "mime_sniffed": mime_sniffed,
+        meta: DownloadAttachmentMeta {
+            folder: input.folder,
+            uid: input.uid,
+            part_id: input.part_id,
+            path: path_str,
+            size_bytes: size,
+            sha256,
+            mime_declared: declared_type,
+            mime_sniffed,
+        },
+        untrusted: Some(DownloadAttachmentUntrusted {
+            filename_original: original_filename,
         }),
-        untrusted: Some(serde_json::json!({
-            "filename_original": original_filename,
-        })),
         security_warnings,
     })
 }
@@ -221,117 +239,9 @@ fn lookup_bs_recursive(
     }
 }
 
-/// Find the MIME part matching `part_id` in a parsed message.
-///
-/// Walks the `mail_parser` parts array and reconstructs IMAP-style
-/// part numbering to find the target part.
-fn find_part_by_id(
-    msg: &mail_parser::Message<'_>,
-    target_part_id: &str,
-) -> Result<(Vec<u8>, String, Option<String>), rimap_core::RimapError> {
-    let part_ids = compute_part_ids(msg)?;
-
-    for (idx, computed_id) in &part_ids {
-        if computed_id == target_part_id {
-            let part = msg.parts.get(*idx).ok_or_else(|| {
-                rimap_core::RimapError::Internal(format!(
-                    "invariant violated: compute_part_ids returned idx {idx} outside msg.parts"
-                ))
-            })?;
-            let body = part.contents().to_vec();
-            let content_type = if let Some(ct) = part.content_type() {
-                let main = ct.ctype();
-                let sub = ct.subtype().unwrap_or("octet-stream");
-                format!("{main}/{sub}")
-            } else {
-                "application/octet-stream".to_string()
-            };
-            let filename = part.attachment_name().map(String::from);
-            return Ok((body, content_type, filename));
-        }
-    }
-
-    Err(rimap_core::RimapError::Authz {
-        code: rimap_core::error::ErrorCode::NotFound,
-        message: format!("part_id {target_part_id} not found in message"),
-    })
-}
-
-/// Compute IMAP-style part IDs for all leaf parts in a parsed
-/// message. Returns `(part_index, imap_part_id)` pairs.
-fn compute_part_ids(
-    msg: &mail_parser::Message<'_>,
-) -> Result<Vec<(usize, String)>, rimap_core::RimapError> {
-    let mut result = Vec::new();
-    let root = msg
-        .parts
-        .first()
-        .ok_or_else(|| rimap_core::RimapError::Internal("message has no parts".into()))?;
-
-    if root.is_multipart() {
-        walk_parts(msg, 0, "", &mut result, 0)?;
-    } else {
-        // Single-part message: the sole part is "1".
-        result.push((0, "1".to_string()));
-    }
-
-    Ok(result)
-}
-
-/// Maximum recursion depth for MIME tree walking (denial-of-service guard).
-const MAX_MIME_DEPTH: u32 = 64;
-
-/// Recursively walk parts and assign IMAP-style IDs.
-fn walk_parts(
-    msg: &mail_parser::Message<'_>,
-    part_idx: usize,
-    prefix: &str,
-    out: &mut Vec<(usize, String)>,
-    depth: u32,
-) -> Result<(), rimap_core::RimapError> {
-    if depth > MAX_MIME_DEPTH {
-        return Ok(());
-    }
-    let part = msg.parts.get(part_idx).ok_or_else(|| {
-        rimap_core::RimapError::Internal(format!(
-            "invariant violated: mail_parser sub_parts reported index {part_idx} outside msg.parts"
-        ))
-    })?;
-
-    if let Some(children) = part.sub_parts() {
-        for (i, &child_idx) in children.iter().enumerate() {
-            let num = i + 1;
-            let child_id = if prefix.is_empty() {
-                num.to_string()
-            } else {
-                format!("{prefix}.{num}")
-            };
-            walk_parts(msg, child_idx as usize, &child_id, out, depth + 1)?;
-        }
-    } else {
-        let part_id = if prefix.is_empty() {
-            "1".to_string()
-        } else {
-            prefix.to_string()
-        };
-        out.push((part_idx, part_id));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
-
-    #[test]
-    fn walk_parts_respects_depth_limit() {
-        let raw = b"From: a@b\r\nContent-Type: text/plain\r\n\r\nHi\r\n";
-        let msg = mail_parser::MessageParser::new().parse(raw).unwrap();
-        let mut out = Vec::new();
-        walk_parts(&msg, 0, "", &mut out, MAX_MIME_DEPTH + 1).unwrap();
-        assert!(out.is_empty());
-    }
 
     // -- cross_validate_mime_type ------------------------------------------
 

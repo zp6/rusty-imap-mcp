@@ -38,6 +38,29 @@ pub async fn parse_message_async(raw: Vec<u8>) -> Result<Content, RimapError> {
     }
 }
 
+/// Run `rimap_content::walk_attachment_parts` on the blocking
+/// threadpool. Shares `PARSE_SEMAPHORE` with [`parse_message_async`]
+/// so heavy attachment extractions cannot saturate the runtime.
+///
+/// # Errors
+///
+/// - `RimapError::Authz { code: InvalidInput, ... }` for `ContentError`
+///   (malformed RFC 5322).
+/// - `RimapError::Internal` for panics or a closed semaphore.
+pub async fn walk_attachment_parts_async(
+    raw: Vec<u8>,
+) -> Result<Vec<rimap_content::RawPart>, RimapError> {
+    let _permit = PARSE_SEMAPHORE
+        .acquire()
+        .await
+        .map_err(|_| RimapError::Internal("parse semaphore closed".into()))?;
+    match tokio::task::spawn_blocking(move || rimap_content::walk_attachment_parts(&raw)).await {
+        Ok(Ok(parts)) => Ok(parts),
+        Ok(Err(e)) => Err(RimapError::invalid_input(e.to_string())),
+        Err(join_err) => Err(crate::mcp::spawn_blocking_panic_error(&join_err)),
+    }
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
