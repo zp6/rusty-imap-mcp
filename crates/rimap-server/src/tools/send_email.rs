@@ -109,3 +109,81 @@ fn parse_lettre_addr(addr: &str) -> Result<lettre::Address, rimap_core::RimapErr
         rimap_core::RimapError::invalid_input("invalid email address in recipient list")
     })
 }
+
+#[cfg(test)]
+#[expect(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "tests"
+)]
+mod tests {
+    use super::{build_envelope, parse_lettre_addr};
+    use crate::tools::message_builder::{AddressInput, ComposeInput};
+    use rimap_core::{ErrorCode, RimapError};
+
+    fn addr(address: &str) -> AddressInput {
+        AddressInput {
+            name: None,
+            address: address.to_string(),
+        }
+    }
+
+    fn compose(to: Vec<AddressInput>) -> ComposeInput {
+        ComposeInput {
+            to,
+            cc: None,
+            bcc: None,
+            subject: "s".into(),
+            body_text: "b".into(),
+            in_reply_to_uid: None,
+            in_reply_to_folder: None,
+        }
+    }
+
+    #[test]
+    fn parse_lettre_addr_accepts_well_formed_mailbox() {
+        let parsed = parse_lettre_addr("alice@example.com").expect("valid address");
+        assert_eq!(parsed.to_string(), "alice@example.com");
+    }
+
+    #[test]
+    fn parse_lettre_addr_rejects_garbage_with_invalid_input() {
+        let err = parse_lettre_addr("not-an-email").unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidInput);
+    }
+
+    #[test]
+    fn build_envelope_single_recipient() {
+        let env = build_envelope("from@example.com", &compose(vec![addr("a@example.com")]))
+            .expect("envelope ok");
+        assert_eq!(env.to().len(), 1);
+        assert!(env.from().is_some());
+    }
+
+    #[test]
+    fn build_envelope_unions_to_cc_bcc() {
+        let mut input = compose(vec![addr("a@example.com")]);
+        input.cc = Some(vec![addr("b@example.com")]);
+        input.bcc = Some(vec![addr("c@example.com")]);
+        let env = build_envelope("from@example.com", &input).expect("envelope ok");
+        assert_eq!(env.to().len(), 3, "to + cc + bcc collapsed into envelope");
+    }
+
+    #[test]
+    fn build_envelope_rejects_bad_from_with_config_error() {
+        let err =
+            build_envelope("not-an-email", &compose(vec![addr("a@example.com")])).unwrap_err();
+        match err {
+            RimapError::Config(_) => {}
+            other => panic!("expected Config, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_envelope_rejects_bad_recipient_with_invalid_input() {
+        let err =
+            build_envelope("from@example.com", &compose(vec![addr("not-an-email")])).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidInput);
+    }
+}
