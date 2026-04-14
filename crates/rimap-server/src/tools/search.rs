@@ -4,7 +4,7 @@ use rimap_imap::types::{
     Address, FetchSpec, FetchedMessage, Flag, SearchQuery, StructuredQuery, Uid,
 };
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -39,6 +39,54 @@ pub struct SearchInput {
     pub offset: Option<usize>,
 }
 
+/// A single message entry in a `search` untrusted payload.
+#[derive(Debug, Serialize)]
+pub struct SearchResultEntry {
+    /// UID of the message.
+    pub uid: u32,
+    /// Message size in bytes, if fetched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u32>,
+    /// IMAP flags on the message, if fetched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flags: Option<Vec<String>>,
+    /// Subject header, sanitized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Date header, sanitized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    /// From addresses, sanitized. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<String>,
+    /// To addresses, sanitized. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
+    /// RFC 2822 `Message-ID`, sanitized.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+}
+
+/// Trusted metadata for a `search` response.
+#[derive(Debug, Serialize)]
+pub struct SearchMeta {
+    /// Folder that was searched.
+    pub folder: String,
+    /// Total number of messages matching the query (before pagination).
+    pub total_matched: usize,
+    /// Number of messages returned in this response.
+    pub returned: usize,
+    /// Whether there are more results beyond this page.
+    pub truncated: bool,
+}
+
+/// Untrusted payload for a `search` response.
+#[derive(Debug, Serialize)]
+pub struct SearchUntrusted {
+    /// Matching messages with sanitized header fields.
+    pub messages: Vec<SearchResultEntry>,
+}
+
 /// Execute the `search` tool.
 ///
 /// # Errors
@@ -51,7 +99,7 @@ pub struct SearchInput {
 pub async fn handle(
     account: &AccountState,
     input: SearchInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<SearchMeta, SearchUntrusted>, rimap_core::RimapError> {
     let query = build_query(account, &input)?;
 
     let uids = Box::pin(account.imap.search(&input.folder, query)).await?;
@@ -64,7 +112,7 @@ pub async fn handle(
 
     let truncated = total_matched > offset + page_uids.len();
 
-    let messages = if page_uids.is_empty() {
+    let messages: Vec<SearchResultEntry> = if page_uids.is_empty() {
         Vec::new()
     } else {
         let fetched = account
@@ -84,15 +132,13 @@ pub async fn handle(
     };
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "total_matched": total_matched,
-            "returned": messages.len(),
-            "truncated": truncated,
-        }),
-        untrusted: Some(serde_json::json!({
-            "messages": messages,
-        })),
+        meta: SearchMeta {
+            folder: input.folder,
+            total_matched,
+            returned: messages.len(),
+            truncated,
+        },
+        untrusted: Some(SearchUntrusted { messages }),
         security_warnings: Vec::new(),
     })
 }
@@ -206,52 +252,59 @@ fn format_flag(flag: &Flag) -> &str {
     }
 }
 
-/// Format a single `FetchedMessage` into a JSON value for search
-/// results.
-fn format_search_result(msg: &FetchedMessage) -> serde_json::Value {
-    let mut entry = serde_json::json!({
-        "uid": msg.uid.get(),
-    });
+/// Format a single `FetchedMessage` into a typed search result entry.
+fn format_search_result(msg: &FetchedMessage) -> SearchResultEntry {
+    let size = msg.size;
 
-    if let Some(size) = msg.size {
-        entry["size"] = serde_json::json!(size);
-    }
+    let flags = msg
+        .flags
+        .as_ref()
+        .map(|f| f.iter().map(|flag| format_flag(flag).to_string()).collect());
 
-    if let Some(flags) = &msg.flags {
-        let flag_strs: Vec<&str> = flags.iter().map(format_flag).collect();
-        entry["flags"] = serde_json::json!(flag_strs);
-    }
-
-    if let Some(env) = &msg.envelope {
-        if let Some(subj) = &env.subject_raw {
-            let raw = String::from_utf8_lossy(subj);
-            entry["subject"] = serde_json::json!(sanitize_for_output(&raw));
-        }
-        if let Some(date) = &env.date {
-            let raw = String::from_utf8_lossy(date);
-            entry["date"] = serde_json::json!(sanitize_for_output(&raw));
-        }
-        if !env.from.is_empty() {
-            let addrs: Vec<String> = format_addresses(&env.from)
+    let (subject, date, from, to, message_id) = if let Some(env) = &msg.envelope {
+        let subject = env.subject_raw.as_ref().map(|s| {
+            let raw = String::from_utf8_lossy(s);
+            sanitize_for_output(&raw)
+        });
+        let date = env.date.as_ref().map(|d| {
+            let raw = String::from_utf8_lossy(d);
+            sanitize_for_output(&raw)
+        });
+        let from = if env.from.is_empty() {
+            Vec::new()
+        } else {
+            format_addresses(&env.from)
                 .into_iter()
                 .map(|a| sanitize_for_output(&a))
-                .collect();
-            entry["from"] = serde_json::json!(addrs);
-        }
-        if !env.to.is_empty() {
-            let addrs: Vec<String> = format_addresses(&env.to)
+                .collect()
+        };
+        let to = if env.to.is_empty() {
+            Vec::new()
+        } else {
+            format_addresses(&env.to)
                 .into_iter()
                 .map(|a| sanitize_for_output(&a))
-                .collect();
-            entry["to"] = serde_json::json!(addrs);
-        }
-        if let Some(mid) = &env.message_id {
+                .collect()
+        };
+        let message_id = env.message_id.as_ref().map(|mid| {
             let raw = String::from_utf8_lossy(mid.as_bytes());
-            entry["message_id"] = serde_json::json!(sanitize_for_output(&raw));
-        }
-    }
+            sanitize_for_output(&raw)
+        });
+        (subject, date, from, to, message_id)
+    } else {
+        (None, None, Vec::new(), Vec::new(), None)
+    };
 
-    entry
+    SearchResultEntry {
+        uid: msg.uid.get(),
+        size,
+        flags,
+        subject,
+        date,
+        from,
+        to,
+        message_id,
+    }
 }
 
 #[cfg(test)]
