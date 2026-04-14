@@ -26,7 +26,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: stable) # zizmor: ignore[superfluous-actions]
         with:
           toolchain: stable
-      - run: cargo build --release --locked
+      - name: Install cargo-auditable
+        run: cargo install cargo-auditable --locked --version 0.7.4
+      - run: cargo auditable build --release --locked
       - name: Rename binary
         run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -51,6 +53,9 @@ jobs:
           targets: aarch64-unknown-linux-gnu
       - name: Install cross
         run: cargo install cross --locked --version 0.2.5
+      # TODO: embed SBOM via cargo-auditable for cross builds. Requires
+      # installing cargo-auditable inside the cross container (e.g. via a
+      # Cross.toml pre-build hook or custom image). Tracked as follow-up.
       - run: cross build --release --locked --target aarch64-unknown-linux-gnu
       - name: Rename binary
         run: cp target/aarch64-unknown-linux-gnu/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-aarch64-unknown-linux-gnu
@@ -71,7 +76,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: stable) # zizmor: ignore[superfluous-actions]
         with:
           toolchain: stable
-      - run: cargo build --release --locked
+      - name: Install cargo-auditable
+        run: cargo install cargo-auditable --locked --version 0.7.4
+      - run: cargo auditable build --release --locked
       - name: Rename binary
         run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-aarch64-apple-darwin
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -98,7 +105,7 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 \
-            bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo build --release --locked"
+            bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo install cargo-auditable --locked --version 0.7.4 && cargo auditable build --release --locked"
       - name: Rename binary
         run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-powerpc64le-unknown-linux-gnu
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -125,7 +132,7 @@ jobs:
             -v "${{ github.workspace }}:/workspace" \
             -w /workspace \
             rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 \
-            bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo build --release --locked"
+            bash -c "apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config && cargo install cargo-auditable --locked --version 0.7.4 && cargo auditable build --release --locked"
       - name: Rename binary
         run: cp target/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-s390x-unknown-linux-gnu
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
