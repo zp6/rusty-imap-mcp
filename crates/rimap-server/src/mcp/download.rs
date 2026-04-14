@@ -15,8 +15,9 @@ use rimap_core::RimapError;
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Internal` if `dest_dir` cannot be
-/// canonicalized or falls outside `allowed_root`.
+/// Returns `RimapError::InvalidInput` when the user-supplied `dest_dir`
+/// cannot be canonicalized (missing path, permission denied) or when
+/// the canonical form falls outside `allowed_root`.
 pub fn resolve_dest_dir(
     dest_dir: Option<&str>,
     allowed_root: &Path,
@@ -27,10 +28,10 @@ pub fn resolve_dest_dir(
             let p = PathBuf::from(d);
             let canonical = p
                 .canonicalize()
-                .map_err(|e| RimapError::Internal(format!("cannot resolve dest_dir: {e}")))?;
+                .map_err(|e| RimapError::invalid_input(format!("cannot resolve dest_dir: {e}")))?;
             if !canonical.starts_with(allowed_root) {
-                return Err(RimapError::Internal(
-                    "dest_dir is outside allowed download directory".into(),
+                return Err(RimapError::invalid_input(
+                    "dest_dir is outside allowed download directory",
                 ));
             }
             canonical
@@ -177,10 +178,21 @@ mod tests {
         let allowed = tmp.path().join("sandbox");
         std::fs::create_dir_all(&allowed).unwrap();
         // Try to escape to the parent.
-        let result = resolve_dest_dir(Some(tmp.path().to_str().unwrap()), &allowed, &allowed);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("outside allowed"));
+        let err =
+            resolve_dest_dir(Some(tmp.path().to_str().unwrap()), &allowed, &allowed).unwrap_err();
+        assert_eq!(err.code(), rimap_core::ErrorCode::InvalidInput);
+        assert!(err.to_string().contains("outside allowed"));
+    }
+
+    #[test]
+    fn resolve_dest_dir_invalid_path_returns_invalid_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let allowed = tmp.path().join("sandbox");
+        std::fs::create_dir_all(&allowed).unwrap();
+        // Non-existent dest_dir cannot be canonicalized.
+        let bogus = tmp.path().join("does/not/exist");
+        let err = resolve_dest_dir(Some(bogus.to_str().unwrap()), &allowed, &allowed).unwrap_err();
+        assert_eq!(err.code(), rimap_core::ErrorCode::InvalidInput);
     }
 
     #[test]
