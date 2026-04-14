@@ -23,7 +23,6 @@ rimap-audit = { path = "../rimap-audit", version = "1.0.0" }
 rimap-content = { path = "../rimap-content", version = "1.0.0" }
 rimap-imap = { path = "../rimap-imap", version = "1.0.0" }
 rimap-smtp = { path = "../rimap-smtp", version = "1.0.0" }
-lettre = { workspace = true }
 mail-builder = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }

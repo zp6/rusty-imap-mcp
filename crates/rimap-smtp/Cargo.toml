@@ -19,9 +19,7 @@ rimap-core = { path = "../rimap-core", version = "1.0.0" }
 rimap-config = { path = "../rimap-config", version = "1.0.0" }
 
 lettre = { workspace = true }
-tokio = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }
