@@ -8,6 +8,9 @@
 //!   - `login` — interactively store a credential in the keychain.
 //!   - `audit <action>` — audit log inspection utilities (see `AuditAction`).
 
+pub(crate) mod audit_merge;
+pub(crate) mod dry_run;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

@@ -71,7 +71,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::dry_run::run;
+    use crate::cli::dry_run::run;
 
     fn write_minimal_config(dir: &TempDir) -> PathBuf {
         let audit = dir.path().join("audit.jsonl");

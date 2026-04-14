@@ -2,12 +2,10 @@
 
 #![deny(missing_docs)]
 
-mod audit_cmd;
 mod audit_init;
 mod cli;
 mod content;
 mod download;
-mod dry_run;
 mod logging;
 mod mcp_error;
 mod registry;
@@ -74,7 +72,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
     }) = cli.command
     {
-        return audit_cmd::run(
+        return cli::audit_merge::run(
             &path,
             since.as_deref(),
             until.as_deref(),
@@ -88,7 +86,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.dry_run {
         let path = resolve_cli_config_path(&cli)?;
         let mut stdout = std::io::stdout().lock();
-        return dry_run::run(&path, &mut stdout);
+        return cli::dry_run::run(&path, &mut stdout);
     }
 
     // Server mode: load config, build subsystems, run MCP transport.
