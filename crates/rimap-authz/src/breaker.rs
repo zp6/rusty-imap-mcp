@@ -412,6 +412,29 @@ mod tests {
     }
 
     #[test]
+    fn half_open_reject_reports_retry_after_ms_zero() {
+        // Documents the convention that CircuitOpen { retry_after_ms: 0 }
+        // means "half-open probe in flight" — not "retry immediately".
+        let b = CircuitBreaker::new(ManualClock::new(), test_cfg());
+        for _ in 0..3 {
+            b.on_failure(FailureReason::Timeout);
+        }
+        b.clock.advance(Duration::from_secs(5));
+        assert!(b.pre_call().is_ok()); // probe admitted → HalfOpen
+        assert_eq!(b.state(), State::HalfOpen);
+        match b.pre_call() {
+            Err(AuthzError::CircuitOpen { retry_after_ms }) => {
+                assert_eq!(
+                    retry_after_ms, 0,
+                    "half-open rejection must signal retry_after_ms=0 \
+                     so callers can distinguish it from a timed cooldown"
+                );
+            }
+            other => panic!("expected CircuitOpen in HalfOpen state, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn half_open_rejects_concurrent_calls_until_probe_resolves() {
         let b = CircuitBreaker::new(ManualClock::new(), test_cfg());
         for _ in 0..3 {

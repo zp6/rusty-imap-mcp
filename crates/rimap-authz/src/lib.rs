@@ -16,5 +16,5 @@ pub use crate::breaker::{
 pub use crate::error::AuthzError;
 pub use crate::folder_guard::FolderGuard;
 pub use crate::guard::DispatchGuard;
-pub use crate::matrix::{EffectiveMatrix, base_allows};
+pub use crate::matrix::EffectiveMatrix;
 pub use crate::rate_limit::Governor;

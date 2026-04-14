@@ -19,9 +19,21 @@ pub enum AuthzError {
         retry_after_ms: u64,
     },
     /// Circuit breaker is open; fast-failing.
+    ///
+    /// # `retry_after_ms` semantics
+    ///
+    /// - `retry_after_ms > 0`: the breaker is in the `Open` state and cooling
+    ///   down. Callers should wait at least this long before retrying.
+    /// - `retry_after_ms == 0`: the breaker is in the `HalfOpen` state — the
+    ///   cooldown has elapsed and a single probe call is already in flight (or
+    ///   has been admitted ahead of this caller). This does *not* mean "retry
+    ///   immediately with no delay"; it means "the probe slot is taken, back
+    ///   off briefly and try again once the probe resolves." A short fixed
+    ///   delay (e.g. tens of milliseconds) is the intended caller behavior.
     #[error("circuit breaker open; retry after {retry_after_ms} ms")]
     CircuitOpen {
-        /// Hint for how long the caller should wait before retrying.
+        /// Hint for how long the caller should wait before retrying. See the
+        /// variant docs for the special `0` case (half-open probe in flight).
         retry_after_ms: u64,
     },
     /// Config-time error during matrix build (e.g. unknown override tool).
