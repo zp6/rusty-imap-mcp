@@ -36,4 +36,25 @@ impl<M: Serialize, U: Serialize> ToolResponse<M, U> {
             security_warnings: Vec::new(),
         }
     }
+
+    /// Attach an untrusted payload.
+    #[must_use]
+    pub fn with_untrusted(mut self, untrusted: U) -> Self {
+        self.untrusted = Some(untrusted);
+        self
+    }
+
+    /// Replace the security warnings vector.
+    #[must_use]
+    pub fn with_warnings(mut self, warnings: Vec<rimap_content::SecurityWarning>) -> Self {
+        self.security_warnings = warnings;
+        self
+    }
+
+    /// Append a single security warning.
+    #[must_use]
+    pub fn with_warning(mut self, warning: rimap_content::SecurityWarning) -> Self {
+        self.security_warnings.push(warning);
+        self
+    }
 }

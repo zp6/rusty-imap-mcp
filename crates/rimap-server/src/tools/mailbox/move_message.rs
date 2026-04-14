@@ -99,13 +99,10 @@ pub async fn handle(
         ));
     }
 
-    Ok(ToolResponse {
-        meta: MoveMessageMeta {
-            folder: input.folder,
-            destination: input.destination,
-            moves,
-        },
-        untrusted: None,
-        security_warnings: warnings,
+    Ok(ToolResponse::meta_only(MoveMessageMeta {
+        folder: input.folder,
+        destination: input.destination,
+        moves,
     })
+    .with_warnings(warnings))
 }

@@ -121,27 +121,25 @@ pub async fn handle(
         }
     }
 
-    Ok(ToolResponse {
-        meta: FetchMessageMeta {
-            folder: input.folder,
-            uid: input.uid,
-            message_id: content.meta.message_id,
-            size: raw_size,
-            truncated,
-        },
-        untrusted: Some(FetchMessageUntrusted {
-            body_text,
-            body_html,
-            subject: content.meta.subject,
-            from: content.meta.from,
-            to: content.meta.to,
-            cc: content.meta.cc,
-            reply_to: content.meta.reply_to,
-            date: content.meta.date,
-            attachments: content.meta.attachments,
-        }),
-        security_warnings: content.security_warnings,
+    Ok(ToolResponse::meta_only(FetchMessageMeta {
+        folder: input.folder,
+        uid: input.uid,
+        message_id: content.meta.message_id,
+        size: raw_size,
+        truncated,
     })
+    .with_untrusted(FetchMessageUntrusted {
+        body_text,
+        body_html,
+        subject: content.meta.subject,
+        from: content.meta.from,
+        to: content.meta.to,
+        cc: content.meta.cc,
+        reply_to: content.meta.reply_to,
+        date: content.meta.date,
+        attachments: content.meta.attachments,
+    })
+    .with_warnings(content.security_warnings))
 }
 
 /// Truncate a string to at most `max` bytes on a valid UTF-8

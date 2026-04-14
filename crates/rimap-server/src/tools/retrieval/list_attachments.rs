@@ -81,15 +81,7 @@ pub async fn handle(
         bodystructure: true,
         ..FetchSpec::default()
     };
-    let messages = account.imap.fetch(&input.folder, &[uid], spec).await?;
-
-    let msg = messages
-        .into_iter()
-        .next()
-        .ok_or_else(|| rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::NotFound,
-            message: format!("UID {} not found in {}", input.uid, input.folder),
-        })?;
+    let msg = crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec).await?;
 
     let bodystructure = msg.bodystructure.ok_or_else(|| {
         rimap_core::RimapError::Internal("server did not return BODYSTRUCTURE".into())
@@ -98,15 +90,12 @@ pub async fn handle(
     let mut attachments = Vec::new();
     collect_attachments(&bodystructure, &mut attachments);
 
-    Ok(ToolResponse {
-        meta: ListAttachmentsMeta {
-            folder: input.folder,
-            uid: input.uid,
-            attachment_count: attachments.len(),
-        },
-        untrusted: Some(ListAttachmentsUntrusted { attachments }),
-        security_warnings: Vec::new(),
+    Ok(ToolResponse::meta_only(ListAttachmentsMeta {
+        folder: input.folder,
+        uid: input.uid,
+        attachment_count: attachments.len(),
     })
+    .with_untrusted(ListAttachmentsUntrusted { attachments }))
 }
 
 use crate::tools::part_walker::walk_body_structure;

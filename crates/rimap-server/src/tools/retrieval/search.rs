@@ -142,16 +142,13 @@ pub async fn handle(
         fetched.iter().map(format_search_result).collect()
     };
 
-    Ok(ToolResponse {
-        meta: SearchMeta {
-            folder: input.folder,
-            total_matched,
-            returned: messages.len(),
-            truncated,
-        },
-        untrusted: Some(SearchUntrusted { messages }),
-        security_warnings: Vec::new(),
+    Ok(ToolResponse::meta_only(SearchMeta {
+        folder: input.folder,
+        total_matched,
+        returned: messages.len(),
+        truncated,
     })
+    .with_untrusted(SearchUntrusted { messages }))
 }
 
 /// Build a `SearchQuery` from the input. The `SearchAdvanced` posture

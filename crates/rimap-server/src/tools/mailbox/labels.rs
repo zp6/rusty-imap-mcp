@@ -200,18 +200,7 @@ pub async fn handle_list_labels(
         flags: true,
         ..FetchSpec::default()
     };
-    let messages = account.imap.fetch(&input.folder, &[uid], spec).await?;
-
-    let msg = messages
-        .into_iter()
-        .next()
-        .ok_or_else(|| rimap_core::RimapError::Authz {
-            code: rimap_core::error::ErrorCode::NotFound,
-            message: format!(
-                "message UID {} not found in folder '{}'",
-                input.uid, input.folder
-            ),
-        })?;
+    let msg = crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec).await?;
 
     let labels: Vec<String> = msg
         .flags

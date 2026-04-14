@@ -148,22 +148,20 @@ pub async fn handle(
         mime_sniffed.as_deref(),
     ));
 
-    Ok(ToolResponse {
-        meta: DownloadAttachmentMeta {
-            folder: input.folder,
-            uid: input.uid,
-            part_id: input.part_id,
-            path: path_str,
-            size_bytes: size,
-            sha256,
-            mime_declared: declared_type,
-            mime_sniffed,
-        },
-        untrusted: Some(DownloadAttachmentUntrusted {
-            filename_original: original_filename,
-        }),
-        security_warnings,
+    Ok(ToolResponse::meta_only(DownloadAttachmentMeta {
+        folder: input.folder,
+        uid: input.uid,
+        part_id: input.part_id,
+        path: path_str,
+        size_bytes: size,
+        sha256,
+        mime_declared: declared_type,
+        mime_sniffed,
     })
+    .with_untrusted(DownloadAttachmentUntrusted {
+        filename_original: original_filename,
+    })
+    .with_warnings(security_warnings))
 }
 
 /// Compare BODYSTRUCTURE-declared MIME type against `mail_parser`'s type.

@@ -11,6 +11,7 @@ pub mod admin;
 pub mod compose;
 pub mod mailbox;
 pub mod retrieval;
+pub(crate) mod support;
 
 pub use admin::*;
 pub use compose::*;
