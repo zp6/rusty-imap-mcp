@@ -179,32 +179,19 @@ fn parse_iso_date(s: &str) -> Result<time::Date, rimap_core::RimapError> {
         .map_err(|e| rimap_core::RimapError::invalid_input(format!("invalid date '{s}': {e}")))
 }
 
-/// Strip control characters and Unicode tag/bidi characters from
-/// a string destined for MCP response output.
+/// Route a string destined for MCP search-result output through the
+/// shared `rimap_content::unicode::sanitize` pipeline. Strips C0/C1
+/// controls, zero-width codepoints, bidi overrides, and normalizes
+/// via NFKC. Warnings are dropped — envelope snippets do not surface
+/// per-field `SecurityWarning`.
 fn sanitize_for_output(s: &str) -> String {
-    s.chars()
-        .filter(|c| !is_forbidden_output_char(*c))
-        .collect()
-}
-
-/// Returns `true` for characters that must not appear in MCP output:
-/// C0 controls (except `\n` and `\t`), DEL, Unicode tag characters,
-/// bidi overrides, and zero-width characters.
-fn is_forbidden_output_char(c: char) -> bool {
-    // `matches!` is appropriate here: char ranges have no fields to
-    // destructure, so the "no matches!" guideline does not apply.
-    matches!(
-        c,
-        '\x00'..='\x08'
-            | '\x0b'..='\x0c'
-            | '\x0e'..='\x1f'
-            | '\x7f'
-            | '\u{E0001}'..='\u{E007F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{200B}'..='\u{200F}'
-            | '\u{FEFF}'
-    )
+    let (clean, _warnings) = rimap_content::unicode::sanitize(
+        s.as_bytes(),
+        Some("utf-8"),
+        rimap_content::parse::MAX_HEADER_BYTES,
+        "search:envelope",
+    );
+    clean
 }
 
 /// Format an address as `"name <mailbox@host>"` or `"mailbox@host"`.
@@ -352,8 +339,10 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_preserves_normal_unicode() {
+    fn sanitize_nfkc_normalizes_decomposed_accents() {
+        // NFKC precomposes "cafe" + combining acute into "café".
+        // Other already-precomposed characters pass through unchanged.
         let input = "cafe\u{0301} naïve résumé 日本語";
-        assert_eq!(sanitize_for_output(input), input);
+        assert_eq!(sanitize_for_output(input), "café naïve résumé 日本語");
     }
 }

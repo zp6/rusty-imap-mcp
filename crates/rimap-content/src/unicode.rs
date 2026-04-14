@@ -67,6 +67,7 @@ pub fn normalize_nfkc(input: &str) -> String {
 ///
 /// The strip set covers:
 /// - Zero-width formatting codepoints (see the private `ZERO_WIDTH` table)
+/// - Unicode Tag Characters (U+E0000..U+E007F), counted with zero-width
 /// - Bidi overrides and isolates (see the private `BIDI_OVERRIDE` table)
 /// - C0 controls (U+0000..U+001F) except `\t` (U+0009) and `\n` (U+000A)
 /// - C1 controls (U+0080..U+009F)
@@ -82,7 +83,7 @@ pub fn filter_codepoints(input: &str) -> FilterResult {
     let mut c0_c1 = 0_usize;
 
     for ch in input.chars() {
-        if ZERO_WIDTH.contains(&ch) {
+        if ZERO_WIDTH.contains(&ch) || is_unicode_tag(ch) {
             zero_width += 1;
             continue;
         }
@@ -129,6 +130,14 @@ fn is_c0_control_disallowed(ch: char) -> bool {
 fn is_c1_control(ch: char) -> bool {
     let c = ch as u32;
     (0x80..=0x9F).contains(&c)
+}
+
+/// Unicode Tag Characters block (U+E0000..U+E007F): LANGUAGE TAG,
+/// TAG codepoints, and CANCEL TAG. These are invisible formatting
+/// codepoints used to smuggle instructions past visual review.
+fn is_unicode_tag(ch: char) -> bool {
+    let c = ch as u32;
+    (0xE0000..=0xE007F).contains(&c)
 }
 
 /// Normalize all line endings to `\n`. Converts `\r\n` to `\n` and

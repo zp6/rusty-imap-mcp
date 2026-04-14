@@ -687,21 +687,24 @@ fn is_valid_account_prefix(s: &str) -> bool {
 /// truth for tool names.
 type ToolSpec = (&'static str, serde_json::Map<String, serde_json::Value>);
 
-/// Return (name, description, schema) for the given `ToolName`, or
-/// `None` for sub-capabilities that share an MCP tool name with a
-/// parent (e.g. `SearchAdvanced`, `FetchMessageHtml`).
+/// Return (description, schema) for the given `ToolName`, or `None`
+/// for sub-capabilities that share an MCP tool name with a parent
+/// (e.g. `SearchAdvanced`, `FetchMessageHtml`).
 fn tool_spec(name: ToolName) -> Option<ToolSpec> {
-    tool_spec_read(name)
-        .or_else(|| tool_spec_write(name))
-        .or_else(|| tool_spec_labels(name))
-        .or_else(|| tool_spec_infra(name))
-}
-
-fn tool_spec_read(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
-        create_draft::CreateDraftInput, download_attachment::DownloadAttachmentInput,
-        fetch_message::FetchMessageInput, flags::FlagInput, list_attachments::ListAttachmentsInput,
-        move_message::MoveMessageInput, search::SearchInput,
+        accounts::UseAccountInput,
+        create_draft::CreateDraftInput,
+        delete_message::DeleteMessageInput,
+        download_attachment::DownloadAttachmentInput,
+        expunge::ExpungeInput,
+        fetch_message::FetchMessageInput,
+        flags::FlagInput,
+        folder_management::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
+        labels::{LabelInput, ListLabelsInput},
+        list_attachments::ListAttachmentsInput,
+        move_message::MoveMessageInput,
+        search::SearchInput,
+        send_email::SendEmailInput,
     };
     let tuple = match name {
         ToolName::ListFolders => ("List all IMAP folders", serde_json::Map::new()),
@@ -739,19 +742,6 @@ fn tool_spec_read(name: ToolName) -> Option<ToolSpec> {
             "Create a draft email with $PendingReview flag",
             schema_map::<CreateDraftInput>(),
         ),
-        _ => return None,
-    };
-    Some(tuple)
-}
-
-fn tool_spec_write(name: ToolName) -> Option<ToolSpec> {
-    use crate::tools::{
-        delete_message::DeleteMessageInput,
-        expunge::ExpungeInput,
-        folder_management::{CreateFolderInput, DeleteFolderInput, RenameFolderInput},
-        send_email::SendEmailInput,
-    };
-    let tuple = match name {
         ToolName::SendEmail => ("Send an email via SMTP", schema_map::<SendEmailInput>()),
         ToolName::DeleteMessage => (
             "Delete a message (move to Trash)",
@@ -770,14 +760,6 @@ fn tool_spec_write(name: ToolName) -> Option<ToolSpec> {
             "Delete an IMAP folder and all its contents",
             schema_map::<DeleteFolderInput>(),
         ),
-        _ => return None,
-    };
-    Some(tuple)
-}
-
-fn tool_spec_labels(name: ToolName) -> Option<ToolSpec> {
-    use crate::tools::labels::{LabelInput, ListLabelsInput};
-    let tuple = match name {
         ToolName::AddLabel => (
             "Add a keyword label to messages",
             schema_map::<LabelInput>(),
@@ -790,14 +772,6 @@ fn tool_spec_labels(name: ToolName) -> Option<ToolSpec> {
             "List keyword labels on a message",
             schema_map::<ListLabelsInput>(),
         ),
-        _ => return None,
-    };
-    Some(tuple)
-}
-
-fn tool_spec_infra(name: ToolName) -> Option<ToolSpec> {
-    use crate::tools::accounts::UseAccountInput;
-    let tuple = match name {
         ToolName::UseAccount => (
             "Set the active account for subsequent tool calls",
             schema_map::<UseAccountInput>(),
