@@ -19,7 +19,7 @@ use rimap_core::RimapError;
 /// user-supplied `dest_dir` cannot be canonicalized (missing path,
 /// permission denied) or when the canonical form falls outside
 /// `allowed_root`.
-pub fn resolve_dest_dir(
+pub(crate) fn resolve_dest_dir(
     dest_dir: Option<&str>,
     allowed_root: &Path,
     fallback_dir: &Path,
@@ -49,7 +49,11 @@ pub fn resolve_dest_dir(
 ///
 /// Returns `RimapError::Internal` if writing fails or if more than
 /// 1000 filename collisions occur.
-pub fn write_attachment(dir: &Path, filename: &str, data: &[u8]) -> Result<PathBuf, RimapError> {
+pub(crate) fn write_attachment(
+    dir: &Path,
+    filename: &str,
+    data: &[u8],
+) -> Result<PathBuf, RimapError> {
     // Strip path components to prevent directory traversal.
     let safe_name = Path::new(filename)
         .file_name()

@@ -56,7 +56,7 @@ pub enum ImapError {
         reason: &'static str,
     },
     /// Caller passed more UIDs than the per-command batch limit.
-    #[error("ERR_BATCH_TOO_LARGE: {count} UIDs exceeds limit of {limit}")]
+    #[error("batch too large: {count} UIDs exceeds limit of {limit}")]
     BatchTooLarge {
         /// Number of UIDs the caller provided.
         count: usize,
@@ -66,7 +66,7 @@ pub enum ImapError {
     /// Audit-subsystem failure during a tool call. The IMAP transport may
     /// be healthy; this variant exists so audit-write failures stay
     /// distinguishable from network failures in metrics and observability.
-    #[error("ERR_AUDIT: {message}")]
+    #[error("audit failure: {message}")]
     Audit {
         /// Short identifier of the audit operation that failed
         /// (e.g. `"emit_auth"`).
