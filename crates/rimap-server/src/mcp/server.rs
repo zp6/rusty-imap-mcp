@@ -172,7 +172,7 @@ impl ServerHandler for ImapMcpServer {
         let state = self
             .registry
             .resolve(Some(account_name))
-            .map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
+            .map_err(|e| crate::mcp::error::to_mcp_error(&e))?;
 
         let available_tools: Vec<String> = state
             .guard
@@ -248,7 +248,7 @@ impl ServerHandler for ImapMcpServer {
         let account = self
             .registry
             .resolve(explicit_account.as_deref())
-            .map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
+            .map_err(|e| crate::mcp::error::to_mcp_error(&e))?;
 
         // Compute the account field for audit records. Legacy single-account
         // `"default"` records `None`; multi-account records the account name.
@@ -283,7 +283,7 @@ impl ImapMcpServer {
     ) -> Result<CallToolResult, ErrorData>
     where
         F: std::future::Future<
-                Output = Result<crate::response::ToolResponse, rimap_core::RimapError>,
+                Output = Result<crate::mcp::response::ToolResponse, rimap_core::RimapError>,
             >,
     {
         let args_value = serde_json::Value::Object(args.clone());
@@ -322,7 +322,7 @@ impl ImapMcpServer {
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::structured(value))
             }
-            Err(e) => Err(crate::mcp_error::to_mcp_error(&e)),
+            Err(e) => Err(crate::mcp::error::to_mcp_error(&e)),
         }
     }
 
@@ -332,7 +332,7 @@ impl ImapMcpServer {
         account: &AccountState,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::response::ToolResponse, rimap_core::RimapError> {
+    ) -> Result<crate::mcp::response::ToolResponse, rimap_core::RimapError> {
         use crate::tools::{
             create_draft, delete_message, download_attachment, expunge, fetch_message, flags,
             folder_mgmt, labels, list_attachments, list_folders, move_message, search, send_email,
@@ -883,7 +883,7 @@ mod tests {
         use tempfile::TempDir;
 
         use crate::boot::registry::AccountRegistry;
-        use crate::server::ImapMcpServer;
+        use crate::mcp::server::ImapMcpServer;
 
         let tmp = TempDir::new().expect("tempdir");
         let audit_path = tmp.path().join("audit.jsonl");

@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 /// Input for `create_folder`.
 #[derive(Debug, Deserialize, JsonSchema)]

@@ -2,7 +2,7 @@
 //! a copy to the Sent folder.
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 use crate::tools::message_builder::{self, ComposeInput};
 
 /// Input for `send_email` — identical fields to `create_draft`.

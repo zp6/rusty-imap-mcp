@@ -7,7 +7,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 /// Maximum number of results per page.
 const MAX_LIMIT: usize = 100;

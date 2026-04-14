@@ -4,14 +4,11 @@
 
 mod boot;
 mod cli;
-mod content;
-mod download;
-mod mcp_error;
-mod response;
-mod server;
+mod mcp;
 mod tools;
 
 use crate::boot::{audit_init, logging, registry};
+use crate::mcp::server;
 
 #[cfg(test)]
 mod e2e_test;

@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 /// Input for the `fetch_message` tool.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -45,7 +45,7 @@ pub async fn handle(
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
     let raw_size = raw.len();
 
-    let content = crate::content::parse_message_async(raw)
+    let content = crate::mcp::content::parse_message_async(raw)
         .await
         .map_err(|e| {
             // Malformed input and cap-exceeded are caller-side problems;

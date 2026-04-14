@@ -2,7 +2,7 @@
 //! to the Drafts folder with a `$PendingReview` keyword.
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 use crate::tools::message_builder::{self, ComposeInput};
 
 /// Input for `create_draft` — identical to shared `ComposeInput`.

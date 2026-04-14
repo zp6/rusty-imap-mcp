@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountRegistry;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct UseAccountInput {

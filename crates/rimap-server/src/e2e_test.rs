@@ -28,7 +28,7 @@ use rimap_core::posture::Posture;
 use rimap_imap::{Connection, ConnectionConfig};
 use tempfile::TempDir;
 
-use crate::server::ImapMcpServer;
+use crate::mcp::server::ImapMcpServer;
 
 // ── Container harness (adapted from rimap-imap) ─────────────────────
 
@@ -340,7 +340,7 @@ async fn call_tool(
     server: &ImapMcpServer,
     tool_name: &str,
     args: serde_json::Value,
-) -> Result<crate::response::ToolResponse, rimap_core::RimapError> {
+) -> Result<crate::mcp::response::ToolResponse, rimap_core::RimapError> {
     let tool = std::str::FromStr::from_str(tool_name).map_err(
         |e: rimap_core::tool::ParseToolNameError| rimap_core::RimapError::Internal(e.to_string()),
     )?;

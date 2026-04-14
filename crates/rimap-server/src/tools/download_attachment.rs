@@ -6,8 +6,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::download;
-use crate::response::ToolResponse;
+use crate::mcp::download;
+use crate::mcp::response::ToolResponse;
 
 /// Input for the `download_attachment` tool.
 #[derive(Debug, Deserialize, JsonSchema)]

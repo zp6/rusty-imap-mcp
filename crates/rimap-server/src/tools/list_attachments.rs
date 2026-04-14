@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 /// Input for the `list_attachments` tool.
 #[derive(Debug, Deserialize, JsonSchema)]

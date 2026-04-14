@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 /// Input for `delete_message`.
 #[derive(Debug, Deserialize, JsonSchema)]

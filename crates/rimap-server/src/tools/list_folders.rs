@@ -1,7 +1,7 @@
 //! `list_folders` tool handler.
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 
 /// Execute the `list_folders` tool.
 ///

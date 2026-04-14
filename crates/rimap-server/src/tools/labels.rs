@@ -14,7 +14,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::boot::registry::AccountState;
-use crate::response::ToolResponse;
+use crate::mcp::response::ToolResponse;
 use crate::tools::flags::resolve_uids;
 
 /// IMAP atom specials (RFC 3501 §9) plus backslash. Any of these
