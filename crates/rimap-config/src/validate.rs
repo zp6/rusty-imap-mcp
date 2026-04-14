@@ -39,22 +39,23 @@ pub struct ValidatedConfig {
 /// # Errors
 /// Returns `ConfigError` on any validation failure.
 pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
-    let tls_fingerprint = parse_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
-    validate_imap_username(&config.imap.username)?;
-    if let Some(ref smtp) = config.smtp {
-        validate_smtp_username(&smtp.username)?;
-    }
-    validate_limits_fields(&config.limits)?;
+    // Per-account fields route through `validate_account`; the legacy
+    // path only needs to additionally check the global audit/paths
+    // sections, which multi-account factors out under `[audit]` and
+    // `[attachments]`.
+    let account = validate_account(
+        AccountId::default_account(),
+        config.imap.clone(),
+        config.smtp.clone(),
+        config.security.clone(),
+        config.limits.clone(),
+    )?;
     validate_audit_config(&config.audit)?;
     validate_paths_multi(&config.audit, &config.attachments)?;
-    validate_folder_safety_fields(&config.security)?;
-    let tool_overrides = resolve_tool_overrides_fields(&config.security)?;
-    validate_smtp_required_fields(&config.security, &tool_overrides, config.smtp.as_ref())?;
-    validate_smtp_encryption_fields(config.smtp.as_ref())?;
     Ok(ValidatedConfig {
         config,
-        tool_overrides,
-        tls_fingerprint,
+        tool_overrides: account.tool_overrides,
+        tls_fingerprint: account.tls_fingerprint,
     })
 }
 

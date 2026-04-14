@@ -406,4 +406,71 @@ mod tests {
             .count();
         assert_eq!(rotated, 3, "without retention_seconds, count-only applies");
     }
+
+    #[test]
+    fn rotate_file_preserves_content_in_rotated_sibling() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+        std::fs::write(&active, b"record-1\nrecord-2\n").unwrap();
+
+        let (_buf, new_len) = rotate_file(&active, 5, None).unwrap();
+        assert_eq!(new_len, 0, "new active file should start empty");
+
+        // The rotated sibling must still hold the pre-rotation bytes.
+        let siblings: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("audit.jsonl."))
+            })
+            .collect();
+        assert_eq!(siblings.len(), 1, "expected exactly one rotated sibling");
+        let rotated_bytes = std::fs::read(siblings[0].path()).unwrap();
+        assert_eq!(rotated_bytes, b"record-1\nrecord-2\n");
+    }
+
+    #[test]
+    fn rotate_file_new_active_file_is_writable_and_lockable() {
+        use std::io::Write as _;
+
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+        std::fs::write(&active, b"pre\n").unwrap();
+
+        let (buf, _len) = rotate_file(&active, 3, None).unwrap();
+        // The returned BufWriter wraps the newly-opened file; it must be
+        // writable (we won't fsync here; just exercise write + flush).
+        let mut buf = buf;
+        buf.write_all(b"post-rotation\n").unwrap();
+        buf.flush().unwrap();
+        drop(buf);
+        // Active file exists and now contains only the new line.
+        let contents = std::fs::read_to_string(&active).unwrap();
+        assert_eq!(contents, "post-rotation\n");
+    }
+
+    #[test]
+    fn rotate_file_keep_zero_also_removes_base_rotation_just_created() {
+        let dir = TempDir::new().unwrap();
+        let active = dir.path().join("audit.jsonl");
+        std::fs::write(&active, b"initial\n").unwrap();
+
+        rotate_file(&active, 0, None).unwrap();
+
+        // With keep=0 the prune loop should remove every rotated sibling,
+        // including the one just created by this rotation.
+        let siblings: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(std::result::Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("audit.jsonl."))
+            })
+            .collect();
+        assert_eq!(siblings.len(), 0, "keep=0 wipes all rotated siblings");
+        assert!(active.exists(), "active file still present after rotation");
+    }
 }

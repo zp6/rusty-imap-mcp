@@ -233,7 +233,9 @@ fn find_part_by_id(
     for (idx, computed_id) in &part_ids {
         if computed_id == target_part_id {
             let part = msg.parts.get(*idx).ok_or_else(|| {
-                rimap_core::RimapError::Internal(format!("part index {idx} out of range"))
+                rimap_core::RimapError::Internal(format!(
+                    "invariant violated: compute_part_ids returned idx {idx} outside msg.parts"
+                ))
             })?;
             let body = part.contents().to_vec();
             let content_type = if let Some(ct) = part.content_type() {
@@ -290,7 +292,9 @@ fn walk_parts(
         return Ok(());
     }
     let part = msg.parts.get(part_idx).ok_or_else(|| {
-        rimap_core::RimapError::Internal(format!("part index {part_idx} out of range"))
+        rimap_core::RimapError::Internal(format!(
+            "invariant violated: mail_parser sub_parts reported index {part_idx} outside msg.parts"
+        ))
     })?;
 
     if let Some(children) = part.sub_parts() {
