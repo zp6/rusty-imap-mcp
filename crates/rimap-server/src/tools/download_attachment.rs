@@ -31,9 +31,11 @@ pub struct DownloadAttachmentInput {
 ///
 /// # Errors
 ///
-/// - `RimapError::InvalidInput` if `uid` is zero, the `part_id` is not
-///   found in the message, or the resolved `dest_dir` escapes the
+/// - `RimapError::Authz { code: InvalidInput, ... }` if `uid` is zero
+///   or the resolved `dest_dir` cannot be canonicalized / escapes the
 ///   configured download sandbox.
+/// - `RimapError::Authz { code: NotFound, ... }` if the `part_id` is
+///   not present in the message.
 /// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH and
 ///   `RimapError::Content { ... }` from message parsing.
 /// - `RimapError::Internal` for unrecoverable filesystem or hashing

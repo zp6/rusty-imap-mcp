@@ -15,9 +15,10 @@ use rimap_core::RimapError;
 ///
 /// # Errors
 ///
-/// Returns `RimapError::InvalidInput` when the user-supplied `dest_dir`
-/// cannot be canonicalized (missing path, permission denied) or when
-/// the canonical form falls outside `allowed_root`.
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` when the
+/// user-supplied `dest_dir` cannot be canonicalized (missing path,
+/// permission denied) or when the canonical form falls outside
+/// `allowed_root`.
 pub fn resolve_dest_dir(
     dest_dir: Option<&str>,
     allowed_root: &Path,

@@ -32,8 +32,9 @@ struct AttachmentInfo {
 ///
 /// # Errors
 ///
-/// - `RimapError::InvalidInput` if `uid` is zero or the message is not
-///   found in `folder`.
+/// - `RimapError::Authz { code: InvalidInput, ... }` if `uid` is zero.
+/// - `RimapError::Authz { code: NotFound, ... }` if the message has no
+///   `BODYSTRUCTURE` (message absent, or metadata-only fetch).
 /// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH.
 pub async fn handle(
     account: &AccountState,

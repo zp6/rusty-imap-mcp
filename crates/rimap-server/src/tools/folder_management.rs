@@ -92,7 +92,7 @@ pub async fn handle_rename(
 /// # Errors
 ///
 /// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if the name
-/// is protected. Returns `RimapError::Authz { code: ExpungeNotAllowed, ... }`
+/// is protected. Returns `RimapError::Authz { code: ExpungeDenied, ... }`
 /// if expunge is not permitted for the folder. Propagates
 /// `RimapError::Imap { ... }` from STATUS and DELETE.
 pub async fn handle_delete(

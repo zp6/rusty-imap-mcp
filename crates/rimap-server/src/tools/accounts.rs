@@ -16,9 +16,10 @@ pub struct UseAccountInput {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::InvalidInput` if `input.account` is not a valid
-/// account-name shape. Returns `RimapError::Authz { code: UnknownAccount, ... }`
-/// if the name does not match a configured account.
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` if
+/// `input.account` is not a valid account-name shape. Returns
+/// `RimapError::UnknownAccount { ... }` if the name does not match a
+/// configured account.
 #[expect(
     clippy::unused_async,
     reason = "handler shape uniform with async-handler siblings"
