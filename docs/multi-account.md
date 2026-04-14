@@ -160,6 +160,39 @@ All accounts share a single audit log file. Every record includes an
 `account` field identifying which account the operation targeted. The
 `audit merge --account <name>` flag filters records by account name.
 
+## Credential Resolution
+
+Each account resolves its IMAP (and SMTP) password via:
+
+1. **OS keyring** keyed by `<username>@<host>`, service `rusty-imap-mcp`.
+2. **Environment variable** `RUSTY_IMAP_MCP_PASSWORD` (single global value).
+3. Failure (`ERR_CONFIG`) if neither is set.
+
+### Keyring Collision (Multi-Account)
+
+The keyring key is `<username>@<host>`, NOT `<account>/<username>@<host>`. If two
+accounts share a `username@host` tuple (e.g., the same email configured for two
+logical accounts), they share a keyring entry — the last `rusty-imap-mcp login`
+wins.
+
+**Workaround:** Give each account a distinct IMAP username (include `+alias`
+suffixes if your provider supports them), or use the environment variable
+fallback for one of the two.
+
+### Env-var Fallback (Multi-Account)
+
+`RUSTY_IMAP_MCP_PASSWORD` is a single global fallback. In multi-account configs,
+if the keyring lookup fails for account A, every subsequent account falls back
+to the same env-var value. This can send account B's password to account A's
+server.
+
+**Recommendation:** In multi-account deployments, use the keyring for every
+account. Do not set `RUSTY_IMAP_MCP_PASSWORD` in production. The fallback exists
+for CI/test automation only.
+
+Tracking issues for per-account keyring namespacing and per-account env vars
+are linked in the v1.x roadmap.
+
 ## Threat model
 
 Multi-account introduces a cross-account data exfiltration vector: a
