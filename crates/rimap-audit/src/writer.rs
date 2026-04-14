@@ -292,7 +292,7 @@ impl AuditWriter {
             tracing::info!(path = %self.path.display(), "audit file rotated");
         }
 
-        do_write_locked(&mut guard, &bytes, &self.path)?;
+        write_under_lock(&mut guard, &bytes, &self.path)?;
 
         if needs_fsync(&record.payload) {
             guard
@@ -494,7 +494,7 @@ impl AuditWriter {
 }
 
 /// Write `bytes` to `guard.buf`, flush, and update `bytes_written`.
-fn do_write_locked(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), AuditError> {
+fn write_under_lock(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), AuditError> {
     use std::io::Write;
 
     guard

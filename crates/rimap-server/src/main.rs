@@ -71,12 +71,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     {
         return cli::audit_merge::run(
             &path,
-            since.as_deref(),
-            until.as_deref(),
-            tool.as_deref(),
-            kind.as_deref(),
-            process.as_deref(),
-            account.as_deref(),
+            cli::audit_merge::RunArgs {
+                since: since.as_deref(),
+                until: until.as_deref(),
+                tool: tool.as_deref(),
+                kind: kind.as_deref(),
+                process: process.as_deref(),
+                account: account.as_deref(),
+            },
         );
     }
 
