@@ -123,13 +123,6 @@ fn validate_addresses(field: &str, addrs: &[AddressInput]) -> Result<(), rimap_c
     Ok(())
 }
 
-/// Strip characters that could inject headers in Message-ID values.
-pub(crate) fn sanitize_message_id(id: &str) -> String {
-    id.chars()
-        .filter(|c| !matches!(c, '\r' | '\n' | '\0' | '<' | '>'))
-        .collect()
-}
-
 /// Generate a Message-ID using the From address domain.
 pub(crate) fn generate_message_id(from_addr: &str) -> String {
     let domain = from_addr.rsplit('@').next().unwrap_or("local");
@@ -206,37 +199,19 @@ pub(crate) async fn apply_threading_headers<'a>(
         .ok_or_else(|| rimap_core::RimapError::invalid_input("in_reply_to_uid must be non-zero"))?;
 
     let raw = account.imap.fetch_body(folder, uid).await?;
-    let parsed = mail_parser::MessageParser::new()
-        .parse(&raw)
-        .ok_or_else(|| {
-            rimap_core::RimapError::Internal("failed to parse referenced message".into())
-        })?;
+    let headers = rimap_content::extract_threading_headers(&raw);
 
-    let Some(raw_msg_id) = parsed.message_id() else {
+    let Some(msg_id) = headers.message_id else {
         return Ok(builder);
     };
 
-    let msg_id = sanitize_message_id(raw_msg_id);
     let builder = builder.in_reply_to(msg_id.clone());
 
-    let mut ref_ids: Vec<String> = Vec::new();
-    match parsed.references() {
-        mail_parser::HeaderValue::Text(t) => {
-            ref_ids.push(sanitize_message_id(t));
-        }
-        mail_parser::HeaderValue::TextList(list) => {
-            for r in list {
-                ref_ids.push(sanitize_message_id(r));
-            }
-        }
-        _ => {}
-    }
+    let mut ref_ids = headers.references;
     ref_ids.push(msg_id);
     let ref_ids = cap_references(ref_ids);
 
-    let builder = builder.references(MessageId::new_list(ref_ids.into_iter()));
-
-    Ok(builder)
+    Ok(builder.references(MessageId::new_list(ref_ids.into_iter())))
 }
 
 /// Build raw RFC 5322 bytes from compose input, applying threading
@@ -273,8 +248,7 @@ mod tests {
     use mail_builder::headers::message_id::MessageId;
 
     use super::{
-        AddressInput, ComposeInput, addresses_to_builder, cap_references, sanitize_message_id,
-        validate_compose_input,
+        AddressInput, ComposeInput, addresses_to_builder, cap_references, validate_compose_input,
     };
 
     /// Build a minimal draft, parse it, verify headers round-trip.
@@ -500,12 +474,6 @@ mod tests {
         }]);
         let err = validate_compose_input(&input).unwrap_err();
         assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput,);
-    }
-
-    #[test]
-    fn sanitize_message_id_strips_crlf_and_angles() {
-        assert_eq!(sanitize_message_id("<id\r\n@host>"), "id@host");
-        assert_eq!(sanitize_message_id("clean@host"), "clean@host");
     }
 
     #[test]
