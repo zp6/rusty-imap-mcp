@@ -68,6 +68,7 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
     })
     .unwrap();
     let conn_cfg = ConnectionConfig {
+        account: None,
         host: cfg.host.clone(),
         port: cfg.port,
         username: cfg.user.clone(),
@@ -98,8 +99,7 @@ async fn proton_bridge_connect_and_fetch_one_envelope() {
     };
     let conn = build_connection(&cfg);
     let _ = conn.select("INBOX", true).await.unwrap();
-    let uids = conn
-        .search("INBOX", rimap_imap::types::SearchQuery::Raw("ALL".into()))
+    let uids = Box::pin(conn.search("INBOX", rimap_imap::types::SearchQuery::Raw("ALL".into())))
         .await
         .unwrap();
     assert!(!uids.is_empty(), "expected at least one message in INBOX");

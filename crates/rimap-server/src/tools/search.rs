@@ -48,7 +48,7 @@ pub async fn handle(
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let query = build_query(account, &input)?;
 
-    let uids = account.imap.search(&input.folder, query).await?;
+    let uids = Box::pin(account.imap.search(&input.folder, query)).await?;
     let total_matched = uids.len();
 
     let offset = input.offset.unwrap_or(0);

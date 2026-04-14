@@ -127,6 +127,7 @@ async fn case_04_login_rejected_emits_audit() {
         return;
     };
     let cfg = ConnectionConfig {
+        account: None,
         host: DovecotHarness::host().to_string(),
         port: h.harness.port(),
         username: DovecotHarness::username().to_string(),
@@ -181,7 +182,7 @@ async fn case_06_search_structured_subject_match() {
         subject: Some("Sprint 3 plain text fixture".to_string()),
         ..StructuredQuery::default()
     });
-    let uids = h.connection.search("INBOX", q).await.unwrap();
+    let uids = Box::pin(h.connection.search("INBOX", q)).await.unwrap();
     assert!(
         !uids.is_empty(),
         "expected at least one UID for the seeded subject"
@@ -196,7 +197,7 @@ async fn case_07_search_raw_passthrough() {
         return;
     };
     let q = SearchQuery::Raw("HEADER \"X-Test\" \"marker\"".to_string());
-    let uids = h.connection.search("INBOX", q).await.unwrap();
+    let uids = Box::pin(h.connection.search("INBOX", q)).await.unwrap();
     assert!(
         !uids.is_empty(),
         "expected at least one UID for X-Test: marker"
@@ -214,7 +215,7 @@ async fn case_08_fetch_envelope_and_bodystructure() {
         subject: Some("Sprint 3 multipart fixture".to_string()),
         ..StructuredQuery::default()
     });
-    let uids = h.connection.search("INBOX", q).await.unwrap();
+    let uids = Box::pin(h.connection.search("INBOX", q)).await.unwrap();
     assert!(!uids.is_empty());
     let spec = FetchSpec {
         envelope: true,
@@ -242,7 +243,7 @@ async fn case_09_fetch_body_under_limit() {
         subject: Some("Sprint 3 plain text fixture".to_string()),
         ..StructuredQuery::default()
     });
-    let uids = h.connection.search("INBOX", q).await.unwrap();
+    let uids = Box::pin(h.connection.search("INBOX", q)).await.unwrap();
     assert!(!uids.is_empty());
     let body = h.connection.fetch_body("INBOX", uids[0]).await.unwrap();
     assert!(!body.is_empty());
@@ -259,6 +260,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         return;
     };
     let cfg = ConnectionConfig {
+        account: None,
         host: DovecotHarness::host().to_string(),
         port: h.harness.port(),
         username: DovecotHarness::username().to_string(),
@@ -280,7 +282,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         subject: Some("Sprint 3 multipart fixture".to_string()),
         ..StructuredQuery::default()
     });
-    let uids = conn.search("INBOX", q).await.unwrap();
+    let uids = Box::pin(conn.search("INBOX", q)).await.unwrap();
     let result = conn.fetch_body("INBOX", uids[0]).await;
     match result {
         Err(Error::SizeLimit { limit }) => assert_eq!(limit, 10),
@@ -332,17 +334,15 @@ async fn case_12_store_add_seen_flag() {
         .unwrap();
 
     // Search for it.
-    let uids = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("store-seen".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let uids = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("store-seen".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(!uids.is_empty(), "seeded message not found");
     let uid = uids[0];
 
@@ -389,17 +389,15 @@ async fn case_13_store_remove_seen_flag() {
         .await
         .unwrap();
 
-    let uids = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("store-unseen".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let uids = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("store-unseen".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(!uids.is_empty());
     let uid = uids[0];
 
@@ -485,17 +483,15 @@ async fn case_15_append_message_to_inbox() {
     assert_eq!(result.uid, None);
 
     // Verify the message is in INBOX by searching for it.
-    let uids = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("append-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let uids = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("append-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(!uids.is_empty(), "appended message not found");
 
     // Verify it has the \Draft flag.
@@ -528,17 +524,15 @@ async fn case_16_move_message_between_folders() {
         .await
         .unwrap();
 
-    let uids = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("move-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let uids = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("move-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(!uids.is_empty(), "seeded message not found");
     let uid = uids[0];
 
@@ -552,34 +546,30 @@ async fn case_16_move_message_between_folders() {
     assert_eq!(outcome.results[0].old_uid, uid);
 
     // Verify the message is gone from INBOX.
-    let after_uids = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("move-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let after_uids = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("move-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(
         after_uids.is_empty(),
         "message should be gone from INBOX after move"
     );
 
     // Verify the message is in Archive.
-    let archive_uids = h
-        .connection
-        .search(
-            "Archive",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("move-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let archive_uids = Box::pin(h.connection.search(
+        "Archive",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("move-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(
         !archive_uids.is_empty(),
         "message should be in Archive after move"
@@ -600,17 +590,15 @@ async fn case_17_delete_message() {
         .unwrap();
 
     // Find the appended message
-    let uids = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("delete-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let uids = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("delete-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(!uids.is_empty(), "seeded message not found");
     let uid = uids[0];
 
@@ -626,17 +614,15 @@ async fn case_17_delete_message() {
     assert!(result.moved_to_trash);
 
     // Verify it's gone from INBOX
-    let after = h
-        .connection
-        .search(
-            "INBOX",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("delete-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let after = Box::pin(h.connection.search(
+        "INBOX",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("delete-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(
         !after.contains(&uid),
         "message should be gone from INBOX after delete"
@@ -659,17 +645,15 @@ async fn case_18_expunge() {
         .unwrap();
 
     // Find it
-    let uids = h
-        .connection
-        .search(
-            "Trash",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("expunge-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let uids = Box::pin(h.connection.search(
+        "Trash",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("expunge-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(!uids.is_empty());
     let uid = uids[0];
 
@@ -693,17 +677,15 @@ async fn case_18_expunge() {
     assert!(count > 0, "should expunge at least one message");
 
     // Verify it's gone
-    let after = h
-        .connection
-        .search(
-            "Trash",
-            rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
-                subject: Some("expunge-test".to_string()),
-                ..Default::default()
-            }),
-        )
-        .await
-        .unwrap();
+    let after = Box::pin(h.connection.search(
+        "Trash",
+        rimap_imap::types::SearchQuery::Structured(rimap_imap::types::StructuredQuery {
+            subject: Some("expunge-test".to_string()),
+            ..Default::default()
+        }),
+    ))
+    .await
+    .unwrap();
     assert!(
         !after.contains(&uid),
         "message should be gone after expunge"

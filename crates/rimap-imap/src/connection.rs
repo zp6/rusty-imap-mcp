@@ -39,6 +39,10 @@ use crate::tls::{TlsConfigBundle, build_tls_config};
 /// value once at construction time.
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
+    /// Account name this connection belongs to. `None` for the legacy
+    /// single-account `"default"` deployment; `Some(name)` in multi-account
+    /// configs. Populated into `Auth` audit records.
+    pub account: Option<String>,
     /// IMAP server host.
     pub host: String,
     /// IMAP server port (typically 993 for IMAPS).
@@ -177,6 +181,7 @@ impl Connection {
 
         let observed = bundle.last_observed.get().copied();
         let ctx = AuthContext {
+            account: cfg.account.as_deref(),
             host: &cfg.host,
             port: cfg.port,
             username: &cfg.username,

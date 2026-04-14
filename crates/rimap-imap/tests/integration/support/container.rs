@@ -524,6 +524,7 @@ impl ConnectedHarness {
         };
 
         let cfg = ConnectionConfig {
+            account: None,
             host: DovecotHarness::host().to_string(),
             port: harness.port(),
             username: DovecotHarness::username().to_string(),

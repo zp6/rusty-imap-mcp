@@ -157,7 +157,7 @@ fn build_registry(
     let mut account_states = std::collections::BTreeMap::new();
     for (id, acfg) in &multi.accounts {
         let guard = build_account_guard(acfg).context("building dispatch guard")?;
-        let conn_cfg = build_account_connection(acfg);
+        let conn_cfg = build_account_connection(id, acfg);
         let imap = Connection::new(conn_cfg, audit.clone(), credentials.clone());
 
         let smtp = build_smtp_client(acfg, credentials)?;
@@ -217,8 +217,17 @@ fn build_account_guard(
 }
 
 /// Map a per-account config to a `ConnectionConfig`.
-fn build_account_connection(acfg: &ValidatedAccountConfig) -> ConnectionConfig {
+fn build_account_connection(
+    id: &rimap_core::account::AccountId,
+    acfg: &ValidatedAccountConfig,
+) -> ConnectionConfig {
+    let account = if id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
+        None
+    } else {
+        Some(id.as_str().to_string())
+    };
     ConnectionConfig {
+        account,
         host: acfg.imap.host.clone(),
         port: acfg.imap.port,
         username: acfg.imap.username.clone(),

@@ -7,6 +7,9 @@ use rimap_core::TlsFingerprint;
 
 /// Inputs every `Auth` record needs.
 pub(crate) struct AuthContext<'a> {
+    /// Account name this auth attempt belongs to. `None` for legacy
+    /// single-account deployments; `Some(name)` in multi-account configs.
+    pub account: Option<&'a str>,
     /// IMAP server host.
     pub host: &'a str,
     /// IMAP server port.
@@ -35,7 +38,7 @@ impl AuthContext<'_> {
 /// Build a successful `Auth` record.
 pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
     Auth {
-        account: None,
+        account: ctx.account.map(str::to_string),
         result: AuthResult::Success,
         host: ctx.host.to_string(),
         port: ctx.port,
@@ -49,7 +52,7 @@ pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
 /// Build a failure `Auth` record carrying the stable error code.
 pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: &str) -> Auth {
     Auth {
-        account: None,
+        account: ctx.account.map(str::to_string),
         result: AuthResult::Failure,
         host: ctx.host.to_string(),
         port: ctx.port,
@@ -74,6 +77,7 @@ mod tests {
     fn success_with_matching_fingerprint() {
         let pin = fp(b"good");
         let ctx = AuthContext {
+            account: None,
             host: "h",
             port: 993,
             username: "u",
@@ -92,6 +96,7 @@ mod tests {
         let pin = fp(b"good");
         let observed = fp(b"bad");
         let ctx = AuthContext {
+            account: None,
             host: "h",
             port: 993,
             username: "u",
@@ -108,6 +113,7 @@ mod tests {
     fn unpinned_observed_yields_none_match() {
         let observed = fp(b"x");
         let ctx = AuthContext {
+            account: None,
             host: "h",
             port: 993,
             username: "u",
@@ -127,6 +133,7 @@ mod tests {
         // verdict — recording stale data here would mislead operators.
         let pin = fp(b"good");
         let ctx = AuthContext {
+            account: None,
             host: "h",
             port: 993,
             username: "u",

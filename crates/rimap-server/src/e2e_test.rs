@@ -312,6 +312,7 @@ fn test_config(harness: &DovecotHarness, audit_dir: &TempDir) -> ValidatedConfig
 
 fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection {
     let conn_cfg = ConnectionConfig {
+        account: None,
         host: "127.0.0.1".into(),
         port: harness.port,
         username: "rimap-test".into(),
