@@ -9,6 +9,17 @@ use crate::mcp::response::ToolResponse;
 use crate::tools::flags::resolve_uids;
 
 /// Input for `move_message`.
+///
+/// # Shape
+///
+/// This tool accepts either a single `uid` or a batch `uids` (XOR; max
+/// 100). The asymmetry with single-target tools (`fetch_message`,
+/// `list_attachments`, `download_attachment`, `delete_message`) is
+/// deliberate: batch shapes are reserved for commutative, idempotent
+/// mutations where per-UID ordering does not matter and results fan out
+/// uniformly. Read-side and destructive single-target tools keep a
+/// scalar `uid` so the response schema and error semantics stay
+/// unambiguous.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MoveMessageInput {
     /// Source folder.

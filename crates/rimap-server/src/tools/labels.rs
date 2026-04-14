@@ -70,6 +70,17 @@ fn invalid_input(message: &str) -> rimap_core::RimapError {
 }
 
 /// Input for `add_label` and `remove_label` tools.
+///
+/// # Shape
+///
+/// This tool accepts either a single `uid` or a batch `uids` (XOR; max
+/// 100). The asymmetry with single-target tools (`fetch_message`,
+/// `list_attachments`, `download_attachment`, `delete_message`) is
+/// deliberate: batch shapes are reserved for commutative, idempotent
+/// mutations where per-UID ordering does not matter and results fan out
+/// uniformly. Read-side and destructive single-target tools keep a
+/// scalar `uid` so the response schema and error semantics stay
+/// unambiguous.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LabelInput {
     /// Target folder.
