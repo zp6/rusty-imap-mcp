@@ -1,12 +1,27 @@
 //! `create_draft` tool handler: compose a draft email and APPEND it
 //! to the Drafts folder with a `$PendingReview` keyword.
 
+use serde::Serialize;
+
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::message_builder::{self, ComposeInput};
 
 /// Input for `create_draft` — identical to shared `ComposeInput`.
 pub type CreateDraftInput = ComposeInput;
+
+/// Trusted metadata for a `create_draft` response.
+#[derive(Debug, Serialize)]
+pub struct CreateDraftMeta {
+    /// Folder the draft was appended to.
+    pub folder: String,
+    /// UID assigned by the server, if returned.
+    pub uid: Option<u32>,
+    /// RFC 2822 `Message-ID` assigned to the draft.
+    pub message_id: Option<String>,
+    /// IMAP keywords applied to the draft.
+    pub keywords: Vec<&'static str>,
+}
 
 /// `create_draft` handler.
 ///
@@ -23,7 +38,7 @@ pub type CreateDraftInput = ComposeInput;
 pub async fn handle(
     account: &AccountState,
     input: CreateDraftInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<CreateDraftMeta>, rimap_core::RimapError> {
     message_builder::validate_compose_input(&input)?;
     let from_addr = account.imap.username();
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
@@ -42,12 +57,12 @@ pub async fn handle(
     let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": drafts_folder,
-            "uid": result.uid.map(rimap_imap::types::Uid::get),
-            "message_id": generated_msg_id,
-            "keywords": ["$PendingReview"],
-        }),
+        meta: CreateDraftMeta {
+            folder: drafts_folder.to_string(),
+            uid: result.uid.map(rimap_imap::types::Uid::get),
+            message_id: generated_msg_id,
+            keywords: vec!["$PendingReview"],
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })

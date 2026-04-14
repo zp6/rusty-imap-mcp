@@ -8,7 +8,7 @@
 //! argument — so that the gesture of "delete" is consistent.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -27,6 +27,21 @@ pub struct DeleteMessageInput {
 /// diverge from this.
 const TRASH_FOLDER: &str = "Trash";
 
+/// Trusted metadata for a `delete_message` response.
+#[derive(Debug, Serialize)]
+pub struct DeleteMessageMeta {
+    /// Always `true` when the handler returns `Ok`.
+    pub deleted: bool,
+    /// Source folder the message was deleted from.
+    pub folder: String,
+    /// UID of the deleted message.
+    pub uid: u32,
+    /// Whether the message was moved to the trash folder.
+    pub moved_to_trash: bool,
+    /// Trash folder the message was moved to.
+    pub destination: &'static str,
+}
+
 /// `delete_message` handler.
 ///
 /// # Errors
@@ -39,7 +54,7 @@ const TRASH_FOLDER: &str = "Trash";
 pub async fn handle(
     account: &AccountState,
     input: DeleteMessageInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<DeleteMessageMeta>, rimap_core::RimapError> {
     let uid = rimap_imap::types::Uid::new(input.uid)
         .ok_or_else(|| rimap_core::RimapError::invalid_input("uid must be non-zero"))?;
 
@@ -49,13 +64,13 @@ pub async fn handle(
         .await?;
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "deleted": true,
-            "folder": input.folder,
-            "uid": input.uid,
-            "moved_to_trash": result.moved_to_trash,
-            "destination": TRASH_FOLDER,
-        }),
+        meta: DeleteMessageMeta {
+            deleted: true,
+            folder: input.folder,
+            uid: input.uid,
+            moved_to_trash: result.moved_to_trash,
+            destination: TRASH_FOLDER,
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })

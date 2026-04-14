@@ -1,12 +1,38 @@
 //! `send_email` tool handler: compose and send via SMTP, then APPEND
 //! a copy to the Sent folder.
 
+use serde::Serialize;
+
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::message_builder::{self, ComposeInput};
 
 /// Input for `send_email` — identical fields to `create_draft`.
 pub type SendEmailInput = ComposeInput;
+
+/// Copy-to-Sent result included in a `send_email` response.
+#[derive(Debug, Serialize)]
+pub struct SentCopyInfo {
+    /// Folder the copy was appended to.
+    pub folder: String,
+    /// UID assigned by the server, if returned.
+    pub uid: Option<u32>,
+    /// `true` if the APPEND failed (best-effort; send itself succeeded).
+    pub failed: bool,
+}
+
+/// Trusted metadata for a `send_email` response.
+#[derive(Debug, Serialize)]
+pub struct SendEmailMeta {
+    /// Whether the message was delivered via SMTP.
+    pub sent: bool,
+    /// RFC 2822 `Message-ID` assigned to the outgoing message.
+    pub message_id: Option<String>,
+    /// Human-readable SMTP delivery status.
+    pub smtp_status: String,
+    /// Result of the best-effort copy to the Sent folder.
+    pub sent_copy: SentCopyInfo,
+}
 
 /// `send_email` handler.
 ///
@@ -23,7 +49,7 @@ pub type SendEmailInput = ComposeInput;
 pub async fn handle(
     account: &AccountState,
     input: SendEmailInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<SendEmailMeta>, rimap_core::RimapError> {
     message_builder::validate_compose_input(&input)?;
 
     let smtp = account.smtp.as_ref().ok_or_else(|| {
@@ -58,16 +84,16 @@ pub async fn handle(
     };
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "sent": true,
-            "message_id": generated_msg_id,
-            "smtp_status": "delivered",
-            "sent_copy": {
-                "folder": sent_folder,
-                "uid": sent_uid,
-                "failed": sent_copy_failed,
+        meta: SendEmailMeta {
+            sent: true,
+            message_id: generated_msg_id,
+            smtp_status: "delivered".to_string(),
+            sent_copy: SentCopyInfo {
+                folder: sent_folder.to_string(),
+                uid: sent_uid,
+                failed: sent_copy_failed,
             },
-        }),
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })

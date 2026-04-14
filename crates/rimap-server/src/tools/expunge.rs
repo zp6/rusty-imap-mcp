@@ -1,7 +1,7 @@
 //! `expunge` tool handler: permanently remove \Deleted messages from a folder.
 
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -11,6 +11,17 @@ use crate::mcp::response::ToolResponse;
 pub struct ExpungeInput {
     /// Folder to expunge.
     pub folder: String,
+}
+
+/// Trusted metadata for an `expunge` response.
+#[derive(Debug, Serialize)]
+pub struct ExpungeMeta {
+    /// Folder that was expunged.
+    pub folder: String,
+    /// Number of messages permanently removed.
+    pub expunged_count: u32,
+    /// UIDs that had the `\Deleted` flag set before expunge.
+    pub deleted_uids_before_expunge: Vec<u32>,
 }
 
 /// `expunge` handler.
@@ -24,20 +35,17 @@ pub struct ExpungeInput {
 pub async fn handle(
     account: &AccountState,
     input: ExpungeInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<ExpungeMeta>, rimap_core::RimapError> {
     account.folder_guard.check_expunge(&input.folder)?;
 
     let (deleted_uids, expunged_count) = account.imap.expunge(&input.folder).await?;
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "expunged_count": expunged_count,
-            "deleted_uids_before_expunge": deleted_uids
-                .iter()
-                .map(|u| u.get())
-                .collect::<Vec<_>>(),
-        }),
+        meta: ExpungeMeta {
+            folder: input.folder,
+            expunged_count,
+            deleted_uids_before_expunge: deleted_uids.iter().map(|u| u.get()).collect(),
+        },
         untrusted: None,
         security_warnings: Vec::new(),
     })

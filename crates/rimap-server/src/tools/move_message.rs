@@ -2,7 +2,7 @@
 
 use rimap_imap::types::Uid;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
@@ -19,6 +19,26 @@ pub struct MoveMessageInput {
     pub uid: Option<u32>,
     /// Batch of UIDs (max 100).
     pub uids: Option<Vec<u32>>,
+}
+
+/// Per-UID move result entry.
+#[derive(Debug, Serialize)]
+pub struct MoveEntry {
+    /// Source UID that was moved.
+    pub old_uid: u32,
+    /// Destination UID assigned by the server, if returned.
+    pub new_uid: Option<u32>,
+}
+
+/// Trusted metadata for a `move_message` response.
+#[derive(Debug, Serialize)]
+pub struct MoveMessageMeta {
+    /// Source folder.
+    pub folder: String,
+    /// Destination folder.
+    pub destination: String,
+    /// Per-UID move results.
+    pub moves: Vec<MoveEntry>,
 }
 
 /// Execute the `move_message` tool.
@@ -42,21 +62,19 @@ pub struct MoveMessageInput {
 pub async fn handle(
     account: &AccountState,
     input: MoveMessageInput,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+) -> Result<ToolResponse<MoveMessageMeta>, rimap_core::RimapError> {
     let uids = resolve_uids(input.uid, input.uids)?;
     let outcome = account
         .imap
         .move_messages(&input.folder, &input.destination, &uids)
         .await?;
 
-    let moves: Vec<serde_json::Value> = outcome
+    let moves: Vec<MoveEntry> = outcome
         .results
         .iter()
-        .map(|r| {
-            serde_json::json!({
-                "old_uid": r.old_uid.get(),
-                "new_uid": r.new_uid.map(Uid::get),
-            })
+        .map(|r| MoveEntry {
+            old_uid: r.old_uid.get(),
+            new_uid: r.new_uid.map(Uid::get),
         })
         .collect();
 
@@ -70,11 +88,11 @@ pub async fn handle(
     }
 
     Ok(ToolResponse {
-        meta: serde_json::json!({
-            "folder": input.folder,
-            "destination": input.destination,
-            "moves": moves,
-        }),
+        meta: MoveMessageMeta {
+            folder: input.folder,
+            destination: input.destination,
+            moves,
+        },
         untrusted: None,
         security_warnings: warnings,
     })
