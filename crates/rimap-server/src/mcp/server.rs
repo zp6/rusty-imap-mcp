@@ -703,6 +703,9 @@ fn refine_tool_name(
     let Some(args) = args else {
         return base;
     };
+    // Exhaustive match so a new ToolName variant forces an explicit
+    // refinement decision at the dispatch seam rather than silently
+    // falling through a catch-all.
     match base {
         ToolName::FetchMessage
             if args
@@ -713,7 +716,30 @@ fn refine_tool_name(
             ToolName::FetchMessageHtml
         }
         ToolName::Search if args.get("advanced_query").is_some() => ToolName::SearchAdvanced,
-        other => other,
+        ToolName::ListFolders
+        | ToolName::Search
+        | ToolName::SearchAdvanced
+        | ToolName::FetchMessage
+        | ToolName::FetchMessageHtml
+        | ToolName::ListAttachments
+        | ToolName::DownloadAttachment
+        | ToolName::MarkRead
+        | ToolName::MarkUnread
+        | ToolName::Flag
+        | ToolName::Unflag
+        | ToolName::AddLabel
+        | ToolName::RemoveLabel
+        | ToolName::ListLabels
+        | ToolName::MoveMessage
+        | ToolName::CreateDraft
+        | ToolName::SendEmail
+        | ToolName::DeleteMessage
+        | ToolName::Expunge
+        | ToolName::CreateFolder
+        | ToolName::RenameFolder
+        | ToolName::DeleteFolder
+        | ToolName::UseAccount
+        | ToolName::ListAccounts => base,
     }
 }
 
@@ -863,7 +889,7 @@ static TOOL_DEFS: std::sync::LazyLock<std::collections::HashMap<ToolName, Tool>>
 mod tests {
     use rimap_core::tool::ToolName;
 
-    use super::{TOOL_DEFS, rimap_error_to_breaker_reason, split_tool_name};
+    use super::{TOOL_DEFS, refine_tool_name, rimap_error_to_breaker_reason, split_tool_name};
 
     #[test]
     fn breaker_reason_maps_service_failures() {
@@ -966,6 +992,50 @@ mod tests {
             .filter_map(|tn| TOOL_DEFS.get(&tn))
             .collect();
         assert_eq!(defs.len(), expected);
+    }
+
+    #[test]
+    fn refine_tool_name_promotes_sub_capabilities() {
+        let mut args = serde_json::Map::new();
+        args.insert("include_html".into(), serde_json::Value::Bool(true));
+        assert_eq!(
+            refine_tool_name(ToolName::FetchMessage, Some(&args)),
+            ToolName::FetchMessageHtml,
+        );
+
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "advanced_query".into(),
+            serde_json::Value::String("FROM x".into()),
+        );
+        assert_eq!(
+            refine_tool_name(ToolName::Search, Some(&args)),
+            ToolName::SearchAdvanced,
+        );
+    }
+
+    #[test]
+    fn refine_tool_name_is_identity_for_all_other_variants() {
+        // Any variant without a refinement rule must pass through
+        // unchanged, including when args are absent or irrelevant. A new
+        // ToolName variant will fail to compile in `refine_tool_name`'s
+        // exhaustive match until a refinement decision is made.
+        let mut args = serde_json::Map::new();
+        args.insert("include_html".into(), serde_json::Value::Bool(true));
+        args.insert(
+            "advanced_query".into(),
+            serde_json::Value::String("FROM x".into()),
+        );
+        for name in ToolName::all() {
+            let refined_no_args = refine_tool_name(name, None);
+            assert_eq!(refined_no_args, name, "{name:?} changed with no args");
+            let refined = refine_tool_name(name, Some(&args));
+            match name {
+                ToolName::FetchMessage => assert_eq!(refined, ToolName::FetchMessageHtml),
+                ToolName::Search => assert_eq!(refined, ToolName::SearchAdvanced),
+                other => assert_eq!(refined, other, "{other:?} unexpectedly refined"),
+            }
+        }
     }
 
     #[test]

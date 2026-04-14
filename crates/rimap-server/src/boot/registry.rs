@@ -21,6 +21,15 @@ use rimap_smtp::SmtpClient;
 /// In-memory, unkeyed governor limiter used for infrastructure tools.
 type InfrastructureLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
+/// Sustained rate for the infrastructure-tool limiter. The `unwrap` runs
+/// in `const` context, so a zero literal would fail the build rather than
+/// panic at runtime.
+const INFRA_RATE_PER_SEC: NonZeroU32 = NonZeroU32::new(5).unwrap();
+
+/// Burst allowance for the infrastructure-tool limiter. See
+/// [`INFRA_RATE_PER_SEC`] for why the `unwrap` is sound.
+const INFRA_BURST: NonZeroU32 = NonZeroU32::new(10).unwrap();
+
 /// Per-account runtime bundle.
 ///
 /// Manual `Debug` impl prints only the account id, since several
@@ -66,10 +75,7 @@ impl AccountRegistry {
     /// Build a registry from the given accounts.
     #[must_use]
     pub fn new(accounts: BTreeMap<AccountId, AccountState>) -> Self {
-        // Safety: literals are non-zero.
-        let per_sec = NonZeroU32::new(5).unwrap_or(NonZeroU32::MIN);
-        let burst = NonZeroU32::new(10).unwrap_or(NonZeroU32::MIN);
-        let quota = Quota::per_second(per_sec).allow_burst(burst);
+        let quota = Quota::per_second(INFRA_RATE_PER_SEC).allow_burst(INFRA_BURST);
         Self {
             accounts,
             active: ArcSwapOption::empty(),

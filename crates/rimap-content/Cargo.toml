@@ -21,7 +21,6 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
-tracing = { workspace = true }
 mail-parser = { workspace = true }
 encoding_rs = { workspace = true }
 unicode-normalization = { workspace = true }
@@ -41,3 +40,8 @@ phf_codegen = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
+
+# `phf` is consumed by the `include!`-expanded output of `build.rs`, so
+# static analyzers like cargo-machete cannot see the direct usage.
+[package.metadata.cargo-machete]
+ignored = ["phf"]
