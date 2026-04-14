@@ -28,15 +28,6 @@ pub enum ContentError {
         /// The compile-time limit value that was exceeded.
         limit: usize,
     },
-
-    /// Character-set decoding failed and no replacement strategy could
-    /// produce valid UTF-8. This should be vanishingly rare because
-    /// `encoding_rs` always returns replacement characters on failure.
-    #[error("text decoding failed: {reason}")]
-    Decoding {
-        /// Short description of the decoding failure.
-        reason: String,
-    },
 }
 
 #[cfg(test)]

@@ -46,7 +46,6 @@ fn error_kind_str(err: &rimap_content::ContentError) -> &'static str {
     match err {
         rimap_content::ContentError::Malformed { .. } => "Malformed",
         rimap_content::ContentError::LimitExceeded { .. } => "LimitExceeded",
-        rimap_content::ContentError::Decoding { .. } => "Decoding",
         _ => "Unknown",
     }
 }

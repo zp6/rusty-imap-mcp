@@ -75,20 +75,11 @@ pub fn write_attachment(dir: &Path, filename: &str, data: &[u8]) -> Result<PathB
         }
     }
 
-    // Verify the resolved path is still inside the target directory.
-    let canonical_dir = dir
-        .canonicalize()
-        .map_err(|e| RimapError::Internal(format!("cannot canonicalize download dir: {e}")))?;
-    let canonical_path =
-        path.parent().unwrap_or(dir).canonicalize().map_err(|e| {
-            RimapError::Internal(format!("cannot canonicalize attachment path: {e}"))
-        })?;
-    if !canonical_path.starts_with(&canonical_dir) {
-        return Err(RimapError::Internal(
-            "attachment path escapes download directory".into(),
-        ));
-    }
-
+    // The filename has already been stripped to its final component
+    // above, so `path` is always `dir/<safe_name>`. Directory-traversal
+    // containment is enforced by `resolve_dest_dir` for the initial
+    // `dir`, not here — a re-canonicalize at this point compares `dir`
+    // against itself and cannot fail meaningfully.
     std::fs::write(&path, data)
         .map_err(|e| RimapError::Internal(format!("failed to write attachment: {e}")))?;
 
