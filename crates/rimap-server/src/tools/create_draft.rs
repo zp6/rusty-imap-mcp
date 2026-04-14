@@ -14,8 +14,11 @@ pub type CreateDraftInput = ComposeInput;
 ///
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
 /// recipient addresses, subject/body size violations, or bad threading
-/// headers. Returns `RimapError::Imap { ... }` on APPEND failure. The
-/// upstream `DispatchGuard::pre_dispatch` gate returns
+/// headers. Returns `RimapError::Imap { ... }` on APPEND failure.
+/// Returns `RimapError::Internal` if `message_builder::build_message`
+/// or `apply_threading_headers` reports an unrecoverable construction
+/// failure (should not happen with validated input). The upstream
+/// `DispatchGuard::pre_dispatch` gate returns
 /// `Authz { code: PostureDenied }` when posture forbids draft creation.
 pub async fn handle(
     account: &AccountState,

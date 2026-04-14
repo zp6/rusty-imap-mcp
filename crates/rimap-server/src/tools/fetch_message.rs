@@ -26,8 +26,11 @@ pub struct FetchMessageInput {
 ///
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`
 /// or when the body fails `rimap-content` parse/limits (malformed, MIME
-/// depth/parts cap). Returns `RimapError::Imap { ... }` for IMAP-layer
-/// failures (network, timeout, protocol, attachment-too-large). The upstream
+/// depth/parts cap). Returns `RimapError::Internal` if the
+/// `parse_message_async` blocking task panics or the parse semaphore
+/// is closed — those are infrastructure failures, not input failures.
+/// Returns `RimapError::Imap { ... }` for IMAP-layer failures (network,
+/// timeout, protocol, attachment-too-large). The upstream
 /// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`
 /// for `FetchMessageHtml` when `include_html=true` and posture forbids it.
 pub async fn handle(

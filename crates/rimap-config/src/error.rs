@@ -112,7 +112,7 @@ pub enum ConfigError {
     )]
     SmtpRequired {
         /// The posture that enabled `send_email`.
-        posture: String,
+        posture: rimap_core::Posture,
     },
     /// A folder appears in both `protected_folders` and `expunge_folders`.
     #[error(

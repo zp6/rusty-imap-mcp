@@ -51,10 +51,10 @@ pub async fn handle(
     Ok(ToolResponse {
         meta: serde_json::json!({
             "deleted": true,
-            "source_folder": input.folder,
+            "folder": input.folder,
             "uid": input.uid,
             "moved_to_trash": result.moved_to_trash,
-            "trash_folder": TRASH_FOLDER,
+            "destination": TRASH_FOLDER,
         }),
         untrusted: None,
         security_warnings: Vec::new(),

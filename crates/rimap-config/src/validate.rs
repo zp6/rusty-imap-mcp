@@ -429,9 +429,7 @@ fn validate_smtp_required_fields(
         None => send_email_base,
     };
     if send_email_effective && smtp.is_none() {
-        return Err(ConfigError::SmtpRequired {
-            posture: posture.to_string(),
-        });
+        return Err(ConfigError::SmtpRequired { posture });
     }
     Ok(())
 }

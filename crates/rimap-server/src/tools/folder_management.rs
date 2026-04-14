@@ -34,8 +34,10 @@ pub struct DeleteFolderInput {
 /// # Errors
 ///
 /// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if the name
-/// is protected (including INBOX). Propagates `RimapError::Imap { ... }`
-/// from the underlying CREATE command.
+/// is protected (including INBOX). Returns `RimapError::Imap { code:
+/// InvalidInput, ... }` if the folder name fails
+/// `validate_folder_name` (empty, too long, forbidden chars).
+/// Propagates `RimapError::Imap { ... }` from the underlying CREATE.
 pub async fn handle_create(
     account: &AccountState,
     input: CreateFolderInput,
@@ -62,7 +64,9 @@ pub async fn handle_create(
 ///
 /// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if either
 /// the source or destination name is protected (including INBOX).
-/// Propagates `RimapError::Imap { ... }` from the underlying RENAME.
+/// Returns `RimapError::Imap { code: InvalidInput, ... }` if either
+/// name fails `validate_folder_name`. Propagates `RimapError::Imap
+/// { ... }` from the underlying RENAME.
 pub async fn handle_rename(
     account: &AccountState,
     input: RenameFolderInput,
@@ -93,8 +97,10 @@ pub async fn handle_rename(
 ///
 /// Returns `RimapError::Authz { code: ProtectedFolder, ... }` if the name
 /// is protected. Returns `RimapError::Authz { code: ExpungeDenied, ... }`
-/// if expunge is not permitted for the folder. Propagates
-/// `RimapError::Imap { ... }` from STATUS and DELETE.
+/// if expunge is not permitted for the folder. Returns
+/// `RimapError::Imap { code: InvalidInput, ... }` if the folder name
+/// fails `validate_folder_name`. Propagates `RimapError::Imap { ... }`
+/// from STATUS and DELETE.
 pub async fn handle_delete(
     account: &AccountState,
     input: DeleteFolderInput,
