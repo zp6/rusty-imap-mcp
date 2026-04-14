@@ -40,7 +40,7 @@ pub struct ImapMcpServer {
     pub(crate) redaction_salt: Arc<RedactionSalt>,
     /// Redaction schemas keyed by tool name (matches `ToolName::as_str`).
     /// Built once at construction from `rimap_audit::redact::schemas()`.
-    pub(crate) redaction_schemas: Arc<HashMap<&'static str, RedactionSchema>>,
+    pub(crate) redaction_schemas: Arc<HashMap<ToolName, RedactionSchema>>,
 }
 
 impl ImapMcpServer {
@@ -48,7 +48,7 @@ impl ImapMcpServer {
     /// from [`rimap_audit::redact::schemas`].
     #[must_use]
     pub fn new(registry: AccountRegistry, audit: AuditWriter, download_dir: PathBuf) -> Self {
-        let schema_map: HashMap<&'static str, RedactionSchema> =
+        let schema_map: HashMap<ToolName, RedactionSchema> =
             schemas().into_iter().map(|s| (s.tool, s)).collect();
         Self {
             registry,
@@ -290,10 +290,13 @@ enum PostureContext {
 }
 
 impl PostureContext {
-    fn as_str(self) -> &'static str {
+    /// The per-account [`rimap_core::Posture`] this context represents, or
+    /// `None` for the infrastructure dispatch path. The audit writer maps
+    /// `None` to the `"infrastructure"` sentinel it records on disk.
+    fn posture(self) -> Option<rimap_core::Posture> {
         match self {
-            Self::Account(p) => p.as_str(),
-            Self::Infrastructure => "infrastructure",
+            Self::Account(p) => Some(p),
+            Self::Infrastructure => None,
         }
     }
 }
@@ -333,7 +336,7 @@ impl ImapMcpServer {
         F: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
     {
         let args_value = serde_json::Value::Object(args.clone());
-        let redacted = self.redact_tool_args(tool.as_str(), &args_value);
+        let redacted = self.redact_tool_args(tool, &args_value);
         let hash = hash_arguments(&args_value);
 
         let start_seq = self
@@ -489,12 +492,12 @@ impl ImapMcpServer {
     /// `tool`. If no schema matches, returns an empty object and emits
     /// a `warn!` — the schema registry is expected to cover every
     /// advertised tool.
-    fn redact_tool_args(&self, tool: &str, args: &serde_json::Value) -> serde_json::Value {
-        if let Some(schema) = self.redaction_schemas.get(tool) {
+    fn redact_tool_args(&self, tool: ToolName, args: &serde_json::Value) -> serde_json::Value {
+        if let Some(schema) = self.redaction_schemas.get(&tool) {
             Redactor::new(schema, self.redaction_salt.as_ref()).apply(args)
         } else {
             tracing::warn!(
-                tool,
+                tool = tool.as_str(),
                 "no redaction schema for tool; recording empty arguments_redacted",
             );
             serde_json::Value::Object(serde_json::Map::new())
@@ -518,9 +521,9 @@ impl ImapMcpServer {
         hash: String,
     ) -> Result<rimap_audit::Seq, ErrorData> {
         let audit = self.audit.clone();
-        let posture_str = posture.as_str();
+        let posture_effective = posture.posture();
         let join = tokio::task::spawn_blocking(move || {
-            audit.log_tool_start(tool, account.as_deref(), posture_str, redacted, hash)
+            audit.log_tool_start(tool, account.as_deref(), posture_effective, redacted, hash)
         })
         .await;
         match join {

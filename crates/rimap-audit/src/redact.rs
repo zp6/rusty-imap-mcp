@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use rand::RngCore;
+use rimap_core::tool::ToolName;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -46,9 +47,9 @@ pub enum FieldPolicy {
 /// JSON object keys.
 #[derive(Debug, Clone)]
 pub struct RedactionSchema {
-    /// Tool identifier (matches `ToolName::as_str`). Used in audit record
-    /// `tool` field and in tracing output.
-    pub tool: &'static str,
+    /// Tool identifier. Audit records render this via [`ToolName::as_str`];
+    /// tracing spans attach the same string.
+    pub tool: ToolName,
     /// Policies keyed by field name.
     pub policies: BTreeMap<&'static str, FieldPolicy>,
 }
@@ -56,7 +57,7 @@ pub struct RedactionSchema {
 impl RedactionSchema {
     /// Construct a schema from a static slice of `(name, policy)` pairs.
     #[must_use]
-    pub fn new(tool: &'static str, rules: &[(&'static str, FieldPolicy)]) -> Self {
+    pub fn new(tool: ToolName, rules: &[(&'static str, FieldPolicy)]) -> Self {
         let mut policies = BTreeMap::new();
         for (name, policy) in rules {
             policies.insert(*name, *policy);
@@ -140,7 +141,7 @@ impl<'a> Redactor<'a> {
                 }
                 FieldPolicy::Forbidden => {
                     tracing::warn!(
-                        tool = self.schema.tool,
+                        tool = self.schema.tool.as_str(),
                         field = name.as_str(),
                         "forbidden field present in tool arguments; dropped",
                     );
@@ -218,7 +219,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
 
     vec![
         RedactionSchema::new(
-            "list_folders",
+            ToolName::ListFolders,
             &[("password", Forbidden), ("token", Forbidden)],
         ),
         // SEARCH criteria policy: from/to/subject/body use `RedactString`,
@@ -232,7 +233,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
         // still records the byte length for unusual-payload detection.
         // Decision recorded in #22.
         RedactionSchema::new(
-            "search",
+            ToolName::Search,
             &[
                 ("folder", Verbatim),
                 ("limit", Verbatim),
@@ -249,7 +250,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
         ),
         // SEE search schema above for the RedactString rationale (#22).
         RedactionSchema::new(
-            "search.advanced_query",
+            ToolName::SearchAdvanced,
             &[
                 ("folder", Verbatim),
                 ("limit", Verbatim),
@@ -259,7 +260,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "fetch_message",
+            ToolName::FetchMessage,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -269,7 +270,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "fetch_message.include_html",
+            ToolName::FetchMessageHtml,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -279,7 +280,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "list_attachments",
+            ToolName::ListAttachments,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -288,7 +289,7 @@ fn read_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "download_attachment",
+            ToolName::DownloadAttachment,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -306,7 +307,7 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
 
     vec![
         RedactionSchema::new(
-            "mark_read",
+            ToolName::MarkRead,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -315,7 +316,7 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "mark_unread",
+            ToolName::MarkUnread,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -324,17 +325,7 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "flag",
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("flag", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            "unflag",
+            ToolName::Flag,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -344,7 +335,17 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "move_message",
+            ToolName::Unflag,
+            &[
+                ("folder", Verbatim),
+                ("uid", Verbatim),
+                ("flag", Verbatim),
+                ("password", Forbidden),
+                ("token", Forbidden),
+            ],
+        ),
+        RedactionSchema::new(
+            ToolName::MoveMessage,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -354,7 +355,7 @@ fn write_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "create_draft",
+            ToolName::CreateDraft,
             &[
                 ("folder", Verbatim),
                 ("in_reply_to_uid", Verbatim),
@@ -377,7 +378,7 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
 
     vec![
         RedactionSchema::new(
-            "send_email",
+            ToolName::SendEmail,
             &[
                 ("to", SaltedHash),
                 ("cc", SaltedHash),
@@ -395,7 +396,7 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "delete_message",
+            ToolName::DeleteMessage,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -406,7 +407,7 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "expunge",
+            ToolName::Expunge,
             &[
                 ("folder", Verbatim),
                 ("expunged_count", Verbatim),
@@ -416,7 +417,7 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "create_folder",
+            ToolName::CreateFolder,
             &[
                 ("name", Verbatim),
                 ("password", Forbidden),
@@ -424,7 +425,7 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "rename_folder",
+            ToolName::RenameFolder,
             &[
                 ("old_name", Verbatim),
                 ("new_name", Verbatim),
@@ -433,7 +434,7 @@ fn v2_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "delete_folder",
+            ToolName::DeleteFolder,
             &[
                 ("name", Verbatim),
                 ("message_count", Verbatim),
@@ -451,7 +452,7 @@ fn label_tool_schemas() -> Vec<RedactionSchema> {
 
     vec![
         RedactionSchema::new(
-            "add_label",
+            ToolName::AddLabel,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -460,7 +461,7 @@ fn label_tool_schemas() -> Vec<RedactionSchema> {
             ],
         ),
         RedactionSchema::new(
-            "remove_label",
+            ToolName::RemoveLabel,
             &[
                 ("folder", Verbatim),
                 ("uid", Verbatim),
@@ -468,7 +469,10 @@ fn label_tool_schemas() -> Vec<RedactionSchema> {
                 ("label", Verbatim),
             ],
         ),
-        RedactionSchema::new("list_labels", &[("folder", Verbatim), ("uid", Verbatim)]),
+        RedactionSchema::new(
+            ToolName::ListLabels,
+            &[("folder", Verbatim), ("uid", Verbatim)],
+        ),
     ]
 }
 
@@ -478,8 +482,8 @@ fn account_tool_schemas() -> Vec<RedactionSchema> {
     use FieldPolicy::Verbatim;
 
     vec![
-        RedactionSchema::new("use_account", &[("account", Verbatim)]),
-        RedactionSchema::new("list_accounts", &[]),
+        RedactionSchema::new(ToolName::UseAccount, &[("account", Verbatim)]),
+        RedactionSchema::new(ToolName::ListAccounts, &[]),
     ]
 }
 
@@ -489,11 +493,13 @@ fn account_tool_schemas() -> Vec<RedactionSchema> {
 mod tests {
     use serde_json::json;
 
+    use rimap_core::tool::ToolName;
+
     use crate::redact::{FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments};
 
     fn schema() -> RedactionSchema {
         RedactionSchema::new(
-            "create_draft",
+            ToolName::CreateDraft,
             &[
                 ("to", FieldPolicy::SaltedHash),
                 ("subject", FieldPolicy::RedactString),
@@ -610,11 +616,10 @@ mod tests {
 
     #[test]
     fn every_v1_tool_has_a_schema() {
-        use rimap_core::ToolName;
         let table = crate::redact::schemas();
         for tool in ToolName::all() {
             assert!(
-                table.iter().any(|s| s.tool == tool.as_str()),
+                table.iter().any(|s| s.tool == tool),
                 "missing redaction schema for {}",
                 tool.as_str(),
             );
@@ -629,7 +634,7 @@ mod tests {
             assert!(
                 seen.insert(schema.tool),
                 "duplicate redaction schema for {}",
-                schema.tool,
+                schema.tool.as_str(),
             );
         }
     }
@@ -639,7 +644,7 @@ mod tests {
         let table = crate::redact::schemas();
         let schema = table
             .iter()
-            .find(|s| s.tool == "create_draft")
+            .find(|s| s.tool == ToolName::CreateDraft)
             .expect("create_draft schema exists");
         assert_eq!(
             schema.policies.get("to").copied(),
@@ -660,7 +665,7 @@ mod tests {
         let table = crate::redact::schemas();
         let schema = table
             .iter()
-            .find(|s| s.tool == "search")
+            .find(|s| s.tool == ToolName::Search)
             .expect("search schema exists");
         assert_eq!(
             schema.policies.get("folder").copied(),
@@ -677,7 +682,7 @@ mod tests {
         let table = crate::redact::schemas();
         let schema = table
             .iter()
-            .find(|s| s.tool == "send_email")
+            .find(|s| s.tool == ToolName::SendEmail)
             .expect("send_email schema exists");
         assert_eq!(
             schema.policies.get("in_reply_to").copied(),
@@ -724,7 +729,7 @@ mod tests {
         let table = crate::redact::schemas();
         let schema = table
             .iter()
-            .find(|s| s.tool == "delete_message")
+            .find(|s| s.tool == ToolName::DeleteMessage)
             .expect("delete_message schema exists");
         assert_eq!(
             schema.policies.get("message_id").copied(),
@@ -741,7 +746,7 @@ mod tests {
         let table = crate::redact::schemas();
         let schema = table
             .iter()
-            .find(|s| s.tool == "expunge")
+            .find(|s| s.tool == ToolName::Expunge)
             .expect("expunge schema exists");
         assert_eq!(
             schema.policies.get("expunged_count").copied(),
@@ -758,7 +763,7 @@ mod tests {
         let table = crate::redact::schemas();
         let schema = table
             .iter()
-            .find(|s| s.tool == "delete_folder")
+            .find(|s| s.tool == ToolName::DeleteFolder)
             .expect("delete_folder schema exists");
         assert_eq!(
             schema.policies.get("message_count").copied(),
