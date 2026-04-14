@@ -86,7 +86,15 @@ pub struct ListLabelsInput {
     pub uid: u32,
 }
 
-/// `add_label` handler.
+/// `add_label` handler — STORE +FLAGS with a custom keyword.
+///
+/// # Limitations
+///
+/// The response does not include UIDVALIDITY. If the folder's UID namespace
+/// rotates between the caller's UID acquisition and this call, labels may
+/// be applied to unintended messages. This is consistent with other flag
+/// tools (`mark_read`, `flag`, etc.) and will be addressed in a future
+/// release.
 pub async fn handle_add_label(
     account: &AccountState,
     input: LabelInput,
@@ -115,7 +123,15 @@ pub async fn handle_add_label(
     })
 }
 
-/// `remove_label` handler.
+/// `remove_label` handler — STORE -FLAGS with a custom keyword.
+///
+/// # Limitations
+///
+/// The response does not include UIDVALIDITY. If the folder's UID namespace
+/// rotates between the caller's UID acquisition and this call, labels may
+/// be removed from unintended messages. This is consistent with other flag
+/// tools (`mark_read`, `flag`, etc.) and will be addressed in a future
+/// release.
 pub async fn handle_remove_label(
     account: &AccountState,
     input: LabelInput,
@@ -144,7 +160,15 @@ pub async fn handle_remove_label(
     })
 }
 
-/// `list_labels` handler.
+/// `list_labels` handler — FETCH FLAGS and return keyword entries.
+///
+/// # Limitations
+///
+/// The response does not include UIDVALIDITY. If the folder's UID namespace
+/// rotates between the caller's UID acquisition and this call, the returned
+/// labels may belong to an unintended message. This is consistent with other
+/// flag tools (`mark_read`, `flag`, etc.) and will be addressed in a future
+/// release.
 pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,
