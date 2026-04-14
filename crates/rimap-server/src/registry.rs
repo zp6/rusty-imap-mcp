@@ -2,14 +2,23 @@
 //! which account a request targets.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::sync::Mutex;
 
+use governor::clock::{Clock, DefaultClock};
+use governor::middleware::NoOpMiddleware;
+use governor::state::{InMemoryState, NotKeyed};
+use governor::{Quota, RateLimiter};
 use rimap_authz::breaker::SystemClock;
 use rimap_authz::{DispatchGuard, FolderGuard};
 use rimap_core::RimapError;
 use rimap_core::account::AccountId;
+use rimap_core::error::ErrorCode;
 use rimap_imap::Connection;
 use rimap_smtp::SmtpClient;
+
+/// In-memory, unkeyed governor limiter used for infrastructure tools.
+type InfrastructureLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
 /// Per-account runtime bundle.
 ///
@@ -44,16 +53,50 @@ impl std::fmt::Debug for AccountState {
 pub struct AccountRegistry {
     accounts: BTreeMap<AccountId, AccountState>,
     active: Mutex<Option<AccountId>>,
+    /// Process-wide rate limiter for infrastructure tools
+    /// (`use_account`, `list_accounts`). Prevents an injected prompt
+    /// from flip-flopping the active account faster than a human
+    /// would. 5 req/sec sustained, burst of 10.
+    infrastructure_limiter: InfrastructureLimiter,
+    /// Clock used by the infrastructure limiter; stored so that
+    /// `wait_time_from` can format retry hints.
+    clock: DefaultClock,
 }
 
 impl AccountRegistry {
     /// Build a registry from the given accounts.
     #[must_use]
     pub fn new(accounts: BTreeMap<AccountId, AccountState>) -> Self {
+        // Safety: literals are non-zero.
+        let per_sec = NonZeroU32::new(5).unwrap_or(NonZeroU32::MIN);
+        let burst = NonZeroU32::new(10).unwrap_or(NonZeroU32::MIN);
+        let quota = Quota::per_second(per_sec).allow_burst(burst);
         Self {
             accounts,
             active: Mutex::new(None),
+            infrastructure_limiter: RateLimiter::direct(quota),
+            clock: DefaultClock::default(),
         }
+    }
+
+    /// Check the infrastructure-tool rate limit. Called by
+    /// `dispatch_infrastructure` before executing `use_account` or
+    /// `list_accounts`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RimapError::Authz`] with
+    /// [`ErrorCode::RateLimited`] when the limit is exceeded. The
+    /// error message includes a retry hint in milliseconds.
+    pub fn check_infrastructure_rate(&self) -> Result<(), RimapError> {
+        self.infrastructure_limiter.check().map_err(|not_until| {
+            let wait_ms = u64::try_from(not_until.wait_time_from(self.clock.now()).as_millis())
+                .unwrap_or(u64::MAX);
+            RimapError::Authz {
+                code: ErrorCode::RateLimited,
+                message: format!("infrastructure tool rate limit exceeded; retry in {wait_ms}ms",),
+            }
+        })
     }
 
     /// Resolve which account a request targets.

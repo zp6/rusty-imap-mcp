@@ -134,6 +134,16 @@ impl ServerHandler for ImapMcpServer {
             )
         })?;
 
+        // Validate the account name before using it in a lookup or
+        // echoing it back in any error. Do not reflect the raw input.
+        AccountId::new(account_name).map_err(|_| {
+            ErrorData::new(
+                McpCode::RESOURCE_NOT_FOUND,
+                "invalid account name in resource URI".to_string(),
+                None,
+            )
+        })?;
+
         let state = self
             .registry
             .resolve(Some(account_name))
@@ -308,6 +318,11 @@ impl ImapMcpServer {
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Infrastructure tools bypass posture + breaker, but still
+        // enforce a process-wide rate limit.
+        if let Err(e) = self.registry.check_infrastructure_rate() {
+            return Err(crate::mcp_error::to_mcp_error(&e));
+        }
         let result = match tool {
             ToolName::UseAccount => {
                 let input: crate::tools::accounts::UseAccountInput =

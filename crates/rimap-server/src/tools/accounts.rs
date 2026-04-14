@@ -16,6 +16,10 @@ pub fn handle_use_account(
     registry: &AccountRegistry,
     input: &UseAccountInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
+    // Validate the account-name shape first so invalid input cannot be
+    // echoed into error messages or reach `set_active`'s lookup code.
+    rimap_core::account::AccountId::new(&input.account)
+        .map_err(|_| rimap_core::RimapError::Internal("invalid account name".to_string()))?;
     let previous = registry.set_active(&input.account)?;
     Ok(ToolResponse {
         meta: serde_json::json!({
