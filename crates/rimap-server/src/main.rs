@@ -36,6 +36,7 @@ use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
 use rimap_config::validate::ValidatedAccountConfig;
 use rimap_imap::{Connection, ConnectionConfig};
+use secrecy::ExposeSecret;
 
 use crate::cli::{AuditAction, Cli, Command};
 
@@ -187,8 +188,9 @@ fn build_smtp_client(
     let smtp_password =
         rimap_config::resolve_credential(&**credentials, &smtp_cfg.username, &smtp_cfg.host)
             .with_context(|| format!("resolving SMTP credential for {}", smtp_cfg.username))?;
-    let client = rimap_smtp::SmtpClient::new(smtp_cfg, &smtp_password)
+    let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
         .with_context(|| format!("building SMTP client for {}", smtp_cfg.host))?;
+    drop(smtp_password);
     Ok(Some(client))
 }
 

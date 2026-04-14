@@ -29,6 +29,9 @@ tokio-rustls = { workspace = true }
 rustls = { workspace = true }
 webpki-roots = { workspace = true }
 
+# Credentials (SecretString exposure at call site)
+secrecy = { workspace = true }
+
 # Error handling
 thiserror = { workspace = true }
 

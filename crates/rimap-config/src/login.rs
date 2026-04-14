@@ -54,6 +54,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Mutex;
 
+    use secrecy::{ExposeSecret, SecretString};
+
     use crate::credential::{CredentialStore, account_key};
     use crate::error::ConfigError;
     use crate::login::run_login;
@@ -64,8 +66,14 @@ mod tests {
     }
 
     impl CredentialStore for MockStore {
-        fn get_password(&self, account: &str) -> Result<Option<String>, ConfigError> {
-            Ok(self.entries.lock().unwrap().get(account).cloned())
+        fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
+            Ok(self
+                .entries
+                .lock()
+                .unwrap()
+                .get(account)
+                .cloned()
+                .map(SecretString::from))
         }
         fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
             self.entries
@@ -84,7 +92,7 @@ mod tests {
             .get_password(&account_key("alice", "host"))
             .unwrap()
             .unwrap();
-        assert_eq!(got, "hunter2");
+        assert_eq!(got.expose_secret(), "hunter2");
     }
 
     #[test]

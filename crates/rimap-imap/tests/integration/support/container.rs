@@ -479,8 +479,11 @@ use tempfile::TempDir;
 pub struct StaticCreds(pub String);
 
 impl CredentialStore for StaticCreds {
-    fn get_password(&self, _account: &str) -> Result<Option<String>, rimap_config::ConfigError> {
-        Ok(Some(self.0.clone()))
+    fn get_password(
+        &self,
+        _account: &str,
+    ) -> Result<Option<secrecy::SecretString>, rimap_config::ConfigError> {
+        Ok(Some(secrecy::SecretString::from(self.0.clone())))
     }
 
     #[expect(clippy::panic, clippy::panic_in_result_fn, reason = "test stub")]

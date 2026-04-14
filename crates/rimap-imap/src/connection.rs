@@ -23,6 +23,7 @@ use rimap_audit::AuditWriter;
 use rimap_audit::record::Auth;
 use rimap_config::credential::{CredentialStore, resolve_credential};
 use rimap_core::TlsFingerprint;
+use secrecy::ExposeSecret;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio::time::timeout;
@@ -318,7 +319,9 @@ impl Connection {
             })?;
 
         // Attempt LOGIN. On NO response the server rejected the credentials.
-        let mut session = match client.login(&cfg.username, &password).await {
+        // Expose the secret only at the moment of use; the borrow ends
+        // when `client.login` returns.
+        let mut session = match client.login(&cfg.username, password.expose_secret()).await {
             Ok(session) => session,
             Err((err, _client)) => {
                 return match err {

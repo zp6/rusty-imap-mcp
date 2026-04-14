@@ -2113,6 +2113,7 @@ dependencies = [
  "keyring",
  "rimap-core",
  "rpassword",
+ "secrecy",
  "serde",
  "temp-env",
  "tempfile",
@@ -2174,6 +2175,7 @@ dependencies = [
  "rimap-config",
  "rimap-core",
  "rustls",
+ "secrecy",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
@@ -2207,6 +2209,7 @@ dependencies = [
  "rimap-smtp",
  "rmcp",
  "schemars",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2",
@@ -2424,6 +2427,15 @@ dependencies = [
  "precomputed-hash",
  "selectors",
  "tendril 0.5.0",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
+ "zeroize",
 ]
 
 [[package]]

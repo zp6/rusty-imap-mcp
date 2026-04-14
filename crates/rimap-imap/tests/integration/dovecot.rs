@@ -114,8 +114,11 @@ async fn case_04_login_rejected_emits_audit() {
 
     struct WrongPass;
     impl CredentialStore for WrongPass {
-        fn get_password(&self, _: &str) -> Result<Option<String>, rimap_config::ConfigError> {
-            Ok(Some("wrong-password".to_string()))
+        fn get_password(
+            &self,
+            _: &str,
+        ) -> Result<Option<secrecy::SecretString>, rimap_config::ConfigError> {
+            Ok(Some(secrecy::SecretString::from("wrong-password")))
         }
         #[expect(clippy::panic, clippy::panic_in_result_fn, reason = "test stub")]
         fn set_password(&self, _: &str, _: &str) -> Result<(), rimap_config::ConfigError> {
