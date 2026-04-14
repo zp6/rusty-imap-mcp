@@ -14,6 +14,7 @@ const MAX_BATCH: usize = 100;
 /// Outcome of a `move_messages` call.
 #[derive(Debug)]
 #[must_use = "check used_fallback for security warnings"]
+#[non_exhaustive]
 pub struct MoveOutcome {
     /// Per-UID results.
     pub results: Vec<MoveResult>,
