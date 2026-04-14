@@ -31,15 +31,8 @@ pub fn handle_use_account(
     })
 }
 
-/// List all configured accounts. Returns `Result` for consistency
-/// with the dispatch pipeline, though it cannot currently fail.
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "consistent Result return with dispatch pipeline"
-)]
-pub fn handle_list_accounts(
-    registry: &AccountRegistry,
-) -> Result<ToolResponse, rimap_core::RimapError> {
+/// List all configured accounts.
+pub fn handle_list_accounts(registry: &AccountRegistry) -> ToolResponse {
     let mut accounts: Vec<serde_json::Value> = Vec::new();
     for state in registry.accounts().values() {
         accounts.push(serde_json::json!({
@@ -48,12 +41,12 @@ pub fn handle_list_accounts(
         }));
     }
     let count = accounts.len();
-    Ok(ToolResponse {
+    ToolResponse {
         meta: serde_json::json!({
             "accounts": accounts,
             "count": count,
         }),
         untrusted: None,
         security_warnings: Vec::new(),
-    })
+    }
 }

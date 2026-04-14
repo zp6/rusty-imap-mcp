@@ -451,7 +451,9 @@ impl ImapMcpServer {
                     Err(e) => Err(e),
                 }
             }
-            ToolName::ListAccounts => crate::tools::accounts::handle_list_accounts(&self.registry),
+            ToolName::ListAccounts => {
+                Ok(crate::tools::accounts::handle_list_accounts(&self.registry))
+            }
             _ => Err(rimap_core::RimapError::Internal(format!(
                 "not an infrastructure tool: {}",
                 tool.as_str(),
