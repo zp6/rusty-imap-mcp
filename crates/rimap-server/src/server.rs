@@ -261,10 +261,7 @@ impl ServerHandler for ImapMcpServer {
         let posture_str = account.guard.matrix().posture().as_str().to_string();
 
         self.run_with_audit_envelope(tool_name, audit_account, posture_str, &args, async {
-            account
-                .guard
-                .pre_dispatch(tool_name)
-                .map_err(rimap_core::RimapError::from)?;
+            account.guard.pre_dispatch(tool_name)?;
             Box::pin(self.dispatch_tool(account, tool_name, &args)).await
         })
         .await

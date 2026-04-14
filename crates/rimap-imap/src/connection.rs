@@ -36,8 +36,8 @@ use crate::error::{AuthFailure, ImapError};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
 /// Everything `Connection` needs to open a session, pulled out of
-/// `rimap_config::ValidatedConfig` by the caller. `Connection` clones this
-/// value once at construction time.
+/// `rimap_config::ValidatedAccountConfig` (or the legacy `ValidatedConfig`)
+/// by the caller. `Connection` clones this value once at construction time.
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
     /// Account name this connection belongs to. `None` for the legacy

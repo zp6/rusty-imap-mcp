@@ -7,6 +7,7 @@ use thiserror::Error;
 
 /// Errors produced by `rimap-authz` stages: posture, breaker, rate limiter.
 #[derive(Debug, Error, Clone)]
+#[non_exhaustive]
 pub enum AuthzError {
     /// Tool denied by the current posture matrix.
     #[error("tool `{0}` denied by current posture")]

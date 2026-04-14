@@ -18,10 +18,7 @@ pub async fn handle(
     account: &AccountState,
     input: ExpungeInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
-    account
-        .folder_guard
-        .check_expunge(&input.folder)
-        .map_err(rimap_core::RimapError::from)?;
+    account.folder_guard.check_expunge(&input.folder)?;
 
     let (deleted_uids, expunged_count) = account.imap.expunge(&input.folder).await?;
 

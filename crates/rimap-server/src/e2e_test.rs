@@ -347,10 +347,7 @@ async fn call_tool(
 
     let account = server.registry.resolve(None)?;
 
-    account
-        .guard
-        .pre_dispatch(tool)
-        .map_err(rimap_core::RimapError::from)?;
+    account.guard.pre_dispatch(tool)?;
 
     let args_map = match args {
         serde_json::Value::Object(m) => m,
