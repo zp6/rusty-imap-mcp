@@ -138,7 +138,7 @@ fn cross_validate_mime_type(
         return Vec::new();
     }
     vec![rimap_content::SecurityWarning::new(
-        rimap_content::WarningCode::ParseMimeTypeMismatch,
+        rimap_content::WarningCode::ParseBodystructureTypeMismatch,
         Some(format!(
             "bodystructure={bodystructure_type},parser={parser_type}"
         )),
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(warnings.len(), 1);
         assert_eq!(
             warnings[0].code,
-            rimap_content::WarningCode::ParseMimeTypeMismatch
+            rimap_content::WarningCode::ParseBodystructureTypeMismatch
         );
         assert_eq!(
             warnings[0].detail.as_deref(),

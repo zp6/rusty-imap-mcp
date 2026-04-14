@@ -119,9 +119,12 @@ pub struct Untrusted {
 pub struct SecurityWarning {
     /// Classification of the warning.
     pub code: WarningCode,
-    /// Human-readable context string. Consumers MUST NOT parse this
-    /// field programmatically — use `code` and other typed fields for
-    /// dispatch. Format may change without notice.
+    /// Optional context string whose format is defined per-variant in
+    /// the [`WarningCode`] doc comments. Within a single crate version
+    /// the format is structured (key=value pairs), so tests may
+    /// pattern-match substrings against known variants. Consumers MUST
+    /// NOT rely on this format across crate versions — it may change
+    /// without notice; use `code` for stable dispatch.
     ///
     /// `None` when no additional detail is available.
     pub detail: Option<String>,
@@ -133,9 +136,13 @@ pub struct SecurityWarning {
 impl SecurityWarning {
     /// Construct a new warning.
     ///
-    /// `code` classifies the event. `detail` is an optional human-readable
-    /// context string (not machine-parseable). `location` names the logical
-    /// site in the message where the warning was raised.
+    /// `code` classifies the event. `detail` carries an optional context
+    /// string whose format is defined per-variant in the [`WarningCode`]
+    /// doc comments — see those docs for the key=value structure each
+    /// variant uses. The format is stable within a single crate version
+    /// but may change across versions; consumers MUST NOT rely on it for
+    /// cross-version compatibility. `location` names the logical site in
+    /// the message where the warning was raised.
     #[must_use]
     pub fn new(code: WarningCode, detail: Option<String>, location: Option<String>) -> Self {
         Self {
@@ -163,8 +170,14 @@ pub enum WarningCode {
     /// was dropped before parsing continued.
     ParseHeaderSmugglingBlocked,
     /// An attachment's declared content type did not match the magic
-    /// bytes of its body.
+    /// bytes of its body. Detail format: `declared=<type>,sniffed=<type>`.
     ParseMimeTypeMismatch,
+    /// BODYSTRUCTURE-declared MIME type disagreed with the type reported
+    /// by the MIME parser for the same part. Distinct from
+    /// `ParseMimeTypeMismatch` (which compares declared type against
+    /// magic-byte sniffing). Detail format:
+    /// `bodystructure=<type>,parser=<type>`.
+    ParseBodystructureTypeMismatch,
     /// An attachment matched multiple magic-byte signatures (polyglot
     /// file). This frequently indicates a deliberate attempt to bypass
     /// content-type sniffing by encoding one file type as another.
@@ -275,6 +288,7 @@ impl WarningCode {
             | WarningCode::UnicodeC0C1Stripped
             | WarningCode::ParseHeaderSmugglingBlocked
             | WarningCode::ParseMimeTypeMismatch
+            | WarningCode::ParseBodystructureTypeMismatch
             | WarningCode::ParseAttachmentPolyglot
             | WarningCode::ParseMimeDepthExceeded
             | WarningCode::ParseMimePartCountExceeded
