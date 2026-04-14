@@ -45,7 +45,7 @@ pub struct SendEmailMeta {
 /// `RimapError::Internal` if the lettre envelope cannot be built from an
 /// already-validated compose input (should not happen in practice). The
 /// copy-to-Sent APPEND is best-effort; an IMAP failure there surfaces via
-/// `sent_copy_failed` in the response, not as an error.
+/// `sent_copy.failed` in the response, not as an error.
 pub async fn handle(
     account: &AccountState,
     input: SendEmailInput,

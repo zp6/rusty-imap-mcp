@@ -58,8 +58,9 @@ pub struct MoveMessageMeta {
 /// because `FolderGuard`'s `check_protected` / `check_expunge` API is
 /// single-name: it asks whether one folder may be created, renamed, or
 /// expunged, which does not fit a pairwise `(source, dest)` move. The
-/// posture matrix gates the capability itself — `Move` is only in the
-/// `Destructive` posture — and per-folder rules for the destination are
+/// posture matrix gates the capability itself — `move_message` is
+/// allowed in the `DraftSafe`, `Full`, and `Destructive` postures and
+/// denied in `Readonly` — and per-folder rules for the destination are
 /// enforced by the IMAP server's own ACLs when the COPY+EXPUNGE
 /// fallback runs. If richer per-folder policy is ever needed for move,
 /// extend `FolderGuard` with a `check_move(src, dst)` method rather
