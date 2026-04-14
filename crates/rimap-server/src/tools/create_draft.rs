@@ -56,14 +56,10 @@ pub async fn handle(
 
     let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
-    Ok(ToolResponse {
-        meta: CreateDraftMeta {
-            folder: drafts_folder.to_string(),
-            uid: result.uid.map(rimap_imap::types::Uid::get),
-            message_id: generated_msg_id,
-            keywords: vec!["$PendingReview"],
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(CreateDraftMeta {
+        folder: drafts_folder.to_string(),
+        uid: result.uid.map(rimap_imap::types::Uid::get),
+        message_id: generated_msg_id,
+        keywords: vec!["$PendingReview"],
+    }))
 }

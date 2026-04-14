@@ -73,15 +73,11 @@ pub async fn handle(
         .delete_message(&input.folder, uid, TRASH_FOLDER)
         .await?;
 
-    Ok(ToolResponse {
-        meta: DeleteMessageMeta {
-            deleted: true,
-            folder: input.folder,
-            uid: input.uid,
-            moved_to_trash: result.moved_to_trash,
-            destination: TRASH_FOLDER,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(DeleteMessageMeta {
+        deleted: true,
+        folder: input.folder,
+        uid: input.uid,
+        moved_to_trash: result.moved_to_trash,
+        destination: TRASH_FOLDER,
+    }))
 }

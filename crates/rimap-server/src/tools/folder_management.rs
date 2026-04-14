@@ -84,14 +84,10 @@ pub async fn handle_create_folder(
 
     account.imap.create_folder(&input.folder).await?;
 
-    Ok(ToolResponse {
-        meta: CreateFolderMeta {
-            created: true,
-            folder: input.folder,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(CreateFolderMeta {
+        created: true,
+        folder: input.folder,
+    }))
 }
 
 /// `rename_folder` handler.
@@ -121,15 +117,11 @@ pub async fn handle_rename_folder(
         .rename_folder(&input.folder, &input.new_folder)
         .await?;
 
-    Ok(ToolResponse {
-        meta: RenameFolderMeta {
-            renamed: true,
-            old_folder: input.folder,
-            new_folder: input.new_folder,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(RenameFolderMeta {
+        renamed: true,
+        old_folder: input.folder,
+        new_folder: input.new_folder,
+    }))
 }
 
 /// `delete_folder` handler.
@@ -176,15 +168,11 @@ pub async fn handle_delete_folder(
 
     account.imap.delete_folder(&input.folder).await?;
 
-    Ok(ToolResponse {
-        meta: DeleteFolderMeta {
-            deleted: true,
-            folder: input.folder,
-            message_count,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(DeleteFolderMeta {
+        deleted: true,
+        folder: input.folder,
+        message_count,
+    }))
 }
 
 #[cfg(test)]

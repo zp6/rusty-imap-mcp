@@ -83,20 +83,16 @@ pub async fn handle(
         }
     };
 
-    Ok(ToolResponse {
-        meta: SendEmailMeta {
-            sent: true,
-            message_id: generated_msg_id,
-            smtp_status: "delivered".to_string(),
-            sent_copy: SentCopyInfo {
-                folder: sent_folder.to_string(),
-                uid: sent_uid,
-                failed: sent_copy_failed,
-            },
+    Ok(ToolResponse::meta_only(SendEmailMeta {
+        sent: true,
+        message_id: generated_msg_id,
+        smtp_status: "delivered".to_string(),
+        sent_copy: SentCopyInfo {
+            folder: sent_folder.to_string(),
+            uid: sent_uid,
+            failed: sent_copy_failed,
         },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    }))
 }
 
 /// Build a rimap-smtp `SendEnvelope` from the compose input addresses.

@@ -58,11 +58,7 @@ pub async fn handle(
         });
     }
 
-    Ok(ToolResponse {
-        meta: ListFoldersMeta {
-            folders: folder_entries,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(ListFoldersMeta {
+        folders: folder_entries,
+    }))
 }

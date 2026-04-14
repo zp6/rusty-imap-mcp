@@ -46,13 +46,9 @@ pub async fn handle(
 
     let (deleted_uids, expunged_count) = account.imap.expunge(&input.folder).await?;
 
-    Ok(ToolResponse {
-        meta: ExpungeMeta {
-            folder: input.folder,
-            expunged_count,
-            deleted_uids_before_expunge: deleted_uids.iter().map(|u| u.get()).collect(),
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(ExpungeMeta {
+        folder: input.folder,
+        expunged_count,
+        deleted_uids_before_expunge: deleted_uids.iter().map(|u| u.get()).collect(),
+    }))
 }

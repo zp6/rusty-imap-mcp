@@ -60,14 +60,10 @@ pub async fn handle_use_account(
     rimap_core::account::AccountId::new(&input.account)
         .map_err(|_| rimap_core::RimapError::invalid_input("invalid account name"))?;
     let previous = registry.set_active(&input.account)?;
-    Ok(ToolResponse {
-        meta: UseAccountMeta {
-            account: input.account,
-            previous,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(UseAccountMeta {
+        account: input.account,
+        previous,
+    }))
 }
 
 /// List all configured accounts.
@@ -92,9 +88,8 @@ pub async fn handle_list_accounts(
         });
     }
     let count = accounts.len();
-    Ok(ToolResponse {
-        meta: ListAccountsMeta { accounts, count },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(ListAccountsMeta {
+        accounts,
+        count,
+    }))
 }

@@ -174,15 +174,11 @@ async fn handle_label_op(
         .await?;
 
     let updated_ids: Vec<u32> = updated.iter().map(|u| u.get()).collect();
-    Ok(ToolResponse {
-        meta: LabelsMeta {
-            folder: input.folder,
-            label: input.label,
-            uids_updated: updated_ids,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(LabelsMeta {
+        folder: input.folder,
+        label: input.label,
+        uids_updated: updated_ids,
+    }))
 }
 
 /// `list_labels` handler — FETCH FLAGS and return keyword entries.
@@ -231,15 +227,11 @@ pub async fn handle_list_labels(
         })
         .unwrap_or_default();
 
-    Ok(ToolResponse {
-        meta: ListLabelsMeta {
-            folder: input.folder,
-            uid: input.uid,
-            labels,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(ListLabelsMeta {
+        folder: input.folder,
+        uid: input.uid,
+        labels,
+    }))
 }
 
 #[cfg(test)]

@@ -116,14 +116,10 @@ async fn handle_flag_op(
 
     let updated_ids: Vec<u32> = updated.iter().map(|u| u.get()).collect();
 
-    Ok(ToolResponse {
-        meta: FlagsMeta {
-            folder: input.folder,
-            uids_updated: updated_ids,
-        },
-        untrusted: None,
-        security_warnings: Vec::new(),
-    })
+    Ok(ToolResponse::meta_only(FlagsMeta {
+        folder: input.folder,
+        uids_updated: updated_ids,
+    }))
 }
 
 /// Maximum number of UIDs in a single batch operation.

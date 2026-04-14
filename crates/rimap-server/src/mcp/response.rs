@@ -23,3 +23,17 @@ pub struct ToolResponse<M: Serialize = serde_json::Value, U: Serialize = serde_j
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub security_warnings: Vec<rimap_content::SecurityWarning>,
 }
+
+impl<M: Serialize, U: Serialize> ToolResponse<M, U> {
+    /// Build a response carrying only trusted metadata.
+    ///
+    /// Equivalent to the struct literal with `untrusted: None` and an
+    /// empty `security_warnings` vec.
+    pub fn meta_only(meta: M) -> Self {
+        Self {
+            meta,
+            untrusted: None,
+            security_warnings: Vec::new(),
+        }
+    }
+}
