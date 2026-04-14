@@ -12,7 +12,7 @@ pub mod labels;
 pub mod list_attachments;
 pub mod list_folders;
 pub(crate) mod message_builder;
-pub(crate) mod mime_part_id;
 pub mod move_message;
+pub(crate) mod part_walker;
 pub mod search;
 pub mod send_email;

@@ -186,58 +186,30 @@ fn check_sniff_mismatch(
     )]
 }
 
-/// Maximum recursion depth for BODYSTRUCTURE tree walking.
-const MAX_BS_DEPTH: u32 = 64;
-
-use crate::tools::mime_part_id::{child_part_id, leaf_part_id};
+use crate::tools::part_walker::walk_body_structure;
 
 /// Look up a part's declared MIME type from a `BodyStructure` tree by
 /// IMAP-style part ID (e.g. "2", "1.2").
 fn lookup_bodystructure_type(bs: &BodyStructure, target_part_id: &str) -> Option<String> {
-    lookup_bs_recursive(bs, "", target_part_id, 0)
-}
-
-/// Recursive walker that mirrors `collect_attachments` numbering.
-fn lookup_bs_recursive(
-    bs: &BodyStructure,
-    prefix: &str,
-    target: &str,
-    depth: u32,
-) -> Option<String> {
-    if depth > MAX_BS_DEPTH {
-        return None;
-    }
-    match bs {
-        BodyStructure::Single {
+    let mut found = None;
+    walk_body_structure(bs, |part_id: &str, node: &BodyStructure| {
+        if found.is_some() || part_id != target_part_id {
+            return;
+        }
+        if let BodyStructure::Single {
             mime_type,
             mime_subtype,
             ..
-        } => {
-            let part_id = leaf_part_id(prefix);
-            if part_id == target {
-                Some(format!(
-                    "{}/{}",
-                    mime_type.to_lowercase(),
-                    mime_subtype.to_lowercase()
-                ))
-            } else {
-                None
-            }
+        } = node
+        {
+            found = Some(format!(
+                "{}/{}",
+                mime_type.to_lowercase(),
+                mime_subtype.to_lowercase()
+            ));
         }
-        BodyStructure::Multipart { parts, .. } => {
-            for (i, part) in parts.iter().enumerate() {
-                let child = child_part_id(prefix, i + 1);
-                if let Some(found) = lookup_bs_recursive(part, &child, target, depth + 1) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        BodyStructure::Message { body, .. } => {
-            let part_id = leaf_part_id(prefix);
-            lookup_bs_recursive(body, &part_id, target, depth + 1)
-        }
-    }
+    });
+    found
 }
 
 #[cfg(test)]
