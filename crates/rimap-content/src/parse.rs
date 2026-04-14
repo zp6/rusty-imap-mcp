@@ -764,41 +764,9 @@ fn build_attachment_meta(
         }
     }
 
-    let filename = part.attachment_name().map(|name| {
-        if contains_bidi_override(name) {
-            warnings.push(SecurityWarning {
-                code: WarningCode::LookalikeFilenameExtensionSpoof,
-                detail: Some(format!("raw={name:?},contains_bidi_override=true")),
-                location: Some(format!("attachment[{idx}]:filename")),
-            });
-        }
-        if let Some((penult, final_ext)) = detect_double_extension(name) {
-            warnings.push(SecurityWarning {
-                code: WarningCode::LookalikeFilenameExtensionSpoof,
-                detail: Some(format!(
-                    "reason=double_extension,visible=.{penult},\
-                     declared=.{penult}.{final_ext}"
-                )),
-                location: Some(format!("attachment[{idx}]:filename")),
-            });
-        }
-        let (unicode_clean, mut ws) = unicode::sanitize(
-            name.as_bytes(),
-            Some("utf-8"),
-            MAX_HEADER_BYTES,
-            &format!("attachment[{idx}]:filename"),
-        );
-        warnings.append(&mut ws);
-        let (safe, rewritten) = sanitize_filename(&unicode_clean, idx);
-        if rewritten {
-            warnings.push(SecurityWarning {
-                code: WarningCode::ParseAttachmentFilenameRewritten,
-                detail: Some(format!("original={unicode_clean:?}")),
-                location: Some(format!("attachment[{idx}]:filename")),
-            });
-        }
-        safe
-    });
+    let filename = part
+        .attachment_name()
+        .map(|name| sanitize_attachment_filename(name, idx, warnings));
 
     let content_id = part.content_id().map(|id| {
         let (text, mut ws) = unicode::sanitize(
@@ -825,6 +793,96 @@ fn build_attachment_meta(
         size_bytes: u64::from(part.raw_len()),
         content_id,
         is_inline: is_inline(part),
+    }
+}
+
+/// Sanitize a raw attachment filename for safe downstream display.
+///
+/// The pipeline matches the invariants the rest of `build_attachment_meta`
+/// relies on: bidi-override detection, double-extension detection, the
+/// shared unicode sanitizer, and `sanitize_filename` rewriting. Every
+/// step that triggers a warning pushes a [`SecurityWarning`] tagged
+/// with the attachment index so the caller does not need to know the
+/// per-warning codes.
+fn sanitize_attachment_filename(
+    name: &str,
+    idx: usize,
+    warnings: &mut Vec<SecurityWarning>,
+) -> String {
+    if contains_bidi_override(name) {
+        warnings.push(SecurityWarning {
+            code: WarningCode::LookalikeFilenameExtensionSpoof,
+            detail: Some(format!("raw={name:?},contains_bidi_override=true")),
+            location: Some(format!("attachment[{idx}]:filename")),
+        });
+    }
+    if let Some((penult, final_ext)) = detect_double_extension(name) {
+        warnings.push(SecurityWarning {
+            code: WarningCode::LookalikeFilenameExtensionSpoof,
+            detail: Some(format!(
+                "reason=double_extension,visible=.{penult},\
+                 declared=.{penult}.{final_ext}"
+            )),
+            location: Some(format!("attachment[{idx}]:filename")),
+        });
+    }
+    let (unicode_clean, mut ws) = unicode::sanitize(
+        name.as_bytes(),
+        Some("utf-8"),
+        MAX_HEADER_BYTES,
+        &format!("attachment[{idx}]:filename"),
+    );
+    warnings.append(&mut ws);
+    let (safe, rewritten) = sanitize_filename(&unicode_clean, idx);
+    if rewritten {
+        warnings.push(SecurityWarning {
+            code: WarningCode::ParseAttachmentFilenameRewritten,
+            detail: Some(format!("original={unicode_clean:?}")),
+            location: Some(format!("attachment[{idx}]:filename")),
+        });
+    }
+    safe
+}
+
+#[cfg(test)]
+mod filename_helper_tests {
+    use super::sanitize_attachment_filename;
+    use crate::output::{SecurityWarning, WarningCode};
+
+    fn sanitize(name: &str) -> (String, Vec<SecurityWarning>) {
+        let mut warnings = Vec::new();
+        let out = sanitize_attachment_filename(name, 0, &mut warnings);
+        (out, warnings)
+    }
+
+    #[test]
+    fn plain_name_produces_no_warnings() {
+        let (out, warnings) = sanitize("notes.txt");
+        assert_eq!(out, "notes.txt");
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn bidi_override_raises_spoof_warning() {
+        // U+202E RIGHT-TO-LEFT OVERRIDE embedded before a fake extension.
+        let (_, warnings) = sanitize("invoice\u{202e}fdp.exe");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeFilenameExtensionSpoof),
+            "expected a spoof warning for bidi override",
+        );
+    }
+
+    #[test]
+    fn double_extension_raises_spoof_warning() {
+        let (_, warnings) = sanitize("report.pdf.exe");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.code == WarningCode::LookalikeFilenameExtensionSpoof),
+            "expected a spoof warning for double extension",
+        );
     }
 }
 
