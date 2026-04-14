@@ -12,16 +12,22 @@ use tokio::sync::Semaphore;
 /// in the content pipeline (message bytes, MIME depth/parts, header
 /// count, HTML body size) is a size cap the caller tripped. `Malformed`
 /// maps to `InvalidInput` — the bytes are syntactically broken.
+#[expect(
+    clippy::match_same_arms,
+    reason = "`ContentError` is #[non_exhaustive]; keeping `Malformed` and the \
+              future-variant fallback listed separately documents that every \
+              known variant has been classified explicitly"
+)]
 fn classify_content_error(err: &ContentError) -> RimapError {
     match err {
         ContentError::LimitExceeded { .. } => RimapError::Authz {
             code: ErrorCode::AttachmentTooLarge,
             message: err.to_string(),
         },
-        // `ContentError` is `#[non_exhaustive]`; `Malformed` plus any
-        // future variant defaults to `InvalidInput` until this classifier
-        // is revisited.
-        ContentError::Malformed { .. } | _ => RimapError::invalid_input(err.to_string()),
+        ContentError::Malformed { .. } => RimapError::invalid_input(err.to_string()),
+        // `ContentError` is `#[non_exhaustive]`: future variants fall through
+        // to `InvalidInput` until this classifier is revisited.
+        _ => RimapError::invalid_input(err.to_string()),
     }
 }
 

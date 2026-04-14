@@ -375,17 +375,16 @@ impl AuditWriter {
     ) -> Result<crate::ids::Seq, AuditError> {
         // `None` models the infrastructure-tool dispatch path (`use_account`,
         // `list_accounts`) which bypasses per-account posture gating by
-        // design. Preserve the on-disk `"infrastructure"` sentinel so audit
-        // log readers can distinguish these records from per-account tool
-        // calls. Every `Posture` variant renders via its kebab-case
-        // `as_str()` form.
-        let posture_effective = posture_effective
-            .map_or_else(|| "infrastructure".to_string(), |p| p.as_str().to_string());
+        // design. `PostureEffective` serializes as the historical on-disk
+        // strings (`"infrastructure"` or the kebab-case posture) so readers
+        // can distinguish these records from per-account tool calls.
         self.emit(crate::record::Payload::ToolStart(
             crate::record::ToolStart {
                 account: account.map(str::to_string),
                 tool,
-                posture_effective,
+                posture_effective: crate::record::PostureEffective::from_optional(
+                    posture_effective,
+                ),
                 arguments_redacted,
                 arguments_hash_sha256,
             },

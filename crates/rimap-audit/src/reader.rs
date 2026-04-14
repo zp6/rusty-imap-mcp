@@ -377,7 +377,9 @@ mod tests {
             payload: Payload::ToolStart(ToolStart {
                 account: None,
                 tool: rimap_core::tool::ToolName::FetchMessage,
-                posture_effective: "draft-safe".to_string(),
+                posture_effective: crate::record::PostureEffective::Account(
+                    rimap_core::Posture::DraftSafe,
+                ),
                 arguments_redacted: serde_json::json!({}),
                 arguments_hash_sha256: "0".repeat(64),
             }),

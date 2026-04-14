@@ -6,9 +6,65 @@
 use std::path::PathBuf;
 
 use rimap_core::{ErrorCode, Posture, WarningCode, tool::ToolName};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::ids::{ProcessId, Seq, Timestamp};
+
+/// The effective posture recorded on a `tool_start` record.
+///
+/// `Account` carries the per-account posture that governed dispatch;
+/// `Infrastructure` marks records for infra-level tools (`use_account`,
+/// `list_accounts`) that bypass per-account posture gating by design.
+///
+/// The serde form is a flat JSON string that matches the historical
+/// on-disk representation: `Posture::as_str()` (kebab-case) for account
+/// postures and the literal `"infrastructure"` for the infra variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostureEffective {
+    /// Per-account posture effective at dispatch time.
+    Account(Posture),
+    /// Infra-level tool dispatch; no per-account posture applies.
+    Infrastructure,
+}
+
+impl PostureEffective {
+    /// Stable string form used on disk.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Account(p) => p.as_str(),
+            Self::Infrastructure => "infrastructure",
+        }
+    }
+
+    /// Build from an optional posture: `None` maps to `Infrastructure`.
+    #[must_use]
+    pub fn from_optional(posture: Option<Posture>) -> Self {
+        match posture {
+            Some(p) => Self::Account(p),
+            None => Self::Infrastructure,
+        }
+    }
+}
+
+impl Serialize for PostureEffective {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PostureEffective {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use core::str::FromStr;
+        let s = String::deserialize(deserializer)?;
+        if s == "infrastructure" {
+            return Ok(Self::Infrastructure);
+        }
+        Posture::from_str(&s)
+            .map(Self::Account)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 /// Why a process exited. Best-effort: only the SIGINT/SIGTERM/EOF paths set
 /// this; a hard crash will simply leave the last record as `tool_end` or
@@ -161,7 +217,7 @@ pub struct ToolStart {
     /// The v1 tool name. Serializes via [`ToolName::as_str`].
     pub tool: ToolName,
     /// Effective posture at dispatch time (after any config-override merge).
-    pub posture_effective: String,
+    pub posture_effective: PostureEffective,
     /// Redacted arguments object produced by `redact::Redactor`.
     pub arguments_redacted: serde_json::Value,
     /// SHA-256 of the canonical JSON serialization of the *unredacted* payload,
@@ -386,7 +442,7 @@ mod tests {
             payload: Payload::ToolStart(crate::record::ToolStart {
                 account: None,
                 tool: ToolName::FetchMessage,
-                posture_effective: "draft-safe".to_string(),
+                posture_effective: crate::record::PostureEffective::Account(Posture::DraftSafe),
                 arguments_redacted: serde_json::json!({
                     "folder": "INBOX",
                     "uid": 12345,

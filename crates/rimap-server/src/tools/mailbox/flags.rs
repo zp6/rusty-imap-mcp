@@ -126,7 +126,7 @@ async fn handle_flag_op(
 pub(crate) const MAX_BATCH_UIDS: usize = 100;
 
 /// Resolve `uid` or `uids` from input to a `Vec<Uid>`.
-pub fn resolve_uids(
+pub(crate) fn resolve_uids(
     uid: Option<u32>,
     uids: Option<Vec<u32>>,
 ) -> Result<Vec<Uid>, rimap_core::RimapError> {

@@ -75,8 +75,11 @@ pub struct DownloadAttachmentUntrusted {
 ///   configured download sandbox.
 /// - `RimapError::Authz { code: NotFound, ... }` if the `part_id` is
 ///   not present in the message.
-/// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH and
-///   `RimapError::Content { ... }` from message parsing.
+/// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH.
+/// - `RimapError::Authz { code: InvalidInput, ... }` for malformed MIME
+///   bodies and `RimapError::Authz { code: AttachmentTooLarge, ... }`
+///   when a content-pipeline cap (MIME depth/parts, header count, body
+///   size) is exceeded during parse.
 /// - `RimapError::Internal` for unrecoverable filesystem or hashing
 ///   failures while writing the attachment bytes.
 pub async fn handle(
@@ -204,7 +207,7 @@ fn check_sniff_mismatch(
     )]
 }
 
-use crate::tools::part_walker::walk_body_structure;
+use crate::tools::retrieval::part_walker::walk_body_structure;
 
 /// Look up a part's declared MIME type from a `BodyStructure` tree by
 /// IMAP-style part ID (e.g. "2", "1.2").

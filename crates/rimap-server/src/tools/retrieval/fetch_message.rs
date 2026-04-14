@@ -74,8 +74,10 @@ pub struct FetchMessageUntrusted {
 /// # Errors
 ///
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`
-/// or when the body fails `rimap-content` parse/limits (malformed, MIME
-/// depth/parts cap). Returns `RimapError::Internal` if the
+/// or when `rimap-content` rejects the body as malformed RFC 5322.
+/// Returns `RimapError::Authz { code: AttachmentTooLarge, ... }` when a
+/// content-pipeline cap (MIME depth/parts, header count, HTML size) is
+/// exceeded during parse. Returns `RimapError::Internal` if the
 /// `parse_message_async` blocking task panics or the parse semaphore
 /// is closed — those are infrastructure failures, not input failures.
 /// Returns `RimapError::Imap { ... }` for IMAP-layer failures (network,
