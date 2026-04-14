@@ -352,7 +352,7 @@ impl ImapMcpServer {
             .unwrap_or(u64::MAX);
         let (status, error_code) = match &result {
             Ok(_) => (ToolStatus::Ok, None),
-            Err(e) => (ToolStatus::Error, Some(e.code().as_str().to_string())),
+            Err(e) => (ToolStatus::Error, Some(e.code())),
         };
         self.emit_tool_end(
             start_seq,
@@ -545,7 +545,7 @@ impl ImapMcpServer {
         tool: ToolName,
         account: Option<String>,
         status: ToolStatus,
-        error_code: Option<String>,
+        error_code: Option<rimap_core::ErrorCode>,
         duration_ms: u64,
     ) {
         let audit = self.audit.clone();
