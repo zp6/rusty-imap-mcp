@@ -93,3 +93,106 @@ pub async fn handle_list_accounts(
         count,
     }))
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests use unwrap_err for assertions")]
+#[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests assert variant shapes via panic")]
+mod tests {
+    //! Input-shape validation for `handle_use_account` and the empty
+    //! case of `handle_list_accounts`. Construction of a full
+    //! `AccountState` requires a live IMAP connection, so the
+    //! happy-path selection of a configured account is covered by the
+    //! Dovecot e2e suite; here we cover the branches an adversarial
+    //! or malformed input reaches before any registry lookup.
+
+    use super::*;
+    use rimap_core::RimapError;
+    use rimap_core::error::ErrorCode;
+    use std::collections::BTreeMap;
+
+    fn empty_registry() -> AccountRegistry {
+        AccountRegistry::new(BTreeMap::new())
+    }
+
+    fn assert_invalid_input(err: &RimapError) {
+        match err {
+            RimapError::Authz { code, .. } => {
+                assert_eq!(*code, ErrorCode::InvalidInput);
+            }
+            other => panic!("expected Authz{{InvalidInput}}, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn use_account_rejects_empty_name() {
+        let reg = empty_registry();
+        let err = handle_use_account(
+            &reg,
+            UseAccountInput {
+                account: String::new(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_invalid_input(&err);
+    }
+
+    #[tokio::test]
+    async fn use_account_rejects_name_with_invalid_chars() {
+        let reg = empty_registry();
+        let err = handle_use_account(
+            &reg,
+            UseAccountInput {
+                account: "has spaces".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_invalid_input(&err);
+    }
+
+    #[tokio::test]
+    async fn use_account_rejects_overlong_name() {
+        let reg = empty_registry();
+        let err = handle_use_account(
+            &reg,
+            UseAccountInput {
+                account: "a".repeat(65),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_invalid_input(&err);
+    }
+
+    #[tokio::test]
+    async fn use_account_valid_shape_but_unknown_returns_unknown_account() {
+        // Name passes shape validation, so we proceed to registry lookup;
+        // an empty registry produces `UnknownAccount`, not `InvalidInput`.
+        let reg = empty_registry();
+        let err = handle_use_account(
+            &reg,
+            UseAccountInput {
+                account: "missing".to_string(),
+            },
+        )
+        .await
+        .unwrap_err();
+        match err {
+            RimapError::UnknownAccount { name, available } => {
+                assert_eq!(name, "missing");
+                assert!(available.is_empty());
+            }
+            other => panic!("expected UnknownAccount, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn list_accounts_on_empty_registry_returns_zero_count() {
+        let reg = empty_registry();
+        let resp = handle_list_accounts(&reg).await.expect("infallible");
+        assert_eq!(resp.meta.count, 0);
+        assert!(resp.meta.accounts.is_empty());
+    }
+}

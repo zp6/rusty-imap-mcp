@@ -3,6 +3,23 @@
 //!
 //! Skips silently when no container runtime is available or the host
 //! architecture is not `x86_64` (dovecot image is amd64-only).
+//!
+//! # Scope and structure
+//!
+//! `e2e_full_session` is intentionally a single monolithic
+//! scenario-level flow rather than a set of isolated per-tool tests.
+//! Bringing up a Dovecot container, seeding mailboxes, and wiring the
+//! full `ImapMcpServer` stack (audit log, circuit breakers, rate
+//! limiters, posture, credential store) dominates wall time; each
+//! split test would pay that cost again. The monolithic flow also
+//! catches ordering bugs (e.g. a flag set in one step visible to the
+//! next) that isolated tests by construction cannot see.
+//!
+//! The tradeoff is that individual input-shape and error-branch
+//! coverage is NOT the job of this file. Those belong to unit tests
+//! next to each handler — see e.g. `tools::admin::accounts::tests`
+//! and `tools::support::tests` for the input-validation and
+//! empty-result branches that used to rely on this e2e for coverage.
 
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::expect_used, reason = "tests")]
