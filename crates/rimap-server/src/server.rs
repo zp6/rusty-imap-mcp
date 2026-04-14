@@ -11,6 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
+use rimap_core::account::{AccountId, DEFAULT_ACCOUNT_NAME};
 use rimap_core::tool::ToolName;
 use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
@@ -48,24 +49,44 @@ impl ServerHandler for ImapMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         let mut tools: Vec<Tool> = Vec::new();
-        let mut seen = std::collections::HashSet::new();
 
-        // Infrastructure tools — always advertised.
+        // Infrastructure tools — always advertised, never namespaced.
         for name in [ToolName::UseAccount, ToolName::ListAccounts] {
             if let Some(def) = tool_definition(name) {
-                seen.insert(name);
                 tools.push(def);
             }
         }
 
-        // Union of posture-filtered tools from all accounts.
-        for state in self.registry.accounts().values() {
+        let accounts = self.registry.accounts();
+        let use_bare_names = is_legacy_single_account(accounts);
+
+        for (id, state) in accounts {
             for &tn in &state.guard.matrix().advertised() {
-                if seen.insert(tn)
-                    && let Some(def) = tool_definition(tn)
-                {
-                    tools.push(def);
-                }
+                let Some(base_def) = tool_definition(tn) else {
+                    continue;
+                };
+                let tool_name = if use_bare_names {
+                    base_def.name.clone()
+                } else {
+                    format!("{}.{}", id.as_str(), base_def.name).into()
+                };
+                let description = if use_bare_names {
+                    base_def.description.clone()
+                } else {
+                    Some(
+                        format!(
+                            "[account: {}, posture: {}] {}",
+                            id.as_str(),
+                            state.guard.matrix().posture().as_str(),
+                            base_def.description.as_deref().unwrap_or(""),
+                        )
+                        .into(),
+                    )
+                };
+                let mut def = base_def.clone();
+                def.name = tool_name;
+                def.description = description;
+                tools.push(def);
             }
         }
 
@@ -148,7 +169,9 @@ impl ServerHandler for ImapMcpServer {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let tool_name = ToolName::from_str(&request.name)
+        let (namespaced_account, bare_name) = split_tool_name(&request.name);
+
+        let tool_name = ToolName::from_str(bare_name)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
         // Reject tools that have no definition (not yet implemented).
@@ -164,19 +187,28 @@ impl ServerHandler for ImapMcpServer {
 
         let mut args = request.arguments.unwrap_or_default();
 
-        // Infrastructure tools bypass account resolution and guards.
+        // Infrastructure tools bypass account resolution and guards and
+        // must never be namespaced.
         if matches!(tool_name, ToolName::UseAccount | ToolName::ListAccounts) {
+            if namespaced_account.is_some() {
+                return Err(ErrorData::invalid_params(
+                    "infrastructure tools cannot be namespaced".to_string(),
+                    None,
+                ));
+            }
             return self.dispatch_infrastructure(tool_name, &args);
         }
 
-        // Extract and strip the optional "account" key.
-        let account_name = args
-            .remove("account")
-            .and_then(|v| v.as_str().map(String::from));
+        // Account resolution order: URI namespace > args["account"] >
+        // session default > auto-select.
+        let explicit_account = namespaced_account.map(String::from).or_else(|| {
+            args.remove("account")
+                .and_then(|v| v.as_str().map(String::from))
+        });
 
         let account = self
             .registry
-            .resolve(account_name.as_deref())
+            .resolve(explicit_account.as_deref())
             .map_err(|e| crate::mcp_error::to_mcp_error(&e))?;
 
         if let Err(e) = crate::dispatch::pre_call_guards(&account.guard, tool_name) {
@@ -323,6 +355,45 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
         }
         _ => serde_json::Map::new(),
     }
+}
+
+/// Whether the registry holds exactly one account and its id is the
+/// legacy `"default"` value. Used to preserve bare (non-namespaced)
+/// tool names for single-account deployments.
+fn is_legacy_single_account(
+    accounts: &std::collections::BTreeMap<AccountId, AccountState>,
+) -> bool {
+    accounts.len() == 1
+        && accounts
+            .keys()
+            .next()
+            .is_some_and(|id| id.as_str() == DEFAULT_ACCOUNT_NAME)
+}
+
+/// Split a possibly-namespaced MCP tool name into `(account, tool)`.
+///
+/// Preserves sub-capability tool names that contain dots (e.g.
+/// `search.advanced_query`): if the raw name parses as a `ToolName`
+/// directly, return it as bare.
+fn split_tool_name(raw: &str) -> (Option<&str>, &str) {
+    if ToolName::from_str(raw).is_ok() {
+        return (None, raw);
+    }
+    match raw.split_once('.') {
+        Some((prefix, rest))
+            if is_valid_account_prefix(prefix) && ToolName::from_str(rest).is_ok() =>
+        {
+            (Some(prefix), rest)
+        }
+        _ => (None, raw),
+    }
+}
+
+/// Structural check on an account-namespace prefix. Mirrors the
+/// `AccountId` character rules (ASCII alphanumerics + hyphens, 1–64
+/// chars) without allocating.
+fn is_valid_account_prefix(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// Build an rmcp `Tool` definition for a `ToolName`. Returns `None`
@@ -507,7 +578,50 @@ fn tool_spec_infra(name: ToolName) -> Option<ToolSpec> {
 mod tests {
     use rimap_core::tool::ToolName;
 
-    use super::tool_definition;
+    use super::{split_tool_name, tool_definition};
+
+    #[test]
+    fn split_tool_name_bare() {
+        assert_eq!(split_tool_name("send_email"), (None, "send_email"));
+    }
+
+    #[test]
+    fn split_tool_name_namespaced() {
+        assert_eq!(
+            split_tool_name("work.send_email"),
+            (Some("work"), "send_email"),
+        );
+    }
+
+    #[test]
+    fn split_tool_name_preserves_dotted_sub_capability() {
+        // `search.advanced_query` is a valid ToolName and must not be
+        // interpreted as account="search", tool="advanced_query".
+        assert_eq!(
+            split_tool_name("search.advanced_query"),
+            (None, "search.advanced_query"),
+        );
+        assert_eq!(
+            split_tool_name("fetch_message.include_html"),
+            (None, "fetch_message.include_html"),
+        );
+    }
+
+    #[test]
+    fn split_tool_name_unknown_returns_bare() {
+        // Unknown names pass through; `from_str` at the caller rejects.
+        assert_eq!(split_tool_name("garbage"), (None, "garbage"));
+        assert_eq!(split_tool_name("work.garbage"), (None, "work.garbage"),);
+    }
+
+    #[test]
+    fn split_tool_name_rejects_invalid_prefix() {
+        // Underscore is not valid in an account prefix.
+        assert_eq!(
+            split_tool_name("bad_name.send_email"),
+            (None, "bad_name.send_email"),
+        );
+    }
 
     #[test]
     fn tool_definition_covers_all_mcp_tools() {
