@@ -22,7 +22,6 @@ pub use crate::model::{
     SmtpEncryption, Verdict,
 };
 pub use crate::validate::{
-    ValidatedAccountConfig, ValidatedConfig, ValidatedMultiConfig, validate,
-    validate_legacy_as_multi, validate_multi,
+    ValidatedAccountConfig, ValidatedMultiConfig, validate_legacy_as_multi, validate_multi,
 };
 pub use rimap_core::tls::{FingerprintParseError, TlsFingerprint};

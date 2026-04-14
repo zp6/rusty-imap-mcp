@@ -19,11 +19,10 @@ use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
 use rimap_authz::matrix::EffectiveMatrix;
 use rimap_authz::rate_limit::Governor;
 use rimap_config::credential::CredentialStore;
-use rimap_config::model::{
-    AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig,
-};
-use rimap_config::validate::ValidatedConfig;
+use rimap_config::model::{ImapConfig, LimitsConfig, SecurityConfig};
+use rimap_config::validate::ValidatedAccountConfig;
 use rimap_core::TlsFingerprint;
+use rimap_core::account::AccountId;
 use rimap_core::posture::Posture;
 use rimap_imap::{Connection, ConnectionConfig};
 use tempfile::TempDir;
@@ -244,14 +243,14 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     })
     .expect("audit open");
 
-    let config = test_config(&harness, &audit_dir);
+    let account_cfg = test_account_config(&harness);
     let imap = test_connection(&harness, &audit);
-    let guard = test_guard(&config);
+    let guard = test_guard(&account_cfg);
     let folder_guard = rimap_authz::FolderGuard::new(
-        &config.config.security.protected_folders,
-        &config.config.security.expunge_folders,
+        &account_cfg.security.protected_folders,
+        &account_cfg.security.expunge_folders,
     );
-    let id = rimap_core::account::AccountId::default_account();
+    let id = account_cfg.id.clone();
     let state = crate::boot::registry::AccountState {
         id: id.clone(),
         imap,
@@ -273,34 +272,23 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     }
 }
 
-fn test_config(harness: &DovecotHarness, audit_dir: &TempDir) -> ValidatedConfig {
-    ValidatedConfig {
-        config: Config {
-            imap: ImapConfig {
-                host: "127.0.0.1".into(),
-                port: harness.port,
-                username: "rimap-test".into(),
-                tls_fingerprint_sha256: None,
-                connect_timeout_seconds: 10,
-                command_timeout_seconds: 30,
-            },
-            smtp: None,
-            security: SecurityConfig {
-                posture: Posture::DraftSafe,
-                ..SecurityConfig::default()
-            },
-            limits: LimitsConfig::default(),
-            audit: AuditConfig {
-                path: audit_dir.path().join("audit.jsonl"),
-                rotate_bytes: 0,
-                rotate_keep: 0,
-                retention_seconds: None,
-                provenance_window_seconds: 60,
-                fail_open: false,
-                allowed_base_dir: Some(audit_dir.path().to_path_buf()),
-            },
-            attachments: AttachmentsConfig::default(),
+fn test_account_config(harness: &DovecotHarness) -> ValidatedAccountConfig {
+    ValidatedAccountConfig {
+        id: AccountId::default_account(),
+        imap: ImapConfig {
+            host: "127.0.0.1".into(),
+            port: harness.port,
+            username: "rimap-test".into(),
+            tls_fingerprint_sha256: None,
+            connect_timeout_seconds: 10,
+            command_timeout_seconds: 30,
         },
+        smtp: None,
+        security: SecurityConfig {
+            posture: Posture::DraftSafe,
+            ..SecurityConfig::default()
+        },
+        limits: LimitsConfig::default(),
         tool_overrides: BTreeMap::new(),
         tls_fingerprint: Some(harness.fingerprint),
     }
@@ -322,13 +310,13 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
     Connection::new(conn_cfg, audit.clone(), creds)
 }
 
-fn test_guard(config: &ValidatedConfig) -> DispatchGuard<SystemClock> {
-    let matrix = EffectiveMatrix::build(config.config.security.posture, &config.tool_overrides);
+fn test_guard(config: &ValidatedAccountConfig) -> DispatchGuard<SystemClock> {
+    let matrix = EffectiveMatrix::build(config.security.posture, &config.tool_overrides);
     let breaker = CircuitBreaker::new(SystemClock::new(), BreakerConfig::default_spec());
     let governor = Governor::new(
-        config.config.limits.commands_per_second,
-        config.config.limits.drafts_per_minute,
-        config.config.limits.sends_per_minute,
+        config.limits.commands_per_second,
+        config.limits.drafts_per_minute,
+        config.limits.sends_per_minute,
     )
     .expect("governor");
     DispatchGuard::new(matrix, breaker, governor)

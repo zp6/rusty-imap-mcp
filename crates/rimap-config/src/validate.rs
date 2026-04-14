@@ -22,43 +22,6 @@ use crate::model::{
     SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
 };
 
-/// Validated config: a `Config` plus the resolved per-tool override map
-/// keyed by `ToolName`, plus the parsed TLS fingerprint (if any).
-#[derive(Debug, Clone)]
-pub struct ValidatedConfig {
-    /// The underlying parsed config (untouched).
-    pub config: Config,
-    /// Resolved per-tool overrides.
-    pub tool_overrides: BTreeMap<ToolName, Verdict>,
-    /// Parsed pinned TLS fingerprint, if `imap.tls_fingerprint_sha256` was set.
-    pub tls_fingerprint: Option<TlsFingerprint>,
-}
-
-/// Validate a parsed config and resolve override tool names.
-///
-/// # Errors
-/// Returns `ConfigError` on any validation failure.
-pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
-    // Per-account fields route through `validate_account`; the legacy
-    // path only needs to additionally check the global audit/paths
-    // sections, which multi-account factors out under `[audit]` and
-    // `[attachments]`.
-    let account = validate_account(
-        AccountId::default_account(),
-        config.imap.clone(),
-        config.smtp.clone(),
-        config.security.clone(),
-        config.limits.clone(),
-    )?;
-    validate_audit_config(&config.audit)?;
-    validate_paths_multi(&config.audit, &config.attachments)?;
-    Ok(ValidatedConfig {
-        config,
-        tool_overrides: account.tool_overrides,
-        tls_fingerprint: account.tls_fingerprint,
-    })
-}
-
 /// Validated per-account config with resolved overrides and fingerprint.
 #[derive(Debug, Clone)]
 pub struct ValidatedAccountConfig {
@@ -126,8 +89,8 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
 
 /// Convert a legacy flat config into a `ValidatedMultiConfig` with a
 /// single account named "default". Production paths take this route;
-/// the older `validate` (returning `ValidatedConfig`) is retained for
-/// the test suite that exercises the per-field invariants directly.
+/// per-field invariants are exercised through `validate_account` and
+/// its callers (`validate_multi`, `validate_legacy_as_multi`).
 ///
 /// # Errors
 /// Returns `ConfigError` on any validation failure.
@@ -472,7 +435,18 @@ mod tests {
         AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig,
         SmtpEncryption, Verdict,
     };
-    use crate::validate::validate;
+    use crate::validate::{ValidatedAccountConfig, validate_legacy_as_multi};
+    use rimap_core::account::AccountId;
+
+    /// Route a legacy flat `Config` through `validate_legacy_as_multi` and
+    /// return the resulting default account. Tests exercise per-field
+    /// invariants through this path — the multi pipeline subsumes what the
+    /// removed single-account `validate()` used to cover.
+    fn validate(config: Config) -> Result<ValidatedAccountConfig, ConfigError> {
+        let multi = validate_legacy_as_multi(config)?;
+        let id = AccountId::default_account();
+        Ok(multi.accounts[&id].clone())
+    }
 
     fn base_config(audit_dir: &std::path::Path) -> Config {
         Config {
@@ -614,7 +588,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let cfg = base_config(dir.path());
         let validated = validate(cfg).unwrap();
-        assert_eq!(validated.config.imap.connect_timeout_seconds, 10);
+        assert_eq!(validated.imap.connect_timeout_seconds, 10);
     }
 
     #[test]
@@ -887,8 +861,7 @@ path = "/tmp/audit.jsonl"
     // -----------------------------------------------------------------------
 
     use crate::model::{DefaultsConfig, MultiAccountConfig, RawAccountConfig};
-    use crate::validate::{validate_legacy_as_multi, validate_multi};
-    use rimap_core::account::AccountId;
+    use crate::validate::validate_multi;
 
     fn base_multi_config(
         audit_dir: &std::path::Path,
