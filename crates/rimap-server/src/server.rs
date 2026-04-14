@@ -876,12 +876,16 @@ mod tests {
 
     #[test]
     fn tool_definition_covers_all_mcp_tools() {
+        // Sub-capabilities are surfaced via their parent tool's schema, not
+        // as standalone MCP tools, so they do not appear in `TOOL_DEFS`.
+        const SUB_CAPABILITIES: &[ToolName] =
+            &[ToolName::SearchAdvanced, ToolName::FetchMessageHtml];
+        let expected = ToolName::all().len() - SUB_CAPABILITIES.len();
         let defs: Vec<_> = ToolName::all()
             .into_iter()
             .filter_map(|tn| TOOL_DEFS.get(&tn))
             .collect();
-        // 24 tool variants minus 2 sub-capabilities = 22
-        assert_eq!(defs.len(), 22);
+        assert_eq!(defs.len(), expected);
     }
 
     #[test]
