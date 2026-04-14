@@ -59,7 +59,7 @@ pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorC
         username: ctx.username.to_string(),
         tls_fingerprint_sha256: ctx.observed_hex(),
         fingerprint_match: ctx.fingerprint_match(),
-        error_code: Some(error_code.as_str().to_string()),
+        error_code: Some(error_code),
     }
 }
 
@@ -106,7 +106,7 @@ mod tests {
         let rec = auth_failure(&ctx, rimap_core::ErrorCode::Tls);
         assert_eq!(rec.result, AuthResult::Failure);
         assert_eq!(rec.fingerprint_match, Some(false));
-        assert_eq!(rec.error_code.as_deref(), Some("ERR_TLS"));
+        assert_eq!(rec.error_code, Some(rimap_core::ErrorCode::Tls));
     }
 
     #[test]
@@ -144,6 +144,6 @@ mod tests {
         assert_eq!(rec.result, AuthResult::Failure);
         assert_eq!(rec.tls_fingerprint_sha256, None);
         assert_eq!(rec.fingerprint_match, None);
-        assert_eq!(rec.error_code.as_deref(), Some("ERR_CONNECTION_LOST"));
+        assert_eq!(rec.error_code, Some(rimap_core::ErrorCode::ConnectionLost));
     }
 }

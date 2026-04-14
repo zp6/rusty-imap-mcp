@@ -57,8 +57,8 @@ impl Filter {
         }
         if let Some(ref want) = self.tool {
             let got = match &record.payload {
-                Payload::ToolStart(t) => Some(&t.tool),
-                Payload::ToolEnd(t) => Some(&t.tool),
+                Payload::ToolStart(t) => Some(t.tool.as_str()),
+                Payload::ToolEnd(t) => Some(t.tool.as_str()),
                 Payload::ProcessStart(_)
                 | Payload::ProcessEnd(_)
                 | Payload::Auth(_)
@@ -376,7 +376,7 @@ mod tests {
             process_id: pid,
             payload: Payload::ToolStart(ToolStart {
                 account: None,
-                tool: "read_email".to_string(),
+                tool: rimap_core::tool::ToolName::FetchMessage,
                 posture_effective: "draft-safe".to_string(),
                 arguments_redacted: serde_json::json!({}),
                 arguments_hash_sha256: "0".repeat(64),
@@ -390,7 +390,7 @@ mod tests {
         let path = write_lines(&dir, "a.jsonl", &lines);
 
         let filter = Filter {
-            tool: Some("read_email".to_string()),
+            tool: Some("fetch_message".to_string()),
             ..Filter::default()
         };
         let mut seen_kinds = Vec::new();

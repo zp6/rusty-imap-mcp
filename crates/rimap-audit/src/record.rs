@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use rimap_core::{ErrorCode, Posture, tool::ToolName};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ProcessId, Seq, Timestamp};
@@ -27,29 +28,26 @@ pub enum ProcessEndReason {
 
 /// Per-account summary for multi-account `process_start` records.
 ///
-/// The on-disk shape carries `posture` as a plain string so existing
-/// consumers keep parsing unchanged, but construction should go through
-/// [`AccountSummary::new`] which takes the typed [`rimap_core::Posture`]
-/// so the written value always matches the canonical enum.
+/// `posture` serializes via [`rimap_core::Posture`]'s kebab-case serde,
+/// which matches [`rimap_core::Posture::as_str`] byte-for-byte so the
+/// on-disk form is identical to the prior string-typed field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountSummary {
     /// Account name from config.
     pub name: String,
     /// Effective posture for this account.
-    pub posture: String,
+    pub posture: Posture,
     /// IMAP host for this account.
     pub imap_host: String,
 }
 
 impl AccountSummary {
-    /// Construct an `AccountSummary` from typed parts. Renders the
-    /// posture via [`rimap_core::Posture::as_str`] so the stored string
-    /// stays in lockstep with the enum.
+    /// Construct an `AccountSummary` from typed parts.
     #[must_use]
-    pub fn new(name: String, posture: rimap_core::Posture, imap_host: String) -> Self {
+    pub fn new(name: String, posture: Posture, imap_host: String) -> Self {
         Self {
             name,
-            posture: posture.as_str().to_string(),
+            posture,
             imap_host,
         }
     }
@@ -66,7 +64,7 @@ pub struct ProcessStart {
     pub git_commit: String,
     /// Effective base posture at startup (single-account mode).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub posture: Option<String>,
+    pub posture: Option<Posture>,
     /// Per-account summaries (multi-account mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accounts: Option<Vec<AccountSummary>>,
@@ -150,7 +148,7 @@ pub struct Auth {
     pub fingerprint_match: Option<bool>,
     /// On failure, the stable error code (`ERR_TLS`, `ERR_AUTH`, …); `None`
     /// on success.
-    pub error_code: Option<String>,
+    pub error_code: Option<ErrorCode>,
 }
 
 /// Payload of the `tool_start` kind. Recorded before dispatch begins so a
@@ -160,8 +158,8 @@ pub struct ToolStart {
     /// Account name this tool call targets.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
-    /// The v1 tool name as a string (matches `ToolName::as_str`).
-    pub tool: String,
+    /// The v1 tool name. Serializes via [`ToolName::as_str`].
+    pub tool: ToolName,
     /// Effective posture at dispatch time (after any config-override merge).
     pub posture_effective: String,
     /// Redacted arguments object produced by `redact::Redactor`.
@@ -219,11 +217,11 @@ pub struct ToolEnd {
     /// `seq` of the paired `tool_start` record.
     pub start_seq: Seq,
     /// Tool name (duplicated from `tool_start` for self-contained log lines).
-    pub tool: String,
+    pub tool: ToolName,
     /// Outcome.
     pub status: ToolStatus,
     /// On `status = Error`, the stable error code; `None` on success.
-    pub error_code: Option<String>,
+    pub error_code: Option<ErrorCode>,
     /// Wall-clock duration in milliseconds.
     pub duration_ms: u64,
     /// Coarse result summary.
@@ -267,6 +265,8 @@ mod tests {
 
     use serde_json::Value;
 
+    use rimap_core::{Posture, tool::ToolName};
+
     use crate::ids::{ProcessId, Seq, Timestamp};
     use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason, ProcessStart};
 
@@ -278,7 +278,7 @@ mod tests {
             payload: Payload::ProcessStart(ProcessStart {
                 version: "0.1.0".to_string(),
                 git_commit: String::new(),
-                posture: Some("draft-safe".to_string()),
+                posture: Some(Posture::DraftSafe),
                 accounts: None,
                 config_path: PathBuf::from("/tmp/config.toml"),
                 config_hash_sha256: "abcd".repeat(16),
@@ -383,7 +383,7 @@ mod tests {
             process_id: ProcessId::new_now(),
             payload: Payload::ToolStart(crate::record::ToolStart {
                 account: None,
-                tool: "fetch_message".to_string(),
+                tool: ToolName::FetchMessage,
                 posture_effective: "draft-safe".to_string(),
                 arguments_redacted: serde_json::json!({
                     "folder": "INBOX",
@@ -411,7 +411,7 @@ mod tests {
             payload: Payload::ToolEnd(crate::record::ToolEnd {
                 account: None,
                 start_seq: Seq(10),
-                tool: "fetch_message".to_string(),
+                tool: ToolName::FetchMessage,
                 status: crate::record::ToolStatus::Ok,
                 error_code: None,
                 duration_ms: 47,

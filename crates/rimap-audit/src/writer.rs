@@ -384,7 +384,7 @@ impl AuditWriter {
         self.emit(crate::record::Payload::ToolStart(
             crate::record::ToolStart {
                 account: account.map(str::to_string),
-                tool: tool.as_str().to_string(),
+                tool,
                 posture_effective,
                 arguments_redacted,
                 arguments_hash_sha256,
@@ -414,9 +414,9 @@ impl AuditWriter {
         self.emit(crate::record::Payload::ToolEnd(crate::record::ToolEnd {
             account: account.map(str::to_string),
             start_seq,
-            tool: tool.as_str().to_string(),
+            tool,
             status,
-            error_code: error_code.map(|c| c.as_str().to_string()),
+            error_code,
             duration_ms,
             result_summary,
             provenance,
@@ -490,7 +490,7 @@ impl AuditWriter {
         let payload = crate::record::ProcessStart {
             version: inputs.version,
             git_commit: inputs.git_commit,
-            posture: inputs.posture.map(|p| p.as_str().to_string()),
+            posture: inputs.posture,
             accounts: inputs.accounts,
             config_path: inputs.config_path,
             config_hash_sha256: inputs.config_hash_sha256,
@@ -973,7 +973,7 @@ mod tests {
             username: "u".into(),
             tls_fingerprint_sha256: None,
             fingerprint_match: None,
-            error_code: Some("ERR_TLS".into()),
+            error_code: Some(rimap_core::ErrorCode::Tls),
         };
         writer.log_auth(make()).unwrap();
         writer.log_auth(make()).unwrap();

@@ -5,6 +5,7 @@
 use core::fmt;
 use core::str::FromStr;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
@@ -142,6 +143,19 @@ impl FromStr for ToolName {
             }
         }
         Err(ParseToolNameError::Unknown(s.to_string()))
+    }
+}
+
+impl Serialize for ToolName {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        Self::from_str(s).map_err(serde::de::Error::custom)
     }
 }
 

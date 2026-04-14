@@ -4,6 +4,9 @@
 //! message. Codes are stable across releases; changing a code is a semver-major
 //! break. The code list comes from design spec §9.
 
+use core::str::FromStr;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 /// Stable machine-readable error codes, per design spec §9.
@@ -77,6 +80,52 @@ impl ErrorCode {
 impl core::fmt::Display for ErrorCode {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// Error returned by [`ErrorCode::from_str`] for unrecognized codes.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("unknown error code `{0}`")]
+pub struct ParseErrorCodeError(pub String);
+
+impl FromStr for ErrorCode {
+    type Err = ParseErrorCodeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ERR_INVALID_INPUT" => Ok(Self::InvalidInput),
+            "ERR_POSTURE_DENIED" => Ok(Self::PostureDenied),
+            "ERR_RATE_LIMITED" => Ok(Self::RateLimited),
+            "ERR_CIRCUIT_OPEN" => Ok(Self::CircuitOpen),
+            "ERR_NOT_FOUND" => Ok(Self::NotFound),
+            "ERR_IMAP_PROTOCOL" => Ok(Self::ImapProtocol),
+            "ERR_SMTP_PROTOCOL" => Ok(Self::SmtpProtocol),
+            "ERR_TLS" => Ok(Self::Tls),
+            "ERR_AUTH" => Ok(Self::Auth),
+            "ERR_CONNECTION_LOST" => Ok(Self::ConnectionLost),
+            "ERR_TIMEOUT" => Ok(Self::Timeout),
+            "ERR_ATTACHMENT_TOO_LARGE" => Ok(Self::AttachmentTooLarge),
+            "ERR_PROTECTED_FOLDER" => Ok(Self::ProtectedFolder),
+            "ERR_EXPUNGE_DENIED" => Ok(Self::ExpungeDenied),
+            "ERR_CONFIG" => Ok(Self::Config),
+            "ERR_INTERNAL" => Ok(Self::Internal),
+            "ERR_NO_ACCOUNT" => Ok(Self::NoAccount),
+            "ERR_UNKNOWN_ACCOUNT" => Ok(Self::UnknownAccount),
+            other => Err(ParseErrorCodeError(other.to_string())),
+        }
+    }
+}
+
+impl Serialize for ErrorCode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ErrorCode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        Self::from_str(s).map_err(serde::de::Error::custom)
     }
 }
 
