@@ -8,6 +8,18 @@ use rimap_config::model::{SmtpConfig, SmtpEncryption};
 
 use crate::error::SmtpError;
 
+/// Addressing envelope for [`SmtpClient::send_raw`], expressed with
+/// plain string addresses so callers do not need to depend on
+/// `lettre`'s address types. Addresses are parsed here at the crate
+/// boundary and surface as `SmtpError::Rejected` on malformed input.
+#[derive(Debug, Clone)]
+pub struct SendEnvelope {
+    /// Sender address (`MAIL FROM`).
+    pub from: String,
+    /// Recipient addresses (`RCPT TO`). All of To/Cc/Bcc collapsed.
+    pub to: Vec<String>,
+}
+
 /// SMTP client built from config. Each `send()` call opens a fresh
 /// connection — no persistent session or connection pool.
 pub struct SmtpClient {
@@ -73,18 +85,39 @@ impl SmtpClient {
     ///
     /// Returns `SmtpError` variants for auth, TLS, rejection, timeout,
     /// or transport failures.
-    pub async fn send_raw(
-        &self,
-        envelope: &lettre::address::Envelope,
-        raw: &[u8],
-    ) -> Result<String, SmtpError> {
+    pub async fn send_raw(&self, envelope: &SendEnvelope, raw: &[u8]) -> Result<String, SmtpError> {
+        let lettre_env = build_lettre_envelope(envelope)?;
         let response = self
             .transport
-            .send_raw(envelope, raw)
+            .send_raw(&lettre_env, raw)
             .await
             .map_err(classify_smtp_error)?;
         Ok(format_response(&response))
     }
+}
+
+/// Parse the string-keyed [`SendEnvelope`] into a `lettre` envelope.
+/// Malformed addresses or the empty-recipient case surface as
+/// `SmtpError::Rejected` so the error taxonomy stays inside the crate.
+fn build_lettre_envelope(env: &SendEnvelope) -> Result<lettre::address::Envelope, SmtpError> {
+    let from = env
+        .from
+        .parse::<lettre::Address>()
+        .map_err(|e| SmtpError::Rejected {
+            reason: format!("invalid From address: {e}"),
+        })?;
+    let mut to = Vec::with_capacity(env.to.len());
+    for addr in &env.to {
+        let parsed = addr
+            .parse::<lettre::Address>()
+            .map_err(|e| SmtpError::Rejected {
+                reason: format!("invalid recipient address: {e}"),
+            })?;
+        to.push(parsed);
+    }
+    lettre::address::Envelope::new(Some(from), to).map_err(|e| SmtpError::Rejected {
+        reason: format!("envelope: {e}"),
+    })
 }
 
 /// Format a lettre SMTP response as a human-readable string.

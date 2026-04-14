@@ -33,8 +33,8 @@ pub async fn handle(
     let from_addr = account.imap.username();
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
-    // Build SMTP envelope from the compose addresses
-    let envelope = build_envelope(from_addr, &input)?;
+    // Build SMTP envelope from the compose addresses.
+    let envelope = build_envelope(from_addr, &input);
 
     // Send via SMTP using raw bytes
     let smtp_response = smtp.send_raw(&envelope, &raw_msg).await?;
@@ -75,52 +75,29 @@ pub async fn handle(
     })
 }
 
-/// Build a lettre `Envelope` from the compose input addresses.
-fn build_envelope(
-    from_addr: &str,
-    input: &ComposeInput,
-) -> Result<lettre::address::Envelope, rimap_core::RimapError> {
-    let from = from_addr
-        .parse::<lettre::Address>()
-        .map_err(|e| rimap_core::RimapError::Config(format!("invalid From address: {e}")))?;
-
-    let mut recipients = Vec::new();
-    for addr in &input.to {
-        recipients.push(parse_lettre_addr(&addr.address)?);
-    }
+/// Build a rimap-smtp `SendEnvelope` from the compose input addresses.
+/// Address validation is delegated to rimap-smtp's parser at send time;
+/// this helper only gathers the addresses into a single To / Cc / Bcc
+/// recipient list and keeps the handler off the `lettre` type surface.
+fn build_envelope(from_addr: &str, input: &ComposeInput) -> rimap_smtp::SendEnvelope {
+    let mut recipients: Vec<String> = Vec::new();
+    recipients.extend(input.to.iter().map(|a| a.address.clone()));
     if let Some(cc) = &input.cc {
-        for addr in cc {
-            recipients.push(parse_lettre_addr(&addr.address)?);
-        }
+        recipients.extend(cc.iter().map(|a| a.address.clone()));
     }
     if let Some(bcc) = &input.bcc {
-        for addr in bcc {
-            recipients.push(parse_lettre_addr(&addr.address)?);
-        }
+        recipients.extend(bcc.iter().map(|a| a.address.clone()));
     }
-
-    lettre::address::Envelope::new(Some(from), recipients).map_err(|e| {
-        rimap_core::RimapError::Internal(format!("failed to build SMTP envelope: {e}"))
-    })
-}
-
-fn parse_lettre_addr(addr: &str) -> Result<lettre::Address, rimap_core::RimapError> {
-    addr.parse::<lettre::Address>().map_err(|_| {
-        rimap_core::RimapError::invalid_input("invalid email address in recipient list")
-    })
+    rimap_smtp::SendEnvelope {
+        from: from_addr.to_string(),
+        to: recipients,
+    }
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::panic,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    reason = "tests"
-)]
 mod tests {
-    use super::{build_envelope, parse_lettre_addr};
+    use super::build_envelope;
     use crate::tools::message_builder::{AddressInput, ComposeInput};
-    use rimap_core::{ErrorCode, RimapError};
 
     fn addr(address: &str) -> AddressInput {
         AddressInput {
@@ -142,23 +119,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_lettre_addr_accepts_well_formed_mailbox() {
-        let parsed = parse_lettre_addr("alice@example.com").expect("valid address");
-        assert_eq!(parsed.to_string(), "alice@example.com");
-    }
-
-    #[test]
-    fn parse_lettre_addr_rejects_garbage_with_invalid_input() {
-        let err = parse_lettre_addr("not-an-email").unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidInput);
-    }
-
-    #[test]
     fn build_envelope_single_recipient() {
-        let env = build_envelope("from@example.com", &compose(vec![addr("a@example.com")]))
-            .expect("envelope ok");
-        assert_eq!(env.to().len(), 1);
-        assert!(env.from().is_some());
+        let env = build_envelope("from@example.com", &compose(vec![addr("a@example.com")]));
+        assert_eq!(env.from, "from@example.com");
+        assert_eq!(env.to, vec!["a@example.com"]);
     }
 
     #[test]
@@ -166,24 +130,20 @@ mod tests {
         let mut input = compose(vec![addr("a@example.com")]);
         input.cc = Some(vec![addr("b@example.com")]);
         input.bcc = Some(vec![addr("c@example.com")]);
-        let env = build_envelope("from@example.com", &input).expect("envelope ok");
-        assert_eq!(env.to().len(), 3, "to + cc + bcc collapsed into envelope");
+        let env = build_envelope("from@example.com", &input);
+        assert_eq!(
+            env.to,
+            vec!["a@example.com", "b@example.com", "c@example.com"],
+        );
     }
 
     #[test]
-    fn build_envelope_rejects_bad_from_with_config_error() {
-        let err =
-            build_envelope("not-an-email", &compose(vec![addr("a@example.com")])).unwrap_err();
-        match err {
-            RimapError::Config(_) => {}
-            other => panic!("expected Config, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn build_envelope_rejects_bad_recipient_with_invalid_input() {
-        let err =
-            build_envelope("from@example.com", &compose(vec![addr("not-an-email")])).unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidInput);
+    fn build_envelope_keeps_raw_strings_for_smtp_layer() {
+        // The SMTP layer owns address validation — build_envelope itself
+        // is infallible and preserves the user-supplied string so the
+        // rejection text from rimap-smtp matches what the caller typed.
+        let env = build_envelope("not-an-email", &compose(vec![addr("also-bad")]));
+        assert_eq!(env.from, "not-an-email");
+        assert_eq!(env.to, vec!["also-bad"]);
     }
 }

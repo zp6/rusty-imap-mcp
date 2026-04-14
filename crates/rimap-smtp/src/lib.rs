@@ -9,5 +9,5 @@
 pub mod client;
 pub mod error;
 
-pub use crate::client::SmtpClient;
+pub use crate::client::{SendEnvelope, SmtpClient};
 pub use crate::error::SmtpError;
