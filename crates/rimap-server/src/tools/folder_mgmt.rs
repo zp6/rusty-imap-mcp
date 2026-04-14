@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 use crate::response::ToolResponse;
 
 /// Input for `create_folder`.

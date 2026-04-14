@@ -1,7 +1,7 @@
 //! `send_email` tool handler: compose and send via SMTP, then APPEND
 //! a copy to the Sent folder.
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 use crate::response::ToolResponse;
 use crate::tools::message_builder::{self, ComposeInput};
 

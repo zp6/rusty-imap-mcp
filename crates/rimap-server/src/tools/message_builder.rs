@@ -10,7 +10,7 @@ use mail_builder::headers::message_id::MessageId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 
 /// An email address with optional display name.
 #[derive(Debug, Deserialize, JsonSchema)]

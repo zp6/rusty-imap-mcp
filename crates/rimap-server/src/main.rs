@@ -2,16 +2,16 @@
 
 #![deny(missing_docs)]
 
-mod audit_init;
+mod boot;
 mod cli;
 mod content;
 mod download;
-mod logging;
 mod mcp_error;
-mod registry;
 mod response;
 mod server;
 mod tools;
+
+use crate::boot::{audit_init, logging, registry};
 
 #[cfg(test)]
 mod e2e_test;

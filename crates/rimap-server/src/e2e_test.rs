@@ -252,7 +252,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         &config.config.security.expunge_folders,
     );
     let id = rimap_core::account::AccountId::default_account();
-    let state = crate::registry::AccountState {
+    let state = crate::boot::registry::AccountState {
         id: id.clone(),
         imap,
         smtp: None,
@@ -261,7 +261,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     };
     let mut accounts = BTreeMap::new();
     accounts.insert(id, state);
-    let registry = crate::registry::AccountRegistry::new(accounts);
+    let registry = crate::boot::registry::AccountRegistry::new(accounts);
 
     let server = ImapMcpServer::new(registry, audit, download_dir.path().to_path_buf());
 

@@ -5,8 +5,8 @@ use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::boot::registry::AccountState;
 use crate::download;
-use crate::registry::AccountState;
 use crate::response::ToolResponse;
 
 /// Input for the `download_attachment` tool.

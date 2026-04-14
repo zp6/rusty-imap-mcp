@@ -6,7 +6,7 @@ use rimap_imap::types::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 use crate::response::ToolResponse;
 
 /// Maximum number of results per page.

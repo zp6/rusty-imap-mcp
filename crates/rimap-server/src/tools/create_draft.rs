@@ -1,7 +1,7 @@
 //! `create_draft` tool handler: compose a draft email and APPEND it
 //! to the Drafts folder with a `$PendingReview` keyword.
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 use crate::response::ToolResponse;
 use crate::tools::message_builder::{self, ComposeInput};
 

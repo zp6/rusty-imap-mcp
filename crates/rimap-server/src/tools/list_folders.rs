@@ -1,6 +1,6 @@
 //! `list_folders` tool handler.
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 use crate::response::ToolResponse;
 
 /// Execute the `list_folders` tool.

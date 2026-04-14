@@ -4,7 +4,7 @@ use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::registry::AccountState;
+use crate::boot::registry::AccountState;
 use crate::response::ToolResponse;
 use crate::tools::flags::resolve_uids;
 

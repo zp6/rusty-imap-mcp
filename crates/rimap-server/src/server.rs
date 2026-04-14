@@ -25,7 +25,7 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 
-use crate::registry::{AccountRegistry, AccountState};
+use crate::boot::registry::{AccountRegistry, AccountState};
 
 /// Core MCP server. Owns every resource the handler methods need.
 pub struct ImapMcpServer {
@@ -882,7 +882,7 @@ mod tests {
         use rimap_audit::{AuditOptions, AuditWriter, Seq};
         use tempfile::TempDir;
 
-        use crate::registry::AccountRegistry;
+        use crate::boot::registry::AccountRegistry;
         use crate::server::ImapMcpServer;
 
         let tmp = TempDir::new().expect("tempdir");

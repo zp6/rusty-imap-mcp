@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::registry::AccountRegistry;
+use crate::boot::registry::AccountRegistry;
 use crate::response::ToolResponse;
 
 #[derive(Debug, Deserialize, JsonSchema)]
