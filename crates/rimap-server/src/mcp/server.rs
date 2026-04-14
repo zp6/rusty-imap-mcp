@@ -228,7 +228,7 @@ impl ServerHandler for ImapMcpServer {
 
         // Infrastructure tools bypass account resolution and guards and
         // must never be namespaced.
-        if matches!(tool_name, ToolName::UseAccount | ToolName::ListAccounts) {
+        if tool_name.is_infrastructure() {
             if namespaced_account.is_some() {
                 return Err(ErrorData::invalid_params(
                     "infrastructure tools cannot be namespaced".to_string(),
@@ -315,7 +315,18 @@ fn rimap_error_to_breaker_reason(
         ErrorCode::Timeout => Some(FailureReason::Timeout),
         ErrorCode::ImapProtocol | ErrorCode::SmtpProtocol => Some(FailureReason::Protocol),
         ErrorCode::Tls => Some(FailureReason::Tls),
-        _ => None,
+        ErrorCode::InvalidInput
+        | ErrorCode::PostureDenied
+        | ErrorCode::RateLimited
+        | ErrorCode::CircuitOpen
+        | ErrorCode::NotFound
+        | ErrorCode::AttachmentTooLarge
+        | ErrorCode::ProtectedFolder
+        | ErrorCode::ExpungeDenied
+        | ErrorCode::Config
+        | ErrorCode::Internal
+        | ErrorCode::NoAccount
+        | ErrorCode::UnknownAccount => None,
     }
 }
 
@@ -485,7 +496,28 @@ impl ImapMcpServer {
                 ToolName::ListAccounts => {
                     ser(crate::tools::accounts::handle_list_accounts(&self.registry).await?)
                 }
-                _ => Err(rimap_core::RimapError::Internal(format!(
+                ToolName::ListFolders
+                | ToolName::Search
+                | ToolName::SearchAdvanced
+                | ToolName::FetchMessage
+                | ToolName::FetchMessageHtml
+                | ToolName::ListAttachments
+                | ToolName::DownloadAttachment
+                | ToolName::MarkRead
+                | ToolName::MarkUnread
+                | ToolName::Flag
+                | ToolName::Unflag
+                | ToolName::AddLabel
+                | ToolName::RemoveLabel
+                | ToolName::ListLabels
+                | ToolName::MoveMessage
+                | ToolName::CreateDraft
+                | ToolName::SendEmail
+                | ToolName::DeleteMessage
+                | ToolName::Expunge
+                | ToolName::CreateFolder
+                | ToolName::RenameFolder
+                | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
                     "not an infrastructure tool: {}",
                     tool.as_str(),
                 ))),
@@ -626,7 +658,12 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
             map.remove("title");
             map
         }
-        _ => serde_json::Map::new(),
+        Ok(serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_)
+        | serde_json::Value::Array(_))
+        | Err(_) => serde_json::Map::new(),
     }
 }
 
@@ -682,7 +719,7 @@ fn split_tool_name(raw: &str) -> (Option<&str>, &str) {
         {
             (Some(prefix), rest)
         }
-        _ => (None, raw),
+        Some(_) | None => (None, raw),
     }
 }
 
@@ -788,7 +825,11 @@ fn tool_spec(name: ToolName) -> Option<ToolSpec> {
             schema_map::<UseAccountInput>(),
         ),
         ToolName::ListAccounts => ("List all configured email accounts", serde_json::Map::new()),
-        _ => return None,
+        // Sub-capabilities that share an MCP tool name with a parent
+        // (e.g. `SearchAdvanced` shares `search`; `FetchMessageHtml`
+        // shares `fetch_message`) are advertised under the parent entry,
+        // so they have no standalone spec.
+        ToolName::SearchAdvanced | ToolName::FetchMessageHtml => return None,
     };
     Some(tuple)
 }

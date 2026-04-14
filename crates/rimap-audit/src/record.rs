@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use rimap_core::{ErrorCode, Posture, tool::ToolName};
+use rimap_core::{ErrorCode, Posture, WarningCode, tool::ToolName};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{ProcessId, Seq, Timestamp};
@@ -194,9 +194,11 @@ pub struct ResultSummary {
     #[serde(default)]
     pub truncated: bool,
     /// Security warning codes emitted alongside the payload (e.g.
-    /// `LOOKALIKE_SENDER_MIXED_SCRIPT`). Sprint 4 populates this.
+    /// `lookalike_mixed_script`). Serialized as `snake_case` strings
+    /// via [`WarningCode`]'s serde impl, matching the on-disk form
+    /// the field carried when it was typed `Vec<String>`.
     #[serde(default)]
-    pub security_warnings_emitted: Vec<String>,
+    pub security_warnings_emitted: Vec<WarningCode>,
 }
 
 /// Snapshot of the provenance ring buffer at `tool_end` time.

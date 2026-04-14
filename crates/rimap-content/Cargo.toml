@@ -16,6 +16,7 @@ description = "MIME parsing, Unicode-safe sanitization, and look-alike detection
 workspace = true
 
 [dependencies]
+rimap-core = { path = "../rimap-core", version = "1.0.0" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
