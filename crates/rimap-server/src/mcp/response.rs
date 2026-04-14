@@ -7,14 +7,19 @@
 use serde::Serialize;
 
 /// Top-level tool response envelope.
+///
+/// `M` is the trusted metadata shape (must `Serialize`). `U` is the
+/// untrusted payload shape (must `Serialize`). Handlers that have no
+/// untrusted body should return `ToolResponse<M, ()>` with
+/// `untrusted: None`.
 #[derive(Debug, Serialize)]
-pub struct ToolResponse {
+pub struct ToolResponse<M: Serialize = serde_json::Value, U: Serialize = serde_json::Value> {
     /// Server-controlled metadata. Trusted.
-    pub meta: serde_json::Value,
+    pub meta: M,
     /// Sanitized content derived from email data. Untrusted.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub untrusted: Option<serde_json::Value>,
+    pub untrusted: Option<U>,
     /// Structured security observations. Trusted metadata.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub security_warnings: Vec<serde_json::Value>,
+    pub security_warnings: Vec<rimap_content::SecurityWarning>,
 }

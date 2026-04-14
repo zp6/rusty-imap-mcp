@@ -130,6 +130,22 @@ pub struct SecurityWarning {
     pub location: Option<String>,
 }
 
+impl SecurityWarning {
+    /// Construct a new warning.
+    ///
+    /// `code` classifies the event. `detail` is an optional human-readable
+    /// context string (not machine-parseable). `location` names the logical
+    /// site in the message where the warning was raised.
+    #[must_use]
+    pub fn new(code: WarningCode, detail: Option<String>, location: Option<String>) -> Self {
+        Self {
+            code,
+            detail,
+            location,
+        }
+    }
+}
+
 /// Classification of pipeline warnings. New variants will be added in
 /// Sprint 4b for HTML and look-alike detection — the enum is
 /// `#[non_exhaustive]` so matches must include a wildcard arm.
@@ -221,6 +237,10 @@ pub enum WarningCode {
     /// extension spoof. Detail format:
     /// `visible=<after_strip>,declared=<original>`.
     LookalikeFilenameExtensionSpoof,
+    /// The IMAP server lacked the MOVE capability; a non-atomic
+    /// COPY+DELETE+EXPUNGE fallback was used. Other messages with
+    /// `\Deleted` flag in the source folder may have been expunged.
+    ServerNonAtomicMoveFallback,
 }
 
 /// Severity classification for [`WarningCode`] variants. Sprint 5
@@ -270,7 +290,8 @@ impl WarningCode {
             | WarningCode::HtmlStyleStripped
             | WarningCode::HtmlRemoteImageStripped
             | WarningCode::HtmlAnchorUnparsableHref
-            | WarningCode::LookalikeIdnPunycode => WarningSeverity::Informational,
+            | WarningCode::LookalikeIdnPunycode
+            | WarningCode::ServerNonAtomicMoveFallback => WarningSeverity::Informational,
         }
     }
 }

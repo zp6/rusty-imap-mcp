@@ -60,15 +60,13 @@ pub async fn handle(
         })
         .collect();
 
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<rimap_content::SecurityWarning> = Vec::new();
     if outcome.used_fallback {
-        warnings.push(serde_json::json!({
-            "type": "non_atomic_move",
-            "message": "Server lacks MOVE capability; \
-                used non-atomic COPY+DELETE+EXPUNGE fallback. \
-                Other messages with \\Deleted flag in the source \
-                folder may have been expunged.",
-        }));
+        warnings.push(rimap_content::SecurityWarning::new(
+            rimap_content::WarningCode::ServerNonAtomicMoveFallback,
+            None,
+            None,
+        ));
     }
 
     Ok(ToolResponse {

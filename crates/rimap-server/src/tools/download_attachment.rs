@@ -127,46 +127,44 @@ pub async fn handle(
     })
 }
 
-/// Stable `type` tag strings used in download-attachment security
-/// warnings. Constants keep the wire vocabulary in one place so
-/// changing a name is a single-file edit that the compiler catches.
-const WARN_MIME_TYPE_MISMATCH: &str = "mime_type_mismatch";
-const WARN_MIME_SNIFF_MISMATCH: &str = "mime_sniff_mismatch";
-
 /// Compare BODYSTRUCTURE-declared MIME type against `mail_parser`'s type.
 ///
 /// Returns a security warning if they disagree (case-insensitive).
-fn cross_validate_mime_type(bodystructure_type: &str, parser_type: &str) -> Vec<serde_json::Value> {
+fn cross_validate_mime_type(
+    bodystructure_type: &str,
+    parser_type: &str,
+) -> Vec<rimap_content::SecurityWarning> {
     if bodystructure_type.eq_ignore_ascii_case(parser_type) {
         return Vec::new();
     }
-    vec![serde_json::json!({
-        "type": WARN_MIME_TYPE_MISMATCH,
-        "bodystructure_type": bodystructure_type,
-        "parser_type": parser_type,
-        "message":
-            "BODYSTRUCTURE MIME type disagrees with parsed content type"
-    })]
+    vec![rimap_content::SecurityWarning::new(
+        rimap_content::WarningCode::ParseMimeTypeMismatch,
+        Some(format!(
+            "bodystructure={bodystructure_type},parser={parser_type}"
+        )),
+        Some("download_attachment:bodystructure_vs_parser".into()),
+    )]
 }
 
 /// Compare declared MIME type against magic-byte-sniffed type.
 ///
 /// Returns a security warning when they disagree. Returns nothing
 /// when sniffing produced no result (unknown magic bytes).
-fn check_sniff_mismatch(declared: &str, sniffed: Option<&str>) -> Vec<serde_json::Value> {
+fn check_sniff_mismatch(
+    declared: &str,
+    sniffed: Option<&str>,
+) -> Vec<rimap_content::SecurityWarning> {
     let Some(sniffed) = sniffed else {
         return Vec::new();
     };
     if declared.eq_ignore_ascii_case(sniffed) {
         return Vec::new();
     }
-    vec![serde_json::json!({
-        "type": WARN_MIME_SNIFF_MISMATCH,
-        "mime_declared": declared,
-        "mime_sniffed": sniffed,
-        "message":
-            "declared MIME type disagrees with magic-byte detection"
-    })]
+    vec![rimap_content::SecurityWarning::new(
+        rimap_content::WarningCode::ParseMimeTypeMismatch,
+        Some(format!("declared={declared},sniffed={sniffed}")),
+        Some("download_attachment:sniff".into()),
+    )]
 }
 
 /// Maximum recursion depth for BODYSTRUCTURE tree walking.
@@ -341,7 +339,14 @@ mod tests {
     fn cross_validate_catches_type_mismatch() {
         let warnings = cross_validate_mime_type("image/png", "text/html");
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].to_string().contains("mime_type_mismatch"));
+        assert_eq!(
+            warnings[0].code,
+            rimap_content::WarningCode::ParseMimeTypeMismatch
+        );
+        assert_eq!(
+            warnings[0].detail.as_deref(),
+            Some("bodystructure=image/png,parser=text/html")
+        );
     }
 
     #[test]
@@ -436,7 +441,14 @@ mod tests {
     fn sniff_mismatch_produces_warning() {
         let warnings = check_sniff_mismatch("text/plain", Some("image/png"));
         assert_eq!(warnings.len(), 1);
-        assert!(warnings[0].to_string().contains("mime_sniff_mismatch"));
+        assert_eq!(
+            warnings[0].code,
+            rimap_content::WarningCode::ParseMimeTypeMismatch
+        );
+        assert_eq!(
+            warnings[0].detail.as_deref(),
+            Some("declared=text/plain,sniffed=image/png")
+        );
     }
 
     #[test]

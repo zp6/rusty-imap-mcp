@@ -87,18 +87,6 @@ pub async fn handle(
         })
         .collect();
 
-    let warnings: Vec<serde_json::Value> = content
-        .security_warnings
-        .iter()
-        .map(|w| {
-            serde_json::json!({
-                "code": w.code,
-                "detail": w.detail,
-                "location": w.location,
-            })
-        })
-        .collect();
-
     let mut untrusted = serde_json::json!({
         "body_text": body_text,
         "subject": content.meta.subject,
@@ -123,7 +111,7 @@ pub async fn handle(
             "truncated": truncated,
         }),
         untrusted: Some(untrusted),
-        security_warnings: warnings,
+        security_warnings: content.security_warnings,
     })
 }
 
