@@ -687,7 +687,7 @@ fn tool_spec_read(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::{
         create_draft::CreateDraftInput, download_attachment::DownloadAttachmentInput,
         fetch_message::FetchMessageInput, flags::FlagInput, list_attachments::ListAttachmentsInput,
-        move_message::MoveInput, search::SearchInput,
+        move_message::MoveMessageInput, search::SearchInput,
     };
     let tuple = match name {
         ToolName::ListFolders => ("List all IMAP folders", serde_json::Map::new()),
@@ -717,7 +717,10 @@ fn tool_spec_read(name: ToolName) -> Option<ToolSpec> {
             "Remove the flagged flag from messages",
             schema_map::<FlagInput>(),
         ),
-        ToolName::MoveMessage => ("Move messages to another folder", schema_map::<MoveInput>()),
+        ToolName::MoveMessage => (
+            "Move messages to another folder",
+            schema_map::<MoveMessageInput>(),
+        ),
         ToolName::CreateDraft => (
             "Create a draft email with $PendingReview flag",
             schema_map::<CreateDraftInput>(),

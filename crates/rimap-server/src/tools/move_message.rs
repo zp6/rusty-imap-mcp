@@ -10,7 +10,7 @@ use crate::tools::flags::resolve_uids;
 
 /// Input for `move_message`.
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct MoveInput {
+pub struct MoveMessageInput {
     /// Source folder.
     pub source_folder: String,
     /// Destination folder.
@@ -30,7 +30,7 @@ pub struct MoveInput {
 /// `RimapError::Imap { ... }` for IMAP-layer failures.
 pub async fn handle(
     account: &AccountState,
-    input: MoveInput,
+    input: MoveMessageInput,
 ) -> Result<ToolResponse, rimap_core::RimapError> {
     let uids = resolve_uids(input.uid, input.uids)?;
     let outcome = account
