@@ -35,21 +35,6 @@ pub struct FetchMessageMeta {
     pub truncated: bool,
 }
 
-/// Attachment summary within a `fetch_message` untrusted body.
-#[derive(Debug, Serialize)]
-pub struct FetchMessageAttachment {
-    /// Filename declared in the MIME part, if present.
-    pub filename: Option<String>,
-    /// Full MIME content type (e.g. `image/png`).
-    pub content_type: String,
-    /// Size of the attachment in bytes.
-    pub size_bytes: u64,
-    /// `Content-ID` header value, if present.
-    pub content_id: Option<String>,
-    /// Whether the MIME part is marked inline.
-    pub is_inline: bool,
-}
-
 /// Sanitized untrusted payload for a `fetch_message` response.
 #[derive(Debug, Serialize)]
 pub struct FetchMessageUntrusted {
@@ -71,7 +56,7 @@ pub struct FetchMessageUntrusted {
     /// `Date` header.
     pub date: Option<time::OffsetDateTime>,
     /// MIME attachment parts found in the message.
-    pub attachments: Vec<FetchMessageAttachment>,
+    pub attachments: Vec<rimap_content::AttachmentMeta>,
 }
 
 /// Execute the `fetch_message` tool.
@@ -126,19 +111,6 @@ pub async fn handle(
         }
     }
 
-    let attachments: Vec<FetchMessageAttachment> = content
-        .meta
-        .attachments
-        .iter()
-        .map(|a| FetchMessageAttachment {
-            filename: a.filename.clone(),
-            content_type: a.content_type.clone(),
-            size_bytes: a.size_bytes,
-            content_id: a.content_id.clone(),
-            is_inline: a.is_inline,
-        })
-        .collect();
-
     Ok(ToolResponse {
         meta: FetchMessageMeta {
             folder: input.folder,
@@ -156,7 +128,7 @@ pub async fn handle(
             cc: content.meta.cc,
             reply_to: content.meta.reply_to,
             date: content.meta.date,
-            attachments,
+            attachments: content.meta.attachments,
         }),
         security_warnings: content.security_warnings,
     })
