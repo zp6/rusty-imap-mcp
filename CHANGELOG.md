@@ -174,4 +174,40 @@ Pre-built binaries for five targets:
 - `justfile` with `just ci` as the local-CI equivalent
 - Dual MIT / Apache-2.0 license
 
+### Security Hardening (post-review)
+
+- Namespace MCP tool names per account (`<account>.<tool>`) in multi-account
+  configs to prevent cross-account posture bypass. Single-account configs
+  with the synthetic `"default"` account keep bare tool names.
+- Emit `tool_start` and `tool_end` audit records for every dispatch with
+  account attribution, redacted arguments, and duration metadata.
+- Populate `account` field on `Auth` audit records for multi-account
+  attribution of login events.
+- Wrap resolved credentials in `secrecy::SecretString` to limit in-memory
+  exposure of IMAP and SMTP passwords.
+- Redact IMAP/SMTP usernames from `anyhow` error contexts so they no longer
+  leak into tracing output.
+- Reject IMAP/SMTP usernames containing CR, LF, or NUL bytes at config load.
+- Rate-limit infrastructure tools (`use_account`, `list_accounts`) to
+  prevent session-state flip-flap attacks.
+- Validate account names via `AccountId::new` before echoing them in
+  MCP error messages to prevent reflected-content amplification.
+- Drop `posture` from `read_resource` body and `imap_host` from
+  `list_accounts` response to reduce attack-surface fingerprinting.
+- Require labels to be ASCII (RFC 3501 atom syntax) and reject `[`
+  consistently at both validator layers to prevent homograph/bidi spoofing.
+- Digest-pin the Rust Docker base image used for ppc64le/s390x release
+  builds to resist tag-repointing supply-chain attacks.
+- Pin `cross` version in release workflow.
+- Embed SBOMs in native release binaries via `cargo-auditable`.
+- Add SLSA build provenance attestation to release artifacts and
+  `SHA256SUMS.txt` via `actions/attest-build-provenance`.
+- Extract per-tag release notes from `CHANGELOG.md` rather than attaching
+  the entire changelog to every release.
+- Document GitHub tag protection and release environment setup.
+- Create per-process attachment tempdir with `0700` permissions on Unix
+  to close a symlink/TOCTOU race on shared `/tmp`.
+- Replace `Mutex<Option<AccountId>>` in the account registry with
+  `ArcSwapOption` to eliminate async-refactor footguns and mutex poisoning.
+
 ## [Unreleased]
