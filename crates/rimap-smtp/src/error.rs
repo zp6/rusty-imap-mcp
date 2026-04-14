@@ -89,4 +89,43 @@ mod tests {
         };
         assert!(err.to_string().contains("user unknown"));
     }
+
+    #[test]
+    fn rejected_error_code_is_smtp_protocol() {
+        let err = SmtpError::Rejected {
+            reason: "450 try later".into(),
+        };
+        let mapped: RimapError = err.into();
+        assert_eq!(mapped.code(), ErrorCode::SmtpProtocol);
+    }
+
+    #[test]
+    fn timeout_carries_error_code() {
+        let mapped: RimapError = SmtpError::Timeout.into();
+        assert_eq!(mapped.code(), ErrorCode::Timeout);
+        assert!(mapped.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn mapped_smtp_error_exposes_source_chain() {
+        use std::error::Error as _;
+        let err = SmtpError::Rejected {
+            reason: "550 reject".into(),
+        };
+        let mapped: RimapError = err.into();
+        // The source chain should bottom out at a SmtpError.
+        let mut cur = mapped.source();
+        let mut saw_smtp_error = false;
+        while let Some(inner) = cur {
+            if inner.downcast_ref::<SmtpError>().is_some() {
+                saw_smtp_error = true;
+                break;
+            }
+            cur = inner.source();
+        }
+        assert!(
+            saw_smtp_error,
+            "expected the RimapError source chain to surface the original SmtpError"
+        );
+    }
 }
