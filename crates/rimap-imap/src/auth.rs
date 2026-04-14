@@ -50,7 +50,7 @@ pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
 }
 
 /// Build a failure `Auth` record carrying the stable error code.
-pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: &str) -> Auth {
+pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorCode) -> Auth {
     Auth {
         account: ctx.account.map(str::to_string),
         result: AuthResult::Failure,
@@ -59,7 +59,7 @@ pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: &str) -> Auth {
         username: ctx.username.to_string(),
         tls_fingerprint_sha256: ctx.observed_hex(),
         fingerprint_match: ctx.fingerprint_match(),
-        error_code: Some(error_code.to_string()),
+        error_code: Some(error_code.as_str().to_string()),
     }
 }
 
@@ -103,7 +103,7 @@ mod tests {
             pinned: Some(pin),
             observed: Some(observed),
         };
-        let rec = auth_failure(&ctx, "ERR_TLS");
+        let rec = auth_failure(&ctx, rimap_core::ErrorCode::Tls);
         assert_eq!(rec.result, AuthResult::Failure);
         assert_eq!(rec.fingerprint_match, Some(false));
         assert_eq!(rec.error_code.as_deref(), Some("ERR_TLS"));
@@ -140,10 +140,10 @@ mod tests {
             pinned: Some(pin),
             observed: None,
         };
-        let rec = auth_failure(&ctx, "ERR_NETWORK");
+        let rec = auth_failure(&ctx, rimap_core::ErrorCode::ConnectionLost);
         assert_eq!(rec.result, AuthResult::Failure);
         assert_eq!(rec.tls_fingerprint_sha256, None);
         assert_eq!(rec.fingerprint_match, None);
-        assert_eq!(rec.error_code.as_deref(), Some("ERR_NETWORK"));
+        assert_eq!(rec.error_code.as_deref(), Some("ERR_CONNECTION_LOST"));
     }
 }

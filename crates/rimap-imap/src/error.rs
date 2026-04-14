@@ -9,7 +9,7 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum ImapError {
     /// TLS leaf-cert fingerprint did not match the configured pin.
-    #[error("ERR_TLS: fingerprint mismatch (observed={observed}, expected={expected})")]
+    #[error("fingerprint mismatch (observed={observed}, expected={expected})")]
     Tls {
         /// The fingerprint the server presented.
         observed: TlsFingerprint,
@@ -18,37 +18,37 @@ pub enum ImapError {
     },
     /// TLS handshake failed for a reason other than fingerprint mismatch
     /// (signature algorithm, protocol version, webpki path error in unpinned mode).
-    #[error("ERR_TLS: handshake failed")]
+    #[error("handshake failed")]
     TlsHandshake(#[source] rustls::Error),
     /// TCP connect failed.
     #[error("connect failed")]
     Connect(#[source] std::io::Error),
     /// `tokio::time::timeout` fired around an IMAP command.
-    #[error("ERR_TIMEOUT: {op} exceeded deadline")]
+    #[error("{op} exceeded deadline")]
     Timeout {
         /// Short tag identifying the operation that timed out.
         op: &'static str,
     },
     /// Authentication-layer failure (LOGIN rejected, LOGIN disabled, BYE greeting).
-    #[error("ERR_AUTH: {reason}")]
+    #[error("auth failed: {reason}")]
     Auth {
         /// Specific failure mode.
         reason: AuthFailure,
     },
     /// Body fetch exceeded the configured size cap; connection was dropped.
-    #[error("ERR_ATTACHMENT_TOO_LARGE: body size exceeded limit of {limit} bytes")]
+    #[error("body size exceeded limit of {limit} bytes")]
     SizeLimit {
         /// The configured `max_fetch_body_bytes`.
         limit: u64,
     },
     /// Underlying `async-imap` protocol error.
-    #[error("ERR_IMAP_PROTOCOL: {0}")]
+    #[error("IMAP protocol error: {0}")]
     Protocol(#[source] async_imap::error::Error),
     /// TCP half-open: detected dead connection during a command.
-    #[error("ERR_CONNECTION_LOST: connection torn down mid-command")]
+    #[error("connection torn down mid-command")]
     ConnectionLost,
     /// Caller supplied invalid input (e.g. control bytes in a search string).
-    #[error("ERR_INVALID_INPUT: {field}: {reason}")]
+    #[error("invalid input: {field}: {reason}")]
     InvalidInput {
         /// Short name identifying the field or parameter that is invalid.
         field: &'static str,

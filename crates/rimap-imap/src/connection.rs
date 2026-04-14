@@ -210,10 +210,7 @@ impl Connection {
                 // running fail_open=false will additionally see the
                 // suppressed_failures counter in process_end once #8
                 // lands.
-                if let Err(audit_err) = self
-                    .emit_auth(auth_failure(&ctx, error_code_for(err)))
-                    .await
-                {
+                if let Err(audit_err) = self.emit_auth(auth_failure(&ctx, err.code())).await {
                     tracing::error!(
                         original_error = %err,
                         audit_error = %audit_err,
@@ -806,9 +803,10 @@ fn map_tls_handshake_error(err: &std::io::Error) -> ImapError {
 }
 
 /// Map a connect/login error to its stable short error code for the
-/// audit log. Routes through [`ImapError::code`] so the string form
-/// always matches the canonical [`rimap_core::ErrorCode`] rather than
-/// one-off literals — keeps audit records in sync with the taxonomy.
+/// audit log. Kept for the test harness that pins the complete
+/// [`ImapError`] -> [`rimap_core::ErrorCode`] mapping; production
+/// callers pass `err.code()` directly through [`ImapError::code`].
+#[cfg(test)]
 fn error_code_for(err: &ImapError) -> &'static str {
     err.code().as_str()
 }

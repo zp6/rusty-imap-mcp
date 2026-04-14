@@ -512,8 +512,8 @@ async fn assert_move_and_gone(server: &ImapMcpServer, uid: u32) {
         server,
         "move_message",
         serde_json::json!({
-            "source_folder": "INBOX",
-            "dest_folder": "Trash",
+            "folder": "INBOX",
+            "destination": "Trash",
             "uid": uid
         }),
     )
