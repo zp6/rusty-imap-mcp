@@ -43,9 +43,10 @@ pub struct DownloadAttachmentUntrusted {
 
 /// Execute the `download_attachment` tool.
 ///
-/// Fetches the full message, parses it with `mail_parser`, extracts
-/// the attachment part matching `part_id`, and writes it to the
-/// sandbox directory.
+/// Fetches the full message, walks its MIME tree via
+/// `rimap_content::walk_attachment_parts` (behind the shared parse
+/// semaphore), extracts the part matching `part_id`, and writes it
+/// to the sandbox directory.
 ///
 /// # Errors
 ///
