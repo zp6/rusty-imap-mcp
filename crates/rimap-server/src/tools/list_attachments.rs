@@ -32,7 +32,9 @@ struct AttachmentInfo {
 ///
 /// # Errors
 ///
-/// Returns `RimapError` on invalid input or IMAP failure.
+/// - `RimapError::InvalidInput` if `uid` is zero or the message is not
+///   found in `folder`.
+/// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH.
 pub async fn handle(
     account: &AccountState,
     input: ListAttachmentsInput,

@@ -13,6 +13,12 @@ pub struct UseAccountInput {
 }
 
 /// Select `input.account` as the session's active account.
+///
+/// # Errors
+///
+/// Returns `RimapError::InvalidInput` if `input.account` is not a valid
+/// account-name shape. Returns `RimapError::Authz { code: UnknownAccount, ... }`
+/// if the name does not match a configured account.
 #[expect(
     clippy::unused_async,
     reason = "handler shape uniform with async-handler siblings"
@@ -37,6 +43,12 @@ pub async fn handle_use_account(
 }
 
 /// List all configured accounts.
+///
+/// # Errors
+///
+/// Infallible in practice; the `Result` type is preserved for symmetry
+/// with other tool handlers so they compose uniformly through the
+/// dispatch pipeline.
 #[expect(
     clippy::unused_async,
     reason = "handler shape uniform with async-handler siblings"

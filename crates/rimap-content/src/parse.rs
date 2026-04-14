@@ -48,9 +48,10 @@ pub const MAX_HEADER_COUNT: usize = 256;
 ///
 /// # Errors
 ///
-/// Returns [`ContentError::Malformed`] if `mail-parser` rejects the
-/// byte stream, and [`ContentError::LimitExceeded`] if any hard limit
-/// (MIME depth, part count, header count) is exceeded.
+/// - [`ContentError::LimitExceeded`] with `kind = "message_bytes"` when
+///   `raw.len() > MAX_MESSAGE_BYTES`, and with other `kind` values when
+///   MIME depth, part count, or header count exceed their hard limits.
+/// - [`ContentError::Malformed`] if `mail-parser` rejects the byte stream.
 pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
     if raw.len() > MAX_MESSAGE_BYTES {
         return Err(ContentError::LimitExceeded {

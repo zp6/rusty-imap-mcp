@@ -31,8 +31,13 @@ pub struct DownloadAttachmentInput {
 ///
 /// # Errors
 ///
-/// Returns `RimapError` on invalid input, IMAP failure, part not
-/// found, or filesystem errors.
+/// - `RimapError::InvalidInput` if `uid` is zero, the `part_id` is not
+///   found in the message, or the resolved `dest_dir` escapes the
+///   configured download sandbox.
+/// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH and
+///   `RimapError::Content { ... }` from message parsing.
+/// - `RimapError::Internal` for unrecoverable filesystem or hashing
+///   failures while writing the attachment bytes.
 pub async fn handle(
     account: &AccountState,
     input: DownloadAttachmentInput,

@@ -657,7 +657,13 @@ impl Connection {
     /// mailbox directly per RFC 3501 section 6.3.11.
     ///
     /// # Errors
-    /// Propagates timeout, connection-lost, or protocol errors.
+    ///
+    /// - `ImapError::SizeLimit` if `message.len()` exceeds the configured
+    ///   `max_append_bytes`.
+    /// - `ImapError::InvalidInput` if any keyword or `Flag::Keyword` value
+    ///   contains non-atom characters.
+    /// - Propagates timeout, connection-lost, or protocol errors from
+    ///   async-imap.
     pub async fn append_message(
         &self,
         folder: &str,
