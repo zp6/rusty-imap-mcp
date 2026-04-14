@@ -187,9 +187,11 @@ fn build_smtp_client(
     };
     let smtp_password =
         rimap_config::resolve_credential(&**credentials, &smtp_cfg.username, &smtp_cfg.host)
-            .with_context(|| format!("resolving SMTP credential for {}", smtp_cfg.username))?;
+            .with_context(|| {
+                format!("resolving SMTP credential for account {}", acfg.id.as_str())
+            })?;
     let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
-        .with_context(|| format!("building SMTP client for {}", smtp_cfg.host))?;
+        .with_context(|| format!("building SMTP client for account {}", acfg.id.as_str()))?;
     drop(smtp_password);
     Ok(Some(client))
 }
