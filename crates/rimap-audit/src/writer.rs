@@ -192,22 +192,28 @@ impl AuditWriter {
         Ok(seq)
     }
 
-    /// Build an `auth` record from `payload`, allocate a seq, and write it.
-    /// Stamps the record with the writer's stable `process_id` and
-    /// `Timestamp::now()`. Returns the allocated `seq` on success.
-    ///
-    /// # Errors
-    /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_auth(&self, payload: crate::record::Auth) -> Result<crate::ids::Seq, AuditError> {
+    /// Allocate a seq, build an `AuditRecord` wrapping `payload`, stamp it
+    /// with the writer's `process_id` and `Timestamp::now()`, and write it
+    /// as a single JSONL line. All `log_*` methods route through this helper
+    /// so the allocate-build-write skeleton lives in one place.
+    fn emit(&self, payload: crate::record::Payload) -> Result<crate::ids::Seq, AuditError> {
         let seq = self.allocate_seq()?;
         let record = crate::record::AuditRecord {
             seq,
             ts: crate::ids::Timestamp::now(),
             process_id: self.process_id,
-            payload: crate::record::Payload::Auth(payload),
+            payload,
         };
         self.write_record(&record)?;
         Ok(seq)
+    }
+
+    /// Build an `auth` record from `payload`, allocate a seq, and write it.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_auth(&self, payload: crate::record::Auth) -> Result<crate::ids::Seq, AuditError> {
+        self.emit(crate::record::Payload::Auth(payload))
     }
 
     /// Serialize `record` as one JSONL line, append it to the active file,
@@ -368,21 +374,15 @@ impl AuditWriter {
         arguments_redacted: serde_json::Value,
         arguments_hash_sha256: String,
     ) -> Result<crate::ids::Seq, AuditError> {
-        let seq = self.allocate_seq()?;
-        let record = crate::record::AuditRecord {
-            seq,
-            ts: crate::ids::Timestamp::now(),
-            process_id: self.process_id,
-            payload: crate::record::Payload::ToolStart(crate::record::ToolStart {
+        self.emit(crate::record::Payload::ToolStart(
+            crate::record::ToolStart {
                 account: account.map(str::to_string),
                 tool: tool.to_string(),
                 posture_effective: posture_effective.to_string(),
                 arguments_redacted,
                 arguments_hash_sha256,
-            }),
-        };
-        self.write_record(&record)?;
-        Ok(seq)
+            },
+        ))
     }
 
     /// Build a `tool_end` record, allocate a seq, and write it. `start_seq`
@@ -404,24 +404,16 @@ impl AuditWriter {
         result_summary: crate::record::ResultSummary,
         provenance: crate::record::Provenance,
     ) -> Result<crate::ids::Seq, AuditError> {
-        let seq = self.allocate_seq()?;
-        let record = crate::record::AuditRecord {
-            seq,
-            ts: crate::ids::Timestamp::now(),
-            process_id: self.process_id,
-            payload: crate::record::Payload::ToolEnd(crate::record::ToolEnd {
-                account: account.map(str::to_string),
-                start_seq,
-                tool: tool.to_string(),
-                status,
-                error_code,
-                duration_ms,
-                result_summary,
-                provenance,
-            }),
-        };
-        self.write_record(&record)?;
-        Ok(seq)
+        self.emit(crate::record::Payload::ToolEnd(crate::record::ToolEnd {
+            account: account.map(str::to_string),
+            start_seq,
+            tool: tool.to_string(),
+            status,
+            error_code,
+            duration_ms,
+            result_summary,
+            provenance,
+        }))
     }
 
     /// Build a `process_end` record, allocate a seq, and write it.
@@ -435,18 +427,12 @@ impl AuditWriter {
         reason: crate::record::ProcessEndReason,
         total_tool_calls: u64,
     ) -> Result<crate::ids::Seq, AuditError> {
-        let seq = self.allocate_seq()?;
-        let record = crate::record::AuditRecord {
-            seq,
-            ts: crate::ids::Timestamp::now(),
-            process_id: self.process_id,
-            payload: crate::record::Payload::ProcessEnd(crate::record::ProcessEnd {
+        self.emit(crate::record::Payload::ProcessEnd(
+            crate::record::ProcessEnd {
                 reason,
                 total_tool_calls,
-            }),
-        };
-        self.write_record(&record)?;
-        Ok(seq)
+            },
+        ))
     }
 }
 
@@ -504,15 +490,7 @@ impl AuditWriter {
             previous_file_inode: inputs.current_inode,
             audit_file_inode_changed: inode_changed,
         };
-        let seq = self.allocate_seq()?;
-        let record = crate::record::AuditRecord {
-            seq,
-            ts: crate::ids::Timestamp::now(),
-            process_id: self.process_id,
-            payload: crate::record::Payload::ProcessStart(payload),
-        };
-        self.write_record(&record)?;
-        Ok(seq)
+        self.emit(crate::record::Payload::ProcessStart(payload))
     }
 }
 

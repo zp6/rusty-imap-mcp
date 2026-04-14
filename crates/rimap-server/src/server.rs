@@ -255,48 +255,45 @@ impl ServerHandler for ImapMcpServer {
             };
         let posture_str = account.guard.matrix().posture().as_str().to_string();
 
-        // Emit `tool_start` BEFORE the guard chain so guard failures also
-        // produce a matching `tool_end` record.
+        self.run_with_audit_envelope(tool_name, audit_account, posture_str, &args, async {
+            account
+                .guard
+                .pre_dispatch(tool_name)
+                .map_err(rimap_core::RimapError::from)?;
+            Box::pin(self.dispatch_tool(account, tool_name, &args)).await
+        })
+        .await
+    }
+}
+
+impl ImapMcpServer {
+    /// Wrap an inner dispatch `body` in the full audit envelope:
+    /// redact+hash args, emit `tool_start`, time the body, emit
+    /// `tool_end` with the status/error code derived from the body's
+    /// result. Returns the MCP-shaped `CallToolResult` or `ErrorData`.
+    async fn run_with_audit_envelope<F>(
+        &self,
+        tool: ToolName,
+        audit_account: Option<String>,
+        posture: String,
+        args: &serde_json::Map<String, serde_json::Value>,
+        body: F,
+    ) -> Result<CallToolResult, ErrorData>
+    where
+        F: std::future::Future<
+                Output = Result<crate::response::ToolResponse, rimap_core::RimapError>,
+            >,
+    {
         let args_value = serde_json::Value::Object(args.clone());
-        let redacted = self.redact_tool_args(tool_name.as_str(), &args_value);
+        let redacted = self.redact_tool_args(tool.as_str(), &args_value);
         let hash = hash_arguments(&args_value);
 
         let start_seq = self
-            .emit_tool_start(
-                tool_name,
-                audit_account.clone(),
-                posture_str.clone(),
-                redacted,
-                hash,
-            )
+            .emit_tool_start(tool, audit_account.clone(), posture, redacted, hash)
             .await?;
-
         let start_time = std::time::Instant::now();
 
-        if let Err(e) = account
-            .guard
-            .pre_dispatch(tool_name)
-            .map_err(rimap_core::RimapError::from)
-        {
-            let err_code = e.code().as_str().to_string();
-            let duration_ms = start_time
-                .elapsed()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX);
-            self.emit_tool_end(
-                start_seq,
-                tool_name,
-                audit_account.clone(),
-                ToolStatus::Error,
-                Some(err_code),
-                duration_ms,
-            )
-            .await;
-            return Err(crate::mcp_error::to_mcp_error(&e));
-        }
-
-        let result = Box::pin(self.dispatch_tool(account, tool_name, &args)).await;
+        let result = body.await;
 
         let duration_ms = start_time
             .elapsed()
@@ -309,7 +306,7 @@ impl ServerHandler for ImapMcpServer {
         };
         self.emit_tool_end(
             start_seq,
-            tool_name,
+            tool,
             audit_account,
             status,
             error_code,
@@ -326,9 +323,7 @@ impl ServerHandler for ImapMcpServer {
             Err(e) => Err(crate::mcp_error::to_mcp_error(&e)),
         }
     }
-}
 
-impl ImapMcpServer {
     /// Dispatch to the tool handler for `tool`.
     pub(crate) async fn dispatch_tool(
         &self,
@@ -412,78 +407,28 @@ impl ImapMcpServer {
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<CallToolResult, ErrorData> {
-        let args_value = serde_json::Value::Object(args.clone());
-        let redacted = self.redact_tool_args(tool.as_str(), &args_value);
-        let hash = hash_arguments(&args_value);
         // Infrastructure tools have no per-account posture; record an
         // explicit sentinel so log readers can distinguish these from
         // per-account dispatches.
-        let posture_str = "infrastructure".to_string();
-
-        let start_seq = self
-            .emit_tool_start(tool, None, posture_str, redacted, hash)
-            .await?;
-        let start_time = std::time::Instant::now();
-
-        // Infrastructure tools bypass posture + breaker, but still
-        // enforce a process-wide rate limit.
-        if let Err(e) = self.registry.check_infrastructure_rate() {
-            let duration_ms = start_time
-                .elapsed()
-                .as_millis()
-                .try_into()
-                .unwrap_or(u64::MAX);
-            let err_code = e.code().as_str().to_string();
-            self.emit_tool_end(
-                start_seq,
-                tool,
-                None,
-                ToolStatus::Error,
-                Some(err_code),
-                duration_ms,
-            )
-            .await;
-            return Err(crate::mcp_error::to_mcp_error(&e));
-        }
-
-        let result = match tool {
-            ToolName::UseAccount => {
-                match parse_args::<crate::tools::accounts::UseAccountInput>(args) {
-                    Ok(input) => {
-                        crate::tools::accounts::handle_use_account(&self.registry, input).await
-                    }
-                    Err(e) => Err(e),
+        self.run_with_audit_envelope(tool, None, "infrastructure".to_string(), args, async {
+            // Infrastructure tools bypass posture + breaker, but still
+            // enforce a process-wide rate limit.
+            self.registry.check_infrastructure_rate()?;
+            match tool {
+                ToolName::UseAccount => {
+                    let input = parse_args::<crate::tools::accounts::UseAccountInput>(args)?;
+                    crate::tools::accounts::handle_use_account(&self.registry, input).await
                 }
+                ToolName::ListAccounts => {
+                    crate::tools::accounts::handle_list_accounts(&self.registry).await
+                }
+                _ => Err(rimap_core::RimapError::Internal(format!(
+                    "not an infrastructure tool: {}",
+                    tool.as_str(),
+                ))),
             }
-            ToolName::ListAccounts => {
-                crate::tools::accounts::handle_list_accounts(&self.registry).await
-            }
-            _ => Err(rimap_core::RimapError::Internal(format!(
-                "not an infrastructure tool: {}",
-                tool.as_str(),
-            ))),
-        };
-
-        let duration_ms = start_time
-            .elapsed()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX);
-        let (status, error_code) = match &result {
-            Ok(_) => (ToolStatus::Ok, None),
-            Err(e) => (ToolStatus::Error, Some(e.code().as_str().to_string())),
-        };
-        self.emit_tool_end(start_seq, tool, None, status, error_code, duration_ms)
-            .await;
-
-        match result {
-            Ok(resp) => {
-                let value = serde_json::to_value(&resp)
-                    .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::structured(value))
-            }
-            Err(e) => Err(crate::mcp_error::to_mcp_error(&e)),
-        }
+        })
+        .await
     }
 
     /// Apply the registered [`rimap_audit::redact::Redactor`] schema for
