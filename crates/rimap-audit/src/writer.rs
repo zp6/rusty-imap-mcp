@@ -367,7 +367,7 @@ impl AuditWriter {
     /// Propagates any error from `allocate_seq` or `write_record`.
     pub fn log_tool_start(
         &self,
-        tool: &str,
+        tool: rimap_core::tool::ToolName,
         account: Option<&str>,
         posture_effective: &str,
         arguments_redacted: serde_json::Value,
@@ -376,7 +376,7 @@ impl AuditWriter {
         self.emit(crate::record::Payload::ToolStart(
             crate::record::ToolStart {
                 account: account.map(str::to_string),
-                tool: tool.to_string(),
+                tool: tool.as_str().to_string(),
                 posture_effective: posture_effective.to_string(),
                 arguments_redacted,
                 arguments_hash_sha256,
@@ -395,7 +395,7 @@ impl AuditWriter {
     pub fn log_tool_end(
         &self,
         start_seq: crate::ids::Seq,
-        tool: &str,
+        tool: rimap_core::tool::ToolName,
         account: Option<&str>,
         status: crate::record::ToolStatus,
         error_code: Option<String>,
@@ -406,7 +406,7 @@ impl AuditWriter {
         self.emit(crate::record::Payload::ToolEnd(crate::record::ToolEnd {
             account: account.map(str::to_string),
             start_seq,
-            tool: tool.to_string(),
+            tool: tool.as_str().to_string(),
             status,
             error_code,
             duration_ms,
@@ -447,7 +447,9 @@ pub struct ProcessStartInputs {
     /// Sprint 5.
     pub git_commit: String,
     /// Effective base posture at startup (single-account mode).
-    pub posture: Option<String>,
+    /// Typed at the construction seam to keep the on-disk string form
+    /// in sync with the [`rimap_core::Posture`] taxonomy.
+    pub posture: Option<rimap_core::Posture>,
     /// Per-account summaries (multi-account mode).
     pub accounts: Option<Vec<crate::record::AccountSummary>>,
     /// Absolute path of the loaded config file.
@@ -480,7 +482,7 @@ impl AuditWriter {
         let payload = crate::record::ProcessStart {
             version: inputs.version,
             git_commit: inputs.git_commit,
-            posture: inputs.posture,
+            posture: inputs.posture.map(|p| p.as_str().to_string()),
             accounts: inputs.accounts,
             config_path: inputs.config_path,
             config_hash_sha256: inputs.config_hash_sha256,
@@ -1002,7 +1004,7 @@ mod tests {
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
-            posture: Some("draft-safe".to_string()),
+            posture: Some(rimap_core::Posture::DraftSafe),
             accounts: None,
             config_path: std::path::PathBuf::from("/tmp/config.toml"),
             config_hash_sha256: "ab".repeat(32),
@@ -1101,7 +1103,7 @@ mod tests {
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
-            posture: Some("draft-safe".to_string()),
+            posture: Some(rimap_core::Posture::DraftSafe),
             accounts: None,
             config_path: std::path::PathBuf::from("/tmp/c.toml"),
             config_hash_sha256: "00".repeat(32),

@@ -26,6 +26,11 @@ pub enum ProcessEndReason {
 }
 
 /// Per-account summary for multi-account `process_start` records.
+///
+/// The on-disk shape carries `posture` as a plain string so existing
+/// consumers keep parsing unchanged, but construction should go through
+/// [`AccountSummary::new`] which takes the typed [`rimap_core::Posture`]
+/// so the written value always matches the canonical enum.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountSummary {
     /// Account name from config.
@@ -34,6 +39,20 @@ pub struct AccountSummary {
     pub posture: String,
     /// IMAP host for this account.
     pub imap_host: String,
+}
+
+impl AccountSummary {
+    /// Construct an `AccountSummary` from typed parts. Renders the
+    /// posture via [`rimap_core::Posture::as_str`] so the stored string
+    /// stays in lockstep with the enum.
+    #[must_use]
+    pub fn new(name: String, posture: rimap_core::Posture, imap_host: String) -> Self {
+        Self {
+            name,
+            posture: posture.as_str().to_string(),
+            imap_host,
+        }
+    }
 }
 
 /// Payload of the `process_start` kind. Fields chosen to chain history across

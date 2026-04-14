@@ -40,11 +40,7 @@ pub fn init_audit_writer_multi(
 
     let single_account = multi.accounts.len() == 1;
     let posture = if single_account {
-        multi
-            .accounts
-            .values()
-            .next()
-            .map(|a| a.security.posture.to_string())
+        multi.accounts.values().next().map(|a| a.security.posture)
     } else {
         None
     };
@@ -55,10 +51,12 @@ pub fn init_audit_writer_multi(
             multi
                 .accounts
                 .values()
-                .map(|a| AccountSummary {
-                    name: a.id.as_str().to_string(),
-                    posture: a.security.posture.to_string(),
-                    imap_host: a.imap.host.clone(),
+                .map(|a| {
+                    AccountSummary::new(
+                        a.id.as_str().to_string(),
+                        a.security.posture,
+                        a.imap.host.clone(),
+                    )
                 })
                 .collect(),
         )
