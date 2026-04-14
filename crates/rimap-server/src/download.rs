@@ -132,11 +132,14 @@ pub async fn write_attachment_async(
 ) -> Result<PathBuf, RimapError> {
     tokio::task::spawn_blocking(move || write_attachment(&dir, &filename, &data))
         .await
-        .unwrap_or_else(|e| {
-            Err(RimapError::Internal(format!(
-                "spawn_blocking panicked: {e}"
-            )))
-        })
+        .unwrap_or_else(|e| Err(spawn_blocking_panic_error(&e)))
+}
+
+/// Render a `tokio::task::JoinError` from `spawn_blocking` as
+/// `RimapError::Internal`. Panics in the blocking threadpool are
+/// genuine bugs, so the `Internal` mapping is correct.
+fn spawn_blocking_panic_error(err: &tokio::task::JoinError) -> RimapError {
+    RimapError::Internal(format!("spawn_blocking panicked: {err}"))
 }
 
 /// MIME-sniff `data` using magic bytes.

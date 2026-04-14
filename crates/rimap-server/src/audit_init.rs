@@ -5,58 +5,8 @@ use std::path::Path;
 
 use rimap_audit::record::AccountSummary;
 use rimap_audit::{AuditError, AuditOptions, AuditWriter, ProcessStartInputs, Seq};
-#[cfg(test)]
-use rimap_config::ValidatedConfig;
 use rimap_config::validate::ValidatedMultiConfig;
 use sha2::{Digest, Sha256};
-
-/// Open the audit writer from a legacy `ValidatedConfig`, run the pre-flight
-/// self-check, and emit the `process_start` record.
-///
-/// Retained for test compatibility. Production code uses
-/// [`init_audit_writer_multi`].
-///
-/// # Errors
-/// Propagates any `AuditError` from the trailing-state read, open, inode
-/// fetch, or `process_start` write.
-#[cfg(test)]
-pub fn init_audit_writer(
-    cfg: &ValidatedConfig,
-    config_file_path: &Path,
-) -> Result<AuditWriter, AuditError> {
-    let audit_path = &cfg.config.audit.path;
-    let trailing = rimap_audit::read_trailing_state(audit_path)?;
-    let initial_seq = trailing.last_seq.map_or(Seq::FIRST, Seq::next);
-
-    let writer = AuditWriter::open(&AuditOptions {
-        path: audit_path.clone(),
-        rotate_bytes: cfg.config.audit.rotate_bytes,
-        rotate_keep: cfg.config.audit.rotate_keep,
-        retention_seconds: cfg.config.audit.retention_seconds,
-        fail_open: cfg.config.audit.fail_open,
-        initial_seq,
-    })?;
-
-    if let Some(parent) = writer.path().parent() {
-        rimap_audit::backup_exclude::exclude_from_backup(parent);
-    }
-
-    let current = rimap_audit::current_inode(audit_path)?;
-    let config_hash = compute_config_hash(config_file_path);
-
-    writer.log_process_start(ProcessStartInputs {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        git_commit: String::new(),
-        posture: Some(cfg.config.security.posture.to_string()),
-        accounts: None,
-        config_path: config_file_path.to_path_buf(),
-        config_hash_sha256: config_hash,
-        trailing,
-        current_inode: current,
-    })?;
-
-    Ok(writer)
-}
 
 /// Open the audit writer for a multi-account config and emit the
 /// `process_start` record with per-account summaries.
@@ -152,7 +102,7 @@ fn compute_config_hash(path: &Path) -> String {
 mod tests {
     use tempfile::TempDir;
 
-    use super::init_audit_writer;
+    use super::init_audit_writer_multi;
 
     fn write_config(dir: &TempDir) -> std::path::PathBuf {
         let audit = dir.path().join("audit.jsonl");
@@ -186,12 +136,12 @@ allowed_base_dir = "{}"
         let config_path = write_config(&dir);
 
         let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
-        let validated = rimap_config::validate::validate(raw).unwrap();
+        let validated = rimap_config::validate::validate_legacy_as_multi(raw).unwrap();
 
         // Scope the writer so the file lock is released before reading.
-        let audit_path = validated.config.audit.path.clone();
+        let audit_path = validated.audit.path.clone();
         {
-            init_audit_writer(&validated, &config_path).unwrap();
+            init_audit_writer_multi(&validated, &config_path).unwrap();
         }
         let contents = std::fs::read_to_string(&audit_path).unwrap();
         let first_line = contents.lines().next().unwrap();
@@ -222,11 +172,11 @@ allowed_base_dir = "{}"
         let dir = TempDir::new().unwrap();
         let config_path = write_config(&dir);
         let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
-        let validated = rimap_config::validate::validate(raw).unwrap();
-        let audit_path = validated.config.audit.path.clone();
+        let validated = rimap_config::validate::validate_legacy_as_multi(raw).unwrap();
+        let audit_path = validated.audit.path.clone();
 
         {
-            let writer = init_audit_writer(&validated, &config_path).unwrap();
+            let writer = init_audit_writer_multi(&validated, &config_path).unwrap();
             writer.log_process_end(ProcessEndReason::Eof, 0).unwrap();
         }
 
@@ -252,8 +202,8 @@ allowed_base_dir = "{}"
         let dir = TempDir::new().unwrap();
         let config_path = write_config(&dir);
         let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
-        let validated = rimap_config::validate::validate(raw).unwrap();
-        let audit_path = validated.config.audit.path.clone();
+        let validated = rimap_config::validate::validate_legacy_as_multi(raw).unwrap();
+        let audit_path = validated.audit.path.clone();
 
         // Pre-populate the audit file with some records so trailing state is non-empty.
         {
@@ -282,7 +232,7 @@ allowed_base_dir = "{}"
 
         // init_audit_writer should resume from seq 2.
         {
-            init_audit_writer(&validated, &config_path).unwrap();
+            init_audit_writer_multi(&validated, &config_path).unwrap();
         }
 
         let contents = std::fs::read_to_string(&audit_path).unwrap();

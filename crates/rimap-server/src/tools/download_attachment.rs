@@ -124,6 +124,12 @@ pub async fn handle(
     })
 }
 
+/// Stable `type` tag strings used in download-attachment security
+/// warnings. Constants keep the wire vocabulary in one place so
+/// changing a name is a single-file edit that the compiler catches.
+const WARN_MIME_TYPE_MISMATCH: &str = "mime_type_mismatch";
+const WARN_MIME_SNIFF_MISMATCH: &str = "mime_sniff_mismatch";
+
 /// Compare BODYSTRUCTURE-declared MIME type against `mail_parser`'s type.
 ///
 /// Returns a security warning if they disagree (case-insensitive).
@@ -132,7 +138,7 @@ fn cross_validate_mime_type(bodystructure_type: &str, parser_type: &str) -> Vec<
         return Vec::new();
     }
     vec![serde_json::json!({
-        "type": "mime_type_mismatch",
+        "type": WARN_MIME_TYPE_MISMATCH,
         "bodystructure_type": bodystructure_type,
         "parser_type": parser_type,
         "message":
@@ -152,7 +158,7 @@ fn check_sniff_mismatch(declared: &str, sniffed: Option<&str>) -> Vec<serde_json
         return Vec::new();
     }
     vec![serde_json::json!({
-        "type": "mime_sniff_mismatch",
+        "type": WARN_MIME_SNIFF_MISMATCH,
         "mime_declared": declared,
         "mime_sniffed": sniffed,
         "message":
