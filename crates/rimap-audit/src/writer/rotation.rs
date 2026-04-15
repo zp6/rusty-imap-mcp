@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use fs4::fs_std::FileExt;
 use time::OffsetDateTime;
 
-use crate::error::AuditError;
+use crate::AuditError;
 
 /// Compute the rotation destination path: `<active>.<rfc3339-timestamp>`.
 /// Example: `audit.jsonl.2026-04-07T14-22-01.000Z`.
@@ -77,7 +77,7 @@ pub fn rotate_file(
         reason: format!("rename to {}: {source}", dst.display()),
     })?;
 
-    let new_file = crate::fs_ext::writer_open_options()
+    let new_file = crate::fs::writer_open_options()
         .open(active)
         .map_err(|source| AuditError::Rotate {
             path: active.to_path_buf(),
@@ -208,7 +208,7 @@ mod tests {
     use tempfile::TempDir;
     use time::macros::datetime;
 
-    use crate::rotation::{rotate_file, rotated_path, unique_rotated_path};
+    use crate::writer::rotation::{rotate_file, rotated_path, unique_rotated_path};
 
     #[test]
     fn rotated_path_appends_utc_stamp() {

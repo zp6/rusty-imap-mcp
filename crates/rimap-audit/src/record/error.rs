@@ -123,7 +123,7 @@ mod tests {
 
     use rimap_core::ErrorCode;
 
-    use crate::error::AuditError;
+    use crate::AuditError;
 
     #[test]
     fn open_time_errors_map_to_config() {

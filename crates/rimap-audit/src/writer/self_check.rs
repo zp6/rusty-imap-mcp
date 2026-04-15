@@ -12,8 +12,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::error::AuditError;
-use crate::ids::{ProcessId, Seq};
+use crate::AuditError;
+use crate::record::ids::{ProcessId, Seq};
 
 /// Hard cap on the file size the self-check will read. Files larger than
 /// this cause the self-check to return default state with a `tracing::warn!`.
@@ -88,7 +88,7 @@ pub fn read_trailing_state(path: &Path) -> Result<TrailingState, AuditError> {
         return Ok(TrailingState::default());
     }
 
-    let file = crate::fs_ext::reader_open_options()
+    let file = crate::fs::reader_open_options()
         .open(path)
         .map_err(|source| AuditError::Read {
             path: path.to_path_buf(),
@@ -207,7 +207,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use crate::self_check::{TrailingState, read_trailing_state};
+    use crate::writer::self_check::{TrailingState, read_trailing_state};
 
     fn write_file(dir: &TempDir, name: &str, body: &[u8]) -> std::path::PathBuf {
         let path = dir.path().join(name);

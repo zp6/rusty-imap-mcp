@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use rimap_core::{ErrorCode, Posture, WarningCode, tool::ToolName};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::ids::{ProcessId, Seq, Timestamp};
+pub(crate) mod error;
+pub mod ids;
+
+use crate::record::ids::{ProcessId, Seq, Timestamp};
 
 /// The effective posture recorded on a `tool_start` record.
 ///
@@ -325,7 +328,7 @@ mod tests {
 
     use rimap_core::{Posture, tool::ToolName};
 
-    use crate::ids::{ProcessId, Seq, Timestamp};
+    use crate::record::ids::{ProcessId, Seq, Timestamp};
     use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason, ProcessStart};
 
     fn sample_start() -> AuditRecord {

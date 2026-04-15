@@ -19,7 +19,11 @@ use std::sync::{Arc, Mutex};
 
 use fs4::fs_std::FileExt;
 
-use crate::error::AuditError;
+pub(crate) mod provenance;
+pub(crate) mod rotation;
+pub(crate) mod self_check;
+
+use crate::AuditError;
 
 /// Options for opening an audit writer.
 #[derive(Debug, Clone)]
@@ -46,7 +50,7 @@ pub struct AuditOptions {
     /// First `Seq` value this writer will allocate. Callers compute this from
     /// `read_trailing_state(path).last_seq.map(Seq::next).unwrap_or(Seq::FIRST)`
     /// before calling `open`.
-    pub initial_seq: crate::ids::Seq,
+    pub initial_seq: crate::record::ids::Seq,
 }
 
 /// Append-only JSONL writer. Construct via [`AuditWriter::open`]. Cheaply
@@ -59,7 +63,7 @@ pub struct AuditWriter {
     rotate_keep: u32,
     retention_seconds: Option<u64>,
     fail_open: bool,
-    process_id: crate::ids::ProcessId,
+    process_id: crate::record::ids::ProcessId,
     suppressed_failures: Arc<AtomicU64>,
     inner: Arc<Mutex<Inner>>,
 }
@@ -70,7 +74,7 @@ pub(crate) struct Inner {
     /// Total bytes written to the active file (used by rotation).
     pub(crate) bytes_written: u64,
     /// Next `Seq` value to hand out via `allocate_seq`.
-    pub(crate) next_seq: crate::ids::Seq,
+    pub(crate) next_seq: crate::record::ids::Seq,
 }
 
 impl AuditWriter {
@@ -92,7 +96,7 @@ impl AuditWriter {
             })?;
             set_parent_mode_0700(parent);
         }
-        let file = crate::fs_ext::writer_open_options()
+        let file = crate::fs::writer_open_options()
             .open(&opts.path)
             .map_err(|source| AuditError::Open {
                 path: opts.path.clone(),
@@ -132,7 +136,7 @@ impl AuditWriter {
             rotate_keep: opts.rotate_keep,
             retention_seconds: opts.retention_seconds,
             fail_open: opts.fail_open,
-            process_id: crate::ids::ProcessId::new_now(),
+            process_id: crate::record::ids::ProcessId::new_now(),
             suppressed_failures: Arc::new(AtomicU64::new(0)),
             inner: Arc::new(Mutex::new(Inner {
                 buf: BufWriter::new(file),
@@ -157,7 +161,7 @@ impl AuditWriter {
     /// The process ID this writer was opened with. Stable for the lifetime
     /// of the writer.
     #[must_use]
-    pub fn process_id(&self) -> crate::ids::ProcessId {
+    pub fn process_id(&self) -> crate::record::ids::ProcessId {
         self.process_id
     }
 
@@ -182,7 +186,7 @@ impl AuditWriter {
     /// # Errors
     /// Returns `AuditError::Write` if the internal mutex is poisoned.
     #[must_use = "the seq value should be stored in the audit record"]
-    pub fn allocate_seq(&self) -> Result<crate::ids::Seq, AuditError> {
+    pub fn allocate_seq(&self) -> Result<crate::record::ids::Seq, AuditError> {
         let mut guard = self.lock_inner()?;
         let seq = guard.next_seq;
         guard.next_seq = seq.next();
@@ -204,11 +208,11 @@ impl AuditWriter {
     /// with the writer's `process_id` and `Timestamp::now()`, and write it
     /// as a single JSONL line. All `log_*` methods route through this helper
     /// so the allocate-build-write skeleton lives in one place.
-    fn emit(&self, payload: crate::record::Payload) -> Result<crate::ids::Seq, AuditError> {
+    fn emit(&self, payload: crate::record::Payload) -> Result<crate::record::ids::Seq, AuditError> {
         let seq = self.allocate_seq()?;
         let record = crate::record::AuditRecord {
             seq,
-            ts: crate::ids::Timestamp::now(),
+            ts: crate::record::ids::Timestamp::now(),
             process_id: self.process_id,
             payload,
         };
@@ -220,7 +224,10 @@ impl AuditWriter {
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_auth(&self, payload: crate::record::Auth) -> Result<crate::ids::Seq, AuditError> {
+    pub fn log_auth(
+        &self,
+        payload: crate::record::Auth,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
         self.emit(crate::record::Payload::Auth(payload))
     }
 
@@ -286,7 +293,7 @@ impl AuditWriter {
         // rotation" and racing on the rename.
         if self.rotate_bytes > 0 && guard.bytes_written >= self.rotate_bytes {
             let (new_buf, new_len) =
-                crate::rotation::rotate_file(&self.path, self.rotate_keep, self.retention_seconds)?;
+                self::rotation::rotate_file(&self.path, self.rotate_keep, self.retention_seconds)?;
             guard.buf = new_buf;
             guard.bytes_written = new_len;
             tracing::info!(path = %self.path.display(), "audit file rotated");
@@ -372,7 +379,7 @@ impl AuditWriter {
         posture_effective: Option<rimap_core::Posture>,
         arguments_redacted: serde_json::Value,
         arguments_hash_sha256: String,
-    ) -> Result<crate::ids::Seq, AuditError> {
+    ) -> Result<crate::record::ids::Seq, AuditError> {
         // `None` models the infrastructure-tool dispatch path (`use_account`,
         // `list_accounts`) which bypasses per-account posture gating by
         // design. `PostureEffective` serializes as the historical on-disk
@@ -401,7 +408,7 @@ impl AuditWriter {
     #[expect(clippy::too_many_arguments, reason = "record schema is fixed")]
     pub fn log_tool_end(
         &self,
-        start_seq: crate::ids::Seq,
+        start_seq: crate::record::ids::Seq,
         tool: rimap_core::tool::ToolName,
         account: Option<&str>,
         status: crate::record::ToolStatus,
@@ -409,7 +416,7 @@ impl AuditWriter {
         duration_ms: u64,
         result_summary: crate::record::ResultSummary,
         provenance: crate::record::Provenance,
-    ) -> Result<crate::ids::Seq, AuditError> {
+    ) -> Result<crate::record::ids::Seq, AuditError> {
         self.emit(crate::record::Payload::ToolEnd(crate::record::ToolEnd {
             account: account.map(str::to_string),
             start_seq,
@@ -432,7 +439,7 @@ impl AuditWriter {
         &self,
         reason: crate::record::ProcessEndReason,
         total_tool_calls: u64,
-    ) -> Result<crate::ids::Seq, AuditError> {
+    ) -> Result<crate::record::ids::Seq, AuditError> {
         self.emit(crate::record::Payload::ProcessEnd(
             crate::record::ProcessEnd {
                 reason,
@@ -444,8 +451,8 @@ impl AuditWriter {
 
 /// Inputs to [`AuditWriter::log_process_start`]. Caller computes the
 /// inode-tamper signal by passing the trailing state from
-/// [`crate::self_check::read_trailing_state`] (run before `open`) and the
-/// current inode (run after `open`, via [`crate::self_check::current_inode`]).
+/// [`crate::writer::self_check::read_trailing_state`] (run before `open`) and the
+/// current inode (run after `open`, via [`crate::writer::self_check::current_inode`]).
 #[derive(Debug, Clone)]
 pub struct ProcessStartInputs {
     /// `CARGO_PKG_VERSION` of the running binary.
@@ -464,9 +471,9 @@ pub struct ProcessStartInputs {
     /// SHA-256 of the config file contents at load time, hex-encoded.
     pub config_hash_sha256: String,
     /// Trailing state read from the audit file BEFORE this writer was opened.
-    pub trailing: crate::self_check::TrailingState,
+    pub trailing: crate::writer::self_check::TrailingState,
     /// Inode of the audit file as observed AFTER this writer was opened
-    /// (call `crate::self_check::current_inode` on the path).
+    /// (call `crate::writer::self_check::current_inode` on the path).
     pub current_inode: u64,
 }
 
@@ -481,7 +488,7 @@ impl AuditWriter {
     pub fn log_process_start(
         &self,
         inputs: ProcessStartInputs,
-    ) -> Result<crate::ids::Seq, AuditError> {
+    ) -> Result<crate::record::ids::Seq, AuditError> {
         let inode_changed = inputs
             .trailing
             .last_recorded_inode
@@ -570,7 +577,7 @@ fn set_parent_mode_0700(_parent: &Path) {}
 mod tests {
     use tempfile::TempDir;
 
-    use crate::error::AuditError;
+    use crate::AuditError;
     use crate::writer::{AuditOptions, AuditWriter};
 
     #[test]
@@ -583,7 +590,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         assert_eq!(writer.path(), path);
@@ -600,7 +607,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         let err = AuditWriter::open(&AuditOptions {
@@ -609,7 +616,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap_err();
         match err {
@@ -629,7 +636,7 @@ mod tests {
                 rotate_keep: 0,
                 retention_seconds: None,
                 fail_open: false,
-                initial_seq: crate::ids::Seq::FIRST,
+                initial_seq: crate::record::ids::Seq::FIRST,
             })
             .unwrap();
         }
@@ -640,7 +647,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
     }
@@ -655,7 +662,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         assert!(path.exists());
@@ -664,7 +671,7 @@ mod tests {
 
     #[test]
     fn write_record_appends_one_jsonl_line() {
-        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
@@ -675,7 +682,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -701,7 +708,7 @@ mod tests {
 
     #[test]
     fn write_record_tracks_bytes_written() {
-        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
@@ -712,7 +719,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -736,7 +743,7 @@ mod tests {
 
     #[test]
     fn rotation_creates_new_file_and_preserves_contents() {
-        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
@@ -747,7 +754,7 @@ mod tests {
             rotate_keep: 5,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -806,7 +813,7 @@ mod tests {
 
     #[test]
     fn after_rotation_the_lock_still_blocks_new_writers() {
-        use crate::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
@@ -817,7 +824,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -840,7 +847,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap_err();
         match err {
@@ -859,7 +866,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         let pid_a = writer.process_id();
@@ -877,15 +884,15 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         let s1 = writer.allocate_seq().unwrap();
         let s2 = writer.allocate_seq().unwrap();
         let s3 = writer.allocate_seq().unwrap();
-        assert_eq!(s1, crate::ids::Seq::FIRST);
-        assert_eq!(s2, crate::ids::Seq(2));
-        assert_eq!(s3, crate::ids::Seq(3));
+        assert_eq!(s1, crate::record::ids::Seq::FIRST);
+        assert_eq!(s2, crate::record::ids::Seq(2));
+        assert_eq!(s3, crate::record::ids::Seq(3));
     }
 
     #[test]
@@ -898,11 +905,11 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq(42),
+            initial_seq: crate::record::ids::Seq(42),
         })
         .unwrap();
-        assert_eq!(writer.allocate_seq().unwrap(), crate::ids::Seq(42));
-        assert_eq!(writer.allocate_seq().unwrap(), crate::ids::Seq(43));
+        assert_eq!(writer.allocate_seq().unwrap(), crate::record::ids::Seq(42));
+        assert_eq!(writer.allocate_seq().unwrap(), crate::record::ids::Seq(43));
     }
 
     #[test]
@@ -917,7 +924,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
@@ -934,7 +941,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(seq, crate::ids::Seq::FIRST);
+        assert_eq!(seq, crate::record::ids::Seq::FIRST);
         drop(writer);
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -959,7 +966,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         let pid = writer.process_id();
@@ -992,8 +999,8 @@ mod tests {
 
     #[test]
     fn log_process_start_populates_chain_of_history_fields() {
-        use crate::self_check::TrailingState;
         use crate::writer::ProcessStartInputs;
+        use crate::writer::self_check::TrailingState;
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -1003,11 +1010,11 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
-        let prior_pid = crate::ids::ProcessId::new_now();
+        let prior_pid = crate::record::ids::ProcessId::new_now();
         let inputs = ProcessStartInputs {
             version: "0.0.0".to_string(),
             git_commit: String::new(),
@@ -1016,14 +1023,14 @@ mod tests {
             config_path: std::path::PathBuf::from("/tmp/config.toml"),
             config_hash_sha256: "ab".repeat(32),
             trailing: TrailingState {
-                last_seq: Some(crate::ids::Seq(99)),
+                last_seq: Some(crate::record::ids::Seq(99)),
                 last_process_id: Some(prior_pid),
                 last_recorded_inode: Some(7777),
             },
             current_inode: 8888,
         };
         let seq = writer.log_process_start(inputs).unwrap();
-        assert_eq!(seq, crate::ids::Seq::FIRST);
+        assert_eq!(seq, crate::record::ids::Seq::FIRST);
         drop(writer);
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1047,12 +1054,12 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 
         let seq = writer.log_process_end(ProcessEndReason::Eof, 42).unwrap();
-        assert_eq!(seq, crate::ids::Seq::FIRST);
+        assert_eq!(seq, crate::record::ids::Seq::FIRST);
         drop(writer);
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -1074,7 +1081,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
         let pid = writer.process_id();
@@ -1092,8 +1099,8 @@ mod tests {
 
     #[test]
     fn log_process_start_marks_inode_unchanged_when_matching() {
-        use crate::self_check::TrailingState;
         use crate::writer::ProcessStartInputs;
+        use crate::writer::self_check::TrailingState;
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -1103,7 +1110,7 @@ mod tests {
             rotate_keep: 0,
             retention_seconds: None,
             fail_open: false,
-            initial_seq: crate::ids::Seq::FIRST,
+            initial_seq: crate::record::ids::Seq::FIRST,
         })
         .unwrap();
 

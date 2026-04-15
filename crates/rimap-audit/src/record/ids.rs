@@ -123,7 +123,7 @@ impl<'de> Deserialize<'de> for Timestamp {
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use crate::ids::{ProcessId, Seq, Timestamp};
+    use crate::record::ids::{ProcessId, Seq, Timestamp};
 
     #[test]
     fn seq_starts_at_one_and_increments() {

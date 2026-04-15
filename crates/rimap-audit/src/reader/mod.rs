@@ -7,7 +7,9 @@ use std::path::Path;
 use fs4::fs_std::FileExt;
 use time::OffsetDateTime;
 
-use crate::error::AuditError;
+pub mod backup_exclude;
+
+use crate::AuditError;
 use crate::record::{AuditRecord, Payload};
 
 /// Filter predicate for `audit merge`. Empty fields mean "no constraint".
@@ -105,7 +107,7 @@ fn kind_of(payload: &Payload) -> &'static str {
 /// - [`AuditError::Locked`] when the file is held exclusively by another
 ///   process (e.g. a running server).
 pub fn open_shared(path: &Path) -> Result<File, AuditError> {
-    let file = crate::fs_ext::reader_open_options()
+    let file = crate::fs::reader_open_options()
         .open(path)
         .map_err(|source| AuditError::Open {
             path: path.to_path_buf(),
@@ -234,13 +236,13 @@ mod tests {
     use tempfile::TempDir;
     use time::macros::datetime;
 
-    use crate::ids::{ProcessId, Timestamp};
     use crate::reader::{Filter, stream_records};
+    use crate::record::ids::{ProcessId, Timestamp};
     use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
     fn sample(seq: u64, pid: ProcessId) -> AuditRecord {
         AuditRecord {
-            seq: crate::ids::Seq(seq),
+            seq: crate::record::ids::Seq(seq),
             ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
             process_id: pid,
             payload: Payload::ProcessEnd(ProcessEnd {
@@ -371,7 +373,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let pid = ProcessId::new_now();
         let tool_rec = AuditRecord {
-            seq: crate::ids::Seq(1),
+            seq: crate::record::ids::Seq(1),
             ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
             process_id: pid,
             payload: Payload::ToolStart(ToolStart {

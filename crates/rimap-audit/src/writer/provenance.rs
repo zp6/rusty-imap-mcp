@@ -137,7 +137,7 @@ impl ProvenanceBuffer {
 mod tests {
     use time::OffsetDateTime;
 
-    use crate::provenance::ProvenanceBuffer;
+    use crate::writer::provenance::ProvenanceBuffer;
 
     fn at(secs: i64) -> OffsetDateTime {
         OffsetDateTime::from_unix_timestamp(1_700_000_000 + secs).unwrap()
