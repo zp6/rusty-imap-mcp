@@ -165,15 +165,15 @@ pub struct TlsConfigBundle {
 /// `CapturingVerifier`.
 ///
 /// # Errors
-/// - `Error::TlsHandshake` if rustls cannot construct a `ClientConfig` with
+/// - `ImapError::TlsHandshake` if rustls cannot construct a `ClientConfig` with
 ///   the workspace's safe default protocol versions (would only fire if a
 ///   future ring provider drops every cipher suite or kx group).
-/// - `Error::TlsHandshake` if `WebPkiServerVerifier::builder.build()` fails
+/// - `ImapError::TlsHandshake` if `WebPkiServerVerifier::builder.build()` fails
 ///   (would only fire if `webpki_roots::TLS_SERVER_ROOTS` is somehow empty,
 ///   e.g. a corrupt webpki-roots release).
 pub fn build_tls_config(
     pinned: Option<TlsFingerprint>,
-) -> Result<TlsConfigBundle, crate::error::Error> {
+) -> Result<TlsConfigBundle, crate::error::ImapError> {
     let last_observed = Arc::new(OnceLock::new());
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
 
@@ -185,7 +185,7 @@ pub fn build_tls_config(
         });
         ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .map_err(crate::error::Error::TlsHandshake)?
+            .map_err(crate::error::ImapError::TlsHandshake)?
             .dangerous()
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth()
@@ -207,9 +207,9 @@ pub fn build_tls_config(
             // still propagate them as TlsHandshake errors rather than
             // panicking. (MAIL-TLS-03)
             .map_err(|e| {
-                crate::error::Error::TlsHandshake(tokio_rustls::rustls::Error::General(format!(
-                    "WebPkiServerVerifier builder failed: {e}"
-                )))
+                crate::error::ImapError::TlsHandshake(tokio_rustls::rustls::Error::General(
+                    format!("WebPkiServerVerifier builder failed: {e}"),
+                ))
             })?;
         let capturing = Arc::new(CapturingVerifier {
             inner: inner_verifier,
@@ -217,7 +217,7 @@ pub fn build_tls_config(
         });
         ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
-            .map_err(crate::error::Error::TlsHandshake)?
+            .map_err(crate::error::ImapError::TlsHandshake)?
             .dangerous()
             .with_custom_certificate_verifier(capturing)
             .with_no_client_auth()

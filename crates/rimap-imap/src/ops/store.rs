@@ -3,7 +3,7 @@
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
-use crate::error::Error;
+use crate::error::ImapError;
 use crate::types::{Flag, FlagAction, Uid};
 
 /// Maximum UIDs per STORE command.
@@ -15,16 +15,16 @@ const MAX_BATCH: usize = 100;
 ///
 /// # Errors
 ///
-/// Returns `Error::BatchTooLarge` if `uids.len() > MAX_BATCH`.
+/// Returns `ImapError::BatchTooLarge` if `uids.len() > MAX_BATCH`.
 /// Propagates connection-lost or protocol errors from async-imap.
-pub async fn store(
+pub(crate) async fn store(
     session: &mut ImapSession,
     uids: &[Uid],
     flags: &[Flag],
     action: FlagAction,
-) -> Result<Vec<Uid>, Error> {
+) -> Result<Vec<Uid>, ImapError> {
     if uids.len() > MAX_BATCH {
-        return Err(Error::BatchTooLarge {
+        return Err(ImapError::BatchTooLarge {
             count: uids.len(),
             limit: MAX_BATCH,
         });
@@ -71,15 +71,15 @@ pub(crate) fn uid_set_string(uids: &[Uid]) -> String {
 }
 
 /// Validate that a keyword string contains only IMAP atom characters.
-/// Returns `Error::InvalidInput` if any non-atom byte is found.
+/// Returns `ImapError::InvalidInput` if any non-atom byte is found.
 ///
 /// IMAP atom = 1*ATOM-CHAR (RFC 3501 section 9 formal syntax)
 /// ATOM-CHAR = any CHAR except atom-specials
 /// atom-specials = "(" / ")" / "{" / SP / CTL /
 ///                 list-wildcards / quoted-specials / resp-specials
-pub(crate) fn validate_keyword(keyword: &str) -> Result<(), Error> {
+pub(crate) fn validate_keyword(keyword: &str) -> Result<(), ImapError> {
     if keyword.is_empty() {
-        return Err(Error::InvalidInput {
+        return Err(ImapError::InvalidInput {
             field: "keyword",
             reason: "keyword must not be empty",
         });
@@ -88,14 +88,14 @@ pub(crate) fn validate_keyword(keyword: &str) -> Result<(), Error> {
         match byte {
             // CTL (0x00-0x1f, 0x7f)
             0x00..=0x1f | 0x7f => {
-                return Err(Error::InvalidInput {
+                return Err(ImapError::InvalidInput {
                     field: "keyword",
                     reason: "contains control characters",
                 });
             }
             // atom-specials: ( ) { SP % * " \ ] [
             b'(' | b')' | b'{' | b' ' | b'%' | b'*' | b'"' | b'\\' | b']' | b'[' => {
-                return Err(Error::InvalidInput {
+                return Err(ImapError::InvalidInput {
                     field: "keyword",
                     reason: "contains IMAP atom-special characters",
                 });
@@ -113,9 +113,9 @@ pub(crate) fn validate_keyword(keyword: &str) -> Result<(), Error> {
 ///
 /// # Errors
 ///
-/// Returns `Error::InvalidInput` if a keyword contains non-atom
+/// Returns `ImapError::InvalidInput` if a keyword contains non-atom
 /// characters (control bytes, spaces, specials).
-pub(crate) fn flags_string(flags: &[Flag]) -> Result<String, Error> {
+pub(crate) fn flags_string(flags: &[Flag]) -> Result<String, ImapError> {
     let mut s = String::new();
     for (i, flag) in flags.iter().enumerate() {
         if i > 0 {
@@ -156,7 +156,7 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(
             err,
-            Error::InvalidInput {
+            ImapError::InvalidInput {
                 field: "keyword",
                 ..
             }
@@ -173,7 +173,7 @@ mod tests {
         let err = validate_keyword("").unwrap_err();
         assert!(matches!(
             err,
-            Error::InvalidInput {
+            ImapError::InvalidInput {
                 field: "keyword",
                 reason: "keyword must not be empty"
             }

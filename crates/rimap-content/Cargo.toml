@@ -16,16 +16,15 @@ description = "MIME parsing, Unicode-safe sanitization, and look-alike detection
 workspace = true
 
 [dependencies]
+rimap-core = { path = "../rimap-core", version = "1.0.0" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true }
-tracing = { workspace = true }
 mail-parser = { workspace = true }
 encoding_rs = { workspace = true }
 unicode-normalization = { workspace = true }
 unicode-segmentation = { workspace = true }
-unicode-properties = { workspace = true }
 unicode-script = { workspace = true }
 scraper = { workspace = true }
 ammonia = { workspace = true }
@@ -41,3 +40,8 @@ phf_codegen = { workspace = true }
 proptest = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
+
+# `phf` is consumed by the `include!`-expanded output of `build.rs`, so
+# static analyzers like cargo-machete cannot see the direct usage.
+[package.metadata.cargo-machete]
+ignored = ["phf"]

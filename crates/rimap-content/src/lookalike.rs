@@ -104,10 +104,16 @@ fn label_mixes_scripts(label: &str) -> bool {
             continue;
         }
         let s = c.script();
-        if matches!(s, Script::Common | Script::Inherited | Script::Unknown) {
-            continue;
+        // `Script` is a large external enum (>150 variants) from `unicode_script`;
+        // enumerating every non-ignored variant is impractical and would couple
+        // us to upstream library changes. Explicitly bind the three
+        // script-neutral variants as no-ops; insert everything else.
+        match s {
+            Script::Common | Script::Inherited | Script::Unknown => {}
+            other => {
+                scripts.insert(other);
+            }
         }
-        scripts.insert(s);
     }
     if scripts.len() <= 1 {
         return false;
@@ -254,18 +260,18 @@ fn emit_classification(domain: &str, location: &str, out: &mut Vec<SecurityWarni
         return;
     };
     if c.mixed_script {
-        out.push(SecurityWarning {
-            code: WarningCode::LookalikeMixedScript,
-            detail: Some(format!("domain={},unicode={}", c.ascii, c.unicode)),
-            location: Some(location.to_string()),
-        });
+        out.push(SecurityWarning::at(
+            WarningCode::LookalikeMixedScript,
+            format!("domain={},unicode={}", c.ascii, c.unicode),
+            location,
+        ));
     }
     if c.was_punycode {
-        out.push(SecurityWarning {
-            code: WarningCode::LookalikeIdnPunycode,
-            detail: Some(format!("domain={},ulabel={}", c.ascii, c.unicode)),
-            location: Some(location.to_string()),
-        });
+        out.push(SecurityWarning::at(
+            WarningCode::LookalikeIdnPunycode,
+            format!("domain={},ulabel={}", c.ascii, c.unicode),
+            location,
+        ));
     }
 }
 

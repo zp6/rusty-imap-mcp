@@ -9,7 +9,7 @@ mod support;
 
 use std::time::Duration;
 
-use rimap_imap::error::{AuthFailure, Error};
+use rimap_imap::error::{AuthFailure, ImapError};
 use rimap_imap::{Connection, ConnectionConfig};
 use support::container::{ConnectedHarness, DovecotHarness, HarnessError, PinChoice};
 
@@ -61,14 +61,14 @@ async fn case_02_connect_with_wrong_pin_emits_audit_and_returns_tls_error() {
     };
     let result = h.connection.list_folders("*").await;
     match result {
-        Err(Error::Tls { observed, expected }) => {
+        Err(ImapError::Tls { observed, expected }) => {
             assert_eq!(
                 expected,
                 rimap_core::TlsFingerprint::from_cert_der(b"deliberately-wrong")
             );
             assert_eq!(observed, h.harness.pinned_fingerprint());
         }
-        Err(Error::TlsHandshake(_)) => {
+        Err(ImapError::TlsHandshake(_)) => {
             // Acceptable fallback if the enrichment path didn't fire.
         }
         #[expect(clippy::panic, reason = "test failure path")]
@@ -94,7 +94,7 @@ async fn case_03_connect_with_no_pin_uses_system_trust_and_fails_self_signed() {
     };
     let result = h.connection.list_folders("*").await;
     match result {
-        Err(Error::TlsHandshake(_)) => {}
+        Err(ImapError::TlsHandshake(_)) => {}
         #[expect(clippy::panic, reason = "test failure path")]
         other => panic!("expected TlsHandshake error, got {other:?}"),
     }
@@ -148,7 +148,7 @@ async fn case_04_login_rejected_emits_audit() {
 
     let result = conn.list_folders("*").await;
     match result {
-        Err(Error::Auth {
+        Err(ImapError::Auth {
             reason: AuthFailure::LoginRejected,
         }) => {}
         #[expect(clippy::panic, reason = "test failure path")]
@@ -288,7 +288,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
     let uids = Box::pin(conn.search("INBOX", q)).await.unwrap();
     let result = conn.fetch_body("INBOX", uids[0]).await;
     match result {
-        Err(Error::SizeLimit { limit }) => assert_eq!(limit, 10),
+        Err(ImapError::SizeLimit { limit }) => assert_eq!(limit, 10),
         #[expect(clippy::panic, reason = "test failure path")]
         other => panic!("expected SizeLimit, got {other:?}"),
     }
@@ -313,7 +313,7 @@ async fn case_11_tcp_half_open_recovery() {
     // Next op should fail with ConnectionLost (or Protocol that maps to it).
     let result = h.connection.list_folders("*").await;
     match result {
-        Err(Error::ConnectionLost | Error::Protocol(_)) => {}
+        Err(ImapError::ConnectionLost | ImapError::Protocol(_)) => {}
         #[expect(clippy::panic, reason = "test failure path")]
         other => panic!("expected ConnectionLost or Protocol error, got {other:?}"),
     }
@@ -455,7 +455,7 @@ async fn case_14_store_batch_too_large() {
         .await;
 
     match result {
-        Err(rimap_imap::error::Error::BatchTooLarge {
+        Err(rimap_imap::error::ImapError::BatchTooLarge {
             count: 101,
             limit: 100,
         }) => {}

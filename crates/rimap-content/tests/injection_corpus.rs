@@ -134,7 +134,6 @@ fn error_kind_label(err: &ContentError) -> &'static str {
     match err {
         ContentError::Malformed { .. } => "Malformed",
         ContentError::LimitExceeded { .. } => "LimitExceeded",
-        ContentError::Decoding { .. } => "Decoding",
         // Required because ContentError is #[non_exhaustive]. Any
         // future variant reaching this arm should fail the corpus run.
         _ => panic!("corpus harness encountered unclassified ContentError variant {err:?}"),

@@ -2,22 +2,10 @@
 
 #![deny(missing_docs)]
 
-mod audit_cmd;
-mod audit_init;
 mod cli;
-mod content;
-mod dispatch;
-mod download;
-mod dry_run;
-mod logging;
-mod mcp_error;
-mod registry;
-mod response;
-mod server;
-mod tools;
 
-#[cfg(test)]
-mod e2e_test;
+use rimap_server::boot::{audit_init, logging, registry};
+use rimap_server::mcp::server;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -75,21 +63,23 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             },
     }) = cli.command
     {
-        return audit_cmd::run(
+        return cli::audit_merge::run(
             &path,
-            since.as_deref(),
-            until.as_deref(),
-            tool.as_deref(),
-            kind.as_deref(),
-            process.as_deref(),
-            account.as_deref(),
+            cli::audit_merge::RunArgs {
+                since: since.as_deref(),
+                until: until.as_deref(),
+                tool: tool.as_deref(),
+                kind: kind.as_deref(),
+                process: process.as_deref(),
+                account: account.as_deref(),
+            },
         );
     }
 
     if cli.dry_run {
         let path = resolve_cli_config_path(&cli)?;
         let mut stdout = std::io::stdout().lock();
-        return dry_run::run(&path, &mut stdout);
+        return cli::dry_run::run(&path, &mut stdout);
     }
 
     // Server mode: load config, build subsystems, run MCP transport.
@@ -100,11 +90,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
 
     let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
-    let download_dir = resolve_download_dir_multi(&multi)?;
-    let registry = build_registry(&multi, &audit, &credentials)?;
+    let download_dir: Arc<std::path::Path> =
+        Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
+    let registry = build_registry(&multi, &audit, &credentials, &download_dir)?;
 
     let audit_for_shutdown = audit.clone();
-    let mcp_server = server::ImapMcpServer::new(registry, audit, download_dir);
+    let mcp_server = server::ImapMcpServer::new(registry, audit);
 
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
     let mcp_result: anyhow::Result<()> = rt.block_on(async {
@@ -150,6 +141,7 @@ fn build_registry(
     multi: &rimap_config::validate::ValidatedMultiConfig,
     audit: &rimap_audit::AuditWriter,
     credentials: &Arc<dyn CredentialStore>,
+    download_dir: &Arc<std::path::Path>,
 ) -> anyhow::Result<registry::AccountRegistry> {
     let mut account_states = std::collections::BTreeMap::new();
     for (id, acfg) in &multi.accounts {
@@ -170,6 +162,7 @@ fn build_registry(
             smtp,
             guard,
             folder_guard,
+            download_dir: Arc::clone(download_dir),
         };
         account_states.insert(id.clone(), state);
     }

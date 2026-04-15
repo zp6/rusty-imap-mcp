@@ -2103,14 +2103,12 @@ name = "rimap-authz"
 version = "1.0.0"
 dependencies = [
  "governor",
- "nonzero_ext",
  "parking_lot",
  "proptest",
  "rimap-config",
  "rimap-core",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
  "utf7-imap",
 ]
 
@@ -2128,7 +2126,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
- "tracing",
  "utf7-imap",
 ]
 
@@ -2146,15 +2143,14 @@ dependencies = [
  "phf 0.13.1",
  "phf_codegen 0.13.1",
  "proptest",
+ "rimap-core",
  "scraper",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "time",
- "tracing",
  "unicode-normalization",
- "unicode-properties",
  "unicode-script",
  "unicode-segmentation",
 ]
@@ -2164,6 +2160,7 @@ name = "rimap-core"
 version = "1.0.0"
 dependencies = [
  "hex",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -2206,7 +2203,6 @@ dependencies = [
  "governor",
  "hex",
  "infer",
- "lettre",
  "mail-builder",
  "mail-parser",
  "predicates",
@@ -2239,7 +2235,6 @@ dependencies = [
  "rimap-core",
  "thiserror 2.0.18",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2366,9 +2361,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.10"
+version = "0.103.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df33b2b81ac578cabaf06b89b0631153a3f416b0a886e8a7a1707fb51abbd1ef"
+checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -3127,12 +3122,6 @@ checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
 dependencies = [
  "tinyvec",
 ]
-
-[[package]]
-name = "unicode-properties"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7df058c713841ad818f1dc5d3fd88063241cc61f49f5fbea4b951e8cf5a8d71d"
 
 [[package]]
 name = "unicode-script"

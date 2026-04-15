@@ -6,6 +6,6 @@ pub mod expunge;
 pub mod fetch;
 pub mod folder_mgmt;
 pub mod folders;
-pub mod move_msg;
+pub mod move_message;
 pub mod search;
 pub mod store;

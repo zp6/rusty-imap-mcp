@@ -8,8 +8,8 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum SmtpError {
     /// Cannot reach the SMTP server.
-    #[error("SMTP connection failed: {0}")]
-    Connection(String),
+    #[error("SMTP connection failed")]
+    Connection(#[source] lettre::transport::smtp::Error),
     /// SMTP authentication failed.
     #[error("SMTP authentication failed")]
     Auth(#[source] lettre::transport::smtp::Error),
@@ -32,24 +32,100 @@ pub enum SmtpError {
 
 impl From<SmtpError> for RimapError {
     fn from(err: SmtpError) -> Self {
-        let (code, message) = match &err {
-            SmtpError::Connection(_) => (
-                ErrorCode::ConnectionLost,
-                "SMTP connection failed".to_string(),
-            ),
-            SmtpError::Auth(_) => (ErrorCode::Auth, "SMTP authentication failed".to_string()),
-            SmtpError::Tls(_) => (ErrorCode::Tls, "SMTP TLS handshake failed".to_string()),
-            SmtpError::Rejected { .. } => (
-                ErrorCode::SmtpProtocol,
-                "SMTP server rejected the message".to_string(),
-            ),
-            SmtpError::Timeout => (ErrorCode::Timeout, "SMTP operation timed out".to_string()),
-            SmtpError::Transport(_) => (ErrorCode::Internal, "SMTP transport error".to_string()),
+        // Preserve Display detail (includes the lettre reason) so the
+        // top-level message is not a generic placeholder; source chain
+        // is still attached for callers that walk it.
+        let message = err.to_string();
+        let code = match &err {
+            SmtpError::Connection(_) => ErrorCode::ConnectionLost,
+            SmtpError::Auth(_) => ErrorCode::Auth,
+            SmtpError::Tls(_) => ErrorCode::Tls,
+            SmtpError::Rejected { .. } => ErrorCode::SmtpProtocol,
+            SmtpError::Timeout => ErrorCode::Timeout,
+            SmtpError::Transport(_) => ErrorCode::Internal,
         };
         RimapError::Smtp {
             code,
             message,
             source: Some(Box::new(err)),
         }
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::panic, reason = "tests")]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejected_maps_to_smtp_protocol_code() {
+        let err = SmtpError::Rejected {
+            reason: "550 blocked".to_string(),
+        };
+        let mapped: RimapError = err.into();
+        match mapped {
+            RimapError::Smtp { code, message, .. } => {
+                assert_eq!(code, ErrorCode::SmtpProtocol);
+                assert!(message.contains("550 blocked"));
+            }
+            other => panic!("expected Smtp variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeout_maps_to_timeout_code() {
+        let err = SmtpError::Timeout;
+        let mapped: RimapError = err.into();
+        match mapped {
+            RimapError::Smtp { code, .. } => assert_eq!(code, ErrorCode::Timeout),
+            other => panic!("expected Smtp variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejected_display_includes_reason() {
+        let err = SmtpError::Rejected {
+            reason: "user unknown".into(),
+        };
+        assert!(err.to_string().contains("user unknown"));
+    }
+
+    #[test]
+    fn rejected_error_code_is_smtp_protocol() {
+        let err = SmtpError::Rejected {
+            reason: "450 try later".into(),
+        };
+        let mapped: RimapError = err.into();
+        assert_eq!(mapped.code(), ErrorCode::SmtpProtocol);
+    }
+
+    #[test]
+    fn timeout_carries_error_code() {
+        let mapped: RimapError = SmtpError::Timeout.into();
+        assert_eq!(mapped.code(), ErrorCode::Timeout);
+        assert!(mapped.to_string().contains("timed out"));
+    }
+
+    #[test]
+    fn mapped_smtp_error_exposes_source_chain() {
+        use std::error::Error as _;
+        let err = SmtpError::Rejected {
+            reason: "550 reject".into(),
+        };
+        let mapped: RimapError = err.into();
+        // The source chain should bottom out at a SmtpError.
+        let mut cur = mapped.source();
+        let mut saw_smtp_error = false;
+        while let Some(inner) = cur {
+            if inner.downcast_ref::<SmtpError>().is_some() {
+                saw_smtp_error = true;
+                break;
+            }
+            cur = inner.source();
+        }
+        assert!(
+            saw_smtp_error,
+            "expected the RimapError source chain to surface the original SmtpError"
+        );
     }
 }

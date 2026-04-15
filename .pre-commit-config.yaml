@@ -106,8 +106,8 @@ repos:
   - repo: local
     hooks:
       - id: cargo-nextest
-        name: cargo nextest run --workspace
-        entry: cargo nextest run --workspace --locked --no-tests=pass
+        name: just test (prune stale containers + cargo nextest)
+        entry: just test
         language: system
         types: [rust]
         pass_filenames: false

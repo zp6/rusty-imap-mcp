@@ -1,0 +1,196 @@
+//! Tool-name parsing and account-namespace prefix handling.
+//!
+//! Splits a wire-format MCP tool name like `work.send_email` into
+//! `(Some("work"), "send_email")`, refines base [`ToolName`] variants to
+//! sub-capabilities based on argument shape, and identifies the legacy
+//! single-account deployment used to suppress namespacing.
+
+use std::str::FromStr;
+
+use rimap_core::account::{AccountId, DEFAULT_ACCOUNT_NAME};
+use rimap_core::tool::ToolName;
+
+use crate::boot::registry::AccountState;
+
+/// Whether the registry holds exactly one account and its id is the
+/// legacy `"default"` value. Used to preserve bare (non-namespaced)
+/// tool names for single-account deployments.
+pub(super) fn is_legacy_single_account(
+    accounts: &std::collections::BTreeMap<AccountId, AccountState>,
+) -> bool {
+    accounts.len() == 1
+        && accounts
+            .keys()
+            .next()
+            .is_some_and(|id| id.as_str() == DEFAULT_ACCOUNT_NAME)
+}
+
+/// Promote a base `ToolName` to a sub-capability variant based on args.
+/// Keeps sub-capability posture checks at the dispatch seam rather than
+/// scattered across handlers.
+pub(super) fn refine_tool_name(
+    base: ToolName,
+    args: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> ToolName {
+    let Some(args) = args else {
+        return base;
+    };
+    // Exhaustive match so a new ToolName variant forces an explicit
+    // refinement decision at the dispatch seam rather than silently
+    // falling through a catch-all.
+    match base {
+        ToolName::FetchMessage
+            if args
+                .get("include_html")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true) =>
+        {
+            ToolName::FetchMessageHtml
+        }
+        ToolName::Search if args.get("advanced_query").is_some() => ToolName::SearchAdvanced,
+        ToolName::ListFolders
+        | ToolName::Search
+        | ToolName::SearchAdvanced
+        | ToolName::FetchMessage
+        | ToolName::FetchMessageHtml
+        | ToolName::ListAttachments
+        | ToolName::DownloadAttachment
+        | ToolName::MarkRead
+        | ToolName::MarkUnread
+        | ToolName::Flag
+        | ToolName::Unflag
+        | ToolName::AddLabel
+        | ToolName::RemoveLabel
+        | ToolName::ListLabels
+        | ToolName::MoveMessage
+        | ToolName::CreateDraft
+        | ToolName::SendEmail
+        | ToolName::DeleteMessage
+        | ToolName::Expunge
+        | ToolName::CreateFolder
+        | ToolName::RenameFolder
+        | ToolName::DeleteFolder
+        | ToolName::UseAccount
+        | ToolName::ListAccounts => base,
+    }
+}
+
+/// Split a possibly-namespaced MCP tool name into `(account, tool)`.
+///
+/// Preserves sub-capability tool names that contain dots (e.g.
+/// `search.advanced_query`): if the raw name parses as a `ToolName`
+/// directly, return it as bare.
+pub(super) fn split_tool_name(raw: &str) -> (Option<&str>, &str) {
+    if ToolName::from_str(raw).is_ok() {
+        return (None, raw);
+    }
+    match raw.split_once('.') {
+        Some((prefix, rest))
+            if is_valid_account_prefix(prefix) && ToolName::from_str(rest).is_ok() =>
+        {
+            (Some(prefix), rest)
+        }
+        Some(_) | None => (None, raw),
+    }
+}
+
+/// Structural check on an account-namespace prefix. Mirrors the
+/// `AccountId` character rules (ASCII alphanumerics + hyphens, 1–64
+/// chars) without allocating.
+fn is_valid_account_prefix(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+#[cfg(test)]
+mod tests {
+    use rimap_core::tool::ToolName;
+
+    use super::{refine_tool_name, split_tool_name};
+
+    #[test]
+    fn split_tool_name_bare() {
+        assert_eq!(split_tool_name("send_email"), (None, "send_email"));
+    }
+
+    #[test]
+    fn split_tool_name_namespaced() {
+        assert_eq!(
+            split_tool_name("work.send_email"),
+            (Some("work"), "send_email"),
+        );
+    }
+
+    #[test]
+    fn split_tool_name_preserves_dotted_sub_capability() {
+        // `search.advanced_query` is a valid ToolName and must not be
+        // interpreted as account="search", tool="advanced_query".
+        assert_eq!(
+            split_tool_name("search.advanced_query"),
+            (None, "search.advanced_query"),
+        );
+        assert_eq!(
+            split_tool_name("fetch_message.include_html"),
+            (None, "fetch_message.include_html"),
+        );
+    }
+
+    #[test]
+    fn split_tool_name_unknown_returns_bare() {
+        // Unknown names pass through; `from_str` at the caller rejects.
+        assert_eq!(split_tool_name("garbage"), (None, "garbage"));
+        assert_eq!(split_tool_name("work.garbage"), (None, "work.garbage"),);
+    }
+
+    #[test]
+    fn split_tool_name_rejects_invalid_prefix() {
+        // Underscore is not valid in an account prefix.
+        assert_eq!(
+            split_tool_name("bad_name.send_email"),
+            (None, "bad_name.send_email"),
+        );
+    }
+
+    #[test]
+    fn refine_tool_name_promotes_sub_capabilities() {
+        let mut args = serde_json::Map::new();
+        args.insert("include_html".into(), serde_json::Value::Bool(true));
+        assert_eq!(
+            refine_tool_name(ToolName::FetchMessage, Some(&args)),
+            ToolName::FetchMessageHtml,
+        );
+
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "advanced_query".into(),
+            serde_json::Value::String("FROM x".into()),
+        );
+        assert_eq!(
+            refine_tool_name(ToolName::Search, Some(&args)),
+            ToolName::SearchAdvanced,
+        );
+    }
+
+    #[test]
+    fn refine_tool_name_is_identity_for_all_other_variants() {
+        // Any variant without a refinement rule must pass through
+        // unchanged, including when args are absent or irrelevant. A new
+        // ToolName variant will fail to compile in `refine_tool_name`'s
+        // exhaustive match until a refinement decision is made.
+        let mut args = serde_json::Map::new();
+        args.insert("include_html".into(), serde_json::Value::Bool(true));
+        args.insert(
+            "advanced_query".into(),
+            serde_json::Value::String("FROM x".into()),
+        );
+        for name in ToolName::all() {
+            let refined_no_args = refine_tool_name(name, None);
+            assert_eq!(refined_no_args, name, "{name:?} changed with no args");
+            let refined = refine_tool_name(name, Some(&args));
+            match name {
+                ToolName::FetchMessage => assert_eq!(refined, ToolName::FetchMessageHtml),
+                ToolName::Search => assert_eq!(refined, ToolName::SearchAdvanced),
+                other => assert_eq!(refined, other, "{other:?} unexpectedly refined"),
+            }
+        }
+    }
+}

@@ -1,6 +1,6 @@
-//! IMAP connection, TLS fingerprint pinning, and read operations for
-//! rusty-imap-mcp. See `docs/superpowers/specs/2026-04-07-sprint-3-imap-design.md`
-//! for the design.
+//! IMAP connection, TLS fingerprint pinning, and per-command operations
+//! (fetch, search, store, move, append, expunge, folder management) for
+//! rusty-imap-mcp. Public entry point: [`Connection`].
 
 #![deny(missing_docs)]
 
@@ -13,4 +13,4 @@ pub mod tls;
 pub mod types;
 
 pub use crate::connection::{Connection, ConnectionConfig};
-pub use crate::error::{AuthFailure, Error};
+pub use crate::error::{AuthFailure, ImapError};

@@ -49,7 +49,7 @@ fn audit_merge_round_trips_synthetic_log() {
             .log_process_start(ProcessStartInputs {
                 version: "0.0.0-test".to_string(),
                 git_commit: String::new(),
-                posture: Some("readonly".to_string()),
+                posture: Some(rimap_core::Posture::Readonly),
                 accounts: None,
                 config_path: config_path.clone(),
                 config_hash_sha256: String::new(),

@@ -6,20 +6,11 @@
 use std::collections::BTreeMap;
 
 use rimap_config::model::Verdict;
-use rimap_config::validate::ValidatedConfig;
+use rimap_core::base_allows;
 use rimap_core::posture::Posture;
 use rimap_core::tool::ToolName;
 
 use crate::error::AuthzError;
-
-/// Lookup against the base `const` matrix, before overrides.
-///
-/// Delegates to [`rimap_core::base_allows`] — the single authoritative
-/// source of posture truth shared with `rimap-config`.
-#[must_use]
-pub fn base_allows(posture: Posture, tool: ToolName) -> bool {
-    rimap_core::base_allows(posture, tool)
-}
 
 /// Effective authorization matrix: base posture merged with per-tool overrides.
 ///
@@ -47,12 +38,6 @@ impl EffectiveMatrix {
             allowed.insert(tool, effective);
         }
         Self { allowed, posture }
-    }
-
-    /// Build from a validated config.
-    #[must_use]
-    pub fn from_validated(cfg: &ValidatedConfig) -> Self {
-        Self::build(cfg.config.security.posture, &cfg.tool_overrides)
     }
 
     /// Base posture used for construction (for logging / display only).
@@ -103,7 +88,8 @@ mod tests {
     use crate::error::AuthzError;
     use rimap_core::posture_matrix::POSTURE_MATRIX;
 
-    use crate::matrix::{EffectiveMatrix, base_allows};
+    use crate::matrix::EffectiveMatrix;
+    use rimap_core::base_allows;
 
     #[test]
     fn matrix_covers_every_non_infrastructure_tool_variant() {

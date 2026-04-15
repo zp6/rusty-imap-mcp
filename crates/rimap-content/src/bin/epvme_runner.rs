@@ -392,7 +392,6 @@ fn error_kind_label(err: &ContentError) -> &'static str {
     match err {
         ContentError::Malformed { .. } => "Malformed",
         ContentError::LimitExceeded { .. } => "LimitExceeded",
-        ContentError::Decoding { .. } => "Decoding",
         _ => "Unknown",
     }
 }

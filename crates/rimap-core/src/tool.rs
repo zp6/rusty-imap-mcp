@@ -5,6 +5,7 @@
 use core::fmt;
 use core::str::FromStr;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
@@ -114,7 +115,34 @@ impl ToolName {
     /// of security posture.
     #[must_use]
     pub fn is_infrastructure(self) -> bool {
-        matches!(self, Self::UseAccount | Self::ListAccounts)
+        // Explicit list of infrastructure variants; remaining variants are all
+        // posture-gated. New variants default to non-infrastructure, which is
+        // the safer behavior (they will be subject to the posture matrix).
+        match self {
+            Self::UseAccount | Self::ListAccounts => true,
+            Self::ListFolders
+            | Self::Search
+            | Self::SearchAdvanced
+            | Self::FetchMessage
+            | Self::FetchMessageHtml
+            | Self::ListAttachments
+            | Self::DownloadAttachment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Flag
+            | Self::Unflag
+            | Self::AddLabel
+            | Self::RemoveLabel
+            | Self::ListLabels
+            | Self::MoveMessage
+            | Self::CreateDraft
+            | Self::SendEmail
+            | Self::DeleteMessage
+            | Self::Expunge
+            | Self::CreateFolder
+            | Self::RenameFolder
+            | Self::DeleteFolder => false,
+        }
     }
 }
 
@@ -142,6 +170,19 @@ impl FromStr for ToolName {
             }
         }
         Err(ParseToolNameError::Unknown(s.to_string()))
+    }
+}
+
+impl Serialize for ToolName {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolName {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = <&str>::deserialize(deserializer)?;
+        Self::from_str(s).map_err(serde::de::Error::custom)
     }
 }
 

@@ -4,11 +4,15 @@
 
 use proptest::prelude::*;
 use rimap_audit::{FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments};
+use rimap_core::tool::ToolName;
 use serde_json::{Map, Value};
 
 fn schema() -> RedactionSchema {
+    // Property-test fixture; the specific ToolName is irrelevant — only the
+    // per-field policies are exercised. Reuse an existing variant rather
+    // than inventing one.
     RedactionSchema::new(
-        "test_tool",
+        ToolName::Search,
         &[
             ("folder", FieldPolicy::Verbatim),
             ("uid", FieldPolicy::Verbatim),

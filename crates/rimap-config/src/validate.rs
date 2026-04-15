@@ -22,42 +22,6 @@ use crate::model::{
     SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
 };
 
-/// Validated config: a `Config` plus the resolved per-tool override map
-/// keyed by `ToolName`, plus the parsed TLS fingerprint (if any).
-#[derive(Debug, Clone)]
-pub struct ValidatedConfig {
-    /// The underlying parsed config (untouched).
-    pub config: Config,
-    /// Resolved per-tool overrides.
-    pub tool_overrides: BTreeMap<ToolName, Verdict>,
-    /// Parsed pinned TLS fingerprint, if `imap.tls_fingerprint_sha256` was set.
-    pub tls_fingerprint: Option<TlsFingerprint>,
-}
-
-/// Validate a parsed config and resolve override tool names.
-///
-/// # Errors
-/// Returns `ConfigError` on any validation failure.
-pub fn validate(config: Config) -> Result<ValidatedConfig, ConfigError> {
-    let tls_fingerprint = parse_fingerprint(config.imap.tls_fingerprint_sha256.as_deref())?;
-    validate_imap_username(&config.imap.username)?;
-    if let Some(ref smtp) = config.smtp {
-        validate_smtp_username(&smtp.username)?;
-    }
-    validate_limits(&config)?;
-    validate_audit(&config)?;
-    validate_paths(&config)?;
-    validate_folder_safety(&config)?;
-    let tool_overrides = resolve_tool_overrides(&config)?;
-    validate_smtp_required(&config, &tool_overrides)?;
-    validate_smtp_encryption(&config)?;
-    Ok(ValidatedConfig {
-        config,
-        tool_overrides,
-        tls_fingerprint,
-    })
-}
-
 /// Validated per-account config with resolved overrides and fingerprint.
 #[derive(Debug, Clone)]
 pub struct ValidatedAccountConfig {
@@ -124,31 +88,31 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
 }
 
 /// Convert a legacy flat config into a `ValidatedMultiConfig` with a
-/// single account named "default".
+/// single account named "default". Production paths take this route;
+/// per-field invariants are exercised through `validate_account` and
+/// its callers (`validate_multi`, `validate_legacy_as_multi`).
 ///
 /// # Errors
 /// Returns `ConfigError` on any validation failure.
 pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, ConfigError> {
-    let validated = validate(config)?;
     let id = AccountId::default_account();
-
-    let account = ValidatedAccountConfig {
-        id: id.clone(),
-        imap: validated.config.imap,
-        smtp: validated.config.smtp,
-        security: validated.config.security,
-        limits: validated.config.limits,
-        tool_overrides: validated.tool_overrides,
-        tls_fingerprint: validated.tls_fingerprint,
-    };
+    let account = validate_account(
+        id.clone(),
+        config.imap,
+        config.smtp,
+        config.security,
+        config.limits,
+    )?;
+    validate_audit_config(&config.audit)?;
+    validate_paths_multi(&config.audit, &config.attachments)?;
 
     let mut accounts = BTreeMap::new();
     accounts.insert(id, account);
 
     Ok(ValidatedMultiConfig {
         accounts,
-        audit: validated.config.audit,
-        attachments: validated.config.attachments,
+        audit: config.audit,
+        attachments: config.attachments,
     })
 }
 
@@ -219,10 +183,6 @@ fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, C
     Ok(Some(fp))
 }
 
-fn validate_audit(config: &Config) -> Result<(), ConfigError> {
-    validate_audit_config(&config.audit)
-}
-
 fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
     if audit.retention_seconds == Some(0) {
         return Err(ConfigError::InvalidLimit {
@@ -235,46 +195,40 @@ fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_limits(config: &Config) -> Result<(), ConfigError> {
-    validate_limits_fields(&config.limits)
-}
+/// Accessor for one field on `LimitsConfig` for the zero-check table.
+type LimitAccessor = fn(&LimitsConfig) -> u64;
 
 fn validate_limits_fields(limits: &LimitsConfig) -> Result<(), ConfigError> {
-    if limits.commands_per_second == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.commands_per_second",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.drafts_per_minute == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.drafts_per_minute",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.sends_per_minute == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.sends_per_minute",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.circuit_breaker_error_threshold == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.circuit_breaker_error_threshold",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.circuit_breaker_window_seconds == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.circuit_breaker_window_seconds",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.max_search_results == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_search_results",
-            reason: "must be > 0".to_string(),
-        });
+    /// Table of `(field_name, accessor)` for zero-value checks. New limits
+    /// that must be `> 0` get added here rather than as another `if` block.
+    const ZERO_CHECKS: &[(&str, LimitAccessor)] = &[
+        ("limits.commands_per_second", |l| {
+            u64::from(l.commands_per_second)
+        }),
+        ("limits.drafts_per_minute", |l| {
+            u64::from(l.drafts_per_minute)
+        }),
+        ("limits.sends_per_minute", |l| u64::from(l.sends_per_minute)),
+        ("limits.circuit_breaker_error_threshold", |l| {
+            u64::from(l.circuit_breaker_error_threshold)
+        }),
+        ("limits.circuit_breaker_window_seconds", |l| {
+            u64::from(l.circuit_breaker_window_seconds)
+        }),
+        ("limits.max_search_results", |l| {
+            u64::from(l.max_search_results)
+        }),
+        ("limits.max_fetch_body_bytes", |l| l.max_fetch_body_bytes),
+        ("limits.max_attachment_bytes", |l| l.max_attachment_bytes),
+        ("limits.max_append_bytes", |l| l.max_append_bytes),
+    ];
+    for (field, accessor) in ZERO_CHECKS {
+        if accessor(limits) == 0 {
+            return Err(ConfigError::InvalidLimit {
+                field,
+                reason: "must be > 0".to_string(),
+            });
+        }
     }
     if limits.max_search_results > limits.max_search_results_cap {
         return Err(ConfigError::InvalidLimit {
@@ -285,29 +239,7 @@ fn validate_limits_fields(limits: &LimitsConfig) -> Result<(), ConfigError> {
             ),
         });
     }
-    if limits.max_fetch_body_bytes == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_fetch_body_bytes",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.max_attachment_bytes == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_attachment_bytes",
-            reason: "must be > 0".to_string(),
-        });
-    }
-    if limits.max_append_bytes == 0 {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_append_bytes",
-            reason: "must be > 0".to_string(),
-        });
-    }
     Ok(())
-}
-
-fn validate_paths(config: &Config) -> Result<(), ConfigError> {
-    validate_paths_multi(&config.audit, &config.attachments)
 }
 
 fn validate_paths_multi(
@@ -428,10 +360,6 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_folder_safety(config: &Config) -> Result<(), ConfigError> {
-    validate_folder_safety_fields(&config.security)
-}
-
 fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), ConfigError> {
     let mut protected: Vec<String> = security
         .protected_folders
@@ -451,13 +379,6 @@ fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), Config
     Ok(())
 }
 
-fn validate_smtp_required(
-    config: &Config,
-    tool_overrides: &BTreeMap<ToolName, Verdict>,
-) -> Result<(), ConfigError> {
-    validate_smtp_required_fields(&config.security, tool_overrides, config.smtp.as_ref())
-}
-
 fn validate_smtp_required_fields(
     security: &SecurityConfig,
     tool_overrides: &BTreeMap<ToolName, Verdict>,
@@ -471,15 +392,9 @@ fn validate_smtp_required_fields(
         None => send_email_base,
     };
     if send_email_effective && smtp.is_none() {
-        return Err(ConfigError::SmtpRequired {
-            posture: posture.to_string(),
-        });
+        return Err(ConfigError::SmtpRequired { posture });
     }
     Ok(())
-}
-
-fn validate_smtp_encryption(config: &Config) -> Result<(), ConfigError> {
-    validate_smtp_encryption_fields(config.smtp.as_ref())
 }
 
 fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), ConfigError> {
@@ -494,10 +409,6 @@ fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), Conf
         }
     }
     Ok(())
-}
-
-fn resolve_tool_overrides(config: &Config) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
-    resolve_tool_overrides_fields(&config.security)
 }
 
 fn resolve_tool_overrides_fields(
@@ -524,7 +435,18 @@ mod tests {
         AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig,
         SmtpEncryption, Verdict,
     };
-    use crate::validate::validate;
+    use crate::validate::{ValidatedAccountConfig, validate_legacy_as_multi};
+    use rimap_core::account::AccountId;
+
+    /// Route a legacy flat `Config` through `validate_legacy_as_multi` and
+    /// return the resulting default account. Tests exercise per-field
+    /// invariants through this path — the multi pipeline subsumes what the
+    /// removed single-account `validate()` used to cover.
+    fn validate(config: Config) -> Result<ValidatedAccountConfig, ConfigError> {
+        let multi = validate_legacy_as_multi(config)?;
+        let id = AccountId::default_account();
+        Ok(multi.accounts[&id].clone())
+    }
 
     fn base_config(audit_dir: &std::path::Path) -> Config {
         Config {
@@ -666,7 +588,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let cfg = base_config(dir.path());
         let validated = validate(cfg).unwrap();
-        assert_eq!(validated.config.imap.connect_timeout_seconds, 10);
+        assert_eq!(validated.imap.connect_timeout_seconds, 10);
     }
 
     #[test]
@@ -939,8 +861,7 @@ path = "/tmp/audit.jsonl"
     // -----------------------------------------------------------------------
 
     use crate::model::{DefaultsConfig, MultiAccountConfig, RawAccountConfig};
-    use crate::validate::{validate_legacy_as_multi, validate_multi};
-    use rimap_core::account::AccountId;
+    use crate::validate::validate_multi;
 
     fn base_multi_config(
         audit_dir: &std::path::Path,
