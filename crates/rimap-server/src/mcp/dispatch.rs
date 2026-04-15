@@ -1,0 +1,333 @@
+//! Tool dispatch routing.
+//!
+//! [`ImapMcpServer::dispatch_tool`] routes a resolved `(account, tool,
+//! args)` triple to the matching handler in `crate::tools`. Each arm
+//! serializes its typed response to `serde_json::Value` so the audit
+//! envelope can work with a single future type.
+//!
+//! Also hosts [`PostureContext`] — the audit-envelope posture header
+//! tag — and [`rimap_error_to_breaker_reason`], the mapping from
+//! [`rimap_core::RimapError`] codes to [`rimap_authz::breaker::FailureReason`]
+//! used to drive the per-account circuit breaker.
+
+use rmcp::model::{CallToolResult, ErrorData};
+
+use crate::boot::registry::AccountState;
+use crate::mcp::server::ImapMcpServer;
+use crate::mcp::tool_catalog::{parse_args, ser};
+use rimap_core::tool::ToolName;
+
+/// Posture context recorded in audit envelope headers.
+///
+/// Per-account dispatches use the account's effective posture; the
+/// infrastructure tools (`list_accounts`, `use_account`) bypass posture
+/// gating by design and record the dedicated `Infrastructure` variant so
+/// log readers can distinguish them from per-account dispatches.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum PostureContext {
+    Account(rimap_core::Posture),
+    Infrastructure,
+}
+
+impl PostureContext {
+    /// The per-account [`rimap_core::Posture`] this context represents, or
+    /// `None` for the infrastructure dispatch path. The audit writer maps
+    /// `None` to the `"infrastructure"` sentinel it records on disk.
+    pub(super) fn posture(self) -> Option<rimap_core::Posture> {
+        match self {
+            Self::Account(p) => Some(p),
+            Self::Infrastructure => None,
+        }
+    }
+}
+
+/// Map a [`rimap_core::RimapError`] to the breaker's [`FailureReason`], or
+/// `None` when the error represents a user/agent/policy failure (which
+/// the breaker must ignore per its contract).
+pub(super) fn rimap_error_to_breaker_reason(
+    err: &rimap_core::RimapError,
+) -> Option<rimap_authz::breaker::FailureReason> {
+    use rimap_authz::breaker::FailureReason;
+    use rimap_core::ErrorCode;
+    match err.code() {
+        ErrorCode::ConnectionLost => Some(FailureReason::ConnectionLost),
+        ErrorCode::Auth => Some(FailureReason::Auth),
+        ErrorCode::Timeout => Some(FailureReason::Timeout),
+        ErrorCode::ImapProtocol | ErrorCode::SmtpProtocol => Some(FailureReason::Protocol),
+        ErrorCode::Tls => Some(FailureReason::Tls),
+        ErrorCode::InvalidInput
+        | ErrorCode::PostureDenied
+        | ErrorCode::RateLimited
+        | ErrorCode::CircuitOpen
+        | ErrorCode::NotFound
+        | ErrorCode::AttachmentTooLarge
+        | ErrorCode::ProtectedFolder
+        | ErrorCode::ExpungeDenied
+        | ErrorCode::Config
+        | ErrorCode::Internal
+        | ErrorCode::NoAccount
+        | ErrorCode::UnknownAccount => None,
+    }
+}
+
+impl ImapMcpServer {
+    /// Dispatch to the tool handler for `tool`. Each arm serializes its
+    /// typed response to `serde_json::Value` before returning, so the
+    /// audit envelope works with a single future type.
+    #[doc(hidden)]
+    pub async fn dispatch_tool(
+        &self,
+        account: &AccountState,
+        tool: ToolName,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, rimap_core::RimapError> {
+        use crate::tools::admin::list_folders;
+        use crate::tools::compose::{create_draft, send_email};
+        use crate::tools::mailbox::{
+            delete_message, expunge, flags, folder_management, labels, move_message,
+        };
+        use crate::tools::retrieval::{
+            download_attachment, fetch_message, list_attachments, search,
+        };
+        let resp = match tool {
+            ToolName::ListFolders => ser(Box::pin(list_folders::handle(account)).await?)?,
+            ToolName::MarkRead => {
+                ser(Box::pin(flags::handle_mark_read(account, parse_args(args)?)).await?)?
+            }
+            ToolName::MarkUnread => {
+                ser(Box::pin(flags::handle_mark_unread(account, parse_args(args)?)).await?)?
+            }
+            ToolName::Flag => ser(Box::pin(flags::handle_flag(account, parse_args(args)?)).await?)?,
+            ToolName::Unflag => {
+                ser(Box::pin(flags::handle_unflag(account, parse_args(args)?)).await?)?
+            }
+            ToolName::MoveMessage => {
+                ser(Box::pin(move_message::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::Search | ToolName::SearchAdvanced => {
+                ser(Box::pin(search::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::FetchMessage | ToolName::FetchMessageHtml => {
+                ser(Box::pin(fetch_message::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::ListAttachments => {
+                ser(Box::pin(list_attachments::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::DownloadAttachment => {
+                let input = parse_args(args)?;
+                ser(Box::pin(download_attachment::handle(
+                    account,
+                    input,
+                    &self.download_dir,
+                ))
+                .await?)?
+            }
+            ToolName::CreateDraft => {
+                ser(Box::pin(create_draft::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::SendEmail => {
+                ser(Box::pin(send_email::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::DeleteMessage => {
+                ser(Box::pin(delete_message::handle(account, parse_args(args)?)).await?)?
+            }
+            ToolName::Expunge => ser(Box::pin(expunge::handle(account, parse_args(args)?)).await?)?,
+            ToolName::CreateFolder => ser(Box::pin(folder_management::handle_create_folder(
+                account,
+                parse_args(args)?,
+            ))
+            .await?)?,
+            ToolName::RenameFolder => ser(Box::pin(folder_management::handle_rename_folder(
+                account,
+                parse_args(args)?,
+            ))
+            .await?)?,
+            ToolName::DeleteFolder => ser(Box::pin(folder_management::handle_delete_folder(
+                account,
+                parse_args(args)?,
+            ))
+            .await?)?,
+            ToolName::AddLabel => {
+                ser(Box::pin(labels::handle_add_label(account, parse_args(args)?)).await?)?
+            }
+            ToolName::RemoveLabel => {
+                ser(Box::pin(labels::handle_remove_label(account, parse_args(args)?)).await?)?
+            }
+            ToolName::ListLabels => {
+                ser(Box::pin(labels::handle_list_labels(account, parse_args(args)?)).await?)?
+            }
+            ToolName::UseAccount | ToolName::ListAccounts => {
+                return Err(rimap_core::RimapError::Internal(
+                    "infrastructure tools must not reach dispatch_tool".into(),
+                ));
+            }
+        };
+        Ok(resp)
+    }
+
+    /// Handle infrastructure tools that bypass account resolution.
+    ///
+    /// Infrastructure tools are not scoped to an account, so their audit
+    /// records record `account: None` regardless of deployment mode.
+    pub(super) async fn dispatch_infrastructure(
+        &self,
+        tool: ToolName,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Infrastructure tools have no per-account posture; record an
+        // explicit sentinel so log readers can distinguish these from
+        // per-account dispatches.
+        self.run_with_audit_envelope(tool, None, PostureContext::Infrastructure, args, async {
+            // Infrastructure tools bypass posture + breaker, but still
+            // enforce a process-wide rate limit.
+            self.registry.check_infrastructure_rate()?;
+            match tool {
+                ToolName::UseAccount => {
+                    let input = parse_args::<crate::tools::admin::accounts::UseAccountInput>(args)?;
+                    ser(
+                        crate::tools::admin::accounts::handle_use_account(&self.registry, input)
+                            .await?,
+                    )
+                }
+                ToolName::ListAccounts => {
+                    ser(crate::tools::admin::accounts::handle_list_accounts(&self.registry).await?)
+                }
+                ToolName::ListFolders
+                | ToolName::Search
+                | ToolName::SearchAdvanced
+                | ToolName::FetchMessage
+                | ToolName::FetchMessageHtml
+                | ToolName::ListAttachments
+                | ToolName::DownloadAttachment
+                | ToolName::MarkRead
+                | ToolName::MarkUnread
+                | ToolName::Flag
+                | ToolName::Unflag
+                | ToolName::AddLabel
+                | ToolName::RemoveLabel
+                | ToolName::ListLabels
+                | ToolName::MoveMessage
+                | ToolName::CreateDraft
+                | ToolName::SendEmail
+                | ToolName::DeleteMessage
+                | ToolName::Expunge
+                | ToolName::CreateFolder
+                | ToolName::RenameFolder
+                | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
+                    "not an infrastructure tool: {}",
+                    tool.as_str(),
+                ))),
+            }
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod tests {
+    use rimap_core::tool::ToolName;
+
+    use super::rimap_error_to_breaker_reason;
+
+    #[test]
+    fn breaker_reason_maps_service_failures() {
+        use rimap_authz::breaker::FailureReason;
+        use rimap_core::{ErrorCode, RimapError};
+        let err = RimapError::Imap {
+            code: ErrorCode::Timeout,
+            message: "x".into(),
+            source: None,
+        };
+        assert_eq!(
+            rimap_error_to_breaker_reason(&err),
+            Some(FailureReason::Timeout),
+        );
+        let auth = RimapError::Imap {
+            code: ErrorCode::Auth,
+            message: "x".into(),
+            source: None,
+        };
+        assert_eq!(
+            rimap_error_to_breaker_reason(&auth),
+            Some(FailureReason::Auth),
+        );
+        let tls = RimapError::Imap {
+            code: ErrorCode::Tls,
+            message: "x".into(),
+            source: None,
+        };
+        assert_eq!(
+            rimap_error_to_breaker_reason(&tls),
+            Some(FailureReason::Tls)
+        );
+    }
+
+    #[test]
+    fn breaker_reason_ignores_user_errors() {
+        use rimap_core::RimapError;
+        assert_eq!(
+            rimap_error_to_breaker_reason(&RimapError::invalid_input("bad")),
+            None,
+        );
+        assert_eq!(
+            rimap_error_to_breaker_reason(&RimapError::Internal("bug".into())),
+            None,
+        );
+    }
+
+    #[tokio::test]
+    async fn infrastructure_tool_emits_tool_start_and_tool_end() {
+        use std::collections::BTreeMap;
+
+        use rimap_audit::{AuditOptions, AuditWriter, Seq};
+        use tempfile::TempDir;
+
+        use crate::boot::registry::AccountRegistry;
+        use crate::mcp::server::ImapMcpServer;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let audit_path = tmp.path().join("audit.jsonl");
+        let audit = AuditWriter::open(&AuditOptions {
+            path: audit_path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .expect("audit open");
+
+        let registry = AccountRegistry::new(BTreeMap::new());
+        let server = ImapMcpServer::new(registry, audit, tmp.path().to_path_buf());
+
+        // list_accounts needs no args and no IMAP connection.
+        let args = serde_json::Map::new();
+        let _ = server
+            .dispatch_infrastructure(ToolName::ListAccounts, &args)
+            .await
+            .expect("list_accounts dispatch");
+
+        drop(server);
+
+        let contents = std::fs::read_to_string(&audit_path).expect("read audit log");
+        let records: Vec<serde_json::Value> = contents
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("parse record"))
+            .collect();
+
+        let start = records
+            .iter()
+            .find(|r| r["kind"] == "tool_start" && r["tool"] == "list_accounts")
+            .expect("tool_start record");
+        let end = records
+            .iter()
+            .find(|r| r["kind"] == "tool_end" && r["tool"] == "list_accounts")
+            .expect("tool_end record");
+
+        assert_eq!(start["seq"], end["start_seq"]);
+        assert_eq!(end["status"], "ok");
+        assert!(start["account"].is_null());
+        assert!(end["account"].is_null());
+    }
+}
