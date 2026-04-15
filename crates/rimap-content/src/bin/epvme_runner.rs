@@ -13,8 +13,40 @@ use std::process::ExitCode;
 
 use rimap_content::{Content, ContentError, WarningCode, parse_message};
 use serde::Serialize;
+use thiserror::Error;
 
 const MAX_RECORDED_FAILURES: usize = 50;
+
+/// Typed errors emitted by the runner CLI. Flattened `String` details
+/// let each variant keep its fs-path context without forcing a full
+/// source-chain hierarchy for a throwaway binary.
+#[derive(Debug, Error)]
+enum RunnerError {
+    #[error("{0}")]
+    UsageMessage(String),
+    #[error("{0}")]
+    Argument(String),
+    #[error("no .eml files found under {0}")]
+    NoEmlFilesFound(PathBuf),
+    #[error("{operation} {path}: {source}")]
+    Filesystem {
+        operation: &'static str,
+        path: PathBuf,
+        source: io::Error,
+    },
+    #[error("serialize JSON report {path}: {source}")]
+    JsonSerialize {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("write {what}: {source}")]
+    Io {
+        what: &'static str,
+        source: io::Error,
+    },
+}
+
+type RunnerResult<T> = Result<T, RunnerError>;
 
 #[derive(Debug)]
 struct Args {
@@ -55,25 +87,25 @@ enum SampleOutcome {
 fn main() -> ExitCode {
     match run() {
         Ok(exit_code) => exit_code,
-        Err(message) => {
-            let _ = writeln!(io::stderr().lock(), "{message}");
+        Err(err) => {
+            let _ = writeln!(io::stderr().lock(), "{err}");
             ExitCode::from(2)
         }
     }
 }
 
-fn run() -> Result<ExitCode, String> {
+fn run() -> RunnerResult<ExitCode> {
     let args = parse_args()?;
     let files = collect_eml_files(&args.dataset_root)?;
     if files.is_empty() {
-        return Err(format!(
-            "no .eml files found under {}",
-            args.dataset_root.display()
-        ));
+        return Err(RunnerError::NoEmlFilesFound(args.dataset_root));
     }
 
     let summary = run_dataset(&args.dataset_root, &files, args.limit, parse_message);
-    print_summary(&summary).map_err(|err| format!("write stdout: {err}"))?;
+    print_summary(&summary).map_err(|err| RunnerError::Io {
+        what: "stdout",
+        source: err,
+    })?;
     if let Some(json_out) = &args.json_out {
         write_json_report(json_out, &summary)?;
     }
@@ -85,7 +117,7 @@ fn run() -> Result<ExitCode, String> {
     }
 }
 
-fn parse_args() -> Result<Args, String> {
+fn parse_args() -> RunnerResult<Args> {
     let mut dataset_root: Option<PathBuf> = None;
     let mut limit: Option<usize> = None;
     let mut json_out: Option<PathBuf> = None;
@@ -96,32 +128,39 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = args.next() {
         match arg.to_str() {
             Some("--help" | "-h") => {
-                return Err(usage());
+                return Err(RunnerError::UsageMessage(usage()));
             }
             Some("--limit") => {
                 let Some(value) = args.next() else {
-                    return Err("--limit requires a value".to_string());
+                    return Err(RunnerError::Argument("--limit requires a value".into()));
                 };
                 let parsed = value
                     .to_str()
-                    .ok_or_else(|| "--limit must be valid UTF-8".to_string())?
+                    .ok_or_else(|| RunnerError::Argument("--limit must be valid UTF-8".into()))?
                     .parse::<usize>()
-                    .map_err(|_| "--limit must be a non-negative integer".to_string())?;
+                    .map_err(|_| {
+                        RunnerError::Argument("--limit must be a non-negative integer".into())
+                    })?;
                 limit = Some(parsed);
             }
             Some("--json-out") => {
                 let Some(value) = args.next() else {
-                    return Err("--json-out requires a path".to_string());
+                    return Err(RunnerError::Argument("--json-out requires a path".into()));
                 };
                 json_out = Some(PathBuf::from(value));
             }
             Some(flag) if flag.starts_with('-') => {
-                return Err(format!("unknown flag: {flag}\n\n{}", usage()));
+                return Err(RunnerError::Argument(format!(
+                    "unknown flag: {flag}\n\n{}",
+                    usage()
+                )));
             }
             _ => {
                 if dataset_root.is_some() {
                     let arg = arg.to_string_lossy();
-                    return Err(format!("unexpected extra positional argument: {arg}"));
+                    return Err(RunnerError::Argument(format!(
+                        "unexpected extra positional argument: {arg}"
+                    )));
                 }
                 dataset_root = Some(PathBuf::from(arg));
             }
@@ -129,7 +168,7 @@ fn parse_args() -> Result<Args, String> {
     }
 
     let Some(dataset_root) = dataset_root else {
-        return Err(usage());
+        return Err(RunnerError::UsageMessage(usage()));
     };
 
     Ok(Args {
@@ -143,15 +182,18 @@ fn usage() -> String {
     "usage: epvme_runner <dataset-root> [--limit N] [--json-out PATH]".to_string()
 }
 
-fn collect_eml_files(root: &Path) -> Result<Vec<PathBuf>, String> {
+fn collect_eml_files(root: &Path) -> RunnerResult<Vec<PathBuf>> {
     if !root.exists() {
-        return Err(format!("dataset root does not exist: {}", root.display()));
+        return Err(RunnerError::Argument(format!(
+            "dataset root does not exist: {}",
+            root.display()
+        )));
     }
     if !root.is_dir() {
-        return Err(format!(
+        return Err(RunnerError::Argument(format!(
             "dataset root is not a directory: {}",
             root.display()
-        ));
+        )));
     }
 
     let mut files = Vec::new();
@@ -160,16 +202,24 @@ fn collect_eml_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-fn walk_eml_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        fs::read_dir(root).map_err(|err| format!("read directory {}: {err}", root.display()))?;
+fn walk_eml_files(root: &Path, files: &mut Vec<PathBuf>) -> RunnerResult<()> {
+    let entries = fs::read_dir(root).map_err(|err| RunnerError::Filesystem {
+        operation: "read directory",
+        path: root.to_path_buf(),
+        source: err,
+    })?;
     for entry in entries {
-        let entry =
-            entry.map_err(|err| format!("read directory entry {}: {err}", root.display()))?;
+        let entry = entry.map_err(|err| RunnerError::Filesystem {
+            operation: "read directory entry",
+            path: root.to_path_buf(),
+            source: err,
+        })?;
         let path = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|err| format!("read file type {}: {err}", path.display()))?;
+        let file_type = entry.file_type().map_err(|err| RunnerError::Filesystem {
+            operation: "read file type",
+            path: path.clone(),
+            source: err,
+        })?;
         if file_type.is_dir() {
             walk_eml_files(&path, files)?;
             continue;
@@ -344,17 +394,26 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
     Ok(())
 }
 
-fn write_json_report(path: &Path, summary: &RunSummary) -> Result<(), String> {
+fn write_json_report(path: &Path, summary: &RunSummary) -> RunnerResult<()> {
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("create JSON report directory {}: {err}", parent.display()))?;
+        fs::create_dir_all(parent).map_err(|err| RunnerError::Filesystem {
+            operation: "create JSON report directory",
+            path: parent.to_path_buf(),
+            source: err,
+        })?;
     }
 
-    let json = serde_json::to_vec_pretty(summary)
-        .map_err(|err| format!("serialize JSON report {}: {err}", path.display()))?;
-    fs::write(path, json).map_err(|err| format!("write JSON report {}: {err}", path.display()))
+    let json = serde_json::to_vec_pretty(summary).map_err(|err| RunnerError::JsonSerialize {
+        path: path.to_path_buf(),
+        source: err,
+    })?;
+    fs::write(path, json).map_err(|err| RunnerError::Filesystem {
+        operation: "write JSON report",
+        path: path.to_path_buf(),
+        source: err,
+    })
 }
 
 fn is_success(summary: &RunSummary) -> bool {

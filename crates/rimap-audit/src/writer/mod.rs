@@ -398,34 +398,27 @@ impl AuditWriter {
         ))
     }
 
-    /// Build a `tool_end` record, allocate a seq, and write it. `start_seq`
-    /// must be the seq returned by the paired [`AuditWriter::log_tool_start`].
+    /// Build a `tool_end` record, allocate a seq, and write it.
+    /// `inputs.start_seq` must be the seq returned by the paired
+    /// [`AuditWriter::log_tool_start`].
     ///
     /// `tool_end` is NOT fsynced per existing policy; see the private `needs_fsync` helper.
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.
-    #[expect(clippy::too_many_arguments, reason = "record schema is fixed")]
     pub fn log_tool_end(
         &self,
-        start_seq: crate::record::ids::Seq,
-        tool: rimap_core::tool::ToolName,
-        account: Option<&str>,
-        status: crate::record::ToolStatus,
-        error_code: Option<rimap_core::ErrorCode>,
-        duration_ms: u64,
-        result_summary: crate::record::ResultSummary,
-        provenance: crate::record::Provenance,
+        inputs: ToolEndInputs,
     ) -> Result<crate::record::ids::Seq, AuditError> {
         self.emit(crate::record::Payload::ToolEnd(crate::record::ToolEnd {
-            account: account.map(str::to_string),
-            start_seq,
-            tool,
-            status,
-            error_code,
-            duration_ms,
-            result_summary,
-            provenance,
+            account: inputs.account,
+            start_seq: inputs.start_seq,
+            tool: inputs.tool,
+            status: inputs.status,
+            error_code: inputs.error_code,
+            duration_ms: inputs.duration_ms,
+            result_summary: inputs.result_summary,
+            provenance: inputs.provenance,
         }))
     }
 
@@ -447,6 +440,27 @@ impl AuditWriter {
             },
         ))
     }
+}
+
+/// Inputs to [`AuditWriter::log_tool_end`].
+#[derive(Debug, Clone)]
+pub struct ToolEndInputs {
+    /// `seq` returned by the paired [`AuditWriter::log_tool_start`].
+    pub start_seq: crate::record::ids::Seq,
+    /// Tool that just finished.
+    pub tool: rimap_core::tool::ToolName,
+    /// Account scope, if any (multi-account mode).
+    pub account: Option<String>,
+    /// Terminal status (ok/error/timeout/...).
+    pub status: crate::record::ToolStatus,
+    /// `RimapError::code()` on failure, `None` on success.
+    pub error_code: Option<rimap_core::ErrorCode>,
+    /// Wall-clock tool duration.
+    pub duration_ms: u64,
+    /// Summarized outbound results (counts, sizes).
+    pub result_summary: crate::record::ResultSummary,
+    /// Provenance snapshot (message IDs recently read, window).
+    pub provenance: crate::record::Provenance,
 }
 
 /// Inputs to [`AuditWriter::log_process_start`]. Caller computes the
