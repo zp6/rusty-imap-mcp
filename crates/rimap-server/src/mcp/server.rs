@@ -1,13 +1,12 @@
 //! MCP server struct and `ServerHandler` implementation.
 //!
 //! `ImapMcpServer` owns an `AccountRegistry` (per-account IMAP/SMTP
-//! connections, guards), an audit writer, and the download directory.
-//! The `ServerHandler` trait wires `list_tools` (posture-filtered
-//! union across accounts) and `call_tool` (account resolution +
-//! dispatch pipeline).
+//! connections, guards, and the attachment download sandbox) and an
+//! audit writer. The `ServerHandler` trait wires `list_tools`
+//! (posture-filtered union across accounts) and `call_tool` (account
+//! resolution + dispatch pipeline).
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -36,8 +35,6 @@ pub struct ImapMcpServer {
     pub registry: AccountRegistry,
     /// Append-only audit writer.
     pub(crate) audit: AuditWriter,
-    /// Directory for attachment downloads.
-    pub(crate) download_dir: PathBuf,
     /// Per-process salt used when applying `Redactor` to tool arguments.
     /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
     pub(crate) redaction_salt: Arc<RedactionSalt>,
@@ -50,13 +47,12 @@ impl ImapMcpServer {
     /// Construct a new server. Builds the redaction salt and schema map
     /// from [`rimap_audit::redact::schemas`].
     #[must_use]
-    pub fn new(registry: AccountRegistry, audit: AuditWriter, download_dir: PathBuf) -> Self {
+    pub fn new(registry: AccountRegistry, audit: AuditWriter) -> Self {
         let schema_map: HashMap<ToolName, RedactionSchema> =
             schemas().into_iter().map(|s| (s.tool, s)).collect();
         Self {
             registry,
             audit,
-            download_dir,
             redaction_salt: Arc::new(RedactionSalt::new_random()),
             redaction_schemas: Arc::new(schema_map),
         }

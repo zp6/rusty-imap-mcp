@@ -274,12 +274,13 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         smtp: None,
         guard,
         folder_guard,
+        download_dir: std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
     };
     let mut accounts = BTreeMap::new();
     accounts.insert(id, state);
     let registry = rimap_server::boot::registry::AccountRegistry::new(accounts);
 
-    let server = ImapMcpServer::new(registry, audit, download_dir.path().to_path_buf());
+    let server = ImapMcpServer::new(registry, audit);
 
     TestEnv {
         _harness: harness,

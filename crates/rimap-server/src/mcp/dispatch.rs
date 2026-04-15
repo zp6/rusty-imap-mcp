@@ -114,13 +114,7 @@ impl ImapMcpServer {
                 ser(Box::pin(list_attachments::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::DownloadAttachment => {
-                let input = parse_args(args)?;
-                ser(Box::pin(download_attachment::handle(
-                    account,
-                    input,
-                    &self.download_dir,
-                ))
-                .await?)?
+                ser(Box::pin(download_attachment::handle(account, parse_args(args)?)).await?)?
             }
             ToolName::CreateDraft => {
                 ser(Box::pin(create_draft::handle(account, parse_args(args)?)).await?)?
@@ -299,7 +293,7 @@ mod tests {
         .expect("audit open");
 
         let registry = AccountRegistry::new(BTreeMap::new());
-        let server = ImapMcpServer::new(registry, audit, tmp.path().to_path_buf());
+        let server = ImapMcpServer::new(registry, audit);
 
         // list_accounts needs no args and no IMAP connection.
         let args = serde_json::Map::new();

@@ -85,7 +85,6 @@ pub struct DownloadAttachmentUntrusted {
 pub async fn handle(
     account: &AccountState,
     input: DownloadAttachmentInput,
-    download_dir: &std::path::Path,
 ) -> Result<ToolResponse<DownloadAttachmentMeta, DownloadAttachmentUntrusted>, rimap_core::RimapError>
 {
     let uid = Uid::new(input.uid)
@@ -97,12 +96,9 @@ pub async fn handle(
         ));
     }
 
-    let dest = download::resolve_dest_dir_async(
-        input.dest_dir,
-        download_dir.to_path_buf(),
-        download_dir.to_path_buf(),
-    )
-    .await?;
+    let download_dir = account.download_dir.to_path_buf();
+    let dest = download::resolve_dest_dir_async(input.dest_dir, download_dir.clone(), download_dir)
+        .await?;
 
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
 

@@ -90,11 +90,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
 
     let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
-    let download_dir = resolve_download_dir_multi(&multi)?;
-    let registry = build_registry(&multi, &audit, &credentials)?;
+    let download_dir: Arc<std::path::Path> =
+        Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
+    let registry = build_registry(&multi, &audit, &credentials, &download_dir)?;
 
     let audit_for_shutdown = audit.clone();
-    let mcp_server = server::ImapMcpServer::new(registry, audit, download_dir);
+    let mcp_server = server::ImapMcpServer::new(registry, audit);
 
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
     let mcp_result: anyhow::Result<()> = rt.block_on(async {
@@ -140,6 +141,7 @@ fn build_registry(
     multi: &rimap_config::validate::ValidatedMultiConfig,
     audit: &rimap_audit::AuditWriter,
     credentials: &Arc<dyn CredentialStore>,
+    download_dir: &Arc<std::path::Path>,
 ) -> anyhow::Result<registry::AccountRegistry> {
     let mut account_states = std::collections::BTreeMap::new();
     for (id, acfg) in &multi.accounts {
@@ -160,6 +162,7 @@ fn build_registry(
             smtp,
             guard,
             folder_guard,
+            download_dir: Arc::clone(download_dir),
         };
         account_states.insert(id.clone(), state);
     }
