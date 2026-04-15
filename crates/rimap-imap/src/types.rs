@@ -21,6 +21,12 @@ impl Uid {
     }
 }
 
+impl From<NonZeroU32> for Uid {
+    fn from(value: NonZeroU32) -> Self {
+        Self(value)
+    }
+}
+
 /// Opaque RFC 5322 `Message-ID` header value, as raw bytes (no decoding).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageId(Vec<u8>);

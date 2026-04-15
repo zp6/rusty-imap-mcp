@@ -1,12 +1,12 @@
 //! `move_message` tool handler.
 
+use rimap_core::UidSelector;
 use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
-use crate::tools::mailbox::flags::resolve_uids;
 
 /// Input for `move_message`.
 ///
@@ -26,10 +26,9 @@ pub struct MoveMessageInput {
     pub folder: String,
     /// Destination folder.
     pub destination: String,
-    /// Single UID.
-    pub uid: Option<u32>,
-    /// Batch of UIDs (max 100).
-    pub uids: Option<Vec<u32>>,
+    /// UID target: `{"uid": N}` or `{"uids": [...]}`.
+    #[serde(flatten)]
+    pub target: UidSelector,
 }
 
 /// Per-UID move result entry.
@@ -75,7 +74,12 @@ pub async fn handle(
     account: &AccountState,
     input: MoveMessageInput,
 ) -> Result<ToolResponse<MoveMessageMeta>, rimap_core::RimapError> {
-    let uids = resolve_uids(input.uid, input.uids)?;
+    let uids: Vec<Uid> = input
+        .target
+        .into_uids()
+        .into_iter()
+        .map(Uid::from)
+        .collect();
     let outcome = account
         .imap
         .move_messages(&input.folder, &input.destination, &uids)

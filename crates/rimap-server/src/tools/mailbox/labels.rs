@@ -9,13 +9,13 @@
 //! messages. This is consistent with other flag tools (`mark_read`, `flag`,
 //! etc.) and will be addressed in a future release.
 
-use rimap_imap::types::{FetchSpec, Flag, FlagAction};
+use rimap_core::UidSelector;
+use rimap_imap::types::{FetchSpec, Flag, FlagAction, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
-use crate::tools::mailbox::flags::resolve_uids;
 
 /// IMAP atom specials (RFC 3501 §9) plus backslash. Any of these
 /// inside a keyword would break the STORE command or collide with
@@ -85,10 +85,9 @@ fn invalid_input(message: &str) -> rimap_core::RimapError {
 pub struct LabelInput {
     /// Target folder.
     pub folder: String,
-    /// Single UID.
-    pub uid: Option<u32>,
-    /// Batch of UIDs (max 100).
-    pub uids: Option<Vec<u32>>,
+    /// UID target: `{"uid": N}` or `{"uids": [...]}`.
+    #[serde(flatten)]
+    pub target: UidSelector,
     /// Custom keyword label to add or remove.
     pub label: String,
 }
@@ -162,7 +161,12 @@ async fn handle_label_op(
     action: FlagAction,
 ) -> Result<ToolResponse<LabelsMeta>, rimap_core::RimapError> {
     validate_label(&input.label)?;
-    let uids = resolve_uids(input.uid, input.uids)?;
+    let uids: Vec<Uid> = input
+        .target
+        .into_uids()
+        .into_iter()
+        .map(Uid::from)
+        .collect();
     let updated = account
         .imap
         .store_flags(
