@@ -1,5 +1,7 @@
 //! `download_attachment` tool handler.
 
+use std::sync::Arc;
+
 use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -96,9 +98,8 @@ pub async fn handle(
         ));
     }
 
-    let download_dir = account.download_dir.to_path_buf();
-    let dest = download::resolve_dest_dir_async(input.dest_dir, download_dir.clone(), download_dir)
-        .await?;
+    let dest =
+        download::resolve_dest_dir_async(input.dest_dir, Arc::clone(&account.download_dir)).await?;
 
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
 

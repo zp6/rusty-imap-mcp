@@ -46,10 +46,8 @@ pub struct AccountState {
     pub guard: DispatchGuard<SystemClock>,
     /// Folder-level access guard.
     pub folder_guard: FolderGuard,
-    /// Attachment download sandbox root. Server-wide today (all
-    /// accounts share the same path); carried on `AccountState` so
-    /// tool handlers have a uniform `handle(account, input)` shape
-    /// and can pick up a per-account override if one ever lands.
+    /// Attachment download sandbox root. Carried on `AccountState` so
+    /// tool handlers keep a uniform `handle(account, input)` shape.
     pub download_dir: Arc<Path>,
 }
 

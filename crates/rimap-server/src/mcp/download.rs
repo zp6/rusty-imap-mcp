@@ -5,6 +5,7 @@
 //! MIME sniffing and SHA-256 hashing utilities.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rimap_core::RimapError;
 
@@ -101,14 +102,11 @@ pub(crate) fn write_attachment(
 /// if `resolve_dest_dir` itself fails.
 pub async fn resolve_dest_dir_async(
     dest_dir: Option<String>,
-    allowed_root: PathBuf,
-    fallback_dir: PathBuf,
+    root: Arc<Path>,
 ) -> Result<PathBuf, RimapError> {
-    tokio::task::spawn_blocking(move || {
-        resolve_dest_dir(dest_dir.as_deref(), &allowed_root, &fallback_dir)
-    })
-    .await
-    .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))
+    tokio::task::spawn_blocking(move || resolve_dest_dir(dest_dir.as_deref(), &root, &root))
+        .await
+        .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))
 }
 
 /// Async wrapper around [`write_attachment`] that runs on a

@@ -16,5 +16,5 @@ pub use crate::posture::{Posture, UnknownPosture};
 pub use crate::posture_matrix::base_allows;
 pub use crate::tls::{FingerprintParseError, TlsFingerprint};
 pub use crate::tool::{ParseToolNameError, ToolName};
-pub use crate::uid_selector::{BoundedUids, MAX_BATCH_UIDS, UidSelector};
+pub use crate::uid_selector::UidSelector;
 pub use crate::warning::{WarningCode, WarningSeverity};

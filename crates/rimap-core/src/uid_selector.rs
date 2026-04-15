@@ -1,10 +1,5 @@
 //! [`UidSelector`] — the single-or-batch UID target shape.
 //!
-//! Replaces the previous runtime XOR (`uid: Option<u32>` +
-//!   `uids: Option<Vec<u32>>` + `resolve_uids` validator) with a
-//!   compile-time-exhaustive enum that deserializes byte-identically
-//!   from the existing MCP JSON payloads.
-//!
 //! # Wire shapes
 //!
 //! ```text
@@ -12,17 +7,13 @@
 //! {"uids": [1,2,3]}  -> UidSelector::Batch
 //! ```
 //!
-//! Mixed (`{"uid": 1, "uids": [2]}`) and empty (`{}`) payloads are rejected
-//! at deserialize time with an actionable error — not caught later by a
-//! handler-local validator.
-//!
 //! # Why a manual `Deserialize`
 //!
-//! `#[serde(untagged)]` + `#[serde(flatten)]` has two footguns that matter
-//! here: ambiguous payloads silently pick the first matching variant, and
-//! error messages collapse to "did not match any variant". We deserialize
-//! into a neutral two-key shape and disambiguate explicitly so both the
-//! "both present" and "neither present" cases produce clear errors.
+//! `#[serde(untagged)]` + `#[serde(flatten)]` silently picks the first
+//! matching variant on ambiguous payloads (both `uid` and `uids` present) and
+//! collapses errors to "did not match any variant". We deserialize into a
+//! neutral two-key shape and disambiguate explicitly so both "both present"
+//! and "neither present" produce actionable errors.
 
 use core::num::NonZeroU32;
 
@@ -40,6 +31,7 @@ pub const MAX_BATCH_UIDS: usize = 100;
 /// caught by runtime validation in every handler.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum UidSelector {
     /// Single-message target.
     Single {
@@ -95,15 +87,12 @@ impl TryFrom<Vec<NonZeroU32>> for BoundedUids {
 }
 
 impl<'de> Deserialize<'de> for BoundedUids {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = Vec::<NonZeroU32>::deserialize(deserializer)?;
-        Self::try_from(raw).map_err(D::Error::custom)
+        Self::try_from(raw).map_err(serde::de::Error::custom)
     }
 }
 
-/// Neutral shape for deserializing [`UidSelector`]. Both fields are optional
-/// at parse time; the invariant is enforced in the [`TryFrom`] below so we
-/// can emit targeted errors for the ambiguous and empty cases.
 #[derive(Deserialize)]
 struct UidSelectorWire {
     #[serde(default)]
