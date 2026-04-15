@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use rand::RngCore;
+use rand::{RngCore, rng};
 use rimap_core::tool::ToolName;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -76,7 +76,7 @@ impl RedactionSalt {
     #[must_use]
     pub fn new_random() -> Self {
         let mut bytes = [0_u8; 32];
-        rand::thread_rng().fill_bytes(&mut bytes);
+        rng().fill_bytes(&mut bytes);
         Self(bytes)
     }
 

@@ -40,7 +40,7 @@ rpassword = "7.3"
 secrecy = "0.10"
 
 # Authorization primitives
-governor = "0.7"
+governor = "0.10"
 utf7-imap = "0.3.2"
 nonzero_ext = "0.3"
 parking_lot = "0.12"
@@ -70,10 +70,7 @@ fs4 = { version = "0.13", default-features = false, features = ["sync"] }
 libc = "0.2"
 serde_json = "1.0"
 time = { version = "0.3", features = ["formatting", "parsing", "macros", "serde", "serde-well-known"] }
-# ulid pinned to =1.1.4: later versions bump to rand 0.9, which conflicts
-# with governor's rand 0.8 transitively and trips cargo-deny's duplicate
-# version ban. Revisit once governor 0.8+ (with rand 0.9) stabilizes.
-ulid = { version = "=1.1.4", features = ["serde"] }
+ulid = { version = "1.2", features = ["serde"] }
 sha2 = "0.10"
 hex = "0.4"
 subtle = "2"
@@ -83,7 +80,7 @@ subtle = "2"
 # no build.rs, standard proc-macro2/quote/syn/heck stack, no network or
 # suspicious env access. Re-audit on any version bump. (SC-PROC-01)
 strum = { version = "0.26", features = ["derive"] }
-rand = "0.8"
+rand = "0.9"
 
 # Content pipeline (Sprint 4a)
 # mail-parser 0.11 transitively pulls hashify (proc-macro), executing
