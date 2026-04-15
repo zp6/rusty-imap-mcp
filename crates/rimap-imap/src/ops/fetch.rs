@@ -48,13 +48,11 @@ fn compress_uid_set(uids: &[Uid]) -> String {
         // which means `run_end < u32::MAX`. Use `checked_add` to make the
         // invariant explicit and to future-proof against a refactor
         // changing the input type.
-        if run_end.checked_add(1) == Some(uid) {
-            run_end = uid;
-        } else {
+        if run_end.checked_add(1) != Some(uid) {
             emit_run(&mut out, run_start, run_end);
             run_start = uid;
-            run_end = uid;
         }
+        run_end = uid;
     }
     emit_run(&mut out, run_start, run_end);
     out
