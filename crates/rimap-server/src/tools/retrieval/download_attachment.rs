@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::boot::registry::AccountState;
 use crate::mcp::download;
 use crate::mcp::response::ToolResponse;
+use crate::tools::retrieval::part_walker::walk_body_structure;
 
 /// Input for the `download_attachment` tool.
 ///
@@ -203,8 +204,6 @@ fn check_sniff_mismatch(
         Some("download_attachment:sniff".into()),
     )]
 }
-
-use crate::tools::retrieval::part_walker::walk_body_structure;
 
 /// Look up a part's declared MIME type from a `BodyStructure` tree by
 /// IMAP-style part ID (e.g. "2", "1.2").

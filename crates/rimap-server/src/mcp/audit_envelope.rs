@@ -144,19 +144,17 @@ impl ImapMcpServer {
             message_ids_recently_read: Vec::new(),
         };
         let summary = ResultSummary::default();
-        let join = tokio::task::spawn_blocking(move || {
-            audit.log_tool_end(
-                start_seq,
-                tool,
-                account.as_deref(),
-                status,
-                error_code,
-                duration_ms,
-                summary,
-                provenance,
-            )
-        })
-        .await;
+        let inputs = rimap_audit::ToolEndInputs {
+            start_seq,
+            tool,
+            account,
+            status,
+            error_code,
+            duration_ms,
+            result_summary: summary,
+            provenance,
+        };
+        let join = tokio::task::spawn_blocking(move || audit.log_tool_end(inputs)).await;
         match join {
             Ok(Ok(_)) => {}
             Ok(Err(audit_err)) => {

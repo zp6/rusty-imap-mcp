@@ -137,3 +137,44 @@ fn build_results(uids: &[Uid]) -> Vec<MoveResult> {
     }
     results
 }
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    fn uid(n: u32) -> Uid {
+        Uid::new(n).expect("non-zero")
+    }
+
+    #[test]
+    fn build_results_is_empty_for_empty_input() {
+        assert!(build_results(&[]).is_empty());
+    }
+
+    #[test]
+    fn build_results_preserves_order_and_leaves_new_uid_unknown() {
+        // UIDPLUS is not parsed out of async-imap's MOVE response today,
+        // so every entry records the old UID and a None for new_uid.
+        // Documenting this at the unit layer prevents a future COPYUID
+        // refactor from breaking the client contract silently.
+        let uids = [uid(7), uid(3), uid(11)];
+        let results = build_results(&uids);
+        assert_eq!(results.len(), 3);
+        for (i, r) in results.iter().enumerate() {
+            assert_eq!(r.old_uid, uids[i]);
+            assert!(r.new_uid.is_none());
+        }
+    }
+
+    #[test]
+    fn build_results_preserves_duplicates() {
+        // MOVE is called with pre-deduped UIDs, but the helper itself does
+        // no filtering — that responsibility sits with the caller.
+        let uids = [uid(5), uid(5)];
+        let results = build_results(&uids);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].old_uid, uids[0]);
+        assert_eq!(results[1].old_uid, uids[1]);
+    }
+}

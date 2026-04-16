@@ -119,3 +119,4 @@ log "ready"
 
 # Hand off: wait on dovecot, propagating its exit code.
 wait "$dovecot_pid"
+exit $?

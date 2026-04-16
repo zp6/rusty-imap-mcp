@@ -736,7 +736,7 @@ impl Connection {
     /// server rejects the command.
     pub async fn create_folder(&self, name: &str) -> Result<(), ImapError> {
         self.with_session("create_folder", async |session| {
-            crate::ops::folder_mgmt::create_folder(session, name).await
+            crate::ops::folder_management::create_folder(session, name).await
         })
         .await
     }
@@ -752,7 +752,7 @@ impl Connection {
     /// server rejects the command.
     pub async fn rename_folder(&self, old_name: &str, new_name: &str) -> Result<(), ImapError> {
         self.with_session("rename_folder", async |session| {
-            crate::ops::folder_mgmt::rename_folder(session, old_name, new_name).await
+            crate::ops::folder_management::rename_folder(session, old_name, new_name).await
         })
         .await
     }
@@ -767,7 +767,7 @@ impl Connection {
     /// the server rejects the command.
     pub async fn delete_folder(&self, name: &str) -> Result<(), ImapError> {
         self.with_session("delete_folder", async |session| {
-            crate::ops::folder_mgmt::delete_folder(session, name).await
+            crate::ops::folder_management::delete_folder(session, name).await
         })
         .await
     }

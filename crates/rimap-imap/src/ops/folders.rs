@@ -170,3 +170,102 @@ fn is_dead_tcp_kind(kind: std::io::ErrorKind) -> bool {
         | _ => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_items_empty_selection_renders_empty_parens() {
+        let items = StatusItems {
+            messages: false,
+            recent: false,
+            uid_next: false,
+            uid_validity: false,
+            unseen: false,
+        };
+        assert_eq!(build_status_items(items), "()");
+    }
+
+    #[test]
+    fn status_items_preserves_canonical_order() {
+        // IMAP STATUS items are space-separated and not order-sensitive per
+        // RFC 3501, but this op always emits in the declared struct order
+        // so the wire format is stable for golden tests.
+        let items = StatusItems {
+            messages: true,
+            recent: true,
+            uid_next: true,
+            uid_validity: true,
+            unseen: true,
+        };
+        assert_eq!(
+            build_status_items(items),
+            "(MESSAGES RECENT UIDNEXT UIDVALIDITY UNSEEN)"
+        );
+    }
+
+    #[test]
+    fn status_items_single_flag_emits_single_token() {
+        let items = StatusItems {
+            messages: false,
+            recent: false,
+            uid_next: true,
+            uid_validity: false,
+            unseen: false,
+        };
+        assert_eq!(build_status_items(items), "(UIDNEXT)");
+    }
+
+    #[test]
+    fn is_dead_tcp_kind_covers_documented_dead_kinds() {
+        use std::io::ErrorKind;
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+            ErrorKind::UnexpectedEof,
+            ErrorKind::NotConnected,
+        ] {
+            assert!(is_dead_tcp_kind(kind), "expected dead: {kind:?}");
+        }
+    }
+
+    #[test]
+    fn is_dead_tcp_kind_rejects_non_dead_kinds() {
+        use std::io::ErrorKind;
+        for kind in [
+            ErrorKind::TimedOut,
+            ErrorKind::ConnectionRefused,
+            ErrorKind::PermissionDenied,
+            ErrorKind::Interrupted,
+            ErrorKind::WouldBlock,
+            ErrorKind::Other,
+        ] {
+            assert!(!is_dead_tcp_kind(kind), "expected alive: {kind:?}");
+        }
+    }
+
+    #[test]
+    fn map_err_routes_io_broken_pipe_to_connection_lost() {
+        // Regression: the previous substring matcher missed async-imap's
+        // Io(BrokenPipe) formatting because "I/O error: Broken pipe" does
+        // not contain the word "connection". Guard that here.
+        let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe");
+        let mapped = map_err(async_imap::error::Error::Io(io));
+        assert!(matches!(mapped, ImapError::ConnectionLost));
+    }
+
+    #[test]
+    fn map_err_routes_io_timed_out_to_protocol() {
+        let io = std::io::Error::new(std::io::ErrorKind::TimedOut, "timed out");
+        let mapped = map_err(async_imap::error::Error::Io(io));
+        assert!(matches!(mapped, ImapError::Protocol(_)));
+    }
+
+    #[test]
+    fn map_err_routes_bad_response_to_protocol() {
+        let mapped = map_err(async_imap::error::Error::Bad("BAD".to_string()));
+        assert!(matches!(mapped, ImapError::Protocol(_)));
+    }
+}

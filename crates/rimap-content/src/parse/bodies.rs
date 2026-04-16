@@ -59,14 +59,14 @@ pub(super) fn extract_bodies(
         match &part.body {
             PartType::Text(s) => {
                 let raw_bytes = s.as_bytes();
-                process_text_part(part, raw_bytes, idx, &mut state, warnings);
+                decode_text_part(part, raw_bytes, idx, &mut state, warnings);
             }
             PartType::Html(cow) => {
                 let is_primary = primary_html_part_id == Some(part_id as usize);
                 if !is_primary {
                     continue;
                 }
-                process_html_part(part, cow.as_bytes(), &mut state, warnings)?;
+                sanitize_html_part(part, cow.as_bytes(), &mut state, warnings)?;
             }
             PartType::Message(_)
             | PartType::Binary(_)
@@ -109,7 +109,7 @@ struct BodyWalkState {
 /// Decode and sanitize a single `text/plain` part, updating `state`
 /// and pushing any new warnings (including `ParseBodyTruncated` when
 /// the raw part exceeds [`MAX_BODY_BYTES`]).
-fn process_text_part(
+fn decode_text_part(
     part: &mail_parser::MessagePart<'_>,
     raw_bytes: &[u8],
     idx: usize,
@@ -146,7 +146,7 @@ fn process_text_part(
 ///
 /// On `ContentError::LimitExceeded`: emits a `ParseBodyTruncated`
 /// warning at `body:html` and continues. Other errors propagate.
-fn process_html_part(
+fn sanitize_html_part(
     part: &mail_parser::MessagePart<'_>,
     raw_bytes: &[u8],
     state: &mut BodyWalkState,

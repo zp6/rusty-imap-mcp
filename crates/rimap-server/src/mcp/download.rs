@@ -98,8 +98,10 @@ pub(crate) fn write_attachment(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Internal` if the blocking task panics or
-/// if `resolve_dest_dir` itself fails.
+/// Propagates whatever [`resolve_dest_dir`] returns (typically
+/// `RimapError::Authz` with `InvalidInput` when the path cannot be
+/// canonicalized or escapes `allowed_root`). Returns
+/// `RimapError::Internal` if the blocking task panics.
 pub async fn resolve_dest_dir_async(
     dest_dir: Option<String>,
     root: Arc<Path>,
@@ -114,8 +116,10 @@ pub async fn resolve_dest_dir_async(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Internal` if the blocking task panics or
-/// if `write_attachment` itself fails.
+/// Propagates whatever [`write_attachment`] returns
+/// (`RimapError::Internal` on I/O failure or after >1000 filename
+/// collisions). Also returns `RimapError::Internal` if the blocking
+/// task panics.
 pub async fn write_attachment_async(
     dir: PathBuf,
     filename: String,

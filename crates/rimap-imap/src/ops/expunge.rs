@@ -17,7 +17,7 @@ pub(crate) async fn count_deleted(
     session: &mut ImapSession,
     folder: &str,
 ) -> Result<Vec<Uid>, ImapError> {
-    super::folder_mgmt::validate_folder_name(folder)?;
+    super::folder_management::validate_folder_name(folder)?;
     super::folders::select(session, folder, true).await?;
     let uids = session
         .uid_search("DELETED")

@@ -55,15 +55,7 @@ static PARSE_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(8)
 /// As described above — never returns `ContentError` directly so the
 /// classification cannot drift at call sites.
 pub async fn parse_message_async(raw: Vec<u8>) -> Result<Content, RimapError> {
-    let _permit = PARSE_SEMAPHORE
-        .acquire()
-        .await
-        .map_err(|_| RimapError::Internal("parse semaphore closed".into()))?;
-    match tokio::task::spawn_blocking(move || parse_message(&raw)).await {
-        Ok(Ok(content)) => Ok(content),
-        Ok(Err(e)) => Err(classify_content_error(&e)),
-        Err(join_err) => Err(crate::mcp::spawn_blocking_panic_error(&join_err)),
-    }
+    run_on_blocking_pool(move || parse_message(&raw)).await
 }
 
 /// Run `rimap_content::walk_attachment_parts` on the blocking
@@ -80,12 +72,22 @@ pub async fn parse_message_async(raw: Vec<u8>) -> Result<Content, RimapError> {
 pub async fn walk_attachment_parts_async(
     raw: Vec<u8>,
 ) -> Result<Vec<rimap_content::RawPart>, RimapError> {
+    run_on_blocking_pool(move || rimap_content::walk_attachment_parts(&raw)).await
+}
+
+/// Classifies `ContentError` via [`classify_content_error`] and panics
+/// via [`spawn_blocking_panic_error`]. Acquires `PARSE_SEMAPHORE`.
+async fn run_on_blocking_pool<F, T>(work: F) -> Result<T, RimapError>
+where
+    F: FnOnce() -> Result<T, ContentError> + Send + 'static,
+    T: Send + 'static,
+{
     let _permit = PARSE_SEMAPHORE
         .acquire()
         .await
         .map_err(|_| RimapError::Internal("parse semaphore closed".into()))?;
-    match tokio::task::spawn_blocking(move || rimap_content::walk_attachment_parts(&raw)).await {
-        Ok(Ok(parts)) => Ok(parts),
+    match tokio::task::spawn_blocking(work).await {
+        Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(classify_content_error(&e)),
         Err(join_err) => Err(crate::mcp::spawn_blocking_panic_error(&join_err)),
     }

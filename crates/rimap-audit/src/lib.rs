@@ -27,4 +27,4 @@ pub use crate::redact::{
 };
 pub use crate::writer::provenance::ProvenanceBuffer;
 pub use crate::writer::self_check::{TrailingState, current_inode, read_trailing_state};
-pub use crate::writer::{AuditOptions, AuditWriter, ProcessStartInputs};
+pub use crate::writer::{AuditOptions, AuditWriter, ProcessStartInputs, ToolEndInputs};

@@ -1,119 +1,114 @@
 # rusty-imap-mcp
 
+[![CI](https://github.com/randomparity/rusty-imap-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/randomparity/rusty-imap-mcp/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/randomparity/rusty-imap-mcp)](https://github.com/randomparity/rusty-imap-mcp/releases)
+[![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)](LICENSE-MIT)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88.0-orange)](rust-toolchain.toml)
+
 A security-first [Model Context Protocol](https://modelcontextprotocol.io/)
-server for IMAP email, written in Rust. Primary target: Proton Mail via
-Proton Bridge. Compatible with standard IMAP servers (Dovecot, Cyrus,
-Gmail via app password, etc.).
+server for IMAP email, written in Rust.
 
-## Why
+## Why this exists
 
-LLM agents reading email are a target for prompt injection. A single
-crafted message can contain hidden instructions that induce the agent to
-send mail, leak data, or pivot to other tools. rusty-imap-mcp treats
-every byte of email content as untrusted input: aggressive sanitization,
-structural tagging, Unicode normalization, look-alike detection, content
-provenance tracking, and posture-based authorization.
+LLM agents with email access are targets for prompt injection. A single
+crafted message can contain hidden instructions that cause an agent to
+send mail, leak data, or pivot to other tools. Most MCP email servers
+pass raw message content straight to the model.
 
-## Quick start
+rusty-imap-mcp treats every byte of email content as untrusted input.
+Messages are parsed, sanitized, normalized, and structurally tagged
+before reaching the agent — so the model sees clean content with
+security metadata, not raw attack surface.
 
-1. Build from source (see below) or download a binary from the
-   [releases page](https://github.com/randomparity/rusty-imap-mcp/releases).
+## Features
 
-2. Create a config file:
+### Content defense
 
-   ```toml
-   [imap]
-   host = "127.0.0.1"
-   port = 1143
-   username = "you@proton.me"
-   tls_fingerprint_sha256 = "..."  # see docs/proton-bridge-setup.md
+- HTML sanitization with hidden-element stripping (CSS `display:none`,
+  `visibility:hidden`, `opacity:0`, white-on-white text)
+- Unicode NFKC normalization and invisible character stripping
+  (zero-width, bidi overrides, C0/C1 controls)
+- Look-alike detection: mixed-script domains, confusable skeletons,
+  display-name spoofing, reply-to mismatch, filename bidi tricks
+- Structured response envelope separating trusted `meta` from
+  `untrusted` content and `security_warnings`
+- Mailing list detection and content provenance tagging
 
-   [audit]
-   path = "~/.local/state/rusty-imap-mcp/audit.jsonl"
-   ```
+### Authorization
 
-   Place it at `~/.config/rusty-imap-mcp/config.toml` (Linux) or
-   `~/Library/Application Support/rusty-imap-mcp/config.toml` (macOS).
+- Four security postures: `readonly`, `draft-safe` (default), `full`,
+  `destructive`
+- Per-tool `"allow"` / `"deny"` overrides
+- Denied tools hidden from `list_tools` and rejected at dispatch
+- `$PendingReview` flag on drafts — human-in-the-loop gate
 
-3. Store the IMAP password:
+### Audit and limits
 
-   ```bash
-   rusty-imap-mcp login
-   ```
+- Append-only JSONL audit log with tamper detection
+- Token-bucket rate limiting (per-tool, per-account)
+- Circuit breaker with sliding-window error counting
+- TLS certificate fingerprint pinning
 
-4. Test the connection:
+### Email operations
 
-   ```bash
-   rusty-imap-mcp --dry-run
-   ```
+- 22 posture-gated tools: list, search, fetch, flag, label, move,
+  draft, send, folder management, attachment download
+- 2 infrastructure tools: `list_accounts`, `use_account`
+- Multi-account support with per-account posture, rate limits, and
+  circuit breaker
+- SMTP sending with automatic Sent-folder copy via IMAP APPEND
 
-5. Add to your MCP client (e.g. Claude Desktop):
+### Operations
 
-   ```json
-   {
-     "mcpServers": {
-       "email": {
-         "command": "rusty-imap-mcp"
-       }
-     }
-   }
-   ```
+- Single static binary — no runtime dependencies
+- Pre-built binaries for 5 platforms (x86_64/aarch64 Linux, aarch64
+  macOS, ppc64le, s390x)
+- TOML configuration with strict validation
+- OS keychain credential storage (no passwords in config files)
+- `--dry-run` mode for connection testing
 
-## Security postures
+## How it compares
 
-Four tiers control which tools are available. The default is
-`draft-safe`.
+| Feature | rusty-imap-mcp | [mcp-email-server](https://github.com/ai-zerolab/mcp-email-server) | [email-mcp](https://github.com/codefuturist/email-mcp) | [read-no-evil-mcp](https://github.com/thekie/read-no-evil-mcp) |
+|---------|:-:|:-:|:-:|:-:|
+| **Security** | | | | |
+| Content sanitization | yes | no | no | no |
+| Prompt injection defense | structural | no | no | ML (72% detection) |
+| Unicode normalization | yes | no | no | no |
+| Invisible char stripping | yes | no | no | partial |
+| Look-alike detection | yes | no | no | no |
+| Security postures | 4 tiers + per-tool | no | no | per-account perms |
+| Audit log | append-only JSONL | no | audit trail | no |
+| TLS fingerprint pinning | yes | no | no | no |
+| Rate limiting | token-bucket | no | token-bucket | no |
+| Circuit breaker | yes | no | no | no |
+| **Capabilities** | | | | |
+| Tool count | 24 | ~10 | 47 | 7 |
+| Multi-account | yes | yes | yes | yes |
+| SMTP send | yes | yes | yes | yes |
+| Credential storage | OS keychain | env vars | config file | env vars |
+| IMAP IDLE / watcher | no | no | yes | no |
+| Email scheduling | no | no | yes | no |
+| **Runtime** | | | | |
+| Language | Rust | Python | TypeScript | Python |
+| Install | single binary | `pip` / `uvx` | `npx` / `pnpm` | `pip` + PyTorch (~500 MB) |
+| Docker | no | yes | yes | yes |
 
-| Posture | Scope |
-|---------|-------|
-| `readonly` | List, search, fetch, download. No mutations. |
-| `draft-safe` | Read + flags, moves, labels, drafts with `$PendingReview`. No SMTP. Default. |
-| `full` | All above + send, delete, folder management, HTML bodies, advanced search. |
-| `destructive` | All above + expunge, delete_folder. |
+Based on public documentation as of April 2026. Corrections welcome
+via issue or PR.
 
-Tools denied by the active posture are not advertised via `list_tools`
-and are rejected at dispatch. Per-tool `"allow"` / `"deny"` overrides
-are supported.
+## Get started
 
-See [docs/security-model.md](docs/security-model.md) for the full
-22-tool x 4-posture matrix and threat model.
+Pick your email provider:
 
-## Multi-account
+- **[Quick start: Gmail](docs/quickstart-gmail.md)** — ~10 minutes,
+  requires an App Password
+- **[Quick start: Proton Bridge](docs/quickstart-proton-bridge.md)** —
+  ~15 minutes, includes TLS fingerprint setup
 
-Multiple accounts are supported in a single server process:
-
-```toml
-[[accounts]]
-name = "work"
-
-[accounts.imap]
-host = "127.0.0.1"
-port = 1143
-username = "user@proton.me"
-
-[[accounts]]
-name = "personal"
-
-[accounts.imap]
-host = "imap.fastmail.com"
-port = 993
-username = "me@fastmail.com"
-
-[accounts.security]
-posture = "readonly"
-
-[audit]
-path = "~/.local/state/rusty-imap-mcp/audit.jsonl"
-```
-
-Agents discover accounts via MCP resources
-(`rimap://accounts/<name>`) and select them with the `use_account`
-tool or per-call `account` parameter. Each account has independent
-posture, rate limits, and circuit breaker.
-
-Existing single-account configs work unchanged.
-
-See [docs/multi-account.md](docs/multi-account.md).
+For other IMAP servers (Fastmail, Dovecot, Cyrus, etc.), follow the
+Gmail guide and adjust the `host`, `port`, and `encryption` fields for
+your provider.
 
 ## MCP tools
 
@@ -130,15 +125,15 @@ See [docs/multi-account.md](docs/multi-account.md).
 **2 infrastructure tools** (always available):
 `use_account`, `list_accounts`
 
+See [docs/postures.md](docs/postures.md) for the full 22-tool x
+4-posture matrix.
+
 ## Build from source
 
 ```bash
-# Clone and build
 git clone https://github.com/randomparity/rusty-imap-mcp.git
 cd rusty-imap-mcp
 cargo build --release
-
-# Binary at target/release/rusty-imap-mcp
 ```
 
 Requires Rust 1.88.0+ and `libdbus-1-dev` (Linux) or equivalent.
@@ -147,32 +142,24 @@ Requires Rust 1.88.0+ and `libdbus-1-dev` (Linux) or equivalent.
 
 ```bash
 just setup    # install required tooling and pre-commit hooks
-just ci       # run the full local-CI equivalent (fmt, clippy, test, MSRV, deny, typos)
+just ci       # run the full local-CI equivalent
 ```
-
-MSRV is 1.88.0, verified independently in CI. Dev toolchain is 1.94.0,
-pinned in `rust-toolchain.toml`.
 
 ## Pre-built binaries
 
 Binaries are published for five targets on each
 [release](https://github.com/randomparity/rusty-imap-mcp/releases):
-
-- `x86_64-unknown-linux-gnu`
-- `aarch64-unknown-linux-gnu`
-- `aarch64-apple-darwin`
-- `powerpc64le-unknown-linux-gnu`
-- `s390x-unknown-linux-gnu`
-
-SHA256 checksums are included with each release.
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+`aarch64-apple-darwin`, `powerpc64le-unknown-linux-gnu`,
+`s390x-unknown-linux-gnu`. SHA256 checksums included.
 
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
-- [Multi-account support](docs/multi-account.md)
 - [Security model and posture matrix](docs/security-model.md)
-- [Proton Bridge setup](docs/proton-bridge-setup.md)
+- [Multi-account support](docs/multi-account.md)
 - [Audit log format](docs/audit-log.md)
+- [Full documentation index](docs/INDEX.md)
 
 ## License
 
