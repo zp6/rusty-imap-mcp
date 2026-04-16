@@ -410,16 +410,7 @@ impl AuditWriter {
         &self,
         inputs: ToolEndInputs,
     ) -> Result<crate::record::ids::Seq, AuditError> {
-        self.emit(crate::record::Payload::ToolEnd(crate::record::ToolEnd {
-            account: inputs.account,
-            start_seq: inputs.start_seq,
-            tool: inputs.tool,
-            status: inputs.status,
-            error_code: inputs.error_code,
-            duration_ms: inputs.duration_ms,
-            result_summary: inputs.result_summary,
-            provenance: inputs.provenance,
-        }))
+        self.emit(crate::record::Payload::ToolEnd(inputs.into()))
     }
 
     /// Build a `process_end` record, allocate a seq, and write it.
@@ -443,24 +434,39 @@ impl AuditWriter {
 }
 
 /// Inputs to [`AuditWriter::log_tool_end`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ToolEndInputs {
-    /// `seq` returned by the paired [`AuditWriter::log_tool_start`].
+    /// Seq returned by the paired [`AuditWriter::log_tool_start`].
     pub start_seq: crate::record::ids::Seq,
-    /// Tool that just finished.
+    /// Which tool completed.
     pub tool: rimap_core::tool::ToolName,
-    /// Account scope, if any (multi-account mode).
+    /// Account scope (`None` for infrastructure tools).
     pub account: Option<String>,
-    /// Terminal status (ok/error/timeout/...).
+    /// Terminal outcome (ok / error / ...).
     pub status: crate::record::ToolStatus,
-    /// `RimapError::code()` on failure, `None` on success.
+    /// Error classification, if any.
     pub error_code: Option<rimap_core::ErrorCode>,
-    /// Wall-clock tool duration.
+    /// Wall-clock milliseconds.
     pub duration_ms: u64,
-    /// Summarized outbound results (counts, sizes).
+    /// Outbound result counts and sizes.
     pub result_summary: crate::record::ResultSummary,
-    /// Provenance snapshot (message IDs recently read, window).
+    /// Recently-read message IDs and window.
     pub provenance: crate::record::Provenance,
+}
+
+impl From<ToolEndInputs> for crate::record::ToolEnd {
+    fn from(i: ToolEndInputs) -> Self {
+        Self {
+            account: i.account,
+            start_seq: i.start_seq,
+            tool: i.tool,
+            status: i.status,
+            error_code: i.error_code,
+            duration_ms: i.duration_ms,
+            result_summary: i.result_summary,
+            provenance: i.provenance,
+        }
+    }
 }
 
 /// Inputs to [`AuditWriter::log_process_start`]. Caller computes the

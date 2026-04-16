@@ -87,6 +87,10 @@ enum SampleOutcome {
 fn main() -> ExitCode {
     match run() {
         Ok(exit_code) => exit_code,
+        Err(RunnerError::UsageMessage(msg)) => {
+            let _ = writeln!(io::stderr().lock(), "{msg}");
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             let _ = writeln!(io::stderr().lock(), "{err}");
             ExitCode::from(2)

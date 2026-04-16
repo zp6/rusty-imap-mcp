@@ -75,10 +75,8 @@ pub async fn walk_attachment_parts_async(
     run_on_blocking_pool(move || rimap_content::walk_attachment_parts(&raw)).await
 }
 
-/// Acquire a `PARSE_SEMAPHORE` permit, run `work` on the blocking
-/// threadpool, and classify failures. Returns the `ContentError`
-/// classification for `Err(ContentError)`, `RimapError::Internal` for
-/// blocking-task panics or a closed semaphore.
+/// Classifies `ContentError` via [`classify_content_error`] and panics
+/// via [`spawn_blocking_panic_error`]. Acquires `PARSE_SEMAPHORE`.
 async fn run_on_blocking_pool<F, T>(work: F) -> Result<T, RimapError>
 where
     F: FnOnce() -> Result<T, ContentError> + Send + 'static,
