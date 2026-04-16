@@ -26,7 +26,7 @@ provenance tracking, and posture-based authorization.
    host = "127.0.0.1"
    port = 1143
    username = "you@proton.me"
-   tls_fingerprint_sha256 = "..."  # see docs/proton-bridge-setup.md
+   tls_fingerprint_sha256 = "..."  # see docs/quickstart-proton-bridge.md
 
    [audit]
    path = "~/.local/state/rusty-imap-mcp/audit.jsonl"
@@ -171,7 +171,7 @@ SHA256 checksums are included with each release.
 - [Configuration reference](docs/configuration.md)
 - [Multi-account support](docs/multi-account.md)
 - [Security model and posture matrix](docs/security-model.md)
-- [Proton Bridge setup](docs/proton-bridge-setup.md)
+- [Proton Bridge quick start](docs/quickstart-proton-bridge.md)
 - [Audit log format](docs/audit-log.md)
 
 ## License
