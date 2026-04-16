@@ -172,7 +172,7 @@ fn parse_args() -> RunnerResult<Args> {
     }
 
     let Some(dataset_root) = dataset_root else {
-        return Err(RunnerError::UsageMessage(usage()));
+        return Err(RunnerError::Argument(usage()));
     };
 
     Ok(Args {
