@@ -155,7 +155,12 @@ fn assert_fixture(name: &str, dir: &Path, expected: &Expected) -> Result<(), Str
 }
 
 fn assert_ok_body(name: &str, content: &Content, expected: &Expected) -> Result<(), String> {
-    let body = &content.untrusted.body_text;
+    assert_body_substrings(name, &content.untrusted.body_text, expected)?;
+    assert_warning_codes(name, &content.security_warnings, expected)?;
+    assert_meta_fields(name, &content.meta, expected)
+}
+
+fn assert_body_substrings(name: &str, body: &str, expected: &Expected) -> Result<(), String> {
     for needle in &expected.must_contain {
         if !body.contains(needle) {
             return Err(format!(
@@ -170,8 +175,15 @@ fn assert_ok_body(name: &str, content: &Content, expected: &Expected) -> Result<
             ));
         }
     }
-    let observed: Vec<&'static str> = content
-        .security_warnings
+    Ok(())
+}
+
+fn assert_warning_codes(
+    name: &str,
+    warnings: &[rimap_content::SecurityWarning],
+    expected: &Expected,
+) -> Result<(), String> {
+    let observed: Vec<&'static str> = warnings
         .iter()
         .map(|w| warning_code_to_label(w.code))
         .collect();
@@ -189,31 +201,40 @@ fn assert_ok_body(name: &str, content: &Content, expected: &Expected) -> Result<
             ));
         }
     }
-    if let Some(meta) = &expected.meta {
-        if let Some(want) = meta.mailing_list_present {
-            let got = content.meta.mailing_list.is_some();
-            if got != want {
-                return Err(format!(
-                    "{name}: meta.mailing_list_present want={want} got={got}"
-                ));
-            }
-        }
-        if let Some(want) = meta.attachment_count {
-            let got = content.meta.attachments.len();
-            if got != want {
-                return Err(format!(
-                    "{name}: meta.attachment_count want={want} got={got}"
-                ));
-            }
-        }
-        if let Some(want) = meta.body_truncated
-            && content.meta.body_truncated != want
-        {
+    Ok(())
+}
+
+fn assert_meta_fields(
+    name: &str,
+    meta: &rimap_content::ContentMeta,
+    expected: &Expected,
+) -> Result<(), String> {
+    let Some(want_meta) = &expected.meta else {
+        return Ok(());
+    };
+    if let Some(want) = want_meta.mailing_list_present {
+        let got = meta.mailing_list.is_some();
+        if got != want {
             return Err(format!(
-                "{name}: meta.body_truncated want={want} got={}",
-                content.meta.body_truncated
+                "{name}: meta.mailing_list_present want={want} got={got}"
             ));
         }
+    }
+    if let Some(want) = want_meta.attachment_count {
+        let got = meta.attachments.len();
+        if got != want {
+            return Err(format!(
+                "{name}: meta.attachment_count want={want} got={got}"
+            ));
+        }
+    }
+    if let Some(want) = want_meta.body_truncated
+        && meta.body_truncated != want
+    {
+        return Err(format!(
+            "{name}: meta.body_truncated want={want} got={}",
+            meta.body_truncated
+        ));
     }
     Ok(())
 }

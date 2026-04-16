@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -94,87 +94,21 @@ impl DovecotHarness {
     ///   can bind port 993. See the comment in `docker-compose.yml` for
     ///   the full context and why a 2.4 bump isn't viable in Sprint 3.
     pub fn try_start() -> Result<Self, HarnessError> {
-        let require_runtime = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
-
-        if std::env::consts::ARCH != "x86_64" {
-            if require_runtime {
-                return Err(HarnessError::DockerCommandFailed(format!(
-                    "host arch {} cannot run amd64 dovecot image but RIMAP_REQUIRE_DOCKER=1",
-                    std::env::consts::ARCH
-                )));
-            }
-            return Err(HarnessError::DockerUnavailable);
-        }
-
-        if !runtime_available() {
-            if require_runtime {
-                return Err(HarnessError::DockerCommandFailed(
-                    "neither docker nor podman found but RIMAP_REQUIRE_DOCKER=1".into(),
-                ));
-            }
-            return Err(HarnessError::DockerUnavailable);
-        }
+        check_prerequisites()?;
 
         let compose_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("integration")
             .join("dovecot");
 
-        // Best-effort cleanup of stale projects from prior runs killed
-        // by SIGKILL / power loss. Drop doesn't fire on either.
         prune_stale_projects(&compose_dir);
 
         let project = format!("rimap-it-{}", uuid_like());
-
-        // Pre-allocate a free host port on 127.0.0.1 so that case_11's
-        // force-recreate can reuse it. Docker's `0:993` dynamic allocation
-        // picks a new port per container creation, which would strand the
-        // cached client Connection after a recreate.
         let host_port = pick_free_port()?;
 
-        let status = Command::new(runtime())
-            .arg("compose")
-            .arg("-p")
-            .arg(&project)
-            .arg("up")
-            .arg("-d")
-            .env("RIMAP_DOVECOT_HOST_PORT", host_port.to_string())
-            .current_dir(&compose_dir)
-            .status()
-            .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
-        if !status.success() {
-            return Err(HarnessError::DockerCommandFailed(format!(
-                "compose up exit {status}"
-            )));
-        }
+        compose_up(&project, &compose_dir, host_port)?;
 
-        let started = Instant::now();
-        let timeout = Duration::from_secs(60);
-        let result = loop {
-            if started.elapsed() > timeout {
-                // Dump container logs so the failure tells us WHY dovecot
-                // never reached ready state instead of just "timeout".
-                let logs = dump_logs(&project, &compose_dir);
-                break Err(HarnessError::DockerCommandFailed(format!(
-                    "dovecot container did not become ready within 60s. \
-                     Last container logs:\n{logs}"
-                )));
-            }
-            if let Ok(fp) = read_fingerprint(&project) {
-                // Fingerprint is in place, but dovecot inside the container
-                // may not be listening yet. Probe the TCP port directly
-                // before handing the harness to the test.
-                if std::net::TcpStream::connect_timeout(
-                    &std::net::SocketAddr::from(([127, 0, 0, 1], host_port)),
-                    Duration::from_millis(500),
-                )
-                .is_ok()
-                {
-                    break Ok((fp, host_port));
-                }
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        };
+        let result = wait_for_ready(&project, &compose_dir, host_port);
         match result {
             Ok((fingerprint, port)) => Ok(Self {
                 project,
@@ -289,6 +223,80 @@ impl DovecotHarness {
             }
             std::thread::sleep(Duration::from_millis(500));
         }
+    }
+}
+
+fn check_prerequisites() -> Result<(), HarnessError> {
+    let require_runtime = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
+
+    if std::env::consts::ARCH != "x86_64" {
+        return if require_runtime {
+            Err(HarnessError::DockerCommandFailed(format!(
+                "host arch {} cannot run amd64 dovecot image but RIMAP_REQUIRE_DOCKER=1",
+                std::env::consts::ARCH
+            )))
+        } else {
+            Err(HarnessError::DockerUnavailable)
+        };
+    }
+
+    if !runtime_available() {
+        return if require_runtime {
+            Err(HarnessError::DockerCommandFailed(
+                "neither docker nor podman found but RIMAP_REQUIRE_DOCKER=1".into(),
+            ))
+        } else {
+            Err(HarnessError::DockerUnavailable)
+        };
+    }
+
+    Ok(())
+}
+
+fn compose_up(project: &str, compose_dir: &Path, host_port: u16) -> Result<(), HarnessError> {
+    let status = Command::new(runtime())
+        .arg("compose")
+        .arg("-p")
+        .arg(project)
+        .arg("up")
+        .arg("-d")
+        .env("RIMAP_DOVECOT_HOST_PORT", host_port.to_string())
+        .current_dir(compose_dir)
+        .status()
+        .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
+    if !status.success() {
+        return Err(HarnessError::DockerCommandFailed(format!(
+            "compose up exit {status}"
+        )));
+    }
+    Ok(())
+}
+
+fn wait_for_ready(
+    project: &str,
+    compose_dir: &Path,
+    host_port: u16,
+) -> Result<(TlsFingerprint, u16), HarnessError> {
+    let started = Instant::now();
+    let timeout = Duration::from_secs(60);
+    loop {
+        if started.elapsed() > timeout {
+            let logs = dump_logs(project, compose_dir);
+            return Err(HarnessError::DockerCommandFailed(format!(
+                "dovecot container did not become ready within 60s. \
+                 Last container logs:\n{logs}"
+            )));
+        }
+        if let Ok(fp) = read_fingerprint(project)
+            && std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], host_port)),
+                Duration::from_millis(500),
+            )
+            .is_ok()
+        {
+            return Ok((fp, host_port));
+        }
+        std::thread::sleep(Duration::from_millis(500));
     }
 }
 
