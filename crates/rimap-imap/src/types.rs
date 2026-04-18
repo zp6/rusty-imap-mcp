@@ -61,6 +61,10 @@ pub struct Folder {
     /// entries. `STATUS` against a non-selectable folder aborts the
     /// connection with `ERR_IMAP_PROTOCOL` on many servers.
     pub selectable: bool,
+    /// RFC 6154 special-use marker, if the server reported one.
+    /// Used to resolve "the drafts/sent/trash folder" without hardcoding
+    /// server-specific names.
+    pub special_use: Option<crate::special_use::SpecialUse>,
 }
 
 /// Bitflags-style selection for `STATUS` items.
