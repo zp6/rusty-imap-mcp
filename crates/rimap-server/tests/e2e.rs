@@ -275,6 +275,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         guard,
         folder_guard,
         download_dir: std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
+        special_use: rimap_imap::SpecialUseMap::default(),
     };
     let mut accounts = BTreeMap::new();
     accounts.insert(id, state);
