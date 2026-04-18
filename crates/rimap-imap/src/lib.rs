@@ -15,4 +15,4 @@ pub mod types;
 
 pub use crate::connection::{Connection, ConnectionConfig};
 pub use crate::error::{AuthFailure, ImapError};
-pub use special_use::{SpecialUse, classify_special_use};
+pub use special_use::{SpecialUse, SpecialUseMap, classify_special_use};
