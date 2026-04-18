@@ -55,6 +55,12 @@ pub struct Folder {
     pub attributes: Vec<String>,
     /// Hierarchy delimiter, if the server reported one.
     pub delimiter: Option<char>,
+    /// Whether the folder can be the target of `SELECT`/`EXAMINE`/`STATUS`.
+    /// False for RFC 3501 `\Noselect` parents (Gmail's `[Gmail]`, some
+    /// Exchange public-folder namespaces) and RFC 5258 `\NonExistent`
+    /// entries. `STATUS` against a non-selectable folder aborts the
+    /// connection with `ERR_IMAP_PROTOCOL` on many servers.
+    pub selectable: bool,
 }
 
 /// Bitflags-style selection for `STATUS` items.

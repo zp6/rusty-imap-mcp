@@ -31,11 +31,18 @@ pub struct ListFoldersMeta {
 
 /// Execute the `list_folders` tool.
 ///
+/// Non-selectable folders (RFC 3501 `\Noselect` namespace parents such as
+/// Gmail's `[Gmail]`, RFC 5258 `\NonExistent` entries) are returned with
+/// `exists`/`unseen`/`uid_validity` left as `None`. Running `STATUS`
+/// against them is a protocol error on strict servers and would abort the
+/// whole tool call.
+///
 /// # Errors
 ///
 /// Returns `RimapError::Imap { ... }` if the server rejects LIST or any
-/// of the per-folder STATUS calls. The upstream
-/// `DispatchGuard::pre_dispatch` gate may also return `PostureDenied`.
+/// of the per-folder STATUS calls against a selectable folder. The
+/// upstream `DispatchGuard::pre_dispatch` gate may also return
+/// `PostureDenied`.
 pub async fn handle(
     account: &AccountState,
 ) -> Result<ToolResponse<ListFoldersMeta>, rimap_core::RimapError> {
@@ -43,18 +50,23 @@ pub async fn handle(
 
     let mut folder_entries = Vec::with_capacity(folders.len());
     for folder in &folders {
-        let status = account
-            .imap
-            .status(&folder.name, rimap_imap::types::StatusItems::all())
-            .await?;
+        let (exists, unseen, uid_validity) = if folder.selectable {
+            let status = account
+                .imap
+                .status(&folder.name, rimap_imap::types::StatusItems::all())
+                .await?;
+            (status.messages, status.unseen, status.uid_validity)
+        } else {
+            (None, None, None)
+        };
 
         folder_entries.push(FolderEntry {
             name: folder.name.clone(),
             delimiter: folder.delimiter,
             flags: folder.attributes.clone(),
-            exists: status.messages,
-            unseen: status.unseen,
-            uid_validity: status.uid_validity,
+            exists,
+            unseen,
+            uid_validity,
         });
     }
 
