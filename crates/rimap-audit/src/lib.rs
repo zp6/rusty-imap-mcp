@@ -2,11 +2,16 @@
 
 #![deny(missing_docs)]
 
+pub mod cancellation;
 pub(crate) mod fs;
 pub mod reader;
 pub mod record;
 pub mod redact;
 pub mod writer;
+
+pub use cancellation::{
+    CancelledToolEndReceiver, CancelledToolEndSender, cancellation_channel, spawn_drainer,
+};
 
 /// Re-export of [`reader::backup_exclude`] so external callers can continue to
 /// use `rimap_audit::backup_exclude::exclude_from_backup` after the split.

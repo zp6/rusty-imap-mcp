@@ -233,7 +233,8 @@ pub struct ToolStart {
 }
 
 /// Outcome status for a tool call. `Ok` means a structured result was
-/// returned; `Error` means dispatch failed and `error_code` is populated.
+/// returned; `Error` means dispatch failed and `error_code` is populated;
+/// `Cancelled` means the tool call was cancelled (e.g. client disconnect, runtime shutdown).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolStatus {
@@ -241,6 +242,9 @@ pub enum ToolStatus {
     Ok,
     /// Tool call failed.
     Error,
+    /// Tool call was cancelled (e.g. client disconnect, runtime shutdown).
+    /// Written by the cancellation drop-guard on future drop; see #99.
+    Cancelled,
 }
 
 /// A coarse summary of what a tool returned. Structured so reviewers can
@@ -333,7 +337,9 @@ mod tests {
     use rimap_core::{Posture, tool::ToolName};
 
     use crate::record::ids::{ProcessId, Seq, Timestamp};
-    use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason, ProcessStart};
+    use crate::record::{
+        AuditRecord, Payload, ProcessEnd, ProcessEndReason, ProcessStart, ToolStatus,
+    };
 
     fn sample_start() -> AuditRecord {
         AuditRecord {
@@ -528,5 +534,13 @@ mod tests {
             serde_json::to_string(&crate::record::ToolStatus::Error).unwrap(),
             "\"error\"",
         );
+    }
+
+    #[test]
+    fn tool_status_cancelled_serializes_as_snake_case() {
+        let j = serde_json::to_string(&ToolStatus::Cancelled).unwrap();
+        assert_eq!(j, "\"cancelled\"");
+        let back: ToolStatus = serde_json::from_str(&j).unwrap();
+        assert_eq!(back, ToolStatus::Cancelled);
     }
 }

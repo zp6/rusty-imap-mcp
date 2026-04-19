@@ -7,9 +7,14 @@
 //! [`ImapMcpServer::emit_tool_end`] offload the blocking writer calls
 //! onto `spawn_blocking` and surface panics/join errors as
 //! `RimapError::Internal`.
+//!
+//! [`AuditEnvelopeGuard`] is a drop-guard that synthesizes a cancellation
+//! `tool_end` if the enclosing future is dropped between `tool_start`
+//! emission and the normal `emit_tool_end` call (#71, #99).
 
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
 use rimap_audit::redact::{Redactor, hash_arguments};
+use rimap_audit::{CancelledToolEndSender, ToolEndInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
 
@@ -41,7 +46,20 @@ impl ImapMcpServer {
             .await?;
         let start_time = std::time::Instant::now();
 
+        let mut guard = AuditEnvelopeGuard::new(
+            start_seq,
+            tool,
+            audit_account.clone(),
+            start_time,
+            self.cancellation_sender.clone(),
+        );
+
         let result = body.await;
+
+        // Body completed normally. Disarm before any further await points so
+        // a drop of THIS future between here and emit_tool_end does not cause
+        // double emission.
+        guard.disarm();
 
         let duration_ms = start_time
             .elapsed()
@@ -165,5 +183,198 @@ impl ImapMcpServer {
                 tracing::error!(error = %rimap_err, "tool_end join error");
             }
         }
+    }
+}
+
+/// RAII guard that emits a cancellation `tool_end` record if dropped
+/// undisarmed. Used inside `run_with_audit_envelope` to pair every
+/// `tool_start` with a `tool_end` even when the outer MCP dispatch
+/// future is dropped mid-call (#71, #99).
+struct AuditEnvelopeGuard {
+    inner: Option<GuardInner>,
+}
+
+struct GuardInner {
+    start_seq: rimap_audit::Seq,
+    tool: ToolName,
+    account: Option<String>,
+    start_time: std::time::Instant,
+    sender: CancelledToolEndSender,
+}
+
+impl AuditEnvelopeGuard {
+    fn new(
+        start_seq: rimap_audit::Seq,
+        tool: ToolName,
+        account: Option<String>,
+        start_time: std::time::Instant,
+        sender: CancelledToolEndSender,
+    ) -> Self {
+        Self {
+            inner: Some(GuardInner {
+                start_seq,
+                tool,
+                account,
+                start_time,
+                sender,
+            }),
+        }
+    }
+
+    /// Mark the guard as completed normally. `Drop` becomes a no-op.
+    fn disarm(&mut self) {
+        self.inner = None;
+    }
+}
+
+impl Drop for AuditEnvelopeGuard {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        let duration_ms = inner
+            .start_time
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        // ToolName is Copy; capture it for the warning log before try_send
+        // consumes the payload.
+        let tool = inner.tool;
+        let cancellation = ToolEndInputs {
+            start_seq: inner.start_seq,
+            tool,
+            account: inner.account,
+            status: rimap_audit::record::ToolStatus::Cancelled,
+            error_code: Some(rimap_core::ErrorCode::Cancelled),
+            duration_ms,
+            result_summary: rimap_audit::record::ResultSummary::default(),
+            provenance: Provenance {
+                window_seconds: 60,
+                message_ids_recently_read: Vec::new(),
+            },
+        };
+        if let Err(e) = inner.sender.try_send(cancellation) {
+            tracing::warn!(
+                error = %e,
+                tool = tool.as_str(),
+                "cancellation tool_end drop: failed to enqueue (channel full or closed)",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use rimap_audit::writer::AuditOptions;
+    use rimap_audit::{AuditWriter, Seq, cancellation_channel, spawn_drainer};
+    use rimap_core::tool::ToolName;
+    use tempfile::tempdir;
+
+    use super::AuditEnvelopeGuard;
+
+    fn test_writer(path: std::path::PathBuf) -> AuditWriter {
+        AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 10 * 1024 * 1024,
+            rotate_keep: 5,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap()
+    }
+
+    /// Dropping an `AuditEnvelopeGuard` without disarming enqueues a
+    /// cancellation record with `status = cancelled` and
+    /// `error_code = ERR_CANCELLED`. The drainer writes it to the audit file.
+    /// This is the core invariant for #71 and #99.
+    #[tokio::test]
+    async fn dropped_guard_enqueues_cancellation_record() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = test_writer(path.clone());
+
+        // Prime a tool_start so the resulting tool_end references a real seq.
+        let start_seq = writer
+            .log_tool_start(
+                ToolName::Search,
+                Some("test"),
+                Some(rimap_core::Posture::Readonly),
+                serde_json::Value::Object(serde_json::Map::new()),
+                "0".repeat(64),
+            )
+            .unwrap();
+
+        let (tx, rx) = cancellation_channel();
+        let drainer = spawn_drainer(rx, writer.clone());
+
+        {
+            let _guard = AuditEnvelopeGuard::new(
+                start_seq,
+                ToolName::Search,
+                Some("test".to_string()),
+                std::time::Instant::now(),
+                tx.clone(),
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            // Implicit drop of `_guard` here — undisarmed, so cancellation fires.
+        }
+
+        drop(tx); // Close the channel so the drainer can exit.
+        drainer.await.unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = contents.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "expected >= 2 records (tool_start + cancellation tool_end), got: {contents}",
+        );
+        let last = lines.last().unwrap();
+        assert!(
+            last.contains(r#""status":"cancelled""#),
+            "last record should be cancellation tool_end: {last}",
+        );
+        assert!(
+            last.contains(r#""error_code":"ERR_CANCELLED""#),
+            "last record should carry ERR_CANCELLED: {last}",
+        );
+        assert!(
+            last.contains(&format!(r#""start_seq":{start_seq}"#)),
+            "last record should reference primed tool_start seq {start_seq}: {last}",
+        );
+    }
+
+    /// A disarmed guard's drop is a no-op: no cancellation record is written.
+    #[tokio::test]
+    async fn disarmed_guard_does_not_enqueue() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = test_writer(path.clone());
+
+        let (tx, rx) = cancellation_channel();
+        let drainer = spawn_drainer(rx, writer.clone());
+
+        {
+            let mut guard = AuditEnvelopeGuard::new(
+                Seq::FIRST,
+                ToolName::Search,
+                Some("test".to_string()),
+                std::time::Instant::now(),
+                tx.clone(),
+            );
+            guard.disarm();
+            // Drop here — disarmed, so no cancellation is enqueued.
+        }
+
+        drop(tx);
+        drainer.await.unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !contents.contains(r#""status":"cancelled""#),
+            "disarmed guard must not write a cancellation record: {contents}",
+        );
     }
 }

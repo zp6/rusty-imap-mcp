@@ -11,6 +11,9 @@ description = "Append-only JSONL audit log with exclusive file locking for rusty
 [lints]
 workspace = true
 
+[features]
+test-injection = []
+
 [dependencies]
 rimap-core = { path = "../rimap-core", version = "1.0.0" }
 thiserror = { workspace = true }
@@ -23,6 +26,8 @@ hex = { workspace = true }
 rand = { workspace = true }
 fs4 = { workspace = true }
 tracing = { workspace = true }
+async-channel = { workspace = true }
+tokio = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -30,3 +35,4 @@ libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
+futures = "0.3"

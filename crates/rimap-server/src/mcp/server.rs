@@ -11,6 +11,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
+use rimap_audit::CancelledToolEndSender;
 use rimap_audit::redact::{RedactionSalt, RedactionSchema, schemas};
 use rimap_core::account::AccountId;
 use rimap_core::tool::ToolName;
@@ -35,6 +36,10 @@ pub struct ImapMcpServer {
     pub registry: AccountRegistry,
     /// Append-only audit writer.
     pub(crate) audit: AuditWriter,
+    /// Channel used by `AuditEnvelopeGuard::drop` to emit synthetic
+    /// cancellation `tool_end` records when the MCP dispatch future is
+    /// dropped mid-call (#71, #99).
+    pub(crate) cancellation_sender: CancelledToolEndSender,
     /// Per-process salt used when applying `Redactor` to tool arguments.
     /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
     pub(crate) redaction_salt: Arc<RedactionSalt>,
@@ -47,12 +52,17 @@ impl ImapMcpServer {
     /// Construct a new server. Builds the redaction salt and schema map
     /// from [`rimap_audit::redact::schemas`].
     #[must_use]
-    pub fn new(registry: AccountRegistry, audit: AuditWriter) -> Self {
+    pub fn new(
+        registry: AccountRegistry,
+        audit: AuditWriter,
+        cancellation_sender: CancelledToolEndSender,
+    ) -> Self {
         let schema_map: HashMap<ToolName, RedactionSchema> =
             schemas().into_iter().map(|s| (s.tool, s)).collect();
         Self {
             registry,
             audit,
+            cancellation_sender,
             redaction_salt: Arc::new(RedactionSalt::new_random()),
             redaction_schemas: Arc::new(schema_map),
         }

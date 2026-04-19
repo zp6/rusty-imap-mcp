@@ -53,6 +53,17 @@ pub struct AuditOptions {
     pub initial_seq: crate::record::ids::Seq,
 }
 
+/// Test-only failure injection hook. When `fail_next` is set, the next
+/// call to `write_record_inner` returns an injected `AuditError::Write`
+/// without touching the file, then clears the flag.
+#[cfg(any(test, feature = "test-injection"))]
+#[derive(Debug, Default)]
+struct FailureInjection {
+    /// When `true`, the next `write_record_inner` call returns
+    /// `AuditError::Write` without touching the file.
+    fail_next: std::sync::atomic::AtomicBool,
+}
+
 /// Append-only JSONL writer. Construct via [`AuditWriter::open`]. Cheaply
 /// cloneable — the underlying `File` and `BufWriter` live behind an
 /// `Arc<Mutex<_>>`, so all clones write through the same lock.
@@ -66,6 +77,8 @@ pub struct AuditWriter {
     process_id: crate::record::ids::ProcessId,
     suppressed_failures: Arc<AtomicU64>,
     inner: Arc<Mutex<Inner>>,
+    #[cfg(any(test, feature = "test-injection"))]
+    failure_injection: Arc<FailureInjection>,
 }
 
 #[derive(Debug)]
@@ -143,6 +156,8 @@ impl AuditWriter {
                 bytes_written,
                 next_seq: opts.initial_seq,
             })),
+            #[cfg(any(test, feature = "test-injection"))]
+            failure_injection: Arc::new(FailureInjection::default()),
         })
     }
 
@@ -283,6 +298,18 @@ impl AuditWriter {
     }
 
     fn write_record_inner(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
+        #[cfg(any(test, feature = "test-injection"))]
+        if self
+            .failure_injection
+            .fail_next
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            return Err(AuditError::Write {
+                path: self.path.clone(),
+                source: std::io::Error::other("injected failure (test)"),
+            });
+        }
+
         let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
         bytes.push(b'\n');
 
@@ -332,6 +359,16 @@ impl AuditWriter {
     #[must_use]
     pub fn suppressed_failures(&self) -> u64 {
         self.suppressed_failures.load(Ordering::Relaxed)
+    }
+
+    /// Test-only: cause the next `write_record_inner` call to fail with
+    /// `AuditError::Write`. Used to exercise `fail_open = true`
+    /// suppression paths without filesystem tricks (#72).
+    #[cfg(any(test, feature = "test-injection"))]
+    pub fn force_next_write_failure(&self) {
+        self.failure_injection
+            .fail_next
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Total bytes written through this writer since `open` (including bytes

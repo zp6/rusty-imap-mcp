@@ -281,7 +281,8 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     accounts.insert(id, state);
     let registry = rimap_server::boot::registry::AccountRegistry::new(accounts);
 
-    let server = ImapMcpServer::new(registry, audit);
+    let (cancellation_sender, _cancellation_rx) = rimap_audit::cancellation_channel();
+    let server = ImapMcpServer::new(registry, audit, cancellation_sender);
 
     TestEnv {
         _harness: harness,

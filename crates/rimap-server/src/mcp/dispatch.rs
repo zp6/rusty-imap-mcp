@@ -66,7 +66,8 @@ pub(super) fn rimap_error_to_breaker_reason(
         | ErrorCode::Config
         | ErrorCode::Internal
         | ErrorCode::NoAccount
-        | ErrorCode::UnknownAccount => None,
+        | ErrorCode::UnknownAccount
+        | ErrorCode::Cancelled => None,
     }
 }
 
@@ -293,7 +294,8 @@ mod tests {
         .expect("audit open");
 
         let registry = AccountRegistry::new(BTreeMap::new());
-        let server = ImapMcpServer::new(registry, audit);
+        let (cancellation_sender, _cancellation_rx) = rimap_audit::cancellation_channel();
+        let server = ImapMcpServer::new(registry, audit, cancellation_sender);
 
         // list_accounts needs no args and no IMAP connection.
         let args = serde_json::Map::new();
