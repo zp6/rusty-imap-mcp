@@ -6,6 +6,7 @@
 //!   3. Clear, actionable error naming both.
 
 use secrecy::{ExposeSecret, SecretString};
+use sha2::{Digest, Sha256};
 
 use crate::error::ConfigError;
 
@@ -39,6 +40,36 @@ pub fn account_key(username: &str, host: &str) -> String {
     format!("{username}@{host}")
 }
 
+/// Return a short (16 hex chars) SHA-256 hash of `"{username}@{host}"` suitable
+/// for correlating error/audit log lines without disclosing the username.
+///
+/// 16 hex chars = 64 bits of prefix — collision probability is negligible at
+/// the scale of "accounts a single deployment's error chain correlates".
+/// The hash is not a keyring key — `account_key` remains distinct and uses the
+/// full unhashed identifiers.
+#[must_use]
+pub fn hash_account_tag(username: &str, host: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(username.as_bytes());
+    hasher.update(b"@");
+    hasher.update(host.as_bytes());
+    let digest = hasher.finalize();
+    let mut out = String::with_capacity(16);
+    for byte in &digest[..8] {
+        use core::fmt::Write;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
+}
+
+/// Split a `username@host` account key back into `(host, account_tag)` for
+/// building error records. If the input has no `@` (malformed), treat the
+/// whole string as host and use an empty username for hashing.
+fn split_account_for_error(account: &str) -> (String, String) {
+    let (username, host) = account.split_once('@').unwrap_or(("", account));
+    (host.to_string(), hash_account_tag(username, host))
+}
+
 /// Resolve a credential: try the store first, then env var, then fail.
 ///
 /// Accepts `&dyn CredentialStore` so callers that hold an
@@ -66,7 +97,8 @@ pub fn resolve_credential(
         return Ok(SecretString::from(env));
     }
     Err(ConfigError::NoCredential {
-        account,
+        host: host.to_string(),
+        account_tag: hash_account_tag(username, host),
         reason: format!(
             "no entry in keychain service `{KEYCHAIN_SERVICE}` and \
              `{PASSWORD_ENV_VAR}` is unset or empty; run `rusty-imap-mcp login` \
@@ -82,33 +114,45 @@ pub struct KeyringStore;
 
 impl CredentialStore for KeyringStore {
     fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
-        let entry =
-            keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| ConfigError::Keychain {
-                account: account.to_string(),
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| {
+            let (host, account_tag) = split_account_for_error(account);
+            ConfigError::Keychain {
+                host,
+                account_tag,
                 source: Box::new(e),
-            })?;
+            }
+        })?;
         match entry.get_password() {
             Ok(p) => Ok(Some(SecretString::from(p))),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(ConfigError::Keychain {
-                account: account.to_string(),
-                source: Box::new(e),
-            }),
+            Err(e) => {
+                let (host, account_tag) = split_account_for_error(account);
+                Err(ConfigError::Keychain {
+                    host,
+                    account_tag,
+                    source: Box::new(e),
+                })
+            }
         }
     }
 
     fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
-        let entry =
-            keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| ConfigError::Keychain {
-                account: account.to_string(),
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| {
+            let (host, account_tag) = split_account_for_error(account);
+            ConfigError::Keychain {
+                host,
+                account_tag,
                 source: Box::new(e),
-            })?;
-        entry
-            .set_password(password)
-            .map_err(|e| ConfigError::Keychain {
-                account: account.to_string(),
+            }
+        })?;
+        entry.set_password(password).map_err(|e| {
+            let (host, account_tag) = split_account_for_error(account);
+            ConfigError::Keychain {
+                host,
+                account_tag,
                 source: Box::new(e),
-            })
+            }
+        })
     }
 }
 
@@ -123,6 +167,25 @@ mod tests {
 
     use crate::credential::{CredentialStore, PASSWORD_ENV_VAR, account_key, resolve_credential};
     use crate::error::ConfigError;
+
+    #[test]
+    fn hash_account_tag_is_16_hex_and_deterministic() {
+        let a = super::hash_account_tag("alice", "mail.example.com");
+        let b = super::hash_account_tag("alice", "mail.example.com");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 16);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn hash_account_tag_differs_on_different_inputs() {
+        let a = super::hash_account_tag("alice", "mail.example.com");
+        let b = super::hash_account_tag("bob", "mail.example.com");
+        let c = super::hash_account_tag("alice", "other.example.com");
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+        assert_ne!(b, c);
+    }
 
     #[derive(Default)]
     struct MockStore {
@@ -153,8 +216,10 @@ mod tests {
     impl CredentialStore for MockStore {
         fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
             if self.fail_on_get {
+                let (host, account_tag) = super::split_account_for_error(account);
                 return Err(ConfigError::Keychain {
-                    account: account.to_string(),
+                    host,
+                    account_tag,
                     source: "simulated failure".into(),
                 });
             }
@@ -208,8 +273,13 @@ mod tests {
         temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
             let err = resolve_credential(&store, "alice", "host").unwrap_err();
             match err {
-                ConfigError::NoCredential { account, reason } => {
-                    assert_eq!(account, "alice@host");
+                ConfigError::NoCredential {
+                    host,
+                    account_tag,
+                    reason,
+                } => {
+                    assert_eq!(host, "host");
+                    assert_eq!(account_tag.len(), 16);
                     assert!(reason.contains("rusty-imap-mcp login"));
                     assert!(reason.contains("RUSTY_IMAP_MCP_PASSWORD"));
                 }

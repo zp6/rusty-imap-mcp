@@ -5,7 +5,7 @@
 //! reserved for MCP transport. Uses `rpassword::prompt_password` which opens
 //! `/dev/tty` on Unix and the console on Windows.
 
-use crate::credential::{CredentialStore, account_key};
+use crate::credential::{CredentialStore, account_key, hash_account_tag};
 use crate::error::ConfigError;
 
 /// Run the `login` flow against the provided store. The caller is responsible
@@ -26,12 +26,14 @@ pub fn run_login<S: CredentialStore>(
     let account = account_key(username, host);
     let prompt_text = format!("Password for {account}: ");
     let password = prompt(&prompt_text).map_err(|e| ConfigError::NoCredential {
-        account: account.clone(),
+        host: host.to_string(),
+        account_tag: hash_account_tag(username, host),
         reason: format!("interactive prompt failed: {e}"),
     })?;
     if password.is_empty() {
         return Err(ConfigError::NoCredential {
-            account,
+            host: host.to_string(),
+            account_tag: hash_account_tag(username, host),
             reason: "empty password not accepted".to_string(),
         });
     }

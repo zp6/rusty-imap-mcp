@@ -21,6 +21,7 @@ directories = { workspace = true }
 keyring = { workspace = true }
 rpassword = { workspace = true }
 secrecy = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

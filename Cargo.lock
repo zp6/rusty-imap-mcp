@@ -2128,6 +2128,7 @@ dependencies = [
  "rpassword",
  "secrecy",
  "serde",
+ "sha2",
  "temp-env",
  "tempfile",
  "thiserror 2.0.18",
