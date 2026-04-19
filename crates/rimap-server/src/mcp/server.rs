@@ -27,7 +27,9 @@ use rmcp::service::RequestContext;
 use crate::boot::registry::AccountRegistry;
 use crate::mcp::dispatch::{PostureContext, rimap_error_to_breaker_reason};
 use crate::mcp::tool_catalog::TOOL_DEFS;
-use crate::mcp::tool_name::{is_legacy_single_account, refine_tool_name, split_tool_name};
+use crate::mcp::tool_name::{
+    is_bare_simple_tool_name, is_legacy_single_account, refine_tool_name, split_tool_name,
+};
 
 /// Core MCP server. Owns every resource the handler methods need.
 pub struct ImapMcpServer {
@@ -229,6 +231,24 @@ impl ServerHandler for ImapMcpServer {
             return Err(ErrorData::new(
                 McpCode::RESOURCE_NOT_FOUND,
                 format!("tool `{}` is not available", request.name),
+                None,
+            ));
+        }
+
+        // Multi-account contract: bare simple tool names are only valid
+        // in legacy single-account mode. In multi-account mode, clients
+        // must use the advertised <account>.<tool> form. Sub-capability
+        // dotted tools (e.g. search.advanced_query) and infrastructure
+        // tools (use_account, list_accounts) remain valid bare forms
+        // regardless. (#73)
+        let accounts = self.registry.accounts();
+        if !is_legacy_single_account(accounts) && is_bare_simple_tool_name(&request.name) {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "tool name must be namespaced in multi-account mode: \
+                     <account>.{}",
+                    &request.name,
+                ),
                 None,
             ));
         }
