@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking (keyring):** Credential keyring entries are now namespaced by
+  account id (`<account-id>/<username>@<host>`) to prevent collisions in
+  multi-account deployments (#77). Existing entries under the legacy
+  `<username>@<host>` key continue to resolve via a transparent fallback
+  that emits a `tracing::warn!` — run
+  `rusty-imap-mcp migrate-keyring --account <id> --host <h> --username <u>`
+  once per account to migrate.
+- `rusty-imap-mcp login` gains a `--account <id>` argument (default
+  `default`), so multi-account deployments can store credentials under
+  the correct namespaced key. Single-account invocations remain
+  unchanged.
+- `ConfigError::NoCredential` and `ConfigError::Keychain` Display strings no
+  longer include the username; they now show the host and a short
+  `account_tag` hash for log correlation (#76).
+
+### Added
+
+- `[defaults.credentials]` / `[[accounts.credentials]]` TOML section with a
+  `fallback` knob (`keyring-only` vs `keyring-then-env`, default
+  `keyring-then-env`). Setting `keyring-only` disables the
+  `RUSTY_IMAP_MCP_PASSWORD` env-var fallback for multi-account deployments
+  where a shared fallback would cross account boundaries (#78).
+- Audit records of kind `auth` now include a `credential_source` field
+  (`keyring` / `legacy_keyring` / `env_var`) for post-incident analysis.
+- `rusty-imap-mcp migrate-keyring` CLI subcommand to migrate credentials
+  from the legacy keyring key format to the new namespaced format.
+
 ## [1.0.0] - 2026-04-13
 
 ### Added
