@@ -52,6 +52,10 @@ pub enum ErrorCode {
     /// shutdown). Emitted in `tool_end` records synthesized by the cancellation
     /// drop-guard (#99).
     Cancelled,
+    /// UIDVALIDITY observed by the server differs from the value the caller
+    /// expected (recorded at its prior SELECT). The target UID may now refer
+    /// to a different message than the caller intended.
+    UidValidityChanged,
 }
 
 impl ErrorCode {
@@ -78,6 +82,7 @@ impl ErrorCode {
             Self::NoAccount => "ERR_NO_ACCOUNT",
             Self::UnknownAccount => "ERR_UNKNOWN_ACCOUNT",
             Self::Cancelled => "ERR_CANCELLED",
+            Self::UidValidityChanged => "ERR_UID_VALIDITY_CHANGED",
         }
     }
 }
@@ -117,6 +122,7 @@ impl FromStr for ErrorCode {
             "ERR_NO_ACCOUNT" => Ok(Self::NoAccount),
             "ERR_UNKNOWN_ACCOUNT" => Ok(Self::UnknownAccount),
             "ERR_CANCELLED" => Ok(Self::Cancelled),
+            "ERR_UID_VALIDITY_CHANGED" => Ok(Self::UidValidityChanged),
             other => Err(ParseErrorCodeError(other.to_string())),
         }
     }
@@ -268,6 +274,7 @@ mod tests {
             (ErrorCode::NoAccount, "ERR_NO_ACCOUNT"),
             (ErrorCode::UnknownAccount, "ERR_UNKNOWN_ACCOUNT"),
             (ErrorCode::Cancelled, "ERR_CANCELLED"),
+            (ErrorCode::UidValidityChanged, "ERR_UID_VALIDITY_CHANGED"),
         ];
         for (code, expected) in cases {
             assert_eq!(code.as_str(), expected);
@@ -280,6 +287,16 @@ mod tests {
         assert_eq!(ErrorCode::Cancelled.as_str(), "ERR_CANCELLED");
         let parsed = "ERR_CANCELLED".parse::<ErrorCode>();
         assert_eq!(parsed, Ok(ErrorCode::Cancelled));
+    }
+
+    #[test]
+    fn uid_validity_changed_round_trips() {
+        assert_eq!(
+            ErrorCode::UidValidityChanged.as_str(),
+            "ERR_UID_VALIDITY_CHANGED"
+        );
+        let parsed = "ERR_UID_VALIDITY_CHANGED".parse::<ErrorCode>();
+        assert_eq!(parsed, Ok(ErrorCode::UidValidityChanged));
     }
 
     #[test]

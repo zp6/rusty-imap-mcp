@@ -70,19 +70,53 @@ fn emit_run(out: &mut String, start: u32, end: u32) {
     }
 }
 
+/// Verify an optional UIDVALIDITY expectation against the server-observed value.
+///
+/// Returns `Err(ImapError::UidValidityChanged)` when `expected` is `Some(v)` and
+/// `observed` is `Some(actual)` with `actual != v`. When `observed` is `None`, the
+/// server omitted the value: a warning is emitted and the guard is skipped. When
+/// `expected` is `None`, the call is a no-op.
+pub(crate) fn check_uidvalidity(
+    folder: &str,
+    expected: Option<u32>,
+    observed: Option<u32>,
+) -> Result<(), ImapError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    match observed {
+        Some(actual) if actual != expected => Err(ImapError::UidValidityChanged {
+            folder: folder.to_owned(),
+            expected,
+            actual,
+        }),
+        None => {
+            tracing::warn!(
+                folder = %folder,
+                expected,
+                "expected_uidvalidity set but server omitted UIDVALIDITY; \
+                 proceeding without guard",
+            );
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 pub(crate) async fn fetch(
     session: &mut ImapSession,
     folder: &str,
     uids: &[Uid],
     spec: FetchSpec,
-) -> Result<Vec<FetchedMessage>, ImapError> {
-    session
-        .examine(folder)
-        .await
-        .map_err(super::folders::map_err)?;
+    expected_uidvalidity: Option<u32>,
+) -> Result<(Vec<FetchedMessage>, Option<u32>), ImapError> {
+    let selected = super::folders::select(session, folder, true).await?;
+    let uid_validity = selected.uid_validity;
+
+    check_uidvalidity(folder, expected_uidvalidity, uid_validity)?;
 
     if uids.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), uid_validity));
     }
     // Compress to IMAP sequence-set range syntax to stay under Dovecot's
     // ~8KB command-line cap. Plain comma-joined lists exceed the cap
@@ -130,7 +164,7 @@ pub(crate) async fn fetch(
             size,
         });
     }
-    Ok(out)
+    Ok((out, uid_validity))
 }
 
 /// Fetch the full `BODY[]` of a single UID. Aborts with `ImapError::SizeLimit`
@@ -409,8 +443,8 @@ fn convert_flag(f: &async_imap::types::Flag<'_>) -> crate::types::Flag {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_BODYSTRUCTURE_DEPTH, compress_uid_set, convert_bs_inner, preflight_size_check,
-        project_size,
+        MAX_BODYSTRUCTURE_DEPTH, check_uidvalidity, compress_uid_set, convert_bs_inner,
+        preflight_size_check, project_size,
     };
     use crate::error::ImapError;
     use async_imap::imap_proto::{
@@ -733,6 +767,46 @@ mod tests {
     #[expect(clippy::unwrap_used, reason = "test")]
     fn preflight_size_check_passes_when_server_omits_size() {
         preflight_size_check(None, 5_000_000).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn check_uidvalidity_none_expected_is_noop() {
+        // No expected → no error, regardless of observed value.
+        check_uidvalidity("INBOX", None, Some(100)).unwrap();
+        check_uidvalidity("INBOX", None, None).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn check_uidvalidity_match_proceeds() {
+        check_uidvalidity("INBOX", Some(42), Some(42)).unwrap();
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    #[expect(clippy::panic, reason = "tests")]
+    fn check_uidvalidity_mismatch_returns_error() {
+        let err = check_uidvalidity("INBOX", Some(42), Some(100)).unwrap_err();
+        match err {
+            ImapError::UidValidityChanged {
+                folder,
+                expected,
+                actual,
+            } => {
+                assert_eq!(folder, "INBOX");
+                assert_eq!(expected, 42);
+                assert_eq!(actual, 100);
+            }
+            other => panic!("expected UidValidityChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn check_uidvalidity_server_omitted_is_not_error() {
+        // Server omitted UIDVALIDITY (None) → warn and proceed, no error.
+        check_uidvalidity("INBOX", Some(42), None).unwrap();
     }
 
     // NOTE: The round-trip parser in this proptest is a SIMPLIFIED model.

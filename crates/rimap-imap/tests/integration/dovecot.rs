@@ -229,7 +229,11 @@ async fn case_08_fetch_envelope_and_bodystructure() {
         flags: false,
         size: false,
     };
-    let msgs = h.connection.fetch("INBOX", &uids, spec).await.unwrap();
+    let (msgs, _) = h
+        .connection
+        .fetch("INBOX", &uids, spec, None)
+        .await
+        .unwrap();
     assert_eq!(msgs.len(), uids.len());
     let envelope = msgs[0].envelope.as_ref().expect("envelope");
     let subject = envelope.subject_raw.as_ref().expect("subject_raw");
@@ -354,20 +358,21 @@ async fn case_12_store_add_seen_flag() {
     let uid = uids[0];
 
     // Add \Seen flag.
-    let updated = h
+    let (updated, _) = h
         .connection
         .store_flags(
             "INBOX",
             &[uid],
             &[rimap_imap::types::Flag::Seen],
             rimap_imap::types::FlagAction::Add,
+            None,
         )
         .await
         .unwrap();
     assert!(updated.contains(&uid));
 
     // Verify the flag is set.
-    let fetched = h
+    let (fetched, _) = h
         .connection
         .fetch(
             "INBOX",
@@ -376,6 +381,7 @@ async fn case_12_store_add_seen_flag() {
                 flags: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -409,20 +415,21 @@ async fn case_13_store_remove_seen_flag() {
     let uid = uids[0];
 
     // Remove \Seen flag.
-    let updated = h
+    let (updated, _) = h
         .connection
         .store_flags(
             "INBOX",
             &[uid],
             &[rimap_imap::types::Flag::Seen],
             rimap_imap::types::FlagAction::Remove,
+            None,
         )
         .await
         .unwrap();
     assert!(updated.contains(&uid));
 
     // Verify the flag is removed.
-    let fetched = h
+    let (fetched, _) = h
         .connection
         .fetch(
             "INBOX",
@@ -431,6 +438,7 @@ async fn case_13_store_remove_seen_flag() {
                 flags: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -455,6 +463,7 @@ async fn case_14_store_batch_too_large() {
             &uids,
             &[rimap_imap::types::Flag::Seen],
             rimap_imap::types::FlagAction::Add,
+            None,
         )
         .await;
 
@@ -502,7 +511,7 @@ async fn case_15_append_message_to_inbox() {
     assert!(!uids.is_empty(), "appended message not found");
 
     // Verify it has the \Draft flag.
-    let fetched = h
+    let (fetched, _) = h
         .connection
         .fetch(
             "INBOX",
@@ -511,6 +520,7 @@ async fn case_15_append_message_to_inbox() {
                 flags: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -546,7 +556,7 @@ async fn case_16_move_message_between_folders() {
     // Move to Archive (seeded in Dovecot entrypoint.sh).
     let outcome = h
         .connection
-        .move_messages("INBOX", "Archive", &[uid])
+        .move_messages("INBOX", "Archive", &[uid], None)
         .await
         .unwrap();
     assert_eq!(outcome.results.len(), 1);
@@ -671,6 +681,7 @@ async fn case_18_expunge() {
             &[uid],
             &[rimap_imap::types::Flag::Deleted],
             rimap_imap::types::FlagAction::Add,
+            None,
         )
         .await
         .unwrap();

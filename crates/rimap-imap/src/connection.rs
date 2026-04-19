@@ -619,7 +619,13 @@ impl Connection {
     /// `FETCH` for the given UIDs with the requested items. Does NOT include
     /// `BODY[]` — see `fetch_body` (Task 13) for full message retrieval.
     ///
+    /// If `expected_uidvalidity` is `Some(v)`, the value is compared against
+    /// the UIDVALIDITY returned by the internal EXAMINE (read-only SELECT). A
+    /// mismatch returns `ImapError::UidValidityChanged` before the FETCH is
+    /// sent. Pass `None` to skip the guard.
+    ///
     /// # Errors
+    /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
     /// Propagates timeout, connection-lost, or protocol errors from the
     /// underlying `ops::fetch::fetch` call.
     pub async fn fetch(
@@ -627,9 +633,10 @@ impl Connection {
         folder: &str,
         uids: &[crate::types::Uid],
         spec: crate::types::FetchSpec,
-    ) -> Result<Vec<crate::types::FetchedMessage>, ImapError> {
+        expected_uidvalidity: Option<u32>,
+    ) -> Result<(Vec<crate::types::FetchedMessage>, Option<u32>), ImapError> {
         self.with_session("fetch", async |session| {
-            crate::ops::fetch::fetch(session, folder, uids, spec).await
+            crate::ops::fetch::fetch(session, folder, uids, spec, expected_uidvalidity).await
         })
         .await
     }
@@ -692,6 +699,7 @@ impl Connection {
                 | ImapError::Protocol(_)
                 | ImapError::InvalidInput { .. }
                 | ImapError::BatchTooLarge { .. }
+                | ImapError::UidValidityChanged { .. }
                 | ImapError::Audit { .. },
             )
             | Ok(_) => false,
@@ -706,8 +714,14 @@ impl Connection {
     ///
     /// Batch limit: 100 UIDs. Returns the UIDs the server confirmed.
     ///
+    /// If `expected_uidvalidity` is `Some(v)`, the value is compared against
+    /// the UIDVALIDITY returned by the internal SELECT. A mismatch returns
+    /// `ImapError::UidValidityChanged` before the STORE is sent. Pass `None`
+    /// to skip the guard.
+    ///
     /// # Errors
     /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn store_flags(
         &self,
@@ -715,10 +729,14 @@ impl Connection {
         uids: &[crate::types::Uid],
         flags: &[crate::types::Flag],
         action: crate::types::FlagAction,
-    ) -> Result<Vec<crate::types::Uid>, ImapError> {
+        expected_uidvalidity: Option<u32>,
+    ) -> Result<(Vec<crate::types::Uid>, Option<u32>), ImapError> {
         self.with_session("store", async |session| {
-            crate::ops::folders::select(session, folder, false).await?;
-            crate::ops::store::store(session, uids, flags, action).await
+            let selected = crate::ops::folders::select(session, folder, false).await?;
+            let uid_validity = selected.uid_validity;
+            crate::ops::fetch::check_uidvalidity(folder, expected_uidvalidity, uid_validity)?;
+            let updated = crate::ops::store::store(session, uids, flags, action).await?;
+            Ok((updated, uid_validity))
         })
         .await
     }
@@ -730,16 +748,24 @@ impl Connection {
     /// The fallback is not atomic — callers should inspect
     /// `MoveOutcome::used_fallback` and surface a warning.
     ///
+    /// If `expected_source_uidvalidity` is `Some(v)`, a STATUS probe is
+    /// issued against `source_folder` before the move. A mismatch
+    /// returns `ImapError::UidValidityChanged`. Pass `None` to skip the
+    /// guard (Task 4 will thread the observed value from SELECT through
+    /// tool input).
+    ///
     /// Batch limit: 100 UIDs.
     ///
     /// # Errors
     /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn move_messages(
         &self,
         source_folder: &str,
         dest_folder: &str,
         uids: &[crate::types::Uid],
+        expected_source_uidvalidity: Option<u32>,
     ) -> Result<crate::ops::move_message::MoveOutcome, ImapError> {
         let has_move = self.has_move_capability();
         let has_uidplus = self.has_uidplus_capability();
@@ -747,8 +773,10 @@ impl Connection {
             crate::ops::folders::select(session, source_folder, false).await?;
             crate::ops::move_message::move_messages(
                 session,
+                source_folder,
                 dest_folder,
                 uids,
+                expected_source_uidvalidity,
                 has_move,
                 has_uidplus,
             )

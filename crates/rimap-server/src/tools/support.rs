@@ -12,8 +12,14 @@ use crate::boot::registry::AccountState;
 /// treat an empty response as "UID not present in folder". Each caller
 /// keeps its own `FetchSpec` so only the dedup-worthy code is centralized.
 ///
+/// If `expected_uidvalidity` is `Some(v)`, the value is verified against the
+/// folder's UIDVALIDITY before the FETCH. A mismatch propagates
+/// `RimapError::Imap { code: UidValidityChanged, ... }`. Pass `None` to skip.
+///
 /// # Errors
 ///
+/// - `RimapError::Imap { code: UidValidityChanged }` if expected UIDVALIDITY
+///   does not match the server's observed value.
 /// - `RimapError::Authz { code: NotFound }` if the server returned no
 ///   message for `uid` in `folder`.
 /// - Propagates `RimapError::Imap { ... }` from the underlying
@@ -23,9 +29,14 @@ pub(crate) async fn fetch_single_by_uid(
     folder: &str,
     uid: Uid,
     spec: FetchSpec,
-) -> Result<FetchedMessage, rimap_core::RimapError> {
-    let messages = account.imap.fetch(folder, &[uid], spec).await?;
-    first_or_not_found(messages, folder, uid)
+    expected_uidvalidity: Option<u32>,
+) -> Result<(FetchedMessage, Option<u32>), rimap_core::RimapError> {
+    let (messages, uid_validity) = account
+        .imap
+        .fetch(folder, &[uid], spec, expected_uidvalidity)
+        .await?;
+    let msg = first_or_not_found(messages, folder, uid)?;
+    Ok((msg, uid_validity))
 }
 
 /// Take the first message from `messages`, or return a `NotFound`

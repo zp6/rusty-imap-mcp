@@ -128,8 +128,9 @@ pub struct SelectedFolder {
     pub exists: u32,
     /// `RECENT` count.
     pub recent: u32,
-    /// `UIDVALIDITY`.
-    pub uid_validity: u32,
+    /// `UIDVALIDITY`, or `None` if the server did not include it in the
+    /// `SELECT`/`EXAMINE` response (non-conformant but observed in the wild).
+    pub uid_validity: Option<u32>,
     /// `UIDNEXT`.
     pub uid_next: Option<u32>,
     /// `READ-ONLY` if `EXAMINE`, otherwise `READ-WRITE`.
@@ -173,6 +174,14 @@ pub struct MoveResult {
     /// UID in the destination folder (after the move). `None` if the
     /// server does not report it (no UIDPLUS, or COPY+DELETE fallback).
     pub new_uid: Option<Uid>,
+    /// Why `new_uid` is `None`, if applicable.
+    ///
+    /// Currently always `Some("async_imap_copyuid_unavailable")` when
+    /// `new_uid` is `None` — async-imap 0.11.2 does not expose
+    /// `ResponseCode::CopyUid`, so the UIDPLUS COPYUID response code is
+    /// never captured. A follow-up issue (#96) tracks wiring COPYUID
+    /// capture once upstream exposes it.
+    pub used_fallback_reason: Option<String>,
 }
 
 /// Result of appending a message to a mailbox.
