@@ -18,8 +18,8 @@ use rimap_core::tool::ToolName;
 
 use crate::error::ConfigError;
 use crate::model::{
-    AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, MultiAccountConfig,
-    SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
+    AttachmentsConfig, AuditConfig, Config, FallbackMode, ImapConfig, LimitsConfig,
+    MultiAccountConfig, SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
 };
 
 /// Validated per-account config with resolved overrides and fingerprint.
@@ -39,6 +39,8 @@ pub struct ValidatedAccountConfig {
     pub tool_overrides: BTreeMap<ToolName, Verdict>,
     /// Parsed pinned TLS fingerprint.
     pub tls_fingerprint: Option<TlsFingerprint>,
+    /// Credential fallback policy (see #78).
+    pub fallback_mode: FallbackMode,
 }
 
 /// Validated multi-account config — the canonical output of config loading.
@@ -72,8 +74,18 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
             .security
             .unwrap_or_else(|| config.defaults.security.clone());
         let limits = raw.limits.unwrap_or_else(|| config.defaults.limits.clone());
+        let fallback_mode = raw
+            .credentials
+            .map_or(config.defaults.credentials.fallback, |c| c.fallback);
 
-        let validated = validate_account(id.clone(), raw.imap, raw.smtp, security, limits)?;
+        let validated = validate_account(
+            id.clone(),
+            raw.imap,
+            raw.smtp,
+            security,
+            limits,
+            fallback_mode,
+        )?;
         accounts.insert(id, validated);
     }
 
@@ -102,6 +114,7 @@ pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, 
         config.smtp,
         config.security,
         config.limits,
+        FallbackMode::default(),
     )?;
     validate_audit_config(&config.audit)?;
     validate_paths_multi(&config.audit, &config.attachments)?;
@@ -123,6 +136,7 @@ fn validate_account(
     smtp: Option<SmtpConfig>,
     security: SecurityConfig,
     limits: LimitsConfig,
+    fallback_mode: FallbackMode,
 ) -> Result<ValidatedAccountConfig, ConfigError> {
     let tls_fingerprint = parse_fingerprint(imap.tls_fingerprint_sha256.as_deref())?;
     validate_imap_username(&imap.username)?;
@@ -143,6 +157,7 @@ fn validate_account(
         limits,
         tool_overrides,
         tls_fingerprint,
+        fallback_mode,
     })
 }
 
@@ -432,8 +447,8 @@ mod tests {
 
     use crate::error::ConfigError;
     use crate::model::{
-        AttachmentsConfig, AuditConfig, Config, ImapConfig, LimitsConfig, SecurityConfig,
-        SmtpEncryption, Verdict,
+        AttachmentsConfig, AuditConfig, Config, CredentialsConfig, FallbackMode, ImapConfig,
+        LimitsConfig, SecurityConfig, SmtpEncryption, Verdict,
     };
     use crate::validate::{ValidatedAccountConfig, validate_legacy_as_multi};
     use rimap_core::account::AccountId;
@@ -986,6 +1001,48 @@ allowed_base_dir = "{}"
         let cfg = base_multi_config(dir.path(), vec![raw_account("bad name")]);
         let err = validate_multi(cfg).unwrap_err();
         assert!(matches!(err, ConfigError::InvalidAccountName(_)));
+    }
+
+    #[test]
+    fn multi_fallback_defaults_to_keyring_then_env() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(dir.path(), vec![raw_account("work")]);
+        let v = validate_multi(cfg).unwrap();
+        let acct = &v.accounts[&AccountId::new("work").unwrap()];
+        assert_eq!(acct.fallback_mode, FallbackMode::KeyringThenEnv);
+    }
+
+    #[test]
+    fn multi_account_inherits_defaults_fallback() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = base_multi_config(dir.path(), vec![raw_account("work")]);
+        cfg.defaults.credentials.fallback = FallbackMode::KeyringOnly;
+        let v = validate_multi(cfg).unwrap();
+        let acct = &v.accounts[&AccountId::new("work").unwrap()];
+        assert_eq!(acct.fallback_mode, FallbackMode::KeyringOnly);
+    }
+
+    #[test]
+    fn multi_account_override_beats_defaults_fallback() {
+        let dir = TempDir::new().unwrap();
+        let mut acct = raw_account("work");
+        acct.credentials = Some(CredentialsConfig {
+            fallback: FallbackMode::KeyringOnly,
+        });
+        let mut cfg = base_multi_config(dir.path(), vec![acct]);
+        cfg.defaults.credentials.fallback = FallbackMode::KeyringThenEnv;
+        let v = validate_multi(cfg).unwrap();
+        let validated = &v.accounts[&AccountId::new("work").unwrap()];
+        assert_eq!(validated.fallback_mode, FallbackMode::KeyringOnly);
+    }
+
+    #[test]
+    fn legacy_fallback_defaults_to_keyring_then_env() {
+        let dir = TempDir::new().unwrap();
+        let cfg = base_config(dir.path());
+        let v = validate_legacy_as_multi(cfg).unwrap();
+        let id = AccountId::default_account();
+        assert_eq!(v.accounts[&id].fallback_mode, FallbackMode::KeyringThenEnv);
     }
 
     #[test]

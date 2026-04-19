@@ -310,6 +310,7 @@ fn test_account_config(harness: &DovecotHarness) -> ValidatedAccountConfig {
         limits: LimitsConfig::default(),
         tool_overrides: BTreeMap::new(),
         tls_fingerprint: Some(harness.fingerprint),
+        fallback_mode: rimap_config::model::FallbackMode::default(),
     }
 }
 
