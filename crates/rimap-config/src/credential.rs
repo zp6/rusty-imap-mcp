@@ -1,7 +1,9 @@
 //! Credential resolution.
 //!
-//! Order of precedence (design spec §4):
-//!   1. OS keychain (service = `rusty-imap-mcp`, account = `<username>@<host>`).
+//! Order of precedence (design spec §4, updated for #77):
+//!   1. OS keychain (service = `rusty-imap-mcp`,
+//!      account = `<account-id>/<username>@<host>`), with a back-compat read
+//!      on the legacy `<username>@<host>` form that logs a migration hint.
 //!   2. Environment variable `RUSTY_IMAP_MCP_PASSWORD`.
 //!   3. Clear, actionable error naming both.
 
@@ -37,11 +39,19 @@ pub trait CredentialStore: Send + Sync {
 
 /// Build the keyring account key for `(account_id, username, host)`.
 ///
-/// Returns the **legacy** `<username>@<host>` form for compatibility with
-/// stored credentials. Task 3 introduces the new `<account-id>/<username>@<host>`
-/// form and a back-compat read path.
+/// New format: `<account-id>/<username>@<host>`. Added in #77 to prevent
+/// collisions when two accounts share a `<username>@<host>` tuple. Use
+/// [`legacy_account_key`] only for the read-fallback path during migration.
 #[must_use]
-pub fn account_key(_account_id: &AccountId, username: &str, host: &str) -> String {
+pub fn account_key(account_id: &AccountId, username: &str, host: &str) -> String {
+    format!("{}/{username}@{host}", account_id.as_str())
+}
+
+/// Legacy keyring key format (`<username>@<host>`) — retained for the
+/// back-compat read path in [`resolve_credential`]. New code MUST call
+/// [`account_key`].
+#[must_use]
+pub fn legacy_account_key(username: &str, host: &str) -> String {
     format!("{username}@{host}")
 }
 
@@ -91,24 +101,45 @@ pub fn resolve_credential(
     username: &str,
     host: &str,
 ) -> Result<SecretString, ConfigError> {
-    let account = account_key(account_id, username, host);
-    if let Some(p) = store.get_password(&account)?
+    let new_key = account_key(account_id, username, host);
+    if let Some(p) = store.get_password(&new_key)?
         && !p.expose_secret().is_empty()
     {
         return Ok(p);
     }
+
+    // Back-compat: before #77 the keyring key was <username>@<host>, with no
+    // account-id prefix. If the new key lookup missed, try the legacy key and
+    // warn the operator to run `rusty-imap-mcp migrate-keyring`.
+    let legacy_key = legacy_account_key(username, host);
+    if let Some(p) = store.get_password(&legacy_key)?
+        && !p.expose_secret().is_empty()
+    {
+        tracing::warn!(
+            account_id = %account_id.as_str(),
+            host = %host,
+            "credential resolved via legacy keyring key format; \
+             run `rusty-imap-mcp migrate-keyring --account {}` to migrate",
+            account_id.as_str(),
+        );
+        return Ok(p);
+    }
+
     if let Ok(env) = std::env::var(PASSWORD_ENV_VAR)
         && !env.is_empty()
     {
         return Ok(SecretString::from(env));
     }
+
     Err(ConfigError::NoCredential {
         host: host.to_string(),
         account_tag: hash_account_tag(username, host),
         reason: format!(
-            "no entry in keychain service `{KEYCHAIN_SERVICE}` and \
-             `{PASSWORD_ENV_VAR}` is unset or empty; run `rusty-imap-mcp login` \
-             or set the environment variable"
+            "no entry in keychain service `{KEYCHAIN_SERVICE}` (under key \
+             `{new_key}` or legacy `{legacy_key}`) and `{PASSWORD_ENV_VAR}` \
+             is unset or empty; run `rusty-imap-mcp login --account \
+             {}` or set the environment variable",
+            account_id.as_str(),
         ),
     })
 }
@@ -250,18 +281,48 @@ mod tests {
     }
 
     #[test]
-    fn account_key_signature_accepts_account_id() {
-        let id = AccountId::default_account();
-        // Old format still returned in this task; task 3 changes to
-        // "<id>/<user>@<host>".
+    fn account_key_uses_namespaced_format() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
         let key = account_key(&id, "alice", "mail.example.test");
+        assert_eq!(key, "work/alice@mail.example.test");
+    }
+
+    #[test]
+    fn legacy_account_key_returns_bare_form() {
+        let key = super::legacy_account_key("alice", "mail.example.test");
         assert_eq!(key, "alice@mail.example.test");
     }
 
     #[test]
+    fn resolve_credential_reads_new_key_format_first() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
+        let store = MockStore::with(&[
+            ("work/alice@host", "from_new_key"),
+            ("alice@host", "from_legacy_key"),
+        ]);
+        temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
+            let got = resolve_credential(&store, &id, "alice", "host").unwrap();
+            assert_eq!(got.expose_secret(), "from_new_key");
+        });
+    }
+
+    #[test]
+    fn resolve_credential_falls_back_to_legacy_key() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
+        let store = MockStore::with(&[("alice@host", "from_legacy_key")]);
+        temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
+            let got = resolve_credential(&store, &id, "alice", "host").unwrap();
+            assert_eq!(got.expose_secret(), "from_legacy_key");
+        });
+    }
+
+    #[test]
     fn keychain_hit_wins_over_env() {
-        let store = MockStore::with(&[("alice@host", "from_keychain")]);
         let default_id = AccountId::default_account();
+        let store = MockStore::with(&[("default/alice@host", "from_keychain")]);
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
             let got = resolve_credential(&store, &default_id, "alice", "host").unwrap();
             assert_eq!(got.expose_secret(), "from_keychain");
@@ -312,8 +373,8 @@ mod tests {
 
     #[test]
     fn empty_keychain_value_falls_through_to_env() {
-        let store = MockStore::with(&[("alice@host", "")]);
         let default_id = AccountId::default_account();
+        let store = MockStore::with(&[("default/alice@host", "")]);
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
             assert_eq!(
                 resolve_credential(&store, &default_id, "alice", "host")
