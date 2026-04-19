@@ -85,27 +85,34 @@ fn split_account_for_error(account: &str) -> (String, String) {
     (host.to_string(), hash_account_tag(username, host))
 }
 
-/// Resolve a credential: try the store first, then env var, then fail.
+/// Resolve a credential: try the store first (new key, then legacy key), then
+/// optionally the env var (depending on `fallback_mode`), then fail.
 ///
 /// Accepts `&dyn CredentialStore` so callers that hold an
 /// `Arc<dyn CredentialStore>` can pass `&*arc` without a generic bound.
 /// Concrete references (e.g. `&KeyringStore`) coerce to `&dyn CredentialStore`
 /// automatically, so existing callers are unaffected.
 ///
+/// Returns `(SecretString, CredentialSource)` — the source lets callers record
+/// where the credential came from for audit/observability purposes.
+///
 /// # Errors
 /// - `ConfigError::Keychain` if the store itself errored.
-/// - `ConfigError::NoCredential` if neither source had a value.
+/// - `ConfigError::NoCredential` if no source produced a value.
 pub fn resolve_credential(
     store: &dyn CredentialStore,
     account_id: &AccountId,
     username: &str,
     host: &str,
-) -> Result<SecretString, ConfigError> {
+    fallback_mode: crate::model::FallbackMode,
+) -> Result<(SecretString, rimap_core::CredentialSource), ConfigError> {
+    use rimap_core::CredentialSource;
+
     let new_key = account_key(account_id, username, host);
     if let Some(p) = store.get_password(&new_key)?
         && !p.expose_secret().is_empty()
     {
-        return Ok(p);
+        return Ok((p, CredentialSource::Keyring));
     }
 
     // Back-compat: before #77 the keyring key was <username>@<host>, with no
@@ -122,26 +129,45 @@ pub fn resolve_credential(
              run `rusty-imap-mcp migrate-keyring --account {}` to migrate",
             account_id.as_str(),
         );
-        return Ok(p);
+        return Ok((p, CredentialSource::LegacyKeyring));
     }
 
-    if let Ok(env) = std::env::var(PASSWORD_ENV_VAR)
+    if fallback_mode == crate::model::FallbackMode::KeyringThenEnv
+        && let Ok(env) = std::env::var(PASSWORD_ENV_VAR)
         && !env.is_empty()
     {
-        return Ok(SecretString::from(env));
+        return Ok((SecretString::from(env), CredentialSource::EnvVar));
     }
 
     Err(ConfigError::NoCredential {
         host: host.to_string(),
         account_tag: hash_account_tag(username, host),
-        reason: format!(
-            "no entry in keychain service `{KEYCHAIN_SERVICE}` (under key \
-             `{new_key}` or legacy `{legacy_key}`) and `{PASSWORD_ENV_VAR}` \
-             is unset or empty; run `rusty-imap-mcp login --account \
-             {}` or set the environment variable",
+        reason: build_no_credential_reason(account_id, fallback_mode, &new_key, &legacy_key),
+    })
+}
+
+fn build_no_credential_reason(
+    account_id: &AccountId,
+    fallback_mode: crate::model::FallbackMode,
+    new_key: &str,
+    legacy_key: &str,
+) -> String {
+    match fallback_mode {
+        crate::model::FallbackMode::KeyringOnly => format!(
+            "no entry in keychain service `{KEYCHAIN_SERVICE}` under key \
+             `{new_key}` or legacy `{legacy_key}`; fallback mode is \
+             keyring-only (env var not consulted). Run `rusty-imap-mcp \
+             login --account {}`",
             account_id.as_str(),
         ),
-    })
+        crate::model::FallbackMode::KeyringThenEnv => format!(
+            "no entry in keychain service `{KEYCHAIN_SERVICE}` under key \
+             `{new_key}` or legacy `{legacy_key}`, and `{PASSWORD_ENV_VAR}` \
+             is unset or empty. Run `rusty-imap-mcp login --account {}` \
+             or set the environment variable",
+            account_id.as_str(),
+        ),
+    }
 }
 
 /// Keychain-backed [`CredentialStore`] using the `keyring` crate. Not
@@ -206,6 +232,7 @@ mod tests {
 
     use crate::credential::{CredentialStore, PASSWORD_ENV_VAR, account_key, resolve_credential};
     use crate::error::ConfigError;
+    use crate::model::FallbackMode;
 
     #[test]
     fn hash_account_tag_is_16_hex_and_deterministic() {
@@ -303,7 +330,9 @@ mod tests {
             ("alice@host", "from_legacy_key"),
         ]);
         temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
-            let got = resolve_credential(&store, &id, "alice", "host").unwrap();
+            let (got, _src) =
+                resolve_credential(&store, &id, "alice", "host", FallbackMode::KeyringThenEnv)
+                    .unwrap();
             assert_eq!(got.expose_secret(), "from_new_key");
         });
     }
@@ -314,7 +343,9 @@ mod tests {
         let id = AccountId::new("work").unwrap();
         let store = MockStore::with(&[("alice@host", "from_legacy_key")]);
         temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
-            let got = resolve_credential(&store, &id, "alice", "host").unwrap();
+            let (got, _src) =
+                resolve_credential(&store, &id, "alice", "host", FallbackMode::KeyringThenEnv)
+                    .unwrap();
             assert_eq!(got.expose_secret(), "from_legacy_key");
         });
     }
@@ -324,7 +355,14 @@ mod tests {
         let default_id = AccountId::default_account();
         let store = MockStore::with(&[("default/alice@host", "from_keychain")]);
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
-            let got = resolve_credential(&store, &default_id, "alice", "host").unwrap();
+            let (got, _src) = resolve_credential(
+                &store,
+                &default_id,
+                "alice",
+                "host",
+                FallbackMode::KeyringThenEnv,
+            )
+            .unwrap();
             assert_eq!(got.expose_secret(), "from_keychain");
         });
     }
@@ -334,7 +372,14 @@ mod tests {
         let store = MockStore::default();
         let default_id = AccountId::default_account();
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
-            let got = resolve_credential(&store, &default_id, "alice", "host").unwrap();
+            let (got, _src) = resolve_credential(
+                &store,
+                &default_id,
+                "alice",
+                "host",
+                FallbackMode::KeyringThenEnv,
+            )
+            .unwrap();
             assert_eq!(got.expose_secret(), "from_env");
         });
     }
@@ -344,7 +389,14 @@ mod tests {
         let store = MockStore::default();
         let default_id = AccountId::default_account();
         temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
-            let err = resolve_credential(&store, &default_id, "alice", "host").unwrap_err();
+            let err = resolve_credential(
+                &store,
+                &default_id,
+                "alice",
+                "host",
+                FallbackMode::KeyringThenEnv,
+            )
+            .unwrap_err();
             match err {
                 ConfigError::NoCredential {
                     host,
@@ -366,7 +418,14 @@ mod tests {
         let store = MockStore::failing();
         let default_id = AccountId::default_account();
         temp_env::with_var(PASSWORD_ENV_VAR, Some("unused"), || {
-            let err = resolve_credential(&store, &default_id, "alice", "host").unwrap_err();
+            let err = resolve_credential(
+                &store,
+                &default_id,
+                "alice",
+                "host",
+                FallbackMode::KeyringThenEnv,
+            )
+            .unwrap_err();
             assert!(matches!(err, ConfigError::Keychain { .. }));
         });
     }
@@ -377,9 +436,16 @@ mod tests {
         let store = MockStore::with(&[("default/alice@host", "")]);
         temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
             assert_eq!(
-                resolve_credential(&store, &default_id, "alice", "host")
-                    .unwrap()
-                    .expose_secret(),
+                resolve_credential(
+                    &store,
+                    &default_id,
+                    "alice",
+                    "host",
+                    FallbackMode::KeyringThenEnv,
+                )
+                .unwrap()
+                .0
+                .expose_secret(),
                 "from_env"
             );
         });
@@ -390,5 +456,57 @@ mod tests {
         let p = SecretString::from("hunter2".to_string());
         let formatted = format!("{p:?}");
         assert!(!formatted.contains("hunter2"));
+    }
+
+    #[test]
+    fn strict_mode_skips_env_var() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
+        let store = MockStore::default();
+        temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
+            let err = resolve_credential(&store, &id, "alice", "host", FallbackMode::KeyringOnly)
+                .unwrap_err();
+            assert!(matches!(err, ConfigError::NoCredential { .. }));
+        });
+    }
+
+    #[test]
+    fn permissive_mode_still_uses_env_var() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
+        let store = MockStore::default();
+        temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
+            let (password, source) =
+                resolve_credential(&store, &id, "alice", "host", FallbackMode::KeyringThenEnv)
+                    .unwrap();
+            assert_eq!(password.expose_secret(), "from_env");
+            assert_eq!(source, rimap_core::CredentialSource::EnvVar);
+        });
+    }
+
+    #[test]
+    fn keyring_hit_reports_keyring_source() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
+        let store = MockStore::with(&[("work/alice@host", "secret")]);
+        temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
+            let (_p, source) =
+                resolve_credential(&store, &id, "alice", "host", FallbackMode::KeyringOnly)
+                    .unwrap();
+            assert_eq!(source, rimap_core::CredentialSource::Keyring);
+        });
+    }
+
+    #[test]
+    fn legacy_keyring_hit_reports_legacy_source() {
+        use rimap_core::account::AccountId;
+        let id = AccountId::new("work").unwrap();
+        let store = MockStore::with(&[("alice@host", "secret")]);
+        temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
+            let (_p, source) =
+                resolve_credential(&store, &id, "alice", "host", FallbackMode::KeyringOnly)
+                    .unwrap();
+            assert_eq!(source, rimap_core::CredentialSource::LegacyKeyring);
+        });
     }
 }

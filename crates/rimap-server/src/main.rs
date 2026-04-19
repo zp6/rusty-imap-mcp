@@ -215,11 +215,12 @@ fn build_smtp_client(
     let Some(ref smtp_cfg) = acfg.smtp else {
         return Ok(None);
     };
-    let smtp_password = rimap_config::resolve_credential(
+    let (smtp_password, _src) = rimap_config::resolve_credential(
         &**credentials,
         &acfg.id,
         &smtp_cfg.username,
         &smtp_cfg.host,
+        acfg.fallback_mode,
     )
     .with_context(|| format!("resolving SMTP credential for account {}", acfg.id.as_str()))?;
     let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
@@ -261,6 +262,7 @@ fn build_account_connection(
     ConnectionConfig {
         account,
         account_id: id.clone(),
+        fallback_mode: acfg.fallback_mode,
         host: acfg.imap.host.clone(),
         port: acfg.imap.port,
         username: acfg.imap.username.clone(),

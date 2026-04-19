@@ -958,6 +958,7 @@ mod tests {
                 tls_fingerprint_sha256: Some("ab".repeat(32)),
                 fingerprint_match: Some(true),
                 error_code: None,
+                credential_source: None,
             })
             .unwrap();
 
@@ -1000,6 +1001,7 @@ mod tests {
             tls_fingerprint_sha256: None,
             fingerprint_match: None,
             error_code: Some(rimap_core::ErrorCode::Tls),
+            credential_source: None,
         };
         writer.log_auth(make()).unwrap();
         writer.log_auth(make()).unwrap();

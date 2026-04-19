@@ -208,6 +208,10 @@ pub struct Auth {
     /// On failure, the stable error code (`ERR_TLS`, `ERR_AUTH`, …); `None`
     /// on success.
     pub error_code: Option<ErrorCode>,
+    /// Credential source on success; `None` on failure (credential was never
+    /// resolved) or on `auth` records from code paths that predate #78.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_source: Option<rimap_core::CredentialSource>,
 }
 
 /// Payload of the `tool_start` kind. Recorded before dispatch begins so a
@@ -414,6 +418,7 @@ mod tests {
                 tls_fingerprint_sha256: Some("ab".repeat(32)),
                 fingerprint_match: Some(true),
                 error_code: None,
+                credential_source: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();

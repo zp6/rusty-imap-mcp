@@ -318,6 +318,7 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
     let conn_cfg = ConnectionConfig {
         account: None,
         account_id: rimap_core::account::AccountId::default_account(),
+        fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
         host: "127.0.0.1".into(),
         port: harness.port,
         username: "rimap-test".into(),
