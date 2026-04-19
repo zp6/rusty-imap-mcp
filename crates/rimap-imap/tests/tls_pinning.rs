@@ -1,5 +1,11 @@
-//! Verifier-level tests. No network. We exercise the `OnceLock` capture
-//! path with synthetic cert DER bytes.
+//! Tests for TLS config construction and `last_observed` slot semantics.
+//!
+//! These are not end-to-end verifier tests — they exercise the `OnceLock`
+//! capture path with synthetic cert DER bytes and confirm that each
+//! `build_tls_config` call owns its own slot. The `ServerCertVerifier`
+//! accept/reject paths (pinned fingerprint match/mismatch) require a real
+//! handshake and are covered by the Dovecot integration test in
+//! `tests/integration/dovecot.rs` (Task 15).
 
 #![expect(clippy::expect_used, reason = "tests")]
 
