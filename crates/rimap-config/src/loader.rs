@@ -72,33 +72,35 @@ pub fn load_and_validate(path: &Path) -> Result<ValidatedMultiConfig, ConfigErro
         source,
     })?;
 
-    // Parse once into `toml::Table` to classify the format. A TOML document
-    // is always a table at the top level, so `toml::from_str::<Table>` will
-    // succeed for any syntactically valid TOML. Format-specific deserialization
-    // is a second pass below — still cheaper and more correct than a
-    // substring match over the raw text.
-    let table: toml::Table = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+    // Parse once. The top level of any syntactically valid TOML document is
+    // a table, so deserialization into `toml::Value` gives us a structured
+    // view for format classification. Format-specific deserialization
+    // reuses the parsed value instead of re-parsing the raw string.
+    let value: toml::Value = toml::from_str(&contents).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
     })?;
 
-    let has_accounts = table.get("accounts").and_then(|v| v.as_array()).is_some();
-    let has_flat_imap = table.contains_key("imap");
+    let (has_accounts, has_flat_imap) = match &value {
+        toml::Value::Table(t) => (
+            t.get("accounts").and_then(toml::Value::as_array).is_some(),
+            t.contains_key("imap"),
+        ),
+        _ => (false, false),
+    };
 
     if has_accounts && has_flat_imap {
         return Err(ConfigError::MixedConfigFormat);
     }
 
     if has_accounts {
-        let config = toml::from_str::<MultiAccountConfig>(&contents).map_err(|source| {
-            ConfigError::Parse {
-                path: path.to_path_buf(),
-                source,
-            }
+        let config: MultiAccountConfig = value.try_into().map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
         })?;
         validate_multi(config)
     } else {
-        let config = toml::from_str::<Config>(&contents).map_err(|source| ConfigError::Parse {
+        let config: Config = value.try_into().map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
