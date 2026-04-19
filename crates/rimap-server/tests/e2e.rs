@@ -275,6 +275,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         guard,
         folder_guard,
         download_dir: std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
+        special_use: rimap_imap::SpecialUseMap::default(),
     };
     let mut accounts = BTreeMap::new();
     accounts.insert(id, state);
@@ -407,6 +408,7 @@ async fn e2e_full_session() {
     assert_fetch(server, uid).await;
     assert_mark_read(server, uid).await;
     assert_create_draft(server, uid).await;
+    assert_create_draft_uses_special_use_when_available(server).await;
     assert_move_and_gone(server, uid).await;
 }
 
@@ -511,6 +513,27 @@ async fn assert_create_draft(server: &ImapMcpServer, reply_uid: u32) {
             .any(|k| k.as_str() == Some("$PendingReview")),
         "missing $PendingReview keyword",
     );
+}
+
+async fn assert_create_draft_uses_special_use_when_available(server: &ImapMcpServer) {
+    let account = server.registry.resolve(None).expect("resolve account");
+    let expected = account
+        .special_use
+        .drafts()
+        .map_or_else(|| "Drafts".to_string(), str::to_string);
+
+    let result = call_tool(
+        server,
+        "create_draft",
+        serde_json::json!({
+            "to": [{"address": "dest@example.com"}],
+            "subject": "s",
+            "body_text": "b",
+        }),
+    )
+    .await
+    .expect("create_draft failed");
+    assert_eq!(result["meta"]["folder"].as_str().unwrap(), expected);
 }
 
 async fn assert_move_and_gone(server: &ImapMcpServer, uid: u32) {

@@ -70,7 +70,7 @@ pub async fn handle(
     let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
     // Best-effort: APPEND copy to Sent folder
-    let sent_folder = "Sent";
+    let sent_folder: &str = account.special_use.sent().unwrap_or("Sent");
     let (sent_uid, sent_copy_failed) = match account
         .imap
         .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])

@@ -43,7 +43,7 @@ pub async fn handle(
     let from_addr = account.imap.username();
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
-    let drafts_folder = "Drafts";
+    let drafts_folder: &str = account.special_use.drafts().unwrap_or("Drafts");
     let result = account
         .imap
         .append_message(

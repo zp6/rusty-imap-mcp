@@ -129,6 +129,26 @@ Controls which tools are available.
 | `protected_folders` | list | `["INBOX", "Sent", "Drafts", "Trash"]` | Folders that cannot be renamed or deleted |
 | `expunge_folders` | list | `[]` | Folders where `expunge` and `delete_folder` are permitted (default empty = deny all) |
 
+### Special-use folder discovery
+
+At account boot, the server runs `LIST "" "*"` once and records any
+RFC 6154 special-use markers (`\Drafts`, `\Sent`, `\Trash`, `\Junk`,
+`\Archive`, `\All`, `\Flagged`) reported by the server. These names
+are then:
+
+1. Used as the target folder for `create_draft` (`\Drafts`) and
+   `send_email`'s Sent copy (`\Sent`), falling back to the literal
+   strings `"Drafts"` and `"Sent"` if the server does not advertise
+   special-use attributes.
+2. Merged (case-insensitively) into the `protected_folders` list, so
+   Gmail's `[Gmail]/Sent Mail` is protected by the default config even
+   though the literal list contains `"Sent"`. The merge only adds
+   names; user-configured entries are preserved.
+
+No config is required to opt in. The expansion is additive — there is
+no way to disable it short of setting `protected_folders` to a list
+that already covers the server-native names.
+
 ### `[security.lookalike]` subsection
 
 | Field | Type | Default | Description |

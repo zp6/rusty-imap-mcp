@@ -92,13 +92,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
     let download_dir: Arc<std::path::Path> =
         Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
-    let registry = build_registry(&multi, &audit, &credentials, &download_dir)?;
 
     let audit_for_shutdown = audit.clone();
-    let mcp_server = server::ImapMcpServer::new(registry, audit);
-
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+
     let mcp_result: anyhow::Result<()> = rt.block_on(async {
+        let registry = build_registry(&multi, &audit, &credentials, &download_dir)
+            .await
+            .context("building account registry")?;
+        let mcp_server = server::ImapMcpServer::new(registry, audit);
         let transport = rmcp::transport::io::stdio();
         let service = Box::pin(rmcp::serve_server(mcp_server, transport))
             .await
@@ -137,7 +139,7 @@ fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
 }
 
 /// Build the account registry from a validated multi-account config.
-fn build_registry(
+async fn build_registry(
     multi: &rimap_config::validate::ValidatedMultiConfig,
     audit: &rimap_audit::AuditWriter,
     credentials: &Arc<dyn CredentialStore>,
@@ -149,12 +151,31 @@ fn build_registry(
         let conn_cfg = build_account_connection(id, acfg);
         let imap = Connection::new(conn_cfg, audit.clone(), credentials.clone());
 
+        let special_use = rimap_server::boot::discovery::resolve_special_use(&imap)
+            .await
+            .with_context(|| {
+                format!("resolving special-use folders for account {}", id.as_str())
+            })?;
+
+        // Expand the config-supplied protected-folders list with any
+        // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
+        // The merge is case-insensitive so user-configured literals
+        // (`"Sent"`) are not duplicated when the server also reports
+        // `"Sent"` on the same mailbox.
+        let mut protected = acfg.security.protected_folders.clone();
+        for discovered in special_use.all_discovered() {
+            if !protected
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(&discovered))
+            {
+                protected.push(discovered);
+            }
+        }
+
         let smtp = build_smtp_client(acfg, credentials)?;
 
-        let folder_guard = rimap_authz::FolderGuard::new(
-            &acfg.security.protected_folders,
-            &acfg.security.expunge_folders,
-        );
+        let folder_guard =
+            rimap_authz::FolderGuard::new(&protected, &acfg.security.expunge_folders);
 
         let state = registry::AccountState {
             id: id.clone(),
@@ -163,6 +184,7 @@ fn build_registry(
             guard,
             folder_guard,
             download_dir: Arc::clone(download_dir),
+            special_use,
         };
         account_states.insert(id.clone(), state);
     }

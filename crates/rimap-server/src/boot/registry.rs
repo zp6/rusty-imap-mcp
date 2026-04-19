@@ -16,7 +16,7 @@ use rimap_authz::{DispatchGuard, FolderGuard};
 use rimap_core::RimapError;
 use rimap_core::account::AccountId;
 use rimap_core::error::ErrorCode;
-use rimap_imap::Connection;
+use rimap_imap::{Connection, SpecialUseMap};
 use rimap_smtp::SmtpClient;
 
 /// In-memory, unkeyed governor limiter used for infrastructure tools.
@@ -49,6 +49,10 @@ pub struct AccountState {
     /// Attachment download sandbox root. Carried on `AccountState` so
     /// tool handlers keep a uniform `handle(account, input)` shape.
     pub download_dir: Arc<Path>,
+    /// RFC 6154 special-use folder name resolutions, populated at boot
+    /// from one `LIST` call. Consulted by `create_draft`, `send_email`,
+    /// and expanded into `folder_guard`'s protected list.
+    pub special_use: SpecialUseMap,
 }
 
 impl std::fmt::Debug for AccountState {
@@ -56,6 +60,9 @@ impl std::fmt::Debug for AccountState {
         f.debug_struct("AccountState")
             .field("id", &self.id)
             .field("smtp", &self.smtp.is_some())
+            .field("special_use_drafts", &self.special_use.drafts())
+            .field("special_use_sent", &self.special_use.sent())
+            .field("special_use_trash", &self.special_use.trash())
             .finish_non_exhaustive()
     }
 }

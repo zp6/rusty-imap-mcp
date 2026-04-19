@@ -18,16 +18,15 @@ pub(crate) async fn list(
     let mut out = Vec::new();
     while let Some(name) = stream.next().await {
         let name = name.map_err(map_err)?;
-        let selectable = is_selectable(name.attributes());
+        let attrs = name.attributes();
+        let selectable = is_selectable(attrs);
+        let special_use = crate::special_use::classify_special_use(attrs);
         out.push(Folder {
             name: name.name().to_string(),
-            attributes: name
-                .attributes()
-                .iter()
-                .map(|attr| format!("{attr:?}"))
-                .collect(),
+            attributes: attrs.iter().map(|attr| format!("{attr:?}")).collect(),
             delimiter: name.delimiter().and_then(|s| s.chars().next()),
             selectable,
+            special_use,
         });
     }
     Ok(out)

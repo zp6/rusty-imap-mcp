@@ -733,3 +733,21 @@ async fn case_19_folder_management() {
         "RenamedFolder should not exist after delete"
     );
 }
+
+#[tokio::test]
+async fn case_20_special_use_discovery_populates_each_slot() {
+    use rimap_imap::{SpecialUse, SpecialUseMap};
+
+    let Some(h) = boot(PinChoice::Correct) else {
+        return;
+    };
+    let folders = h.connection.list_folders("*").await.unwrap();
+    let map = SpecialUseMap::from_folders(&folders);
+
+    assert_eq!(map.drafts(), Some("Drafts"));
+    assert_eq!(map.sent(), Some("Sent"));
+    assert_eq!(map.trash(), Some("Trash"));
+
+    let drafts_folder = folders.iter().find(|f| f.name == "Drafts").unwrap();
+    assert_eq!(drafts_folder.special_use, Some(SpecialUse::Drafts));
+}
