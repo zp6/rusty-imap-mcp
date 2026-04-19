@@ -57,6 +57,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     }
 
+    if let Some(Command::MigrateKeyring {
+        account,
+        host,
+        username,
+    }) = &cli.command
+    {
+        return run_migrate_keyring(account, username, host);
+    }
+
     if let Some(Command::Audit {
         action:
             AuditAction::Merge {
@@ -299,6 +308,25 @@ fn resolve_download_dir_multi(
             .with_context(|| format!("setting 0700 perms on {}", dir.display()))?;
     }
     Ok(dir)
+}
+
+/// Handle the `migrate-keyring` subcommand.
+fn run_migrate_keyring(account: &str, username: &str, host: &str) -> anyhow::Result<()> {
+    let store = KeyringStore;
+    let account_id = rimap_core::account::AccountId::new(account)
+        .with_context(|| format!("invalid account name `{account}`"))?;
+    let migrated = cli::migrate_keyring::migrate_one(&store, &account_id, username, host)
+        .with_context(|| format!("migrating credential for account `{account}`, host `{host}`"))?;
+    let mut stdout = std::io::stdout().lock();
+    if migrated {
+        writeln!(stdout, "migrated credential for account `{account}`")?;
+    } else {
+        writeln!(
+            stdout,
+            "no legacy credential found for account `{account}` (host `{host}`); nothing to migrate"
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

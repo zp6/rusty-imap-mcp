@@ -10,6 +10,7 @@
 
 pub(crate) mod audit_merge;
 pub(crate) mod dry_run;
+pub(crate) mod migrate_keyring;
 
 use std::path::PathBuf;
 
@@ -52,6 +53,21 @@ pub enum Command {
         #[arg(long)]
         host: String,
         /// IMAP username (e.g. `alice@example.com`).
+        #[arg(long)]
+        username: String,
+    },
+    /// Migrate a credential from the legacy keyring key format
+    /// (`<username>@<host>`) to the new namespaced format
+    /// (`<account-id>/<username>@<host>`). Run once per account after
+    /// upgrading across #77.
+    MigrateKeyring {
+        /// Account name from config.
+        #[arg(long)]
+        account: String,
+        /// IMAP host.
+        #[arg(long)]
+        host: String,
+        /// IMAP username.
         #[arg(long)]
         username: String,
     },
