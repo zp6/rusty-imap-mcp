@@ -62,6 +62,34 @@ fn default_connect_timeout() -> u32 {
     10
 }
 
+/// How credential resolution falls back when the keyring has no entry.
+///
+/// - `KeyringThenEnv` (default) — try the keyring, then
+///   `RUSTY_IMAP_MCP_PASSWORD`, then fail. Suitable for CI/test and
+///   single-account deployments.
+/// - `KeyringOnly` — keyring only; a miss returns `NoCredential` without
+///   consulting the env var. Recommended for multi-account deployments
+///   where a shared env-var fallback would silently send one account's
+///   password to another account's server (see #78).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FallbackMode {
+    /// Keyring, then env var, then fail.
+    #[default]
+    KeyringThenEnv,
+    /// Keyring only; no env-var fallback.
+    KeyringOnly,
+}
+
+/// `[defaults.credentials]` / `[[accounts.credentials]]` block.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialsConfig {
+    /// Fallback policy.
+    #[serde(default)]
+    pub fallback: FallbackMode,
+}
+
 /// SMTP encryption mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -359,6 +387,9 @@ pub struct DefaultsConfig {
     /// Default numeric limits.
     #[serde(default)]
     pub limits: LimitsConfig,
+    /// Default credential policy inherited by accounts that omit it.
+    #[serde(default)]
+    pub credentials: CredentialsConfig,
 }
 
 /// A single account entry in `[[accounts]]`.
@@ -378,6 +409,9 @@ pub struct RawAccountConfig {
     /// Per-account limit overrides; `None` inherits from `[defaults]`.
     #[serde(default)]
     pub limits: Option<LimitsConfig>,
+    /// Per-account credential policy; `None` inherits from `[defaults.credentials]`.
+    #[serde(default)]
+    pub credentials: Option<CredentialsConfig>,
 }
 
 #[cfg(test)]
@@ -449,5 +483,32 @@ mod tests {
             let back: W = toml::from_str(&s).unwrap();
             assert_eq!(back.v, v);
         }
+    }
+
+    #[test]
+    fn fallback_mode_defaults_to_keyring_then_env() {
+        assert_eq!(FallbackMode::default(), FallbackMode::KeyringThenEnv);
+    }
+
+    #[test]
+    fn fallback_mode_round_trips_via_toml() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct W {
+            v: FallbackMode,
+        }
+        for v in [FallbackMode::KeyringOnly, FallbackMode::KeyringThenEnv] {
+            let s = toml::to_string(&W { v }).unwrap();
+            let back: W = toml::from_str(&s).unwrap();
+            assert_eq!(back.v, v);
+        }
+    }
+
+    #[test]
+    fn credentials_config_deserializes_with_fallback_key() {
+        let toml_str = r#"
+fallback = "keyring-only"
+"#;
+        let cfg: CredentialsConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.fallback, FallbackMode::KeyringOnly);
     }
 }

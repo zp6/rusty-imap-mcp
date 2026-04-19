@@ -897,6 +897,7 @@ path = "/tmp/audit.jsonl"
             smtp: None,
             security: None,
             limits: None,
+            credentials: None,
         }
     }
 
