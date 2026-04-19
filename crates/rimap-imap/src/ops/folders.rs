@@ -7,6 +7,10 @@ use crate::connection::ImapSession;
 use crate::error::ImapError;
 use crate::types::{Folder, FolderStatus, SelectedFolder, StatusItems};
 
+/// RFC 5258 `\NonExistent` attribute. `imap-proto` surfaces it as
+/// `NameAttribute::Extension("\\NonExistent")` rather than a dedicated variant.
+const NON_EXISTENT_ATTR: &str = "\\NonExistent";
+
 pub(crate) async fn list(
     session: &mut ImapSession,
     pattern: &str,
@@ -45,7 +49,7 @@ fn is_selectable(attrs: &[NameAttribute<'_>]) -> bool {
     for attr in attrs {
         match attr {
             NameAttribute::NoSelect => return false,
-            NameAttribute::Extension(ext) if ext.eq_ignore_ascii_case("\\NonExistent") => {
+            NameAttribute::Extension(ext) if ext.eq_ignore_ascii_case(NON_EXISTENT_ATTR) => {
                 return false;
             }
             _ => {}

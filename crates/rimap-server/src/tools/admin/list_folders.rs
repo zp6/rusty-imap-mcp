@@ -48,22 +48,27 @@ pub async fn handle(
 ) -> Result<ToolResponse<ListFoldersMeta>, rimap_core::RimapError> {
     let folders = account.imap.list_folders("*").await?;
 
+    let status_items = rimap_imap::types::StatusItems {
+        messages: true,
+        recent: false,
+        uid_next: false,
+        uid_validity: true,
+        unseen: true,
+    };
+
     let mut folder_entries = Vec::with_capacity(folders.len());
-    for folder in &folders {
+    for folder in folders {
         let (exists, unseen, uid_validity) = if folder.selectable {
-            let status = account
-                .imap
-                .status(&folder.name, rimap_imap::types::StatusItems::all())
-                .await?;
+            let status = account.imap.status(&folder.name, status_items).await?;
             (status.messages, status.unseen, status.uid_validity)
         } else {
             (None, None, None)
         };
 
         folder_entries.push(FolderEntry {
-            name: folder.name.clone(),
+            name: folder.name,
             delimiter: folder.delimiter,
-            flags: folder.attributes.clone(),
+            flags: folder.attributes,
             exists,
             unseen,
             uid_validity,
