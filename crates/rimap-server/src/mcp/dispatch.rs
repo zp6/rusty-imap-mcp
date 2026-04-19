@@ -294,7 +294,8 @@ mod tests {
         .expect("audit open");
 
         let registry = AccountRegistry::new(BTreeMap::new());
-        let server = ImapMcpServer::new(registry, audit);
+        let (cancellation_sender, _cancellation_rx) = rimap_audit::cancellation_channel();
+        let server = ImapMcpServer::new(registry, audit, cancellation_sender);
 
         // list_accounts needs no args and no IMAP connection.
         let args = serde_json::Map::new();

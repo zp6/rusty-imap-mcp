@@ -7,9 +7,14 @@
 //! [`ImapMcpServer::emit_tool_end`] offload the blocking writer calls
 //! onto `spawn_blocking` and surface panics/join errors as
 //! `RimapError::Internal`.
+//!
+//! [`AuditEnvelopeGuard`] is a drop-guard that synthesizes a cancellation
+//! `tool_end` if the enclosing future is dropped between `tool_start`
+//! emission and the normal `emit_tool_end` call (#71, #99).
 
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
 use rimap_audit::redact::{Redactor, hash_arguments};
+use rimap_audit::{CancelledToolEndSender, ToolEndInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
 
@@ -41,7 +46,20 @@ impl ImapMcpServer {
             .await?;
         let start_time = std::time::Instant::now();
 
+        let mut guard = AuditEnvelopeGuard::new(
+            start_seq,
+            tool,
+            audit_account.clone(),
+            start_time,
+            self.cancellation_sender.clone(),
+        );
+
         let result = body.await;
+
+        // Body completed normally. Disarm before any further await points so
+        // a drop of THIS future between here and emit_tool_end does not cause
+        // double emission.
+        guard.disarm();
 
         let duration_ms = start_time
             .elapsed()
@@ -164,6 +182,84 @@ impl ImapMcpServer {
                 let rimap_err = crate::mcp::spawn_blocking_panic_error(&join_err);
                 tracing::error!(error = %rimap_err, "tool_end join error");
             }
+        }
+    }
+}
+
+/// RAII guard that emits a cancellation `tool_end` record if dropped
+/// undisarmed. Used inside `run_with_audit_envelope` to pair every
+/// `tool_start` with a `tool_end` even when the outer MCP dispatch
+/// future is dropped mid-call (#71, #99).
+struct AuditEnvelopeGuard {
+    inner: Option<GuardInner>,
+}
+
+struct GuardInner {
+    start_seq: rimap_audit::Seq,
+    tool: ToolName,
+    account: Option<String>,
+    start_time: std::time::Instant,
+    sender: CancelledToolEndSender,
+}
+
+impl AuditEnvelopeGuard {
+    fn new(
+        start_seq: rimap_audit::Seq,
+        tool: ToolName,
+        account: Option<String>,
+        start_time: std::time::Instant,
+        sender: CancelledToolEndSender,
+    ) -> Self {
+        Self {
+            inner: Some(GuardInner {
+                start_seq,
+                tool,
+                account,
+                start_time,
+                sender,
+            }),
+        }
+    }
+
+    /// Mark the guard as completed normally. `Drop` becomes a no-op.
+    fn disarm(&mut self) {
+        self.inner = None;
+    }
+}
+
+impl Drop for AuditEnvelopeGuard {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        let duration_ms = inner
+            .start_time
+            .elapsed()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        // ToolName is Copy; capture it for the warning log before try_send
+        // consumes the payload.
+        let tool = inner.tool;
+        let cancellation = ToolEndInputs {
+            start_seq: inner.start_seq,
+            tool,
+            account: inner.account,
+            status: rimap_audit::record::ToolStatus::Cancelled,
+            error_code: Some(rimap_core::ErrorCode::Cancelled),
+            duration_ms,
+            result_summary: rimap_audit::record::ResultSummary::default(),
+            provenance: Provenance {
+                window_seconds: 60,
+                message_ids_recently_read: Vec::new(),
+            },
+        };
+        if let Err(e) = inner.sender.try_send(cancellation) {
+            tracing::warn!(
+                error = %e,
+                tool = tool.as_str(),
+                "cancellation tool_end drop: failed to enqueue (channel full or closed)",
+            );
         }
     }
 }

@@ -116,15 +116,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         let registry = build_registry(&multi, &audit, &credentials, &download_dir)
             .await
             .context("building account registry")?;
-        let mcp_server = server::ImapMcpServer::new(registry, audit);
+
+        let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
+        let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
+
+        let mcp_server = server::ImapMcpServer::new(registry, audit, cancellation_tx);
         let transport = rmcp::transport::io::stdio();
         let service = Box::pin(rmcp::serve_server(mcp_server, transport))
             .await
             .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
+        // waiting() takes ownership of service, consuming it and dropping the
+        // ImapMcpServer (including all cancellation sender clones) when it
+        // returns. The drainer task exits once all senders have dropped.
         service
             .waiting()
             .await
             .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
+
+        // All senders dropped above. Wait for the drainer to flush any
+        // remaining queued cancellation records before the runtime exits.
+        if let Err(e) = drainer_handle.await {
+            tracing::error!(error = %e, "cancellation drainer join error");
+        }
         Ok(())
     });
 
