@@ -22,6 +22,13 @@ pub struct MoveOutcome {
     /// instead of the atomic UID MOVE command. Callers should surface a
     /// security warning when this is `true`.
     pub used_fallback: bool,
+    /// Source-folder UIDVALIDITY observed at the guard STATUS probe, or
+    /// `None` if no guard was requested or the server omitted it.
+    pub source_uid_validity: Option<u32>,
+    /// Destination-folder UIDVALIDITY observed after the COPY fallback
+    /// succeeds, or `None` (either not the fallback path, or the server
+    /// omitted UIDVALIDITY from the STATUS response).
+    pub destination_uid_validity: Option<u32>,
 }
 
 /// Move `uids` from the currently selected folder to `dest_folder`.
@@ -33,14 +40,22 @@ pub struct MoveOutcome {
 /// When `has_move` is `false` the COPY+DELETE fallback is used
 /// immediately without attempting UID MOVE.
 ///
+/// If `expected_source_uidvalidity` is `Some(v)`, a STATUS probe is
+/// issued against `src_folder` before the move. A mismatch returns
+/// `ImapError::UidValidityChanged`; if the server omits UIDVALIDITY
+/// from the STATUS response the guard is skipped with a warning.
+///
 /// # Errors
 ///
 /// Returns `ImapError::BatchTooLarge` if `uids.len() > MAX_BATCH`.
+/// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
 /// Propagates connection-lost or protocol errors from async-imap.
 pub(crate) async fn move_messages(
     session: &mut ImapSession,
+    src_folder: &str,
     dest_folder: &str,
     uids: &[Uid],
+    expected_source_uidvalidity: Option<u32>,
     has_move: bool,
     has_uidplus: bool,
 ) -> Result<MoveOutcome, ImapError> {
@@ -55,14 +70,51 @@ pub(crate) async fn move_messages(
         return Ok(MoveOutcome {
             results: Vec::new(),
             used_fallback: false,
+            source_uid_validity: None,
+            destination_uid_validity: None,
         });
     }
 
+    // UIDVALIDITY guard: STATUS does not require SELECT and does not
+    // perturb the session's currently selected mailbox.
+    let source_uid_validity = if let Some(expected) = expected_source_uidvalidity {
+        let items = crate::types::StatusItems {
+            messages: false,
+            recent: false,
+            uid_next: false,
+            uid_validity: true,
+            unseen: false,
+        };
+        let status = crate::ops::folders::status(session, src_folder, items).await?;
+        match status.uid_validity {
+            Some(actual) if actual != expected => {
+                return Err(ImapError::UidValidityChanged {
+                    folder: src_folder.to_string(),
+                    expected,
+                    actual,
+                });
+            }
+            Some(actual) => Some(actual),
+            None => {
+                tracing::warn!(
+                    folder = %src_folder,
+                    "STATUS omitted UIDVALIDITY; skipping UIDVALIDITY guard",
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if !has_move {
-        let results = copy_delete_fallback(session, dest_folder, uids, has_uidplus).await?;
+        let (results, destination_uid_validity) =
+            copy_delete_fallback(session, dest_folder, uids, has_uidplus).await?;
         return Ok(MoveOutcome {
             results,
             used_fallback: true,
+            source_uid_validity,
+            destination_uid_validity,
         });
     }
 
@@ -73,6 +125,8 @@ pub(crate) async fn move_messages(
         Ok(()) => Ok(MoveOutcome {
             results: build_results(uids),
             used_fallback: false,
+            source_uid_validity,
+            destination_uid_validity: None,
         }),
         Err(e) => Err(super::folders::map_err(e)),
     }
@@ -84,12 +138,15 @@ pub(crate) async fn move_messages(
 /// the flagged UIDs. Otherwise plain EXPUNGE removes all `\Deleted` messages,
 /// which is a known data-loss risk for concurrent operations.
 /// Servers that support MOVE never reach this path.
+///
+/// Returns `(results, destination_uid_validity)`. The destination UIDVALIDITY
+/// is probed via STATUS after the COPY succeeds so the caller can surface it.
 async fn copy_delete_fallback(
     session: &mut ImapSession,
     dest_folder: &str,
     uids: &[Uid],
     has_uidplus: bool,
-) -> Result<Vec<MoveResult>, ImapError> {
+) -> Result<(Vec<MoveResult>, Option<u32>), ImapError> {
     crate::ops::folders::validate_server_folder_name(dest_folder)?;
     let uid_set = store::uid_set_string(uids);
 
@@ -99,10 +156,26 @@ async fn copy_delete_fallback(
         .await
         .map_err(super::folders::map_err)?;
 
-    // Step 2: STORE +FLAGS \Deleted on the originals.
+    // Step 2: Probe the destination UIDVALIDITY so the caller can echo it.
+    // STATUS does not change the selected mailbox.
+    let dest_status = crate::ops::folders::status(
+        session,
+        dest_folder,
+        crate::types::StatusItems {
+            messages: false,
+            recent: false,
+            uid_next: false,
+            uid_validity: true,
+            unseen: false,
+        },
+    )
+    .await?;
+    let destination_uid_validity = dest_status.uid_validity;
+
+    // Step 3: STORE +FLAGS \Deleted on the originals.
     store::store(session, uids, &[Flag::Deleted], FlagAction::Add).await?;
 
-    // Step 3: Remove the flagged messages from the source folder.
+    // Step 4: Remove the flagged messages from the source folder.
     if has_uidplus {
         // UID EXPUNGE (RFC 4315): only expunge the UIDs we flagged.
         let stream = session
@@ -124,17 +197,19 @@ async fn copy_delete_fallback(
         }
     }
 
-    Ok(build_results(uids))
+    Ok((build_results(uids), destination_uid_validity))
 }
 
 /// Build `MoveResult` entries with `new_uid: None` (async-imap does
-/// not expose UIDPLUS data).
+/// not expose UIDPLUS data). `used_fallback_reason` is always set
+/// because `new_uid` is always `None` in this version of the library.
 fn build_results(uids: &[Uid]) -> Vec<MoveResult> {
     let mut results = Vec::with_capacity(uids.len());
     for &uid in uids {
         results.push(MoveResult {
             old_uid: uid,
             new_uid: None,
+            used_fallback_reason: Some("async_imap_copyuid_unavailable".to_string()),
         });
     }
     results
@@ -160,12 +235,17 @@ mod tests {
         // so every entry records the old UID and a None for new_uid.
         // Documenting this at the unit layer prevents a future COPYUID
         // refactor from breaking the client contract silently.
+        // used_fallback_reason is always set while new_uid is always None.
         let uids = [uid(7), uid(3), uid(11)];
         let results = build_results(&uids);
         assert_eq!(results.len(), 3);
         for (i, r) in results.iter().enumerate() {
             assert_eq!(r.old_uid, uids[i]);
             assert!(r.new_uid.is_none());
+            assert_eq!(
+                r.used_fallback_reason.as_deref(),
+                Some("async_imap_copyuid_unavailable"),
+            );
         }
     }
 

@@ -731,16 +731,24 @@ impl Connection {
     /// The fallback is not atomic — callers should inspect
     /// `MoveOutcome::used_fallback` and surface a warning.
     ///
+    /// If `expected_source_uidvalidity` is `Some(v)`, a STATUS probe is
+    /// issued against `source_folder` before the move. A mismatch
+    /// returns `ImapError::UidValidityChanged`. Pass `None` to skip the
+    /// guard (Task 4 will thread the observed value from SELECT through
+    /// tool input).
+    ///
     /// Batch limit: 100 UIDs.
     ///
     /// # Errors
     /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn move_messages(
         &self,
         source_folder: &str,
         dest_folder: &str,
         uids: &[crate::types::Uid],
+        expected_source_uidvalidity: Option<u32>,
     ) -> Result<crate::ops::move_message::MoveOutcome, ImapError> {
         let has_move = self.has_move_capability();
         let has_uidplus = self.has_uidplus_capability();
@@ -748,8 +756,10 @@ impl Connection {
             crate::ops::folders::select(session, source_folder, false).await?;
             crate::ops::move_message::move_messages(
                 session,
+                source_folder,
                 dest_folder,
                 uids,
+                expected_source_uidvalidity,
                 has_move,
                 has_uidplus,
             )

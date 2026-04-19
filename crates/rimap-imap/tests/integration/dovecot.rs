@@ -546,7 +546,7 @@ async fn case_16_move_message_between_folders() {
     // Move to Archive (seeded in Dovecot entrypoint.sh).
     let outcome = h
         .connection
-        .move_messages("INBOX", "Archive", &[uid])
+        .move_messages("INBOX", "Archive", &[uid], None)
         .await
         .unwrap();
     assert_eq!(outcome.results.len(), 1);

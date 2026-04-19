@@ -82,7 +82,7 @@ pub async fn handle(
         .collect();
     let outcome = account
         .imap
-        .move_messages(&input.folder, &input.destination, &uids)
+        .move_messages(&input.folder, &input.destination, &uids, None)
         .await?;
 
     let moves: Vec<MoveEntry> = outcome
