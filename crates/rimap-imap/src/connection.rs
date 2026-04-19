@@ -619,7 +619,13 @@ impl Connection {
     /// `FETCH` for the given UIDs with the requested items. Does NOT include
     /// `BODY[]` — see `fetch_body` (Task 13) for full message retrieval.
     ///
+    /// If `expected_uidvalidity` is `Some(v)`, the value is compared against
+    /// the UIDVALIDITY returned by the internal EXAMINE (read-only SELECT). A
+    /// mismatch returns `ImapError::UidValidityChanged` before the FETCH is
+    /// sent. Pass `None` to skip the guard.
+    ///
     /// # Errors
+    /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
     /// Propagates timeout, connection-lost, or protocol errors from the
     /// underlying `ops::fetch::fetch` call.
     pub async fn fetch(
@@ -627,9 +633,10 @@ impl Connection {
         folder: &str,
         uids: &[crate::types::Uid],
         spec: crate::types::FetchSpec,
+        expected_uidvalidity: Option<u32>,
     ) -> Result<(Vec<crate::types::FetchedMessage>, Option<u32>), ImapError> {
         self.with_session("fetch", async |session| {
-            crate::ops::fetch::fetch(session, folder, uids, spec).await
+            crate::ops::fetch::fetch(session, folder, uids, spec, expected_uidvalidity).await
         })
         .await
     }
@@ -707,8 +714,14 @@ impl Connection {
     ///
     /// Batch limit: 100 UIDs. Returns the UIDs the server confirmed.
     ///
+    /// If `expected_uidvalidity` is `Some(v)`, the value is compared against
+    /// the UIDVALIDITY returned by the internal SELECT. A mismatch returns
+    /// `ImapError::UidValidityChanged` before the STORE is sent. Pass `None`
+    /// to skip the guard.
+    ///
     /// # Errors
     /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
+    /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn store_flags(
         &self,
@@ -716,10 +729,12 @@ impl Connection {
         uids: &[crate::types::Uid],
         flags: &[crate::types::Flag],
         action: crate::types::FlagAction,
+        expected_uidvalidity: Option<u32>,
     ) -> Result<(Vec<crate::types::Uid>, Option<u32>), ImapError> {
         self.with_session("store", async |session| {
             let selected = crate::ops::folders::select(session, folder, false).await?;
             let uid_validity = selected.uid_validity;
+            crate::ops::fetch::check_uidvalidity(folder, expected_uidvalidity, uid_validity)?;
             let updated = crate::ops::store::store(session, uids, flags, action).await?;
             Ok((updated, uid_validity))
         })

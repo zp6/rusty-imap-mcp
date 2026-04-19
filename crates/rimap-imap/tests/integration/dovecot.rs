@@ -229,7 +229,11 @@ async fn case_08_fetch_envelope_and_bodystructure() {
         flags: false,
         size: false,
     };
-    let (msgs, _) = h.connection.fetch("INBOX", &uids, spec).await.unwrap();
+    let (msgs, _) = h
+        .connection
+        .fetch("INBOX", &uids, spec, None)
+        .await
+        .unwrap();
     assert_eq!(msgs.len(), uids.len());
     let envelope = msgs[0].envelope.as_ref().expect("envelope");
     let subject = envelope.subject_raw.as_ref().expect("subject_raw");
@@ -361,6 +365,7 @@ async fn case_12_store_add_seen_flag() {
             &[uid],
             &[rimap_imap::types::Flag::Seen],
             rimap_imap::types::FlagAction::Add,
+            None,
         )
         .await
         .unwrap();
@@ -376,6 +381,7 @@ async fn case_12_store_add_seen_flag() {
                 flags: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -416,6 +422,7 @@ async fn case_13_store_remove_seen_flag() {
             &[uid],
             &[rimap_imap::types::Flag::Seen],
             rimap_imap::types::FlagAction::Remove,
+            None,
         )
         .await
         .unwrap();
@@ -431,6 +438,7 @@ async fn case_13_store_remove_seen_flag() {
                 flags: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -455,6 +463,7 @@ async fn case_14_store_batch_too_large() {
             &uids,
             &[rimap_imap::types::Flag::Seen],
             rimap_imap::types::FlagAction::Add,
+            None,
         )
         .await;
 
@@ -511,6 +520,7 @@ async fn case_15_append_message_to_inbox() {
                 flags: true,
                 ..Default::default()
             },
+            None,
         )
         .await
         .unwrap();
@@ -671,6 +681,7 @@ async fn case_18_expunge() {
             &[uid],
             &[rimap_imap::types::Flag::Deleted],
             rimap_imap::types::FlagAction::Add,
+            None,
         )
         .await
         .unwrap();

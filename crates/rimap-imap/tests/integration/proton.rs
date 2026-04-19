@@ -115,6 +115,6 @@ async fn proton_bridge_connect_and_fetch_one_envelope() {
         flags: true,
         size: true,
     };
-    let (msgs, _) = conn.fetch("INBOX", &uids[..1], spec).await.unwrap();
+    let (msgs, _) = conn.fetch("INBOX", &uids[..1], spec, None).await.unwrap();
     assert_eq!(msgs.len(), 1);
 }

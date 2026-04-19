@@ -136,7 +136,7 @@ pub async fn handle(
         bodystructure: true,
         ..FetchSpec::default()
     };
-    if let Ok((msgs, _uid_validity)) = account.imap.fetch(&input.folder, &[uid], spec).await
+    if let Ok((msgs, _uid_validity)) = account.imap.fetch(&input.folder, &[uid], spec, None).await
         && let Some(bs) = msgs.into_iter().next().and_then(|m| m.bodystructure)
         && let Some(bs_type) = lookup_bodystructure_type(&bs, &input.part_id)
     {

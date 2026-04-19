@@ -36,6 +36,11 @@ pub struct FlagInput {
     /// UID target: `{"uid": N}` or `{"uids": [...]}`.
     #[serde(flatten)]
     pub target: UidSelector,
+    /// When set, the handler verifies the folder's UIDVALIDITY matches this
+    /// value before applying flags. A mismatch returns
+    /// `ERR_UID_VALIDITY_CHANGED`. Omit to skip the guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_uidvalidity: Option<u32>,
 }
 
 /// Trusted metadata for a flag mutation response.
@@ -121,7 +126,13 @@ async fn handle_flag_op(
         .collect();
     let (updated, uid_validity) = account
         .imap
-        .store_flags(&input.folder, &uids, flags, action)
+        .store_flags(
+            &input.folder,
+            &uids,
+            flags,
+            action,
+            input.expected_uidvalidity,
+        )
         .await?;
 
     let updated_ids: Vec<u32> = updated.iter().map(|u| u.get()).collect();
@@ -214,5 +225,19 @@ mod tests {
             err.to_string().contains("nonzero") || err.to_string().contains("non-zero"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn flag_input_parses_expected_uidvalidity_when_present() {
+        let input: FlagInput =
+            serde_json::from_str(r#"{"folder": "INBOX", "uid": 1, "expected_uidvalidity": 42}"#)
+                .unwrap();
+        assert_eq!(input.expected_uidvalidity, Some(42));
+    }
+
+    #[test]
+    fn flag_input_defaults_expected_uidvalidity_to_none() {
+        let input: FlagInput = serde_json::from_str(r#"{"folder": "INBOX", "uid": 1}"#).unwrap();
+        assert_eq!(input.expected_uidvalidity, None);
     }
 }

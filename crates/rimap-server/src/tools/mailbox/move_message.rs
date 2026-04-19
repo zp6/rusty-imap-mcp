@@ -29,6 +29,11 @@ pub struct MoveMessageInput {
     /// UID target: `{"uid": N}` or `{"uids": [...]}`.
     #[serde(flatten)]
     pub target: UidSelector,
+    /// When set, the handler verifies the source folder's UIDVALIDITY matches
+    /// this value before performing the move. A mismatch returns
+    /// `ERR_UID_VALIDITY_CHANGED`. Omit to skip the guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_source_uidvalidity: Option<u32>,
 }
 
 /// Per-UID move result entry.
@@ -93,7 +98,12 @@ pub async fn handle(
         .collect();
     let outcome = account
         .imap
-        .move_messages(&input.folder, &input.destination, &uids, None)
+        .move_messages(
+            &input.folder,
+            &input.destination,
+            &uids,
+            input.expected_source_uidvalidity,
+        )
         .await?;
 
     let moves: Vec<MoveEntry> = outcome
@@ -181,5 +191,23 @@ mod tests {
             json.contains(r#""destination_uid_validity":22"#),
             "json = {json}"
         );
+    }
+
+    #[test]
+    fn move_input_parses_expected_source_uidvalidity_when_present() {
+        let input: MoveMessageInput = serde_json::from_str(
+            r#"{"folder": "INBOX", "destination": "Archive", "uid": 1,
+               "expected_source_uidvalidity": 55}"#,
+        )
+        .unwrap();
+        assert_eq!(input.expected_source_uidvalidity, Some(55));
+    }
+
+    #[test]
+    fn move_input_defaults_expected_source_uidvalidity_to_none() {
+        let input: MoveMessageInput =
+            serde_json::from_str(r#"{"folder": "INBOX", "destination": "Archive", "uid": 1}"#)
+                .unwrap();
+        assert_eq!(input.expected_source_uidvalidity, None);
     }
 }

@@ -86,6 +86,11 @@ pub struct LabelInput {
     pub target: UidSelector,
     /// Custom keyword label to add or remove.
     pub label: String,
+    /// When set, the handler verifies the folder's UIDVALIDITY matches this
+    /// value before applying the label. A mismatch returns
+    /// `ERR_UID_VALIDITY_CHANGED`. Omit to skip the guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_uidvalidity: Option<u32>,
 }
 
 /// Input for `list_labels` tool.
@@ -95,6 +100,11 @@ pub struct ListLabelsInput {
     pub folder: String,
     /// Message UID.
     pub uid: u32,
+    /// When set, the handler verifies the folder's UIDVALIDITY matches this
+    /// value before fetching labels. A mismatch returns
+    /// `ERR_UID_VALIDITY_CHANGED`. Omit to skip the guard.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_uidvalidity: Option<u32>,
 }
 
 /// Trusted metadata for `add_label` and `remove_label` responses.
@@ -176,6 +186,7 @@ async fn handle_label_op(
             &uids,
             &[Flag::Keyword(input.label.clone())],
             action,
+            input.expected_uidvalidity,
         )
         .await?;
 
@@ -206,8 +217,14 @@ pub async fn handle_list_labels(
         flags: true,
         ..FetchSpec::default()
     };
-    let (msg, uid_validity) =
-        crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec).await?;
+    let (msg, uid_validity) = crate::tools::support::fetch_single_by_uid(
+        account,
+        &input.folder,
+        uid,
+        spec,
+        input.expected_uidvalidity,
+    )
+    .await?;
 
     let labels: Vec<String> = msg
         .flags
@@ -382,5 +399,36 @@ mod tests {
         validate_label("$Junk").unwrap();
         validate_label("$NotJunk").unwrap();
         validate_label("$MDNSent").unwrap();
+    }
+
+    #[test]
+    fn label_input_parses_expected_uidvalidity_when_present() {
+        let input: LabelInput = serde_json::from_str(
+            r#"{"folder": "INBOX", "uid": 1, "label": "Urgent", "expected_uidvalidity": 99}"#,
+        )
+        .unwrap();
+        assert_eq!(input.expected_uidvalidity, Some(99));
+    }
+
+    #[test]
+    fn label_input_defaults_expected_uidvalidity_to_none() {
+        let input: LabelInput =
+            serde_json::from_str(r#"{"folder": "INBOX", "uid": 1, "label": "Urgent"}"#).unwrap();
+        assert_eq!(input.expected_uidvalidity, None);
+    }
+
+    #[test]
+    fn list_labels_input_parses_expected_uidvalidity_when_present() {
+        let input: ListLabelsInput =
+            serde_json::from_str(r#"{"folder": "INBOX", "uid": 5, "expected_uidvalidity": 77}"#)
+                .unwrap();
+        assert_eq!(input.expected_uidvalidity, Some(77));
+    }
+
+    #[test]
+    fn list_labels_input_defaults_expected_uidvalidity_to_none() {
+        let input: ListLabelsInput =
+            serde_json::from_str(r#"{"folder": "INBOX", "uid": 5}"#).unwrap();
+        assert_eq!(input.expected_uidvalidity, None);
     }
 }

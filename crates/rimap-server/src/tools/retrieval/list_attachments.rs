@@ -82,7 +82,7 @@ pub async fn handle(
         ..FetchSpec::default()
     };
     let (msg, _uid_validity) =
-        crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec).await?;
+        crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec, None).await?;
 
     let bodystructure = msg.bodystructure.ok_or_else(|| {
         rimap_core::RimapError::Internal("server did not return BODYSTRUCTURE".into())

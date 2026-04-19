@@ -137,6 +137,7 @@ pub async fn handle(
                     size: true,
                     ..FetchSpec::default()
                 },
+                None,
             )
             .await?;
         let (fetched, _uid_validity) = fetched;
