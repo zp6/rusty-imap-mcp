@@ -95,6 +95,47 @@ pub(crate) async fn status(
     })
 }
 
+/// LIST + STATUS combined. Currently always uses the LIST-then-STATUS-
+/// per-folder fallback (because async-imap does not yet expose the
+/// RFC 5819 extended LIST command). The `has_list_status` argument is
+/// reserved for the future wiring — when async-imap exposes
+/// `LIST ... RETURN (STATUS ...)`, this function can dispatch on the
+/// capability flag without any change to callers.
+///
+/// Returns (folder, status) pairs. `status` is `None` for non-selectable
+/// folders.
+///
+/// # Errors
+/// Propagates `ImapError` from LIST / STATUS.
+pub(crate) async fn list_with_status(
+    session: &mut ImapSession,
+    pattern: &str,
+    _has_list_status: bool,
+) -> Result<Vec<(Folder, Option<FolderStatus>)>, ImapError> {
+    // Always take the legacy fallback until async-imap exposes LIST-STATUS.
+    // The `has_list_status` flag is kept on the public surface so the
+    // future extended-LIST wiring is a behavior change, not a signature
+    // change.
+    let folders = list(session, pattern).await?;
+    let mut out = Vec::with_capacity(folders.len());
+    for folder in folders {
+        let folder_status = if folder.selectable() {
+            let items = StatusItems {
+                messages: true,
+                recent: false,
+                uid_next: false,
+                uid_validity: true,
+                unseen: true,
+            };
+            Some(status(session, &folder.name, items).await?)
+        } else {
+            None
+        };
+        out.push((folder, folder_status));
+    }
+    Ok(out)
+}
+
 pub(crate) async fn select(
     session: &mut ImapSession,
     folder: &str,
