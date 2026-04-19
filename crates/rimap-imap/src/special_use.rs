@@ -170,7 +170,6 @@ mod map_tests {
             name: name.to_string(),
             attributes: Vec::new(),
             delimiter: Some('/'),
-            selectable: true,
             special_use: special,
         }
     }

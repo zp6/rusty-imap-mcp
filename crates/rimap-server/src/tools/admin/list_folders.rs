@@ -58,7 +58,7 @@ pub async fn handle(
 
     let mut folder_entries = Vec::with_capacity(folders.len());
     for folder in folders {
-        let (exists, unseen, uid_validity) = if folder.selectable {
+        let (exists, unseen, uid_validity) = if folder.selectable() {
             let status = account.imap.status(&folder.name, status_items).await?;
             (status.messages, status.unseen, status.uid_validity)
         } else {
@@ -68,7 +68,11 @@ pub async fn handle(
         folder_entries.push(FolderEntry {
             name: folder.name,
             delimiter: folder.delimiter,
-            flags: folder.attributes,
+            flags: folder
+                .attributes
+                .iter()
+                .map(|a| a.as_wire_str().into_owned())
+                .collect(),
             exists,
             unseen,
             uid_validity,

@@ -1,15 +1,10 @@
 //! `LIST`, `STATUS`, `SELECT` / `EXAMINE` against an active `async-imap` session.
 
-use async_imap::types::NameAttribute;
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
 use crate::error::ImapError;
-use crate::types::{Folder, FolderStatus, SelectedFolder, StatusItems};
-
-/// RFC 5258 `\NonExistent` attribute. `imap-proto` surfaces it as
-/// `NameAttribute::Extension("\\NonExistent")` rather than a dedicated variant.
-const NON_EXISTENT_ATTR: &str = "\\NonExistent";
+use crate::types::{Folder, FolderAttribute, FolderStatus, SelectedFolder, StatusItems};
 
 pub(crate) async fn list(
     session: &mut ImapSession,
@@ -23,39 +18,18 @@ pub(crate) async fn list(
     while let Some(name) = stream.next().await {
         let name = name.map_err(map_err)?;
         let attrs = name.attributes();
-        let selectable = is_selectable(attrs);
         let special_use = crate::special_use::classify_special_use(attrs);
         out.push(Folder {
             name: name.name().to_string(),
-            attributes: attrs.iter().map(|attr| format!("{attr:?}")).collect(),
+            attributes: attrs
+                .iter()
+                .map(FolderAttribute::from_name_attribute)
+                .collect(),
             delimiter: name.delimiter().and_then(|s| s.chars().next()),
-            selectable,
             special_use,
         });
     }
     Ok(out)
-}
-
-/// Returns `false` if any attribute marks the mailbox non-selectable —
-/// RFC 3501 `\Noselect` or RFC 5258 `\NonExistent`. Running `STATUS`,
-/// `SELECT`, or `EXAMINE` against such an entry is a protocol error on
-/// strict servers (Gmail returns `[NONEXISTENT] Invalid folder` and drops
-/// the response).
-///
-/// `\NonExistent` is not a dedicated variant in the `imap-proto` enum (it
-/// arrives as `Extension("\\NonExistent")`), so the check walks both the
-/// named variant and the extension string with a case-insensitive compare.
-fn is_selectable(attrs: &[NameAttribute<'_>]) -> bool {
-    for attr in attrs {
-        match attr {
-            NameAttribute::NoSelect => return false,
-            NameAttribute::Extension(ext) if ext.eq_ignore_ascii_case(NON_EXISTENT_ATTR) => {
-                return false;
-            }
-            _ => {}
-        }
-    }
-    true
 }
 
 pub(crate) async fn status(
@@ -202,50 +176,6 @@ fn is_dead_tcp_kind(kind: std::io::ErrorKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn is_selectable_accepts_normal_folder() {
-        let attrs = [
-            NameAttribute::Unmarked,
-            NameAttribute::Extension("\\HasNoChildren".into()),
-        ];
-        assert!(is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_rejects_noselect() {
-        let attrs = [
-            NameAttribute::Extension("\\HasChildren".into()),
-            NameAttribute::NoSelect,
-        ];
-        assert!(!is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_rejects_rfc5258_nonexistent_extension() {
-        let attrs = [NameAttribute::Extension("\\NonExistent".into())];
-        assert!(!is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_nonexistent_match_is_case_insensitive() {
-        let attrs = [NameAttribute::Extension("\\nonexistent".into())];
-        assert!(!is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_ignores_unrelated_extensions() {
-        let attrs = [
-            NameAttribute::Extension("\\All".into()),
-            NameAttribute::Extension("\\Sent".into()),
-        ];
-        assert!(is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_empty_attribute_list_is_selectable() {
-        assert!(is_selectable(&[]));
-    }
 
     #[test]
     fn status_items_empty_selection_renders_empty_parens() {

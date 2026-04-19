@@ -48,23 +48,27 @@ impl MessageId {
 /// IMAP `LIST` response entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Folder {
-    /// Folder name (mailbox path) as the server reported it. Modified UTF-7
-    /// decoding is left to the caller / Sprint 4.
+    /// Mailbox path reported by the server (Modified UTF-7, not decoded).
     pub name: String,
-    /// Folder attribute flags (`\Noinferiors`, `\Marked`, etc.).
-    pub attributes: Vec<String>,
-    /// Hierarchy delimiter, if the server reported one.
+    /// Attributes reported on this mailbox.
+    pub attributes: Vec<FolderAttribute>,
+    /// Hierarchy delimiter (`/` for most servers; `None` for namespaces
+    /// without a delimiter).
     pub delimiter: Option<char>,
-    /// Whether the folder can be the target of `SELECT`/`EXAMINE`/`STATUS`.
-    /// False for RFC 3501 `\Noselect` parents (Gmail's `[Gmail]`, some
-    /// Exchange public-folder namespaces) and RFC 5258 `\NonExistent`
-    /// entries. `STATUS` against a non-selectable folder aborts the
-    /// connection with `ERR_IMAP_PROTOCOL` on many servers.
-    pub selectable: bool,
-    /// RFC 6154 special-use marker, if the server reported one.
-    /// Used to resolve "the drafts/sent/trash folder" without hardcoding
-    /// server-specific names.
+    /// RFC 6154 special-use marker, if present.
     pub special_use: Option<crate::special_use::SpecialUse>,
+}
+
+impl Folder {
+    /// Whether this mailbox can be `SELECT`ed. Derived from the attribute
+    /// list — `\Noselect` and `\NonExistent` are non-selectable.
+    #[must_use]
+    pub fn selectable(&self) -> bool {
+        !self
+            .attributes
+            .iter()
+            .any(|a| matches!(a, FolderAttribute::Noselect | FolderAttribute::NonExistent))
+    }
 }
 
 /// Bitflags-style selection for `STATUS` items.
@@ -483,5 +487,52 @@ mod tests {
             FolderAttribute::from_name_attribute(&NameAttribute::Trash),
             FolderAttribute::Other("\\Trash".to_string()),
         );
+    }
+
+    #[test]
+    fn folder_selectable_when_no_noselect() {
+        let f = super::Folder {
+            name: "INBOX".to_string(),
+            attributes: vec![super::FolderAttribute::HasNoChildren],
+            delimiter: Some('/'),
+            special_use: None,
+        };
+        assert!(f.selectable());
+    }
+
+    #[test]
+    fn folder_not_selectable_with_noselect() {
+        let f = super::Folder {
+            name: "[Gmail]".to_string(),
+            attributes: vec![
+                super::FolderAttribute::Noselect,
+                super::FolderAttribute::HasChildren,
+            ],
+            delimiter: Some('/'),
+            special_use: None,
+        };
+        assert!(!f.selectable());
+    }
+
+    #[test]
+    fn folder_not_selectable_with_nonexistent() {
+        let f = super::Folder {
+            name: "orphan".to_string(),
+            attributes: vec![super::FolderAttribute::NonExistent],
+            delimiter: Some('/'),
+            special_use: None,
+        };
+        assert!(!f.selectable());
+    }
+
+    #[test]
+    fn folder_selectable_empty_attributes() {
+        let f = super::Folder {
+            name: "plain".to_string(),
+            attributes: vec![],
+            delimiter: Some('/'),
+            special_use: None,
+        };
+        assert!(f.selectable());
     }
 }
