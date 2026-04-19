@@ -151,7 +151,7 @@ pub(crate) async fn select(
         name: folder.to_string(),
         exists: mailbox.exists,
         recent: mailbox.recent,
-        uid_validity: mailbox.uid_validity.unwrap_or(0),
+        uid_validity: mailbox.uid_validity,
         uid_next: mailbox.uid_next,
         read_only,
     })

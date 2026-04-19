@@ -63,6 +63,18 @@ pub enum ImapError {
         /// Maximum UIDs allowed per command.
         limit: usize,
     },
+    /// UIDVALIDITY observed by the server differs from the value the
+    /// caller expected (recorded at its prior SELECT). The target UID may
+    /// now refer to a different message than the caller intended.
+    #[error("UIDVALIDITY changed for `{folder}`: expected {expected}, server reports {actual}")]
+    UidValidityChanged {
+        /// The folder that was selected.
+        folder: String,
+        /// The UIDVALIDITY value the caller expected.
+        expected: u32,
+        /// The UIDVALIDITY value the server reported.
+        actual: u32,
+    },
     /// Audit-subsystem failure during a tool call. The IMAP transport may
     /// be healthy; this variant exists so audit-write failures stay
     /// distinguishable from network failures in metrics and observability.
@@ -125,6 +137,7 @@ impl ImapError {
             Self::SizeLimit { .. } => ErrorCode::AttachmentTooLarge,
             Self::Protocol(_) => ErrorCode::ImapProtocol,
             Self::InvalidInput { .. } | Self::BatchTooLarge { .. } => ErrorCode::InvalidInput,
+            Self::UidValidityChanged { .. } => ErrorCode::UidValidityChanged,
             Self::Audit { .. } => ErrorCode::Internal,
         }
     }
@@ -139,5 +152,23 @@ impl From<ImapError> for RimapError {
             message,
             source: Some(Box::new(err)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ImapError;
+
+    #[test]
+    fn uid_validity_changed_display_includes_numbers_and_folder() {
+        let err = ImapError::UidValidityChanged {
+            folder: "INBOX".to_string(),
+            expected: 100,
+            actual: 101,
+        };
+        let display = format!("{err}");
+        assert!(display.contains("INBOX"));
+        assert!(display.contains("100"));
+        assert!(display.contains("101"));
     }
 }

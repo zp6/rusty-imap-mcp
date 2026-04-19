@@ -128,8 +128,9 @@ pub struct SelectedFolder {
     pub exists: u32,
     /// `RECENT` count.
     pub recent: u32,
-    /// `UIDVALIDITY`.
-    pub uid_validity: u32,
+    /// `UIDVALIDITY`, or `None` if the server did not include it in the
+    /// `SELECT`/`EXAMINE` response (non-conformant but observed in the wild).
+    pub uid_validity: Option<u32>,
     /// `UIDNEXT`.
     pub uid_next: Option<u32>,
     /// `READ-ONLY` if `EXAMINE`, otherwise `READ-WRITE`.

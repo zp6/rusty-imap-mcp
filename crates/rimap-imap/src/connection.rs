@@ -692,6 +692,7 @@ impl Connection {
                 | ImapError::Protocol(_)
                 | ImapError::InvalidInput { .. }
                 | ImapError::BatchTooLarge { .. }
+                | ImapError::UidValidityChanged { .. }
                 | ImapError::Audit { .. },
             )
             | Ok(_) => false,

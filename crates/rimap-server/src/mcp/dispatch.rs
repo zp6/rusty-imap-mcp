@@ -67,7 +67,8 @@ pub(super) fn rimap_error_to_breaker_reason(
         | ErrorCode::Internal
         | ErrorCode::NoAccount
         | ErrorCode::UnknownAccount
-        | ErrorCode::Cancelled => None,
+        | ErrorCode::Cancelled
+        | ErrorCode::UidValidityChanged => None,
     }
 }
 
