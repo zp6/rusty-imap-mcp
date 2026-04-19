@@ -212,7 +212,7 @@ impl ServerHandler for ImapMcpServer {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let (namespaced_account, bare_name) = split_tool_name(&request.name);
 
@@ -264,7 +264,21 @@ impl ServerHandler for ImapMcpServer {
                     None,
                 ));
             }
-            return Box::pin(self.dispatch_infrastructure(tool_name, &args)).await;
+            let result = Box::pin(self.dispatch_infrastructure(tool_name, &args)).await;
+            // After a successful use_account, notify subscribed clients that
+            // the effective tool list has changed (the session default account
+            // flipped). Best-effort: transport failures do not fail the call
+            // because use_account itself succeeded. (#80)
+            if result.is_ok()
+                && tool_name == ToolName::UseAccount
+                && let Err(e) = context.peer.notify_tool_list_changed().await
+            {
+                tracing::warn!(
+                    error = %e,
+                    "failed to emit notifications/tools/list_changed after use_account",
+                );
+            }
+            return result;
         }
 
         // Account resolution order: URI namespace > args["account"] >
