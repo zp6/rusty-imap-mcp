@@ -44,6 +44,10 @@ pub struct ListFoldersMeta {
 /// so server-controlled bidi overrides, zero-width characters, and C0/C1
 /// stripping are surfaced as structured warnings rather than riding
 /// unfiltered under the trusted `meta` envelope (#98).
+///
+/// Used only from unit tests; `handle` inlines the same logic to merge
+/// `FolderStatus` data at construction time.
+#[cfg(test)]
 pub(crate) fn sanitize_folder_entries(
     folders: Vec<rimap_imap::types::Folder>,
 ) -> (
@@ -95,9 +99,7 @@ pub(crate) fn sanitize_folder_entries(
 ///
 /// Non-selectable folders (RFC 3501 `\Noselect` namespace parents such as
 /// Gmail's `[Gmail]`, RFC 5258 `\NonExistent` entries) are returned with
-/// `exists`/`unseen`/`uid_validity` left as `None`. Running `STATUS`
-/// against them is a protocol error on strict servers and would abort the
-/// whole tool call.
+/// `exists`/`unseen`/`uid_validity` left as `None`.
 ///
 /// # Errors
 ///
@@ -108,44 +110,48 @@ pub(crate) fn sanitize_folder_entries(
 pub async fn handle(
     account: &AccountState,
 ) -> Result<ToolResponse<ListFoldersMeta>, rimap_core::RimapError> {
-    let folders = account.imap.list_folders("*").await?;
+    let pairs = account.imap.list_folders_with_status("*").await?;
 
-    let status_items = rimap_imap::types::StatusItems {
-        messages: true,
-        recent: false,
-        uid_next: false,
-        uid_validity: true,
-        unseen: true,
-    };
+    let mut entries = Vec::with_capacity(pairs.len());
+    let mut warnings: Vec<rimap_content::output::SecurityWarning> = Vec::new();
 
-    // Collect STATUS data per folder before sanitizing names/flags, so
-    // we can merge them into the sanitized entries.
-    let mut status_data: Vec<(Option<u32>, Option<u32>, Option<u32>)> =
-        Vec::with_capacity(folders.len());
-    for folder in &folders {
-        let triple = if folder.selectable() {
-            let status = account.imap.status(&folder.name, status_items).await?;
-            (status.messages, status.unseen, status.uid_validity)
-        } else {
-            (None, None, None)
-        };
-        status_data.push(triple);
-    }
+    for (folder, status) in pairs {
+        let (clean_name, name_warnings) = rimap_content::unicode::sanitize(
+            folder.name.as_bytes(),
+            None,
+            MAX_FOLDER_NAME_BYTES,
+            "folder.name",
+        );
+        warnings.extend(name_warnings);
 
-    // Sanitize server-controlled folder metadata before placing under
-    // the trusted `meta` envelope (#98).
-    let (mut folder_entries, warnings) = sanitize_folder_entries(folders);
+        let flags: Vec<String> = folder
+            .attributes
+            .iter()
+            .map(|attr| {
+                let raw = attr.as_wire_str();
+                let (clean, flag_warnings) = rimap_content::unicode::sanitize(
+                    raw.as_bytes(),
+                    None,
+                    MAX_FOLDER_NAME_BYTES,
+                    "folder.flag",
+                );
+                warnings.extend(flag_warnings);
+                clean
+            })
+            .collect();
 
-    // Merge STATUS data (not available inside sanitize_folder_entries,
-    // which operates without network access).
-    for (entry, (exists, unseen, uid_validity)) in folder_entries.iter_mut().zip(status_data) {
-        entry.exists = exists;
-        entry.unseen = unseen;
-        entry.uid_validity = uid_validity;
+        entries.push(FolderEntry {
+            name: clean_name,
+            delimiter: folder.delimiter,
+            flags,
+            exists: status.as_ref().and_then(|s| s.messages),
+            unseen: status.as_ref().and_then(|s| s.unseen),
+            uid_validity: status.as_ref().and_then(|s| s.uid_validity),
+        });
     }
 
     Ok(ToolResponse::meta_only(ListFoldersMeta {
-        folders: folder_entries,
+        folders: entries,
         security_warnings: warnings,
     }))
 }
