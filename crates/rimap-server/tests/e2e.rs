@@ -316,6 +316,7 @@ fn test_account_config(harness: &DovecotHarness) -> ValidatedAccountConfig {
 fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection {
     let conn_cfg = ConnectionConfig {
         account: None,
+        account_id: rimap_core::account::AccountId::default_account(),
         host: "127.0.0.1".into(),
         port: harness.port,
         username: "rimap-test".into(),

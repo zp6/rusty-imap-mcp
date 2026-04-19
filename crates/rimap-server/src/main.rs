@@ -41,9 +41,16 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    if let Some(Command::Login { host, username }) = &cli.command {
+    if let Some(Command::Login {
+        account,
+        host,
+        username,
+    }) = &cli.command
+    {
         let store = KeyringStore;
-        run_login(&store, username, host, tty_prompt)
+        let account_id = rimap_core::account::AccountId::new(account)
+            .with_context(|| format!("invalid account name `{account}`"))?;
+        run_login(&store, &account_id, username, host, tty_prompt)
             .with_context(|| format!("storing credential for {username}@{host}"))?;
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "credential stored for {username}@{host}")?;
@@ -199,11 +206,13 @@ fn build_smtp_client(
     let Some(ref smtp_cfg) = acfg.smtp else {
         return Ok(None);
     };
-    let smtp_password =
-        rimap_config::resolve_credential(&**credentials, &smtp_cfg.username, &smtp_cfg.host)
-            .with_context(|| {
-                format!("resolving SMTP credential for account {}", acfg.id.as_str())
-            })?;
+    let smtp_password = rimap_config::resolve_credential(
+        &**credentials,
+        &acfg.id,
+        &smtp_cfg.username,
+        &smtp_cfg.host,
+    )
+    .with_context(|| format!("resolving SMTP credential for account {}", acfg.id.as_str()))?;
     let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
         .with_context(|| format!("building SMTP client for account {}", acfg.id.as_str()))?;
     drop(smtp_password);
@@ -242,6 +251,7 @@ fn build_account_connection(
     };
     ConnectionConfig {
         account,
+        account_id: id.clone(),
         host: acfg.imap.host.clone(),
         port: acfg.imap.port,
         username: acfg.imap.username.clone(),

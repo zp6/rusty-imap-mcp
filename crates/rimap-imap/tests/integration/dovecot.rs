@@ -131,6 +131,7 @@ async fn case_04_login_rejected_emits_audit() {
     };
     let cfg = ConnectionConfig {
         account: None,
+        account_id: rimap_core::account::AccountId::default_account(),
         host: DovecotHarness::host().to_string(),
         port: h.harness.port(),
         username: DovecotHarness::username().to_string(),
@@ -264,6 +265,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
     };
     let cfg = ConnectionConfig {
         account: None,
+        account_id: rimap_core::account::AccountId::default_account(),
         host: DovecotHarness::host().to_string(),
         port: h.harness.port(),
         username: DovecotHarness::username().to_string(),

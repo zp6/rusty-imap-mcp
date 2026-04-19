@@ -72,6 +72,7 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
     .unwrap();
     let conn_cfg = ConnectionConfig {
         account: None,
+        account_id: rimap_core::account::AccountId::default_account(),
         host: cfg.host.clone(),
         port: cfg.port,
         username: cfg.user.clone(),

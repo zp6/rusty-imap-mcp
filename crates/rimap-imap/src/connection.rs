@@ -45,6 +45,9 @@ pub struct ConnectionConfig {
     /// single-account `"default"` deployment; `Some(name)` in multi-account
     /// configs. Populated into `Auth` audit records.
     pub account: Option<String>,
+    /// Account id used for keyring lookups. Always set — the default account
+    /// uses `AccountId::default_account()`.
+    pub account_id: rimap_core::account::AccountId,
     /// IMAP server host.
     pub host: String,
     /// IMAP server port (typically 993 for IMAPS).
@@ -322,10 +325,15 @@ impl Connection {
         // map it to ERR_AUTH so retry logic and operator messages stay
         // accurate.
         let cfg = &self.inner.cfg;
-        let password = resolve_credential(&*self.inner.credentials, &cfg.username, &cfg.host)
-            .map_err(|e| ImapError::Auth {
-                reason: AuthFailure::CredentialUnavailable(e.to_string()),
-            })?;
+        let password = resolve_credential(
+            &*self.inner.credentials,
+            &cfg.account_id,
+            &cfg.username,
+            &cfg.host,
+        )
+        .map_err(|e| ImapError::Auth {
+            reason: AuthFailure::CredentialUnavailable(e.to_string()),
+        })?;
 
         // Attempt LOGIN. On NO response the server rejected the credentials.
         // Expose the secret only at the moment of use; the borrow ends
