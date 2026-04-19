@@ -23,6 +23,8 @@ hex = { workspace = true }
 rand = { workspace = true }
 fs4 = { workspace = true }
 tracing = { workspace = true }
+async-channel = { workspace = true }
+tokio = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -30,3 +32,4 @@ libc = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 proptest = { workspace = true }
+futures = "0.3"
