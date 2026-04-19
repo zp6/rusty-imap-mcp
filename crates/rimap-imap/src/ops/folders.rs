@@ -1,15 +1,34 @@
 //! `LIST`, `STATUS`, `SELECT` / `EXAMINE` against an active `async-imap` session.
 
-use async_imap::types::NameAttribute;
 use futures_util::StreamExt;
 
 use crate::connection::ImapSession;
 use crate::error::ImapError;
-use crate::types::{Folder, FolderStatus, SelectedFolder, StatusItems};
+use crate::types::{Folder, FolderAttribute, FolderStatus, SelectedFolder, StatusItems};
 
-/// RFC 5258 `\NonExistent` attribute. `imap-proto` surfaces it as
-/// `NameAttribute::Extension("\\NonExistent")` rather than a dedicated variant.
-const NON_EXISTENT_ATTR: &str = "\\NonExistent";
+/// Validate a mailbox name returned by the server BEFORE it flows into
+/// subsequent IMAP commands or MCP responses.
+///
+/// Rejects NUL and all C0/C1 control characters (`\x01`–`\x1f`, `\x7f`).
+/// Bidi override and zero-width characters are NOT rejected here —
+/// `rimap-server` sanitizes them at the response boundary via
+/// `rimap_content::unicode::sanitize`, which surfaces them as warnings
+/// rather than dropping the folder.
+///
+/// # Errors
+/// Returns `ImapError::Protocol` with a descriptive message if the name
+/// contains a disallowed control character.
+pub(crate) fn validate_server_folder_name(name: &str) -> Result<(), ImapError> {
+    for (i, b) in name.bytes().enumerate() {
+        if b == 0 || b < 0x20 || b == 0x7f {
+            return Err(ImapError::Protocol(async_imap::error::Error::Bad(format!(
+                "server returned mailbox name containing control \
+                     byte 0x{b:02x} at offset {i}"
+            ))));
+        }
+    }
+    Ok(())
+}
 
 pub(crate) async fn list(
     session: &mut ImapSession,
@@ -22,40 +41,30 @@ pub(crate) async fn list(
     let mut out = Vec::new();
     while let Some(name) = stream.next().await {
         let name = name.map_err(map_err)?;
+        let folder_name = name.name().to_string();
+        // Validate server-returned name. Drop names with control bytes
+        // — logged at warn level so operators see malformed LIST
+        // responses without losing the whole call. #95.
+        if let Err(e) = validate_server_folder_name(&folder_name) {
+            tracing::warn!(
+                error = %e,
+                "dropping LIST entry with invalid mailbox name",
+            );
+            continue;
+        }
         let attrs = name.attributes();
-        let selectable = is_selectable(attrs);
         let special_use = crate::special_use::classify_special_use(attrs);
         out.push(Folder {
-            name: name.name().to_string(),
-            attributes: attrs.iter().map(|attr| format!("{attr:?}")).collect(),
+            name: folder_name,
+            attributes: attrs
+                .iter()
+                .map(FolderAttribute::from_name_attribute)
+                .collect(),
             delimiter: name.delimiter().and_then(|s| s.chars().next()),
-            selectable,
             special_use,
         });
     }
     Ok(out)
-}
-
-/// Returns `false` if any attribute marks the mailbox non-selectable —
-/// RFC 3501 `\Noselect` or RFC 5258 `\NonExistent`. Running `STATUS`,
-/// `SELECT`, or `EXAMINE` against such an entry is a protocol error on
-/// strict servers (Gmail returns `[NONEXISTENT] Invalid folder` and drops
-/// the response).
-///
-/// `\NonExistent` is not a dedicated variant in the `imap-proto` enum (it
-/// arrives as `Extension("\\NonExistent")`), so the check walks both the
-/// named variant and the extension string with a case-insensitive compare.
-fn is_selectable(attrs: &[NameAttribute<'_>]) -> bool {
-    for attr in attrs {
-        match attr {
-            NameAttribute::NoSelect => return false,
-            NameAttribute::Extension(ext) if ext.eq_ignore_ascii_case(NON_EXISTENT_ATTR) => {
-                return false;
-            }
-            _ => {}
-        }
-    }
-    true
 }
 
 pub(crate) async fn status(
@@ -63,6 +72,7 @@ pub(crate) async fn status(
     folder: &str,
     items: StatusItems,
 ) -> Result<FolderStatus, ImapError> {
+    validate_server_folder_name(folder)?;
     let item_str = build_status_items(items);
     let mailbox = session.status(folder, &item_str).await.map_err(map_err)?;
     // STATUS response populates only the requested fields.
@@ -85,11 +95,53 @@ pub(crate) async fn status(
     })
 }
 
+/// LIST + STATUS combined. Currently always uses the LIST-then-STATUS-
+/// per-folder fallback (because async-imap does not yet expose the
+/// RFC 5819 extended LIST command). The `has_list_status` argument is
+/// reserved for the future wiring — when async-imap exposes
+/// `LIST ... RETURN (STATUS ...)`, this function can dispatch on the
+/// capability flag without any change to callers.
+///
+/// Returns (folder, status) pairs. `status` is `None` for non-selectable
+/// folders.
+///
+/// # Errors
+/// Propagates `ImapError` from LIST / STATUS.
+pub(crate) async fn list_with_status(
+    session: &mut ImapSession,
+    pattern: &str,
+    _has_list_status: bool,
+) -> Result<Vec<(Folder, Option<FolderStatus>)>, ImapError> {
+    // Always take the legacy fallback until async-imap exposes LIST-STATUS.
+    // The `has_list_status` flag is kept on the public surface so the
+    // future extended-LIST wiring is a behavior change, not a signature
+    // change.
+    let folders = list(session, pattern).await?;
+    let mut out = Vec::with_capacity(folders.len());
+    for folder in folders {
+        let folder_status = if folder.selectable() {
+            let items = StatusItems {
+                messages: true,
+                recent: false,
+                uid_next: false,
+                uid_validity: true,
+                unseen: true,
+            };
+            Some(status(session, &folder.name, items).await?)
+        } else {
+            None
+        };
+        out.push((folder, folder_status));
+    }
+    Ok(out)
+}
+
 pub(crate) async fn select(
     session: &mut ImapSession,
     folder: &str,
     read_only: bool,
 ) -> Result<SelectedFolder, ImapError> {
+    validate_server_folder_name(folder)?;
     let mailbox = if read_only {
         session.examine(folder).await.map_err(map_err)?
     } else {
@@ -204,50 +256,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_selectable_accepts_normal_folder() {
-        let attrs = [
-            NameAttribute::Unmarked,
-            NameAttribute::Extension("\\HasNoChildren".into()),
-        ];
-        assert!(is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_rejects_noselect() {
-        let attrs = [
-            NameAttribute::Extension("\\HasChildren".into()),
-            NameAttribute::NoSelect,
-        ];
-        assert!(!is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_rejects_rfc5258_nonexistent_extension() {
-        let attrs = [NameAttribute::Extension("\\NonExistent".into())];
-        assert!(!is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_nonexistent_match_is_case_insensitive() {
-        let attrs = [NameAttribute::Extension("\\nonexistent".into())];
-        assert!(!is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_ignores_unrelated_extensions() {
-        let attrs = [
-            NameAttribute::Extension("\\All".into()),
-            NameAttribute::Extension("\\Sent".into()),
-        ];
-        assert!(is_selectable(&attrs));
-    }
-
-    #[test]
-    fn is_selectable_empty_attribute_list_is_selectable() {
-        assert!(is_selectable(&[]));
-    }
-
-    #[test]
     fn status_items_empty_selection_renders_empty_parens() {
         let items = StatusItems {
             messages: false,
@@ -339,5 +347,32 @@ mod tests {
     fn map_err_routes_bad_response_to_protocol() {
         let mapped = map_err(async_imap::error::Error::Bad("BAD".to_string()));
         assert!(matches!(mapped, ImapError::Protocol(_)));
+    }
+
+    #[test]
+    fn validate_server_folder_name_rejects_nul() {
+        let result = super::validate_server_folder_name("INBOX\0");
+        assert!(matches!(result, Err(ImapError::Protocol(_))));
+    }
+
+    #[test]
+    fn validate_server_folder_name_rejects_c0_c1() {
+        for bad in ["\x01INBOX", "INBOX\x1f", "INBOX\x7f", "A\x0aB"] {
+            let result = super::validate_server_folder_name(bad);
+            assert!(
+                matches!(result, Err(ImapError::Protocol(_))),
+                "bad = {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_server_folder_name_accepts_normal() {
+        assert!(super::validate_server_folder_name("INBOX").is_ok());
+        assert!(super::validate_server_folder_name("[Gmail]/All Mail").is_ok());
+        assert!(super::validate_server_folder_name("Folder with spaces").is_ok());
+        // Bidi / ZWJ are accepted here (baseline permissive); Task 6 handles
+        // them downstream via rimap_content::unicode::sanitize.
+        assert!(super::validate_server_folder_name("folder\u{202e}txt").is_ok());
     }
 }
