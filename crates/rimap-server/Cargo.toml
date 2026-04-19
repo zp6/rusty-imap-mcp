@@ -50,4 +50,6 @@ tempfile = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 mail-parser = { workspace = true }
+rimap-audit = { path = "../rimap-audit", version = "1.0.0", features = ["test-injection"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
