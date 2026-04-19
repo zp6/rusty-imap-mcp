@@ -263,3 +263,118 @@ impl Drop for AuditEnvelopeGuard {
         }
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use rimap_audit::writer::AuditOptions;
+    use rimap_audit::{AuditWriter, Seq, cancellation_channel, spawn_drainer};
+    use rimap_core::tool::ToolName;
+    use tempfile::tempdir;
+
+    use super::AuditEnvelopeGuard;
+
+    fn test_writer(path: std::path::PathBuf) -> AuditWriter {
+        AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 10 * 1024 * 1024,
+            rotate_keep: 5,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap()
+    }
+
+    /// Dropping an `AuditEnvelopeGuard` without disarming enqueues a
+    /// cancellation record with `status = cancelled` and
+    /// `error_code = ERR_CANCELLED`. The drainer writes it to the audit file.
+    /// This is the core invariant for #71 and #99.
+    #[tokio::test]
+    async fn dropped_guard_enqueues_cancellation_record() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = test_writer(path.clone());
+
+        // Prime a tool_start so the resulting tool_end references a real seq.
+        let start_seq = writer
+            .log_tool_start(
+                ToolName::Search,
+                Some("test"),
+                Some(rimap_core::Posture::Readonly),
+                serde_json::Value::Object(serde_json::Map::new()),
+                "0".repeat(64),
+            )
+            .unwrap();
+
+        let (tx, rx) = cancellation_channel();
+        let drainer = spawn_drainer(rx, writer.clone());
+
+        {
+            let _guard = AuditEnvelopeGuard::new(
+                start_seq,
+                ToolName::Search,
+                Some("test".to_string()),
+                std::time::Instant::now(),
+                tx.clone(),
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            // Implicit drop of `_guard` here — undisarmed, so cancellation fires.
+        }
+
+        drop(tx); // Close the channel so the drainer can exit.
+        drainer.await.unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<_> = contents.lines().collect();
+        assert!(
+            lines.len() >= 2,
+            "expected >= 2 records (tool_start + cancellation tool_end), got: {contents}",
+        );
+        let last = lines.last().unwrap();
+        assert!(
+            last.contains(r#""status":"cancelled""#),
+            "last record should be cancellation tool_end: {last}",
+        );
+        assert!(
+            last.contains(r#""error_code":"ERR_CANCELLED""#),
+            "last record should carry ERR_CANCELLED: {last}",
+        );
+        assert!(
+            last.contains(&format!(r#""start_seq":{start_seq}"#)),
+            "last record should reference primed tool_start seq {start_seq}: {last}",
+        );
+    }
+
+    /// A disarmed guard's drop is a no-op: no cancellation record is written.
+    #[tokio::test]
+    async fn disarmed_guard_does_not_enqueue() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = test_writer(path.clone());
+
+        let (tx, rx) = cancellation_channel();
+        let drainer = spawn_drainer(rx, writer.clone());
+
+        {
+            let mut guard = AuditEnvelopeGuard::new(
+                Seq::FIRST,
+                ToolName::Search,
+                Some("test".to_string()),
+                std::time::Instant::now(),
+                tx.clone(),
+            );
+            guard.disarm();
+            // Drop here — disarmed, so no cancellation is enqueued.
+        }
+
+        drop(tx);
+        drainer.await.unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            !contents.contains(r#""status":"cancelled""#),
+            "disarmed guard must not write a cancellation record: {contents}",
+        );
+    }
+}
