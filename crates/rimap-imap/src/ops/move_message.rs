@@ -44,6 +44,7 @@ pub(crate) async fn move_messages(
     has_move: bool,
     has_uidplus: bool,
 ) -> Result<MoveOutcome, ImapError> {
+    crate::ops::folders::validate_server_folder_name(dest_folder)?;
     if uids.len() > MAX_BATCH {
         return Err(ImapError::BatchTooLarge {
             count: uids.len(),
@@ -89,6 +90,7 @@ async fn copy_delete_fallback(
     uids: &[Uid],
     has_uidplus: bool,
 ) -> Result<Vec<MoveResult>, ImapError> {
+    crate::ops::folders::validate_server_folder_name(dest_folder)?;
     let uid_set = store::uid_set_string(uids);
 
     // Step 1: COPY to destination.
@@ -176,5 +178,15 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].old_uid, uids[0]);
         assert_eq!(results[1].old_uid, uids[1]);
+    }
+
+    #[test]
+    fn server_folder_validator_rejects_nul_dest_folder() {
+        // Pins that validate_server_folder_name — which move_messages and
+        // copy_delete_fallback both call at entry — rejects control bytes.
+        use crate::ops::folders::validate_server_folder_name;
+        assert!(validate_server_folder_name("target\0folder").is_err());
+        assert!(validate_server_folder_name("target\x1ffolder").is_err());
+        assert!(validate_server_folder_name("normal/path").is_ok());
     }
 }
