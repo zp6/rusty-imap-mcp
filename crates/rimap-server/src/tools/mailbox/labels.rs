@@ -1,13 +1,9 @@
 //! Label (custom keyword) tool handlers: `add_label`, `remove_label`,
 //! `list_labels`.
 //!
-//! # UIDVALIDITY limitation
-//!
-//! All handlers in this module accept UIDs but do not return or cross-check
-//! UIDVALIDITY. If the folder's UID namespace rotates between the caller's
-//! UID acquisition and the call, the operation may affect unintended
-//! messages. This is consistent with other flag tools (`mark_read`, `flag`,
-//! etc.) and will be addressed in a future release.
+//! All handlers echo `uid_validity` from the SELECT/EXAMINE issued per
+//! operation. Callers can use this to detect UID namespace rotation between
+//! acquisition and mutation. (#70)
 
 use rimap_core::UidSelector;
 use rimap_imap::types::{FetchSpec, Flag, FlagAction, Uid};
@@ -110,6 +106,10 @@ pub struct LabelsMeta {
     pub label: String,
     /// UIDs that were updated.
     pub uids_updated: Vec<u32>,
+    /// UIDVALIDITY observed at the SELECT used for this operation. `None`
+    /// when the server's SELECT response omitted the response code. (#70)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid_validity: Option<u32>,
 }
 
 /// Trusted metadata for a `list_labels` response.
@@ -121,10 +121,13 @@ pub struct ListLabelsMeta {
     pub uid: u32,
     /// Custom keyword labels on the message.
     pub labels: Vec<String>,
+    /// UIDVALIDITY observed at the EXAMINE used for this operation. `None`
+    /// when the server's EXAMINE response omitted the response code. (#70)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid_validity: Option<u32>,
 }
 
 /// `add_label` handler — STORE +FLAGS with a custom keyword.
-/// See the module-level doc for the UIDVALIDITY limitation.
 ///
 /// # Errors
 ///
@@ -140,7 +143,6 @@ pub async fn handle_add_label(
 }
 
 /// `remove_label` handler — STORE -FLAGS with a custom keyword.
-/// See the module-level doc for the UIDVALIDITY limitation.
 ///
 /// # Errors
 ///
@@ -167,7 +169,7 @@ async fn handle_label_op(
         .into_iter()
         .map(Uid::from)
         .collect();
-    let updated = account
+    let (updated, uid_validity) = account
         .imap
         .store_flags(
             &input.folder,
@@ -182,11 +184,11 @@ async fn handle_label_op(
         folder: input.folder,
         label: input.label,
         uids_updated: updated_ids,
+        uid_validity,
     }))
 }
 
 /// `list_labels` handler — FETCH FLAGS and return keyword entries.
-/// See the module-level doc for the UIDVALIDITY limitation.
 ///
 /// # Errors
 ///
@@ -204,7 +206,8 @@ pub async fn handle_list_labels(
         flags: true,
         ..FetchSpec::default()
     };
-    let msg = crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec).await?;
+    let (msg, uid_validity) =
+        crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec).await?;
 
     let labels: Vec<String> = msg
         .flags
@@ -229,6 +232,7 @@ pub async fn handle_list_labels(
         folder: input.folder,
         uid: input.uid,
         labels,
+        uid_validity,
     }))
 }
 
@@ -236,6 +240,54 @@ pub async fn handle_list_labels(
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_meta_serializes_uid_validity_when_some() {
+        let meta = LabelsMeta {
+            folder: "INBOX".to_string(),
+            label: "MyLabel".to_string(),
+            uids_updated: vec![1],
+            uid_validity: Some(99),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains(r#""uid_validity":99"#), "json = {json}");
+    }
+
+    #[test]
+    fn labels_meta_omits_uid_validity_when_none() {
+        let meta = LabelsMeta {
+            folder: "INBOX".to_string(),
+            label: "MyLabel".to_string(),
+            uids_updated: vec![1],
+            uid_validity: None,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("uid_validity"), "json = {json}");
+    }
+
+    #[test]
+    fn list_labels_meta_serializes_uid_validity_when_some() {
+        let meta = ListLabelsMeta {
+            folder: "INBOX".to_string(),
+            uid: 7,
+            labels: vec!["tag".to_string()],
+            uid_validity: Some(77),
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains(r#""uid_validity":77"#), "json = {json}");
+    }
+
+    #[test]
+    fn list_labels_meta_omits_uid_validity_when_none() {
+        let meta = ListLabelsMeta {
+            folder: "INBOX".to_string(),
+            uid: 7,
+            labels: vec![],
+            uid_validity: None,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("uid_validity"), "json = {json}");
+    }
 
     #[test]
     fn rejects_empty_label() {

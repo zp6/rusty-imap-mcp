@@ -627,7 +627,7 @@ impl Connection {
         folder: &str,
         uids: &[crate::types::Uid],
         spec: crate::types::FetchSpec,
-    ) -> Result<Vec<crate::types::FetchedMessage>, ImapError> {
+    ) -> Result<(Vec<crate::types::FetchedMessage>, Option<u32>), ImapError> {
         self.with_session("fetch", async |session| {
             crate::ops::fetch::fetch(session, folder, uids, spec).await
         })
@@ -716,10 +716,12 @@ impl Connection {
         uids: &[crate::types::Uid],
         flags: &[crate::types::Flag],
         action: crate::types::FlagAction,
-    ) -> Result<Vec<crate::types::Uid>, ImapError> {
+    ) -> Result<(Vec<crate::types::Uid>, Option<u32>), ImapError> {
         self.with_session("store", async |session| {
-            crate::ops::folders::select(session, folder, false).await?;
-            crate::ops::store::store(session, uids, flags, action).await
+            let selected = crate::ops::folders::select(session, folder, false).await?;
+            let uid_validity = selected.uid_validity;
+            let updated = crate::ops::store::store(session, uids, flags, action).await?;
+            Ok((updated, uid_validity))
         })
         .await
     }

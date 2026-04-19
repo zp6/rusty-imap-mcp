@@ -139,6 +139,7 @@ pub async fn handle(
                 },
             )
             .await?;
+        let (fetched, _uid_validity) = fetched;
         fetched.iter().map(format_search_result).collect()
     };
 

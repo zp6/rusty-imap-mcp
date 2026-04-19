@@ -75,14 +75,12 @@ pub(crate) async fn fetch(
     folder: &str,
     uids: &[Uid],
     spec: FetchSpec,
-) -> Result<Vec<FetchedMessage>, ImapError> {
-    session
-        .examine(folder)
-        .await
-        .map_err(super::folders::map_err)?;
+) -> Result<(Vec<FetchedMessage>, Option<u32>), ImapError> {
+    let selected = super::folders::select(session, folder, true).await?;
+    let uid_validity = selected.uid_validity;
 
     if uids.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), uid_validity));
     }
     // Compress to IMAP sequence-set range syntax to stay under Dovecot's
     // ~8KB command-line cap. Plain comma-joined lists exceed the cap
@@ -130,7 +128,7 @@ pub(crate) async fn fetch(
             size,
         });
     }
-    Ok(out)
+    Ok((out, uid_validity))
 }
 
 /// Fetch the full `BODY[]` of a single UID. Aborts with `ImapError::SizeLimit`

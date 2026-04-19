@@ -49,6 +49,17 @@ pub struct MoveMessageMeta {
     pub destination: String,
     /// Per-UID move results.
     pub moves: Vec<MoveEntry>,
+    /// Source-folder UIDVALIDITY observed at the guard STATUS probe, or at
+    /// the source SELECT if no guard was requested. `None` when the server
+    /// omitted the response code or no guard/probe occurred. (#70)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_uid_validity: Option<u32>,
+    /// Destination-folder UIDVALIDITY observed after the COPY+DELETE fallback
+    /// path. `None` on the UID MOVE happy path (destination UIDVALIDITY not
+    /// observable without an extra STATUS) or when the server omitted the
+    /// response code. (#70)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination_uid_validity: Option<u32>,
 }
 
 /// Execute the `move_message` tool.
@@ -107,6 +118,68 @@ pub async fn handle(
         folder: input.folder,
         destination: input.destination,
         moves,
+        source_uid_validity: outcome.source_uid_validity,
+        destination_uid_validity: outcome.destination_uid_validity,
     })
     .with_warnings(warnings))
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use super::*;
+
+    fn base_meta(src: Option<u32>, dst: Option<u32>) -> MoveMessageMeta {
+        MoveMessageMeta {
+            folder: "INBOX".to_string(),
+            destination: "Archive".to_string(),
+            moves: vec![],
+            source_uid_validity: src,
+            destination_uid_validity: dst,
+        }
+    }
+
+    #[test]
+    fn move_meta_serializes_source_uid_validity_when_some() {
+        let meta = base_meta(Some(10), None);
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(
+            json.contains(r#""source_uid_validity":10"#),
+            "json = {json}"
+        );
+        assert!(!json.contains("destination_uid_validity"), "json = {json}");
+    }
+
+    #[test]
+    fn move_meta_serializes_destination_uid_validity_when_some() {
+        let meta = base_meta(None, Some(20));
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("source_uid_validity"), "json = {json}");
+        assert!(
+            json.contains(r#""destination_uid_validity":20"#),
+            "json = {json}"
+        );
+    }
+
+    #[test]
+    fn move_meta_omits_both_uid_validity_fields_when_none() {
+        let meta = base_meta(None, None);
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("source_uid_validity"), "json = {json}");
+        assert!(!json.contains("destination_uid_validity"), "json = {json}");
+    }
+
+    #[test]
+    fn move_meta_serializes_both_uid_validity_fields_when_some() {
+        let meta = base_meta(Some(11), Some(22));
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(
+            json.contains(r#""source_uid_validity":11"#),
+            "json = {json}"
+        );
+        assert!(
+            json.contains(r#""destination_uid_validity":22"#),
+            "json = {json}"
+        );
+    }
 }

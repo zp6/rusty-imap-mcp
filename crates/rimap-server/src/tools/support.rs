@@ -23,9 +23,10 @@ pub(crate) async fn fetch_single_by_uid(
     folder: &str,
     uid: Uid,
     spec: FetchSpec,
-) -> Result<FetchedMessage, rimap_core::RimapError> {
-    let messages = account.imap.fetch(folder, &[uid], spec).await?;
-    first_or_not_found(messages, folder, uid)
+) -> Result<(FetchedMessage, Option<u32>), rimap_core::RimapError> {
+    let (messages, uid_validity) = account.imap.fetch(folder, &[uid], spec).await?;
+    let msg = first_or_not_found(messages, folder, uid)?;
+    Ok((msg, uid_validity))
 }
 
 /// Take the first message from `messages`, or return a `NotFound`

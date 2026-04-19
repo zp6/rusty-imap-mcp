@@ -229,7 +229,7 @@ async fn case_08_fetch_envelope_and_bodystructure() {
         flags: false,
         size: false,
     };
-    let msgs = h.connection.fetch("INBOX", &uids, spec).await.unwrap();
+    let (msgs, _) = h.connection.fetch("INBOX", &uids, spec).await.unwrap();
     assert_eq!(msgs.len(), uids.len());
     let envelope = msgs[0].envelope.as_ref().expect("envelope");
     let subject = envelope.subject_raw.as_ref().expect("subject_raw");
@@ -354,7 +354,7 @@ async fn case_12_store_add_seen_flag() {
     let uid = uids[0];
 
     // Add \Seen flag.
-    let updated = h
+    let (updated, _) = h
         .connection
         .store_flags(
             "INBOX",
@@ -367,7 +367,7 @@ async fn case_12_store_add_seen_flag() {
     assert!(updated.contains(&uid));
 
     // Verify the flag is set.
-    let fetched = h
+    let (fetched, _) = h
         .connection
         .fetch(
             "INBOX",
@@ -409,7 +409,7 @@ async fn case_13_store_remove_seen_flag() {
     let uid = uids[0];
 
     // Remove \Seen flag.
-    let updated = h
+    let (updated, _) = h
         .connection
         .store_flags(
             "INBOX",
@@ -422,7 +422,7 @@ async fn case_13_store_remove_seen_flag() {
     assert!(updated.contains(&uid));
 
     // Verify the flag is removed.
-    let fetched = h
+    let (fetched, _) = h
         .connection
         .fetch(
             "INBOX",
@@ -502,7 +502,7 @@ async fn case_15_append_message_to_inbox() {
     assert!(!uids.is_empty(), "appended message not found");
 
     // Verify it has the \Draft flag.
-    let fetched = h
+    let (fetched, _) = h
         .connection
         .fetch(
             "INBOX",
