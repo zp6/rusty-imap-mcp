@@ -334,3 +334,154 @@ pub struct FetchedMessage {
     /// `RFC822.SIZE` if requested.
     pub size: Option<u32>,
 }
+
+/// RFC 3501 / RFC 5258 mailbox name attribute reported by LIST.
+///
+/// Maps `async_imap::types::NameAttribute` to a stable, match-friendly
+/// representation. Extension attributes that the codebase does not branch
+/// on land in `Other(String)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FolderAttribute {
+    /// `\Noselect` — mailbox cannot be selected.
+    Noselect,
+    /// `\NoInferiors` — no children may be created under this mailbox.
+    NoInferiors,
+    /// `\Marked` — server considers this mailbox interesting.
+    Marked,
+    /// `\Unmarked` — server does not consider this mailbox interesting.
+    Unmarked,
+    /// `\HasChildren` (RFC 5258).
+    HasChildren,
+    /// `\HasNoChildren` (RFC 5258).
+    HasNoChildren,
+    /// `\NonExistent` (RFC 5258) — mailbox name is known but does not exist.
+    NonExistent,
+    /// Any other attribute the server reported (extension / unknown).
+    Other(String),
+}
+
+impl FolderAttribute {
+    /// Translate an `async_imap::types::NameAttribute` to a typed variant.
+    ///
+    /// `HasChildren` / `HasNoChildren` / `NonExistent` arrive through
+    /// `NameAttribute::Extension(Cow<'_, str>)` — decoded here by matching
+    /// the attribute string. RFC 6154 special-use variants (`Sent`,
+    /// `Trash`, etc.) are first-class in `NameAttribute` but the codebase
+    /// routes them through `Folder.special_use`; here they become
+    /// `Other(spelling)` so the attribute list preserves its shape without
+    /// duplicating information.
+    #[must_use]
+    pub fn from_name_attribute(attr: &async_imap::types::NameAttribute<'_>) -> Self {
+        use async_imap::types::NameAttribute;
+        match attr {
+            NameAttribute::NoSelect => Self::Noselect,
+            NameAttribute::NoInferiors => Self::NoInferiors,
+            NameAttribute::Marked => Self::Marked,
+            NameAttribute::Unmarked => Self::Unmarked,
+            NameAttribute::All => Self::Other("\\All".to_string()),
+            NameAttribute::Archive => Self::Other("\\Archive".to_string()),
+            NameAttribute::Drafts => Self::Other("\\Drafts".to_string()),
+            NameAttribute::Flagged => Self::Other("\\Flagged".to_string()),
+            NameAttribute::Junk => Self::Other("\\Junk".to_string()),
+            NameAttribute::Sent => Self::Other("\\Sent".to_string()),
+            NameAttribute::Trash => Self::Other("\\Trash".to_string()),
+            NameAttribute::Extension(s) => match s.as_ref() {
+                "\\HasChildren" => Self::HasChildren,
+                "\\HasNoChildren" => Self::HasNoChildren,
+                "\\NonExistent" => Self::NonExistent,
+                _ => Self::Other(s.to_string()),
+            },
+            // NameAttribute is #[non_exhaustive] — fall through to preserve
+            // future-added variants as `Other(debug-repr)`.
+            other => Self::Other(format!("{other:?}")),
+        }
+    }
+
+    /// Stable wire-safe string form for serialization (matches RFC 3501
+    /// attribute spelling, including the leading backslash). Used by
+    /// `rimap-server`'s `FolderEntry.flags: Vec<String>` boundary.
+    #[must_use]
+    pub fn as_wire_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Noselect => "\\Noselect".into(),
+            Self::NoInferiors => "\\NoInferiors".into(),
+            Self::Marked => "\\Marked".into(),
+            Self::Unmarked => "\\Unmarked".into(),
+            Self::HasChildren => "\\HasChildren".into(),
+            Self::HasNoChildren => "\\HasNoChildren".into(),
+            Self::NonExistent => "\\NonExistent".into(),
+            Self::Other(s) => s.as_str().into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FolderAttribute;
+
+    #[test]
+    fn folder_attribute_round_trips_rfc_3501_variants() {
+        use async_imap::types::NameAttribute;
+
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::NoSelect),
+            FolderAttribute::Noselect,
+        );
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::NoInferiors),
+            FolderAttribute::NoInferiors,
+        );
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Marked),
+            FolderAttribute::Marked,
+        );
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Unmarked),
+            FolderAttribute::Unmarked,
+        );
+    }
+
+    #[test]
+    fn folder_attribute_extension_decodes_children_and_nonexistent() {
+        use async_imap::types::NameAttribute;
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Extension("\\HasChildren".into()),),
+            FolderAttribute::HasChildren,
+        );
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Extension(
+                "\\HasNoChildren".into()
+            ),),
+            FolderAttribute::HasNoChildren,
+        );
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Extension("\\NonExistent".into()),),
+            FolderAttribute::NonExistent,
+        );
+    }
+
+    #[test]
+    fn folder_attribute_unknown_extension_becomes_other() {
+        use async_imap::types::NameAttribute;
+        let attr =
+            FolderAttribute::from_name_attribute(&NameAttribute::Extension("\\Unknown".into()));
+        assert_eq!(attr, FolderAttribute::Other("\\Unknown".to_string()));
+    }
+
+    #[test]
+    fn folder_attribute_special_use_variants_become_other_preserving_spelling() {
+        // RFC 6154 special-use variants are first-class in NameAttribute,
+        // but the codebase routes them through Folder.special_use — so the
+        // attribute list carries them as Other(spelling) to preserve shape
+        // without duplicating information.
+        use async_imap::types::NameAttribute;
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Sent),
+            FolderAttribute::Other("\\Sent".to_string()),
+        );
+        assert_eq!(
+            FolderAttribute::from_name_attribute(&NameAttribute::Trash),
+            FolderAttribute::Other("\\Trash".to_string()),
+        );
+    }
+}
