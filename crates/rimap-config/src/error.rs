@@ -88,19 +88,33 @@ pub enum ConfigError {
         reason: String,
     },
     /// No credential could be found in keychain or environment.
-    #[error("no credential found for `{account}`: {reason}")]
+    ///
+    /// Display never includes the username. `host` is the IMAP/SMTP host
+    /// (public DNS in practice). `account_tag` is `hash_account_tag(username,
+    /// host)` — operators can correlate logs without seeing the username.
+    #[error("no credential for host `{host}` (account_tag {account_tag}): {reason}")]
     NoCredential {
-        /// `<username>@<host>` style account.
-        account: String,
+        /// IMAP/SMTP host (public DNS, safe to log).
+        host: String,
+        /// Short hash of `username@host` for log correlation.
+        account_tag: String,
         /// What we tried and what the user should do next.
         reason: String,
     },
     /// Keychain access error (not "not found" — that becomes `NoCredential`).
-    #[error("keychain error for `{account}`: {source}")]
+    ///
+    /// Display never includes the username. See `NoCredential` for the rules
+    /// on `host` and `account_tag`. The underlying source error is accessible
+    /// via the error chain (e.g. `#[source]` / traversal by `anyhow` or similar),
+    /// never interpolated into the Display string.
+    #[error("keychain error for host `{host}` (account_tag {account_tag})")]
     Keychain {
-        /// `<username>@<host>` style account.
-        account: String,
-        /// Underlying keyring error.
+        /// IMAP/SMTP host (public DNS, safe to log).
+        host: String,
+        /// Short hash of `username@host` for log correlation.
+        account_tag: String,
+        /// Underlying keyring error. Not included in Display to prevent
+        /// leaking username-bearing content from the keyring crate.
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
@@ -151,4 +165,46 @@ pub enum ConfigError {
     /// Multi-account config has an empty `[[accounts]]` array.
     #[error("no accounts defined in [[accounts]] array")]
     NoAccounts,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_credential_display_omits_username() {
+        let err = ConfigError::NoCredential {
+            host: "mail.example.com".to_string(),
+            account_tag: "deadbeefcafef00d".to_string(),
+            reason: "nothing in keyring".to_string(),
+        };
+        let display = format!("{err}");
+        let full = format!("{err:#}");
+        assert!(
+            !display.contains("alice"),
+            "display leaked username: {display}"
+        );
+        assert!(
+            !full.contains("alice"),
+            "full chain leaked username: {full}"
+        );
+        assert!(display.contains("mail.example.com"));
+        assert!(display.contains("deadbeefcafef00d"));
+    }
+
+    #[test]
+    fn keychain_display_omits_username() {
+        let err = ConfigError::Keychain {
+            host: "mail.example.com".to_string(),
+            account_tag: "deadbeefcafef00d".to_string(),
+            source: "underlying kernel error for alice@something".into(),
+        };
+        let display = format!("{err}");
+        assert!(
+            !display.contains("alice"),
+            "display leaked username: {display}"
+        );
+        assert!(display.contains("mail.example.com"));
+        assert!(display.contains("deadbeefcafef00d"));
+    }
 }

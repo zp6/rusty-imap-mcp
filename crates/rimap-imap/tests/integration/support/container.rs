@@ -536,6 +536,8 @@ impl ConnectedHarness {
 
         let cfg = ConnectionConfig {
             account: None,
+            account_id: rimap_core::account::AccountId::default_account(),
+            fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
             host: DovecotHarness::host().to_string(),
             port: harness.port(),
             username: DovecotHarness::username().to_string(),

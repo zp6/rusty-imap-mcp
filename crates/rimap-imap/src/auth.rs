@@ -20,6 +20,9 @@ pub(crate) struct AuthContext<'a> {
     pub pinned: Option<TlsFingerprint>,
     /// Fingerprint the server actually presented, if handshake reached cert verification.
     pub observed: Option<TlsFingerprint>,
+    /// Source of the resolved credential. `None` before `resolve_credential`
+    /// runs (e.g. a TLS failure) or when resolution itself failed.
+    pub credential_source: Option<rimap_core::CredentialSource>,
 }
 
 impl AuthContext<'_> {
@@ -46,6 +49,7 @@ pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
         tls_fingerprint_sha256: ctx.observed_hex(),
         fingerprint_match: ctx.fingerprint_match(),
         error_code: None,
+        credential_source: ctx.credential_source,
     }
 }
 
@@ -60,6 +64,7 @@ pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorC
         tls_fingerprint_sha256: ctx.observed_hex(),
         fingerprint_match: ctx.fingerprint_match(),
         error_code: Some(error_code),
+        credential_source: ctx.credential_source,
     }
 }
 
@@ -83,6 +88,7 @@ mod tests {
             username: "u",
             pinned: Some(pin),
             observed: Some(pin),
+            credential_source: None,
         };
         let rec = auth_success(&ctx);
         assert_eq!(rec.result, AuthResult::Success);
@@ -102,6 +108,7 @@ mod tests {
             username: "u",
             pinned: Some(pin),
             observed: Some(observed),
+            credential_source: None,
         };
         let rec = auth_failure(&ctx, rimap_core::ErrorCode::Tls);
         assert_eq!(rec.result, AuthResult::Failure);
@@ -119,6 +126,7 @@ mod tests {
             username: "u",
             pinned: None,
             observed: Some(observed),
+            credential_source: None,
         };
         let rec = auth_success(&ctx);
         assert_eq!(rec.fingerprint_match, None);
@@ -139,6 +147,7 @@ mod tests {
             username: "u",
             pinned: Some(pin),
             observed: None,
+            credential_source: None,
         };
         let rec = auth_failure(&ctx, rimap_core::ErrorCode::ConnectionLost);
         assert_eq!(rec.result, AuthResult::Failure);

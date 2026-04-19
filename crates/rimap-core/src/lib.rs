@@ -3,6 +3,8 @@
 #![deny(missing_docs)]
 
 pub mod account;
+pub mod credential;
+pub use credential::CredentialSource;
 pub mod error;
 pub mod posture;
 pub mod posture_matrix;

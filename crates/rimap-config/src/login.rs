@@ -5,7 +5,7 @@
 //! reserved for MCP transport. Uses `rpassword::prompt_password` which opens
 //! `/dev/tty` on Unix and the console on Windows.
 
-use crate::credential::{CredentialStore, account_key};
+use crate::credential::{CredentialStore, account_key, hash_account_tag};
 use crate::error::ConfigError;
 
 /// Run the `login` flow against the provided store. The caller is responsible
@@ -19,19 +19,22 @@ use crate::error::ConfigError;
 /// prompt failed (e.g. non-interactive terminal).
 pub fn run_login<S: CredentialStore>(
     store: &S,
+    account_id: &rimap_core::account::AccountId,
     username: &str,
     host: &str,
     prompt: impl FnOnce(&str) -> std::io::Result<String>,
 ) -> Result<(), ConfigError> {
-    let account = account_key(username, host);
+    let account = account_key(account_id, username, host);
     let prompt_text = format!("Password for {account}: ");
     let password = prompt(&prompt_text).map_err(|e| ConfigError::NoCredential {
-        account: account.clone(),
+        host: host.to_string(),
+        account_tag: hash_account_tag(username, host),
         reason: format!("interactive prompt failed: {e}"),
     })?;
     if password.is_empty() {
         return Err(ConfigError::NoCredential {
-            account,
+            host: host.to_string(),
+            account_tag: hash_account_tag(username, host),
             reason: "empty password not accepted".to_string(),
         });
     }
@@ -55,6 +58,8 @@ mod tests {
     use std::sync::Mutex;
 
     use secrecy::{ExposeSecret, SecretString};
+
+    use rimap_core::account::AccountId;
 
     use crate::credential::{CredentialStore, account_key};
     use crate::error::ConfigError;
@@ -87,9 +92,13 @@ mod tests {
     #[test]
     fn login_writes_prompted_password_to_store() {
         let store = MockStore::default();
-        run_login(&store, "alice", "host", |_| Ok("hunter2".to_string())).unwrap();
+        let default_id = AccountId::default_account();
+        run_login(&store, &default_id, "alice", "host", |_| {
+            Ok("hunter2".to_string())
+        })
+        .unwrap();
         let got = store
-            .get_password(&account_key("alice", "host"))
+            .get_password(&account_key(&default_id, "alice", "host"))
             .unwrap()
             .unwrap();
         assert_eq!(got.expose_secret(), "hunter2");
@@ -98,14 +107,17 @@ mod tests {
     #[test]
     fn empty_password_is_rejected() {
         let store = MockStore::default();
-        let err = run_login(&store, "alice", "host", |_| Ok(String::new())).unwrap_err();
+        let default_id = AccountId::default_account();
+        let err =
+            run_login(&store, &default_id, "alice", "host", |_| Ok(String::new())).unwrap_err();
         assert!(matches!(err, ConfigError::NoCredential { .. }));
     }
 
     #[test]
     fn prompt_error_is_surfaced() {
         let store = MockStore::default();
-        let err = run_login(&store, "alice", "host", |_| {
+        let default_id = AccountId::default_account();
+        let err = run_login(&store, &default_id, "alice", "host", |_| {
             Err(std::io::Error::other("no tty"))
         })
         .unwrap_err();

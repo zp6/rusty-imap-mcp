@@ -45,6 +45,12 @@ pub struct ConnectionConfig {
     /// single-account `"default"` deployment; `Some(name)` in multi-account
     /// configs. Populated into `Auth` audit records.
     pub account: Option<String>,
+    /// Account id used for keyring lookups. Always set — the default account
+    /// uses `AccountId::default_account()`.
+    pub account_id: rimap_core::account::AccountId,
+    /// Credential fallback policy: whether to consult the env var when the
+    /// keyring has no entry.
+    pub fallback_mode: rimap_config::model::FallbackMode,
     /// IMAP server host.
     pub host: String,
     /// IMAP server port (typically 993 for IMAPS).
@@ -170,22 +176,23 @@ impl Connection {
         let cfg = &self.inner.cfg;
         let bundle = build_tls_config(cfg.pinned_fingerprint)?;
 
-        // Run the connect flow. If it failed with a TLS handshake error AND
-        // we have a pinned fingerprint, enrich the error into ImapError::Tls
-        // with the structured observed/expected fields by reading the
-        // bundle's last_observed slot.
+        // Run the connect flow. The return type carries `credential_source` for
+        // both the success and post-resolve-failure paths.  Pre-resolve failures
+        // (TLS, connect, greeting, CAPABILITY) return `None`; post-resolve
+        // failures (LoginRejected) and success both return `Some(source)`.
         let raw_outcome = self.connect_with_bundle(&bundle).await;
-        let outcome = match raw_outcome {
-            Ok(session) => Ok(session),
-            Err(ImapError::TlsHandshake(inner)) => {
-                match (cfg.pinned_fingerprint, bundle.last_observed.get().copied()) {
+        let (outcome, credential_source) = match raw_outcome {
+            Ok((session, src)) => (Ok(session), Some(src)),
+            Err((ImapError::TlsHandshake(inner), src)) => {
+                let enriched = match (cfg.pinned_fingerprint, bundle.last_observed.get().copied()) {
                     (Some(expected), Some(observed)) if expected != observed => {
-                        Err(ImapError::Tls { observed, expected })
+                        ImapError::Tls { observed, expected }
                     }
-                    (Some(_) | None, _) => Err(ImapError::TlsHandshake(inner)),
-                }
+                    (Some(_) | None, _) => ImapError::TlsHandshake(inner),
+                };
+                (Err(enriched), src)
             }
-            Err(other) => Err(other),
+            Err((other, src)) => (Err(other), src),
         };
 
         let observed = bundle.last_observed.get().copied();
@@ -196,6 +203,7 @@ impl Connection {
             username: &cfg.username,
             pinned: cfg.pinned_fingerprint,
             observed,
+            credential_source,
         };
 
         match &outcome {
@@ -224,43 +232,61 @@ impl Connection {
         outcome
     }
 
+    /// Returns `Ok((session, credential_source))` on success, or
+    /// `Err((error, Option<credential_source>))` on failure. The
+    /// `credential_source` in the `Err` variant is `Some` when the failure
+    /// occurred after `resolve_credential` succeeded (e.g. server rejected
+    /// the credentials), and `None` for pre-resolve failures (TLS, connect,
+    /// greeting, CAPABILITY).
     async fn connect_with_bundle(
         &self,
         bundle: &TlsConfigBundle,
-    ) -> Result<ImapSession, ImapError> {
+    ) -> Result<
+        (ImapSession, rimap_core::CredentialSource),
+        (ImapError, Option<rimap_core::CredentialSource>),
+    > {
         let cfg = &self.inner.cfg;
         let total_deadline = cfg.connect_timeout;
         let started = std::time::Instant::now();
 
-        // Step 1: TCP connect.
+        // Step 1: TCP connect. Pre-resolve; failures carry `None`.
         let tcp = timeout(
             total_deadline,
             TcpStream::connect((cfg.host.as_str(), cfg.port)),
         )
         .await
-        .map_err(|_| ImapError::Timeout { op: "tcp_connect" })?
-        .map_err(ImapError::Connect)?;
+        .map_err(|_| (ImapError::Timeout { op: "tcp_connect" }, None))?
+        .map_err(|e| (ImapError::Connect(e), None))?;
 
-        // Step 2: TLS handshake.
+        // Step 2: TLS handshake. Pre-resolve; failures carry `None`.
         let server_name = ServerName::try_from(cfg.host.clone()).map_err(|_| {
-            ImapError::Connect(std::io::Error::other("invalid server name for TLS"))
+            (
+                ImapError::Connect(std::io::Error::other("invalid server name for TLS")),
+                None,
+            )
         })?;
         let connector = TlsConnector::from(bundle.config.clone());
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
         let tls_stream = timeout(remaining, connector.connect(server_name, tcp))
             .await
-            .map_err(|_| ImapError::Timeout {
-                op: "tls_handshake",
+            .map_err(|_| {
+                (
+                    ImapError::Timeout {
+                        op: "tls_handshake",
+                    },
+                    None,
+                )
             })?
-            .map_err(|e| map_tls_handshake_error(&e))?;
+            .map_err(|e| (map_tls_handshake_error(&e), None))?;
 
-        // Step 3: IMAP greeting + capability check + login.
+        // Step 3: IMAP greeting + capability check + login. The login step
+        // may return a credential source on both success and certain failures.
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
         timeout(remaining, self.imap_login(tls_stream))
             .await
-            .map_err(|_| ImapError::Timeout { op: "imap_login" })?
+            .map_err(|_| (ImapError::Timeout { op: "imap_login" }, None))?
     }
 
     /// Run the IMAP greeting + CAPABILITY probe + LOGIN sequence.
@@ -274,59 +300,93 @@ impl Connection {
     ///      and drain the unsolicited channel for `Other(ResponseData)` items
     ///      containing `Response::Capabilities` data.
     ///   3. Call `client.login(user, pass)`.
-    async fn imap_login(&self, tls_stream: TlsStream<TcpStream>) -> Result<ImapSession, ImapError> {
+    ///
+    /// Returns `Ok((session, credential_source))` on success.
+    /// Returns `Err((error, Some(source)))` when the failure occurred after
+    /// `resolve_credential` succeeded (e.g. server rejected the credentials).
+    /// Returns `Err((error, None))` for pre-resolve failures (greeting, CAPABILITY).
+    async fn imap_login(
+        &self,
+        tls_stream: TlsStream<TcpStream>,
+    ) -> Result<
+        (ImapSession, rimap_core::CredentialSource),
+        (ImapError, Option<rimap_core::CredentialSource>),
+    > {
         let mut client = async_imap::Client::new(tls_stream);
 
         // Read the server greeting. An absent greeting (EOF) or BYE status
-        // means the server immediately rejected us.
+        // means the server immediately rejected us. Pre-resolve; carry `None`.
         let greeting = client
             .read_response()
             .await
-            .map_err(ImapError::Connect)?
-            .ok_or(ImapError::Auth {
-                reason: AuthFailure::ServerRejected,
-            })?;
+            .map_err(|e| (ImapError::Connect(e), None))?
+            .ok_or((
+                ImapError::Auth {
+                    reason: AuthFailure::ServerRejected,
+                },
+                None,
+            ))?;
 
         if let Response::Data {
             status: Status::Bye,
             ..
         } = greeting.parsed()
         {
-            return Err(ImapError::Auth {
-                reason: AuthFailure::ServerRejected,
-            });
+            return Err((
+                ImapError::Auth {
+                    reason: AuthFailure::ServerRejected,
+                },
+                None,
+            ));
         }
 
         // Issue CAPABILITY and scan responses for LOGINDISABLED.
         // We create a bounded channel so intermediate untagged responses
         // (including `* CAPABILITY ...`) are routed through it rather than
-        // being silently discarded.
+        // being silently discarded. Pre-resolve; carry `None`.
         let (tx, rx) = async_channel::bounded::<UnsolicitedResponse>(32);
         client
             .run_command_and_check_ok("CAPABILITY", Some(tx))
             .await
-            .map_err(ImapError::Protocol)?;
+            .map_err(|e| (ImapError::Protocol(e), None))?;
 
         // Drain whatever arrived on the channel (non-blocking; the command
         // has already completed). A `Response::Capabilities` list containing
-        // LOGINDISABLED means LOGIN is prohibited.
+        // LOGINDISABLED means LOGIN is prohibited. Pre-resolve; carry `None`.
         let logindisabled = drain_for_logindisabled(&rx);
         if logindisabled {
-            return Err(ImapError::Auth {
-                reason: AuthFailure::CapabilityMissing { needed: "LOGIN" },
-            });
+            return Err((
+                ImapError::Auth {
+                    reason: AuthFailure::CapabilityMissing { needed: "LOGIN" },
+                },
+                None,
+            ));
         }
 
         // Resolve the password from the credential store. A missing
         // credential is an authentication failure, not a network failure —
         // map it to ERR_AUTH so retry logic and operator messages stay
-        // accurate.
+        // accurate. Pre-resolve; carry `None`.
         let cfg = &self.inner.cfg;
-        let password = resolve_credential(&*self.inner.credentials, &cfg.username, &cfg.host)
-            .map_err(|e| ImapError::Auth {
-                reason: AuthFailure::CredentialUnavailable(e.to_string()),
-            })?;
+        let (password, credential_source) = resolve_credential(
+            &*self.inner.credentials,
+            &cfg.account_id,
+            &cfg.username,
+            &cfg.host,
+            cfg.fallback_mode,
+        )
+        .map_err(|e| {
+            (
+                ImapError::Auth {
+                    reason: AuthFailure::CredentialUnavailable(e.to_string()),
+                },
+                None,
+            )
+        })?;
 
+        // From here on, all errors carry `Some(credential_source)` because
+        // resolution succeeded.
+        //
         // Attempt LOGIN. On NO response the server rejected the credentials.
         // Expose the secret only at the moment of use; the borrow ends
         // when `client.login` returns.
@@ -334,10 +394,13 @@ impl Connection {
             Ok(session) => session,
             Err((err, _client)) => {
                 return match err {
-                    async_imap::error::Error::No(_) => Err(ImapError::Auth {
-                        reason: AuthFailure::LoginRejected,
-                    }),
-                    other => Err(ImapError::Protocol(other)),
+                    async_imap::error::Error::No(_) => Err((
+                        ImapError::Auth {
+                            reason: AuthFailure::LoginRejected,
+                        },
+                        Some(credential_source),
+                    )),
+                    other => Err((ImapError::Protocol(other), Some(credential_source))),
                 };
             }
         };
@@ -358,7 +421,7 @@ impl Connection {
         self.inner.has_move.store(has_move, Ordering::Relaxed);
         self.inner.has_uidplus.store(has_uidplus, Ordering::Relaxed);
 
-        Ok(session)
+        Ok((session, credential_source))
     }
 
     /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside

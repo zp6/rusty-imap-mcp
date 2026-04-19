@@ -10,10 +10,12 @@
 
 pub(crate) mod audit_merge;
 pub(crate) mod dry_run;
+pub(crate) mod migrate_keyring;
 
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use rimap_core::account::DEFAULT_ACCOUNT_NAME;
 
 /// Top-level CLI.
 #[derive(Debug, Parser)]
@@ -43,10 +45,29 @@ pub struct Cli {
 pub enum Command {
     /// Interactively store IMAP credentials in the OS keychain.
     Login {
+        /// Account name from config. Defaults to `default`, matching the
+        /// synthetic account used for legacy single-account configs.
+        #[arg(long, default_value_t = String::from(DEFAULT_ACCOUNT_NAME))]
+        account: String,
         /// IMAP host (e.g. `127.0.0.1` for Proton Bridge).
         #[arg(long)]
         host: String,
         /// IMAP username (e.g. `alice@example.com`).
+        #[arg(long)]
+        username: String,
+    },
+    /// Migrate a credential from the legacy keyring key format
+    /// (`<username>@<host>`) to the new namespaced format
+    /// (`<account-id>/<username>@<host>`). Run once per account after
+    /// upgrading across #77.
+    MigrateKeyring {
+        /// Account name from config.
+        #[arg(long)]
+        account: String,
+        /// IMAP host.
+        #[arg(long)]
+        host: String,
+        /// IMAP username.
         #[arg(long)]
         username: String,
     },
@@ -92,6 +113,7 @@ pub enum AuditAction {
 #[expect(clippy::panic, reason = "tests")]
 mod tests {
     use clap::Parser;
+    use rimap_core::account::DEFAULT_ACCOUNT_NAME;
 
     use crate::cli::{Cli, Command};
 
@@ -119,7 +141,39 @@ mod tests {
         ])
         .unwrap();
         match cli.command {
-            Some(Command::Login { host, username }) => {
+            Some(Command::Login {
+                account,
+                host,
+                username,
+            }) => {
+                assert_eq!(account, DEFAULT_ACCOUNT_NAME);
+                assert_eq!(host, "127.0.0.1");
+                assert_eq!(username, "alice");
+            }
+            other => panic!("expected Login, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_login_subcommand_with_explicit_account() {
+        let cli = Cli::try_parse_from([
+            "rusty-imap-mcp",
+            "login",
+            "--account",
+            "work",
+            "--host",
+            "127.0.0.1",
+            "--username",
+            "alice",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Login {
+                account,
+                host,
+                username,
+            }) => {
+                assert_eq!(account, "work");
                 assert_eq!(host, "127.0.0.1");
                 assert_eq!(username, "alice");
             }

@@ -41,13 +41,29 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
-    if let Some(Command::Login { host, username }) = &cli.command {
+    if let Some(Command::Login {
+        account,
+        host,
+        username,
+    }) = &cli.command
+    {
         let store = KeyringStore;
-        run_login(&store, username, host, tty_prompt)
+        let account_id = rimap_core::account::AccountId::new(account)
+            .with_context(|| format!("invalid account name `{account}`"))?;
+        run_login(&store, &account_id, username, host, tty_prompt)
             .with_context(|| format!("storing credential for {username}@{host}"))?;
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "credential stored for {username}@{host}")?;
         return Ok(());
+    }
+
+    if let Some(Command::MigrateKeyring {
+        account,
+        host,
+        username,
+    }) = &cli.command
+    {
+        return run_migrate_keyring(account, username, host);
     }
 
     if let Some(Command::Audit {
@@ -199,11 +215,14 @@ fn build_smtp_client(
     let Some(ref smtp_cfg) = acfg.smtp else {
         return Ok(None);
     };
-    let smtp_password =
-        rimap_config::resolve_credential(&**credentials, &smtp_cfg.username, &smtp_cfg.host)
-            .with_context(|| {
-                format!("resolving SMTP credential for account {}", acfg.id.as_str())
-            })?;
+    let (smtp_password, _src) = rimap_config::resolve_credential(
+        &**credentials,
+        &acfg.id,
+        &smtp_cfg.username,
+        &smtp_cfg.host,
+        acfg.fallback_mode,
+    )
+    .with_context(|| format!("resolving SMTP credential for account {}", acfg.id.as_str()))?;
     let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
         .with_context(|| format!("building SMTP client for account {}", acfg.id.as_str()))?;
     drop(smtp_password);
@@ -242,6 +261,8 @@ fn build_account_connection(
     };
     ConnectionConfig {
         account,
+        account_id: id.clone(),
+        fallback_mode: acfg.fallback_mode,
         host: acfg.imap.host.clone(),
         port: acfg.imap.port,
         username: acfg.imap.username.clone(),
@@ -289,6 +310,25 @@ fn resolve_download_dir_multi(
             .with_context(|| format!("setting 0700 perms on {}", dir.display()))?;
     }
     Ok(dir)
+}
+
+/// Handle the `migrate-keyring` subcommand.
+fn run_migrate_keyring(account: &str, username: &str, host: &str) -> anyhow::Result<()> {
+    let store = KeyringStore;
+    let account_id = rimap_core::account::AccountId::new(account)
+        .with_context(|| format!("invalid account name `{account}`"))?;
+    let migrated = cli::migrate_keyring::migrate_one(&store, &account_id, username, host)
+        .with_context(|| format!("migrating credential for account `{account}`, host `{host}`"))?;
+    let mut stdout = std::io::stdout().lock();
+    if migrated {
+        writeln!(stdout, "migrated credential for account `{account}`")?;
+    } else {
+        writeln!(
+            stdout,
+            "no legacy credential found for account `{account}` (host `{host}`); nothing to migrate"
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
