@@ -52,7 +52,8 @@ pub fn to_mcp_error(err: &RimapError) -> ErrorData {
         | ErrorCode::ConnectionLost
         | ErrorCode::Timeout
         | ErrorCode::Config
-        | ErrorCode::Internal => ErrorData::internal_error(message, None),
+        | ErrorCode::Internal
+        | ErrorCode::Cancelled => ErrorData::internal_error(message, None),
     }
 }
 

@@ -48,6 +48,10 @@ pub enum ErrorCode {
     NoAccount,
     /// Named account not found in registry.
     UnknownAccount,
+    /// Operation cancelled before completion (e.g. client disconnect, runtime
+    /// shutdown). Emitted in `tool_end` records synthesized by the cancellation
+    /// drop-guard (#99).
+    Cancelled,
 }
 
 impl ErrorCode {
@@ -73,6 +77,7 @@ impl ErrorCode {
             Self::Internal => "ERR_INTERNAL",
             Self::NoAccount => "ERR_NO_ACCOUNT",
             Self::UnknownAccount => "ERR_UNKNOWN_ACCOUNT",
+            Self::Cancelled => "ERR_CANCELLED",
         }
     }
 }
@@ -111,6 +116,7 @@ impl FromStr for ErrorCode {
             "ERR_INTERNAL" => Ok(Self::Internal),
             "ERR_NO_ACCOUNT" => Ok(Self::NoAccount),
             "ERR_UNKNOWN_ACCOUNT" => Ok(Self::UnknownAccount),
+            "ERR_CANCELLED" => Ok(Self::Cancelled),
             other => Err(ParseErrorCodeError(other.to_string())),
         }
     }
@@ -261,11 +267,19 @@ mod tests {
             (ErrorCode::Internal, "ERR_INTERNAL"),
             (ErrorCode::NoAccount, "ERR_NO_ACCOUNT"),
             (ErrorCode::UnknownAccount, "ERR_UNKNOWN_ACCOUNT"),
+            (ErrorCode::Cancelled, "ERR_CANCELLED"),
         ];
         for (code, expected) in cases {
             assert_eq!(code.as_str(), expected);
             assert_eq!(format!("{code}"), expected);
         }
+    }
+
+    #[test]
+    fn cancelled_round_trips() {
+        assert_eq!(ErrorCode::Cancelled.as_str(), "ERR_CANCELLED");
+        let parsed = "ERR_CANCELLED".parse::<ErrorCode>();
+        assert_eq!(parsed, Ok(ErrorCode::Cancelled));
     }
 
     #[test]
