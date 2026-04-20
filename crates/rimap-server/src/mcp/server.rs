@@ -23,7 +23,7 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 
-use crate::boot::registry::AccountRegistry;
+use crate::boot::registry::{AccountRegistry, AccountState};
 use crate::mcp::dispatch::{PostureContext, rimap_error_to_breaker_reason};
 use crate::mcp::tool_catalog::TOOL_DEFS;
 use crate::mcp::tool_name::{
@@ -63,6 +63,162 @@ impl ImapMcpServer {
             redaction_salt: Arc::new(RedactionSalt::new_random()),
         }
     }
+
+    /// Run an account-scoped tool through the full dispatch pipeline:
+    /// posture header + breaker / rate-limit guard + audit envelope +
+    /// handler. Returns the MCP-shaped `CallToolResult`.
+    ///
+    /// Single source of truth for the account-scoped dispatch
+    /// composition. Used by the real [`ServerHandler::call_tool`] trait
+    /// method and by `execute_tool_for_test`, so the two paths cannot
+    /// drift.
+    pub(crate) async fn dispatch_account_scoped(
+        &self,
+        account: &AccountState,
+        tool: ToolName,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Legacy single-account `"default"` records `None`; multi-account
+        // records the account name.
+        let audit_account: Option<String> =
+            if account.id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
+                None
+            } else {
+                Some(account.id.as_str().to_string())
+            };
+        let posture = PostureContext::Account(account.guard.matrix().posture());
+
+        self.run_with_audit_envelope(tool, audit_account, posture, args, |ticket| async move {
+            account.guard.pre_dispatch(tool)?;
+            let result = Box::pin(self.dispatch_tool(ticket, account, tool, args)).await;
+            match &result {
+                Ok(_) => account.guard.on_success(),
+                Err(e) => {
+                    if let Some(reason) = rimap_error_to_breaker_reason(e) {
+                        account.guard.on_failure(reason);
+                    }
+                }
+            }
+            result
+        })
+        .await
+    }
+}
+
+/// Integration-test entry point. Exposed under `#[cfg(any(test, feature =
+/// "test-support"))]` so tests exercise the exact same pipeline (account
+/// resolve → `pre_dispatch` → audit envelope → `dispatch_tool`) as real
+/// MCP clients, instead of re-implementing the composition and drifting
+/// from the production path. Production builds without the feature
+/// cannot see this method, and `dispatch_tool` itself is `pub(crate)`.
+#[cfg(any(test, feature = "test-support"))]
+impl ImapMcpServer {
+    /// Execute `tool` through the full dispatch pipeline. Mirrors
+    /// [`ServerHandler::call_tool`] but takes a pre-parsed `ToolName`
+    /// and a raw JSON args value; returns the handler's JSON body
+    /// (the `structured_content` of the MCP `CallToolResult`).
+    ///
+    /// # Errors
+    ///
+    /// Any pipeline failure — unknown account, posture denial, rate
+    /// limit, breaker open, handler error — is returned as a
+    /// [`rimap_core::RimapError`] (the MCP `ErrorData` shape is
+    /// bridged back).
+    pub async fn execute_tool_for_test(
+        &self,
+        account_name: Option<&str>,
+        tool: ToolName,
+        args: serde_json::Value,
+    ) -> Result<serde_json::Value, rimap_core::RimapError> {
+        if account_name.is_some() && tool.is_infrastructure() {
+            return Err(rimap_core::RimapError::invalid_input(
+                "execute_tool_for_test: account_name must be None for infrastructure tools",
+            ));
+        }
+
+        let args_map = match args {
+            serde_json::Value::Object(m) => m,
+            serde_json::Value::Null => serde_json::Map::new(),
+            other => {
+                return Err(rimap_core::RimapError::invalid_input(format!(
+                    "execute_tool_for_test expects a JSON object or null, got {other}"
+                )));
+            }
+        };
+
+        let call_tool_result = if tool.is_infrastructure() {
+            Box::pin(self.dispatch_infrastructure(tool, &args_map))
+                .await
+                .map_err(|e| error_data_to_rimap_error(&e))?
+        } else {
+            let account = self.registry.resolve(account_name)?;
+            Box::pin(self.dispatch_account_scoped(account, tool, &args_map))
+                .await
+                .map_err(|e| error_data_to_rimap_error(&e))?
+        };
+
+        Ok(extract_json_from_call_tool_result(call_tool_result))
+    }
+
+    /// Drive `run_with_audit_envelope` with a caller-supplied async
+    /// factory. The factory receives no ticket (infrastructure posture,
+    /// no account) and returns a future that can suspend at will.
+    ///
+    /// Used in integration tests that need a body that actually yields
+    /// at an `.await` point — e.g. to verify the `AuditEnvelopeGuard`
+    /// fires when the dispatch future is aborted mid-body. Real tool
+    /// handlers complete synchronously so the abort never lands mid-body;
+    /// this method lets the test inject a never-resolving body instead.
+    pub async fn run_envelope_with_body_for_test<Fut>(
+        &self,
+        tool: ToolName,
+        body_fut: Fut,
+    ) -> Result<CallToolResult, ErrorData>
+    where
+        Fut: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
+    {
+        debug_assert!(
+            tool.is_infrastructure(),
+            "run_envelope_with_body_for_test only supports infrastructure tools; \
+             use execute_tool_for_test for account-scoped tools"
+        );
+        let args = serde_json::Map::new();
+        self.run_with_audit_envelope(
+            tool,
+            None,
+            crate::mcp::dispatch::PostureContext::Infrastructure,
+            &args,
+            |_ticket| body_fut,
+        )
+        .await
+    }
+}
+
+/// Extract the structured JSON body from a [`CallToolResult`]. Prefers
+/// the `structured_content` field (populated by `CallToolResult::structured`),
+/// falling back to parsing the first text content item. Returns
+/// `serde_json::Value::Null` when neither is available.
+#[cfg(any(test, feature = "test-support"))]
+fn extract_json_from_call_tool_result(result: CallToolResult) -> serde_json::Value {
+    if let Some(value) = result.structured_content {
+        return value;
+    }
+    result
+        .content
+        .into_iter()
+        .next()
+        .and_then(|content| content.as_text().map(|t| t.text.clone()))
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Bridge an MCP `ErrorData` back to a `RimapError` for the test
+/// helper's uniform `Result<_, RimapError>` surface. The original
+/// message is preserved; the JSON-RPC / MCP code is surfaced as a
+/// prefix so test assertions can still match on it.
+#[cfg(any(test, feature = "test-support"))]
+fn error_data_to_rimap_error(err: &ErrorData) -> rimap_core::RimapError {
+    rimap_core::RimapError::Internal(format!("mcp error {}: {}", err.code.0, err.message))
 }
 
 impl ServerHandler for ImapMcpServer {
@@ -287,29 +443,7 @@ impl ServerHandler for ImapMcpServer {
             .resolve(explicit_account.as_deref())
             .map_err(|e| crate::mcp::error::to_mcp_error(&e))?;
 
-        // Compute the account field for audit records. Legacy single-account
-        // `"default"` records `None`; multi-account records the account name.
-        let audit_account: Option<String> =
-            if account.id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
-                None
-            } else {
-                Some(account.id.as_str().to_string())
-            };
-        let posture = PostureContext::Account(account.guard.matrix().posture());
-
-        self.run_with_audit_envelope(tool_name, audit_account, posture, &args, async {
-            account.guard.pre_dispatch(tool_name)?;
-            let result = Box::pin(self.dispatch_tool(account, tool_name, &args)).await;
-            match &result {
-                Ok(_) => account.guard.on_success(),
-                Err(e) => {
-                    if let Some(reason) = rimap_error_to_breaker_reason(e) {
-                        account.guard.on_failure(reason);
-                    }
-                }
-            }
-            result
-        })
-        .await
+        self.dispatch_account_scoped(account, tool_name, &args)
+            .await
     }
 }

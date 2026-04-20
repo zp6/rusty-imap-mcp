@@ -12,6 +12,7 @@ pub type SendEmailInput = ComposeInput;
 
 /// Copy-to-Sent result included in a `send_email` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct SentCopyInfo {
     /// Folder the copy was appended to.
     pub folder: String,
@@ -19,6 +20,12 @@ pub struct SentCopyInfo {
     pub uid: Option<u32>,
     /// `true` if the APPEND failed (best-effort; send itself succeeded).
     pub failed: bool,
+    /// Error code classifying why the APPEND failed. Present only when
+    /// `failed` is `true`. Clients use this to decide whether to retry
+    /// (e.g. `Timeout`, `ConnectionLost`) or surface an operator action
+    /// (e.g. `InvalidInput`, `ImapProtocol`, `AttachmentTooLarge`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<rimap_core::ErrorCode>,
 }
 
 /// Trusted metadata for a `send_email` response.
@@ -73,10 +80,12 @@ pub async fn handle(
     // by this point — any failure (including a malformed resolved folder
     // name) must route through `sent_copy.failed` so the response does
     // not misleadingly report delivery failure. Each error is logged at
-    // the failure site, then collapsed to `()` so the pure helper that
-    // builds `SentCopyInfo` stays non-generic and trivially testable.
+    // the failure site. The error code is forwarded to the helper so
+    // clients can distinguish transient from permanent failures; the
+    // helper stays pure and directly testable without an AccountState
+    // fixture.
     let sent_folder: &str = account.special_use.sent().unwrap_or("Sent");
-    let append_outcome: Option<Result<Option<u32>, ()>> =
+    let append_outcome: Option<Result<Option<u32>, rimap_core::ErrorCode>> =
         if let Err(e) = rimap_authz::folder_name::FolderName::new(sent_folder) {
             // Stable warn fields go in the structured record; the full
             // Display goes to DEBUG so it is available when tracing is
@@ -97,13 +106,14 @@ pub async fn handle(
             {
                 Ok(result) => Some(Ok(result.uid.map(rimap_imap::types::Uid::get))),
                 Err(e) => {
+                    let code = e.code();
                     tracing::warn!(
                         tool = "send_email",
-                        error_code = %e.code(),
+                        error_code = %code,
                         "failed to append to Sent folder",
                     );
                     tracing::debug!(error = %e, "sent-folder append detail");
-                    Some(Err(()))
+                    Some(Err(code))
                 }
             }
         };
@@ -132,20 +142,18 @@ pub async fn handle(
 /// `AccountState` fixture.
 fn build_sent_copy_info(
     sent_folder: &str,
-    append_outcome: Option<Result<Option<u32>, ()>>,
+    append_outcome: Option<Result<Option<u32>, rimap_core::ErrorCode>>,
 ) -> SentCopyInfo {
-    // `if let` (rather than `match`) keeps the two failure shapes
-    // (`None`, `Some(Err(()))`) on the same `else` branch without
-    // tripping the workspace's no-wildcard-arm policy via `_ =>`.
-    let (uid, failed) = if let Some(Ok(uid)) = append_outcome {
-        (uid, false)
-    } else {
-        (None, true)
+    let (uid, failed, failure_code) = match append_outcome {
+        Some(Ok(uid)) => (uid, false, None),
+        Some(Err(code)) => (None, true, Some(code)),
+        None => (None, true, Some(rimap_core::ErrorCode::InvalidInput)),
     };
     SentCopyInfo {
         folder: sent_folder.to_string(),
         uid,
         failed,
+        failure_code,
     }
 }
 
@@ -233,6 +241,7 @@ mod tests {
         assert_eq!(info.folder, "Sent");
         assert!(info.failed);
         assert_eq!(info.uid, None);
+        assert_eq!(info.failure_code, Some(rimap_core::ErrorCode::InvalidInput));
     }
 
     #[test]
@@ -256,10 +265,11 @@ mod tests {
 
     #[test]
     fn sent_copy_marks_failed_when_append_errored() {
-        let info = build_sent_copy_info("Sent", Some(Err(())));
+        let info = build_sent_copy_info("Sent", Some(Err(rimap_core::ErrorCode::ImapProtocol)));
         assert_eq!(info.folder, "Sent");
         assert!(info.failed);
         assert_eq!(info.uid, None);
+        assert_eq!(info.failure_code, Some(rimap_core::ErrorCode::ImapProtocol));
     }
 
     #[test]
@@ -270,5 +280,20 @@ mod tests {
         // SPECIAL-USE mappings like "[Gmail]/Sent Mail".
         let info = build_sent_copy_info("[Gmail]/Sent Mail", Some(Ok(Some(7))));
         assert_eq!(info.folder, "[Gmail]/Sent Mail");
+    }
+
+    #[test]
+    fn sent_copy_carries_failure_code_when_append_errored() {
+        let info = build_sent_copy_info("Sent", Some(Err(rimap_core::ErrorCode::Timeout)));
+        assert!(info.failed);
+        assert_eq!(info.uid, None);
+        assert_eq!(info.failure_code, Some(rimap_core::ErrorCode::Timeout));
+    }
+
+    #[test]
+    fn sent_copy_omits_failure_code_on_success() {
+        let info = build_sent_copy_info("Sent", Some(Ok(Some(42))));
+        assert!(!info.failed);
+        assert_eq!(info.failure_code, None);
     }
 }

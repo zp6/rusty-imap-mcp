@@ -137,7 +137,7 @@ fn validate(raw: &str) -> Result<(), FolderNameError> {
     // These have no legitimate use in client-supplied folder names and
     // are a common spoofing vector (e.g., `INBOX\u{202e}txt.exe`).
     for c in raw.chars() {
-        if is_rejected_codepoint(c) {
+        if is_rejected_display_codepoint(c) {
             return Err(FolderNameError::new(
                 "folder name contains disallowed Unicode character",
             ));
@@ -169,7 +169,7 @@ fn validate(raw: &str) -> Result<(), FolderNameError> {
 /// style forbids `_ =>` in normal `match` expressions). Adding a new
 /// codepoint is a single-line edit either way.
 #[must_use]
-pub(crate) fn is_rejected_codepoint(c: char) -> bool {
+pub fn is_rejected_display_codepoint(c: char) -> bool {
     matches!(
         c,
         '\u{202a}'..='\u{202e}'    // bidi embedding / override
@@ -321,7 +321,7 @@ mod proptests {
 
     use proptest::prelude::*;
 
-    use super::{FolderName, is_rejected_codepoint};
+    use super::{FolderName, is_rejected_display_codepoint};
 
     /// Reference implementation: an independent re-derivation of the
     /// rules from the [`super::FolderName::new`] doc comment, used to
@@ -353,7 +353,7 @@ mod proptests {
             }
         }
         for c in s.chars() {
-            if is_rejected_codepoint(c) {
+            if is_rejected_display_codepoint(c) {
                 return false;
             }
         }
@@ -402,7 +402,7 @@ mod proptests {
 
         /// Every codepoint in the Unicode Tag Characters block
         /// (U+E0000..=U+E007F) is rejected, independent of the shared
-        /// [`is_rejected_codepoint`] predicate — if the predicate is
+        /// [`is_rejected_display_codepoint`] predicate — if the predicate is
         /// silently edited to drop the Tag range, this test fails.
         #[test]
         fn any_unicode_tag_codepoint_is_rejected(

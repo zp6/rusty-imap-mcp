@@ -19,7 +19,7 @@ pub mod warning;
 pub use crate::auth_event::{AuthEvent, AuthResult};
 pub use crate::auth_sink::{AuthEventSink, AuthSinkError};
 pub use crate::error::{ErrorCode, RimapError};
-pub use crate::folder_name::{FolderName, FolderNameError};
+pub use crate::folder_name::{FolderName, FolderNameError, is_rejected_display_codepoint};
 pub use crate::posture::{Posture, UnknownPosture};
 pub use crate::posture_matrix::base_allows;
 pub use crate::tls::{FingerprintParseError, TlsFingerprint};

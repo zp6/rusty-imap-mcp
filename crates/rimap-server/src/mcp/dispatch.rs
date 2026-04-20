@@ -10,12 +10,48 @@
 //! [`rimap_core::RimapError`] codes to [`rimap_authz::breaker::FailureReason`]
 //! used to drive the per-account circuit breaker.
 
+use std::marker::PhantomData;
+
 use rmcp::model::{CallToolResult, ErrorData};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::server::ImapMcpServer;
 use crate::mcp::tool_catalog::{parse_args, ser};
 use rimap_core::tool::ToolName;
+
+/// Proof that the audit envelope is open and the pre-dispatch checks
+/// (posture, breaker, rate limit) have already run. Construction is
+/// module-private; the only way to obtain one is via the `body`
+/// closure of [`ImapMcpServer::run_with_audit_envelope`] (or the
+/// sibling [`ImapMcpServer::dispatch_infrastructure`]). Because
+/// [`ImapMcpServer::dispatch_tool`] consumes the ticket by value,
+/// forgetting to wrap a dispatch in the envelope becomes a compile
+/// error rather than a silent audit-log gap (#110).
+///
+/// Deliberately neither `Clone` nor `Copy`: a ticket is single-use,
+/// scoped to one envelope. Kept `Send` so the dispatch future can
+/// cross `await` boundaries inside the tokio-based MCP handler.
+///
+/// Note on marker choice: the original design sketched
+/// `PhantomData<*const ()>` to kill `Send`/`Sync` auto-traits as a
+/// further reuse barrier. `rmcp::ServerHandler::call_tool` returns a
+/// `MaybeSendFuture`-bound future, and non-`Send` types held across
+/// `.await` boundaries inside that future fail to compile. Since the
+/// ticket is a ZST with no interior state, the weaker `PhantomData<()>`
+/// is as safe as `*const ()` would be — the `Send`/`Sync` auto-traits
+/// have nothing to leak — and the single-use guarantee still holds via
+/// absence of `Clone`/`Copy` and module-private construction.
+#[must_use]
+pub(crate) struct DispatchTicket(PhantomData<()>);
+
+impl DispatchTicket {
+    /// Mint a new ticket. Callable only from within this module, so
+    /// every ticket is necessarily produced by the audit-envelope
+    /// machinery that opens a `tool_start` record.
+    pub(super) fn new() -> Self {
+        Self(PhantomData)
+    }
+}
 
 /// Posture context recorded in audit envelope headers.
 ///
@@ -76,9 +112,16 @@ impl ImapMcpServer {
     /// Dispatch to the tool handler for `tool`. Each arm serializes its
     /// typed response to `serde_json::Value` before returning, so the
     /// audit envelope works with a single future type.
-    #[doc(hidden)]
-    pub async fn dispatch_tool(
+    ///
+    /// The [`DispatchTicket`] is consumed by value — its construction is
+    /// module-private and only `run_with_audit_envelope` /
+    /// `dispatch_infrastructure` mint one, so any caller must first open
+    /// the audit envelope. This closes the bypass where a direct
+    /// `dispatch_tool` call would skip posture gating, breaker updates,
+    /// rate limits, and the `tool_start`/`tool_end` envelope (#110).
+    pub(crate) async fn dispatch_tool(
         &self,
+        _ticket: DispatchTicket,
         account: &AccountState,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -173,48 +216,56 @@ impl ImapMcpServer {
         // Infrastructure tools have no per-account posture; record an
         // explicit sentinel so log readers can distinguish these from
         // per-account dispatches.
-        self.run_with_audit_envelope(tool, None, PostureContext::Infrastructure, args, async {
-            // Infrastructure tools bypass posture + breaker, but still
-            // enforce a process-wide rate limit.
-            self.registry.check_infrastructure_rate()?;
-            match tool {
-                ToolName::UseAccount => {
-                    let input = parse_args::<crate::tools::admin::accounts::UseAccountInput>(args)?;
-                    ser(
-                        crate::tools::admin::accounts::handle_use_account(&self.registry, input)
-                            .await?,
-                    )
+        self.run_with_audit_envelope(
+            tool,
+            None,
+            PostureContext::Infrastructure,
+            args,
+            |_ticket| async move {
+                // Infrastructure tools bypass posture + breaker, but still
+                // enforce a process-wide rate limit.
+                self.registry.check_infrastructure_rate()?;
+                match tool {
+                    ToolName::UseAccount => {
+                        let input =
+                            parse_args::<crate::tools::admin::accounts::UseAccountInput>(args)?;
+                        ser(crate::tools::admin::accounts::handle_use_account(
+                            &self.registry,
+                            input,
+                        )
+                        .await?)
+                    }
+                    ToolName::ListAccounts => ser(
+                        crate::tools::admin::accounts::handle_list_accounts(&self.registry).await?,
+                    ),
+                    ToolName::ListFolders
+                    | ToolName::Search
+                    | ToolName::SearchAdvanced
+                    | ToolName::FetchMessage
+                    | ToolName::FetchMessageHtml
+                    | ToolName::ListAttachments
+                    | ToolName::DownloadAttachment
+                    | ToolName::MarkRead
+                    | ToolName::MarkUnread
+                    | ToolName::Flag
+                    | ToolName::Unflag
+                    | ToolName::AddLabel
+                    | ToolName::RemoveLabel
+                    | ToolName::ListLabels
+                    | ToolName::MoveMessage
+                    | ToolName::CreateDraft
+                    | ToolName::SendEmail
+                    | ToolName::DeleteMessage
+                    | ToolName::Expunge
+                    | ToolName::CreateFolder
+                    | ToolName::RenameFolder
+                    | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
+                        "not an infrastructure tool: {}",
+                        tool.as_str(),
+                    ))),
                 }
-                ToolName::ListAccounts => {
-                    ser(crate::tools::admin::accounts::handle_list_accounts(&self.registry).await?)
-                }
-                ToolName::ListFolders
-                | ToolName::Search
-                | ToolName::SearchAdvanced
-                | ToolName::FetchMessage
-                | ToolName::FetchMessageHtml
-                | ToolName::ListAttachments
-                | ToolName::DownloadAttachment
-                | ToolName::MarkRead
-                | ToolName::MarkUnread
-                | ToolName::Flag
-                | ToolName::Unflag
-                | ToolName::AddLabel
-                | ToolName::RemoveLabel
-                | ToolName::ListLabels
-                | ToolName::MoveMessage
-                | ToolName::CreateDraft
-                | ToolName::SendEmail
-                | ToolName::DeleteMessage
-                | ToolName::Expunge
-                | ToolName::CreateFolder
-                | ToolName::RenameFolder
-                | ToolName::DeleteFolder => Err(rimap_core::RimapError::Internal(format!(
-                    "not an infrastructure tool: {}",
-                    tool.as_str(),
-                ))),
-            }
-        })
+            },
+        )
         .await
     }
 }
