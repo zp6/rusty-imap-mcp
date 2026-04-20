@@ -18,6 +18,10 @@ pub struct AccountId(String);
 impl AccountId {
     /// Parse and validate an account name.
     ///
+    /// Validation accepts ASCII alphanumerics and hyphens, 1–64 characters.
+    /// The stored value is normalized to ASCII lowercase, so `AccountId`
+    /// equality is case-insensitive (`Work` and `work` are the same account).
+    ///
     /// # Errors
     ///
     /// Returns [`InvalidAccountName`] if the name is empty, longer than
@@ -48,7 +52,7 @@ impl AccountId {
                 ),
             });
         }
-        Ok(Self(name.to_string()))
+        Ok(Self(name.to_ascii_lowercase()))
     }
 
     /// The built-in default account name.
@@ -83,14 +87,22 @@ pub struct InvalidAccountName {
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
 
     #[test]
     fn valid_names() {
-        for name in ["work", "personal-2", "default", "a", "A-1-b"] {
-            let id = AccountId::new(name).expect("should be valid");
-            assert_eq!(id.as_str(), name);
+        // Each tuple is (input, expected stored form after lowercasing).
+        for (input, expected) in [
+            ("work", "work"),
+            ("personal-2", "personal-2"),
+            ("default", "default"),
+            ("a", "a"),
+            ("A-1-b", "a-1-b"),
+        ] {
+            let id = AccountId::new(input).expect("should be valid");
+            assert_eq!(id.as_str(), expected);
         }
     }
 
@@ -141,5 +153,38 @@ mod tests {
     fn default_account_valid() {
         let id = AccountId::default_account();
         assert_eq!(id.as_str(), DEFAULT_ACCOUNT_NAME);
+    }
+
+    #[test]
+    fn new_lowercases_inner_string() {
+        // Regression (#75): casing is presentation, not identity.
+        assert_eq!(AccountId::new("Work").unwrap().as_str(), "work");
+        assert_eq!(AccountId::new("WORK").unwrap().as_str(), "work");
+        assert_eq!(
+            AccountId::new("PersonalAccount-2").unwrap().as_str(),
+            "personalaccount-2"
+        );
+    }
+
+    #[test]
+    fn case_variants_are_equal() {
+        // Regression (#75): AccountId("Work") == AccountId("work") so that
+        // the multi-account registry deduplicates them via BTreeMap insert.
+        assert_eq!(
+            AccountId::new("Work").unwrap(),
+            AccountId::new("work").unwrap()
+        );
+        assert_eq!(
+            AccountId::new("WORK").unwrap(),
+            AccountId::new("work").unwrap()
+        );
+    }
+
+    #[test]
+    fn display_prints_normalized_lowercase() {
+        // Regression (#75): Display follows the inner string, so users see
+        // the canonical lowercase form in error messages.
+        let id = AccountId::new("Work").unwrap();
+        assert_eq!(format!("{id}"), "work");
     }
 }

@@ -988,6 +988,19 @@ allowed_base_dir = "{}"
     }
 
     #[test]
+    fn case_variant_account_names_collide() {
+        // Regression (#75): AccountId normalizes to lowercase, so a config
+        // naming both "Work" and "work" is rejected as a duplicate.
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(dir.path(), vec![raw_account("Work"), raw_account("work")]);
+        let err = validate_multi(cfg).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::DuplicateAccountName { .. }),
+            "expected DuplicateAccountName, got {err:?}",
+        );
+    }
+
+    #[test]
     fn no_accounts_rejected() {
         let dir = TempDir::new().unwrap();
         let cfg = base_multi_config(dir.path(), vec![]);
