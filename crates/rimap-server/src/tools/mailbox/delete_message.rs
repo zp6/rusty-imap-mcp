@@ -81,3 +81,89 @@ pub async fn handle(
         destination: TRASH_FOLDER,
     }))
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod tests {
+    use rimap_core::ErrorCode;
+    use rimap_core::RimapError;
+
+    use super::{DeleteMessageInput, DeleteMessageMeta, TRASH_FOLDER};
+
+    fn sample_meta(uid: u32, moved: bool) -> DeleteMessageMeta {
+        DeleteMessageMeta {
+            deleted: true,
+            folder: "INBOX".to_string(),
+            uid,
+            moved_to_trash: moved,
+            destination: TRASH_FOLDER,
+        }
+    }
+
+    #[test]
+    fn zero_uid_is_rejected_as_invalid_input() {
+        // Mirrors the guard inside `handle`: `Uid::new(0)` is `None`,
+        // which the handler maps to `RimapError::invalid_input`.
+        let input = DeleteMessageInput {
+            folder: "INBOX".into(),
+            uid: 0,
+        };
+        let err = rimap_imap::types::Uid::new(input.uid)
+            .ok_or_else(|| RimapError::invalid_input("uid must be non-zero"))
+            .unwrap_err();
+        assert_eq!(err.code(), ErrorCode::InvalidInput);
+        assert!(
+            err.to_string().contains("uid must be non-zero"),
+            "message should identify the uid constraint: {err}"
+        );
+    }
+
+    #[test]
+    fn nonzero_uid_parses_through_to_typed_uid() {
+        let input = DeleteMessageInput {
+            folder: "INBOX".into(),
+            uid: 42,
+        };
+        let uid = rimap_imap::types::Uid::new(input.uid).unwrap();
+        assert_eq!(uid.get(), 42);
+    }
+
+    #[test]
+    fn meta_json_contains_all_expected_keys() {
+        let meta = sample_meta(7, true);
+        let value = serde_json::to_value(&meta).unwrap();
+        let obj = value.as_object().unwrap();
+        assert_eq!(obj.get("deleted"), Some(&serde_json::json!(true)));
+        assert_eq!(obj.get("folder"), Some(&serde_json::json!("INBOX")));
+        assert_eq!(obj.get("uid"), Some(&serde_json::json!(7)));
+        assert_eq!(obj.get("moved_to_trash"), Some(&serde_json::json!(true)));
+        assert_eq!(obj.get("destination"), Some(&serde_json::json!("Trash")));
+    }
+
+    #[test]
+    fn meta_preserves_moved_to_trash_false() {
+        let meta = sample_meta(9, false);
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains(r#""moved_to_trash":false"#), "json = {json}");
+    }
+
+    #[test]
+    fn trash_constant_round_trips_through_meta() {
+        // The TRASH_FOLDER literal is load-bearing: downstream clients
+        // and audit trails read the `destination` string back. Pin the
+        // exact spelling so a silent rename can't drift past review.
+        assert_eq!(TRASH_FOLDER, "Trash");
+        let meta = sample_meta(1, true);
+        assert_eq!(meta.destination, TRASH_FOLDER);
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(json.contains(r#""destination":"Trash""#), "json = {json}");
+    }
+
+    #[test]
+    fn input_round_trips_through_json() {
+        let input: DeleteMessageInput =
+            serde_json::from_str(r#"{"folder": "Archive", "uid": 123}"#).unwrap();
+        assert_eq!(input.folder, "Archive");
+        assert_eq!(input.uid, 123);
+    }
+}

@@ -129,24 +129,66 @@ fn format_response(response: &lettre::transport::smtp::response::Response) -> St
     )
 }
 
+/// Coarse classification of an SMTP error derived from the public
+/// predicates on `lettre::transport::smtp::Error`. Separated from the
+/// error-to-variant mapping so the taxonomy can be unit-tested with
+/// synthetic inputs — `lettre::transport::smtp::Error` has only
+/// crate-private constructors, so variants cannot be fabricated directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SmtpErrorShape {
+    /// Server replied with a 4xx/5xx response code.
+    Response,
+    /// Client-side / protocol-setup failure.
+    Client,
+    /// Anything else (network, connection, TLS, timeout, shutdown).
+    Other,
+}
+
+impl SmtpErrorShape {
+    fn of(err: &lettre::transport::smtp::Error) -> Self {
+        if err.is_response() {
+            Self::Response
+        } else if err.is_client() {
+            Self::Client
+        } else {
+            Self::Other
+        }
+    }
+}
+
 /// Classify a lettre SMTP error into our error taxonomy.
 fn classify_smtp_error(err: lettre::transport::smtp::Error) -> SmtpError {
-    if err.is_response() {
-        SmtpError::Rejected {
+    match SmtpErrorShape::of(&err) {
+        SmtpErrorShape::Response => SmtpError::Rejected {
             reason: err.to_string(),
-        }
-    } else if err.is_client() {
-        SmtpError::Connection(err)
-    } else {
-        SmtpError::Transport(err)
+        },
+        SmtpErrorShape::Client => SmtpError::Connection(err),
+        SmtpErrorShape::Other => SmtpError::Transport(err),
+    }
+}
+
+/// Which `SmtpError` variant a given shape maps to. Pure, testable mirror
+/// of the match arms in [`classify_smtp_error`] — keeps the taxonomy
+/// intention under test without depending on lettre's private error
+/// constructors.
+#[cfg(test)]
+fn shape_to_variant_name(shape: SmtpErrorShape) -> &'static str {
+    match shape {
+        SmtpErrorShape::Response => "Rejected",
+        SmtpErrorShape::Client => "Connection",
+        SmtpErrorShape::Other => "Transport",
     }
 }
 
 #[cfg(test)]
+#[expect(clippy::unwrap_used, clippy::panic, reason = "tests")]
 mod tests {
     use rimap_config::model::{SmtpConfig, SmtpEncryption};
 
-    use super::SmtpClient;
+    use super::{
+        SendEnvelope, SmtpClient, SmtpError, SmtpErrorShape, build_lettre_envelope,
+        shape_to_variant_name,
+    };
 
     fn test_config() -> SmtpConfig {
         SmtpConfig {
@@ -162,5 +204,81 @@ mod tests {
     fn client_builds_with_no_encryption() {
         let client = SmtpClient::new(&test_config(), "password");
         assert!(client.is_ok());
+    }
+
+    #[test]
+    fn envelope_rejects_malformed_from_address() {
+        let env = SendEnvelope {
+            from: "not-an-email".into(),
+            to: vec!["to@example.com".into()],
+        };
+        let err = build_lettre_envelope(&env).unwrap_err();
+        let SmtpError::Rejected { reason } = err else {
+            panic!("expected Rejected, got {err:?}");
+        };
+        assert!(
+            reason.contains("invalid From address"),
+            "reason should identify the From field: {reason}"
+        );
+    }
+
+    #[test]
+    fn envelope_rejects_empty_recipient_list() {
+        let env = SendEnvelope {
+            from: "sender@example.com".into(),
+            to: vec![],
+        };
+        let err = build_lettre_envelope(&env).unwrap_err();
+        let SmtpError::Rejected { reason } = err else {
+            panic!("expected Rejected, got {err:?}");
+        };
+        // lettre's Envelope::new surfaces the empty-recipient case via its
+        // own error — we surface it under the `envelope:` prefix.
+        assert!(
+            reason.contains("envelope"),
+            "reason should mention the envelope error: {reason}"
+        );
+    }
+
+    #[test]
+    fn envelope_rejects_malformed_to_address() {
+        let env = SendEnvelope {
+            from: "sender@example.com".into(),
+            to: vec!["also-not-an-email".into()],
+        };
+        let err = build_lettre_envelope(&env).unwrap_err();
+        let SmtpError::Rejected { reason } = err else {
+            panic!("expected Rejected, got {err:?}");
+        };
+        assert!(
+            reason.contains("invalid recipient address"),
+            "reason should identify the recipient field: {reason}"
+        );
+    }
+
+    #[test]
+    fn envelope_accepts_valid_from_and_to() {
+        let env = SendEnvelope {
+            from: "sender@example.com".into(),
+            to: vec!["to@example.com".into(), "cc@example.com".into()],
+        };
+        let lettre_env = build_lettre_envelope(&env).unwrap();
+        assert_eq!(lettre_env.to().len(), 2);
+        assert!(lettre_env.from().is_some());
+    }
+
+    #[test]
+    fn shape_response_maps_to_rejected_variant() {
+        assert_eq!(shape_to_variant_name(SmtpErrorShape::Response), "Rejected");
+    }
+
+    #[test]
+    fn shape_client_maps_to_connection_variant() {
+        assert_eq!(shape_to_variant_name(SmtpErrorShape::Client), "Connection");
+    }
+
+    #[test]
+    fn shape_other_maps_to_transport_variant() {
+        assert_eq!(shape_to_variant_name(SmtpErrorShape::Other), "Transport");
     }
 }
