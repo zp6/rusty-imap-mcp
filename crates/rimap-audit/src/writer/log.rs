@@ -1,0 +1,224 @@
+//! Per-kind `log_*` family that wraps the [`super::AuditWriter::emit`]
+//! skeleton with a typed shape per record kind.
+//!
+//! ## `log_*` family input convention
+//!
+//! All `log_*` methods take a single argument so the family stays
+//! uniform at the call site. Two shapes are accepted:
+//!
+//! - **Record struct directly** (`Auth`, `ProcessEnd`) — the on-disk
+//!   record has no derived fields and the caller can construct it
+//!   verbatim. Adding a `<Kind>Inputs` shim would be a redirect with
+//!   no behavior.
+//! - **`<Kind>Inputs` shim with `From<Inputs> for record::<Kind>`**
+//!   ([`ProcessStartInputs`], [`ToolStartInputs`], [`ToolEndInputs`])
+//!   — the on-disk record carries derived state (`PostureEffective::
+//!   from_optional`, inode-change computation) that the caller would
+//!   otherwise have to re-derive at every site.
+//!
+//! New `log_*` methods MUST follow this rule: pick the record struct
+//! directly when no translation is needed; introduce a `*Inputs` shim
+//! when it is. Do not pass positional arguments. The rule is also
+//! pinned in `AGENTS.md` so future additions do not drift.
+
+use crate::AuditError;
+
+use super::AuditWriter;
+
+impl AuditWriter {
+    /// Build an `auth` record from `payload`, allocate a seq, and write it.
+    /// See the module-level [`log_*` family input convention](self) for
+    /// when to pass the record struct directly versus an `Inputs` shim.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_auth(
+        &self,
+        payload: crate::record::Auth,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        self.emit(crate::record::Payload::Auth(payload))
+    }
+
+    /// Build a `tool_start` record, allocate a seq, and write it. Returns
+    /// the allocated `seq` — the caller should retain this value and pass
+    /// it back to [`AuditWriter::log_tool_end`] as `start_seq` so the two
+    /// records can be paired.
+    ///
+    /// `tool_start` is NOT fsynced per existing policy; see the private
+    /// `needs_fsync` helper in `writer/emit.rs`.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_tool_start(
+        &self,
+        inputs: ToolStartInputs,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        // `inputs.account = None` + `inputs.posture_effective = None` models
+        // the infrastructure-tool dispatch path (`use_account`,
+        // `list_accounts`) which bypasses per-account posture gating by
+        // design. `PostureEffective` serializes as the historical on-disk
+        // strings (`"infrastructure"` or the kebab-case posture) so readers
+        // can distinguish these records from per-account tool calls.
+        self.emit(crate::record::Payload::ToolStart(inputs.into()))
+    }
+
+    /// Build a `tool_end` record, allocate a seq, and write it.
+    /// `inputs.start_seq` must be the seq returned by the paired
+    /// [`AuditWriter::log_tool_start`].
+    ///
+    /// `tool_end` is NOT fsynced per existing policy.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_tool_end(
+        &self,
+        inputs: ToolEndInputs,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        self.emit(crate::record::Payload::ToolEnd(inputs.into()))
+    }
+
+    /// Build a `process_end` record from `payload`, allocate a seq, and
+    /// write it. Stamps the record with the writer's stable `process_id`
+    /// and `Timestamp::now()`. Returns the allocated `seq` on success.
+    ///
+    /// `ProcessEnd` is taken directly per the `log_*` family convention:
+    /// the on-disk record has no derived fields, so a `<Kind>Inputs`
+    /// shim would add a redirect without behavior.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_process_end(
+        &self,
+        payload: crate::record::ProcessEnd,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        self.emit(crate::record::Payload::ProcessEnd(payload))
+    }
+
+    /// Build a `process_start` record from `inputs` and the writer's own
+    /// `process_id`, allocate a seq, and write it. Computes the
+    /// `audit_file_inode_changed` tamper signal from
+    /// `inputs.trailing.last_recorded_inode` vs `inputs.current_inode`.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_process_start(
+        &self,
+        inputs: ProcessStartInputs,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        let inode_changed = inputs
+            .trailing
+            .last_recorded_inode
+            .is_some_and(|prior| prior != inputs.current_inode);
+        let payload = crate::record::ProcessStart {
+            version: inputs.version,
+            git_commit: inputs.git_commit,
+            posture: inputs.posture,
+            accounts: inputs.accounts,
+            config_path: inputs.config_path,
+            config_hash_sha256: inputs.config_hash_sha256,
+            previous_last_seq: inputs.trailing.last_seq,
+            previous_process_id: inputs.trailing.last_process_id,
+            previous_file_inode: inputs.current_inode,
+            audit_file_inode_changed: inode_changed,
+        };
+        self.emit(crate::record::Payload::ProcessStart(payload))
+    }
+}
+
+/// Inputs to [`AuditWriter::log_tool_end`].
+#[derive(Debug)]
+pub struct ToolEndInputs {
+    /// Seq returned by the paired [`AuditWriter::log_tool_start`].
+    pub start_seq: crate::record::ids::Seq,
+    /// Which tool completed.
+    pub tool: rimap_core::tool::ToolName,
+    /// Account scope (`None` for infrastructure tools).
+    pub account: Option<String>,
+    /// Terminal outcome (ok / error / ...).
+    pub status: crate::record::ToolStatus,
+    /// Error classification, if any.
+    pub error_code: Option<rimap_core::ErrorCode>,
+    /// Wall-clock milliseconds.
+    pub duration_ms: u64,
+    /// Outbound result counts and sizes.
+    pub result_summary: crate::record::ResultSummary,
+    /// Recently-read message IDs and window.
+    pub provenance: crate::record::Provenance,
+}
+
+impl From<ToolEndInputs> for crate::record::ToolEnd {
+    fn from(i: ToolEndInputs) -> Self {
+        Self {
+            account: i.account,
+            start_seq: i.start_seq,
+            tool: i.tool,
+            status: i.status,
+            error_code: i.error_code,
+            duration_ms: i.duration_ms,
+            result_summary: i.result_summary,
+            provenance: i.provenance,
+        }
+    }
+}
+
+/// Inputs to [`AuditWriter::log_tool_start`].
+///
+/// Mirrors [`ToolEndInputs`] so the call sites use a consistent
+/// construction shape instead of a long positional argument list.
+#[derive(Debug)]
+pub struct ToolStartInputs {
+    /// Which tool is being dispatched.
+    pub tool: rimap_core::tool::ToolName,
+    /// Account scope (`None` for infrastructure tools like `use_account` /
+    /// `list_accounts`, which bypass per-account posture gating).
+    pub account: Option<String>,
+    /// Effective posture at dispatch time (`None` for infrastructure tools).
+    /// Serializes as the historical on-disk strings (`"infrastructure"` or
+    /// the kebab-case posture) via [`crate::record::PostureEffective`].
+    pub posture_effective: Option<rimap_core::Posture>,
+    /// Redacted arguments object produced by `redact::Redactor`.
+    pub arguments_redacted: serde_json::Value,
+    /// SHA-256 of the canonical JSON serialization of the *unredacted*
+    /// payload, hex-encoded.
+    pub arguments_hash_sha256: String,
+}
+
+impl From<ToolStartInputs> for crate::record::ToolStart {
+    fn from(i: ToolStartInputs) -> Self {
+        Self {
+            account: i.account,
+            tool: i.tool,
+            posture_effective: crate::record::PostureEffective::from_optional(i.posture_effective),
+            arguments_redacted: i.arguments_redacted,
+            arguments_hash_sha256: i.arguments_hash_sha256,
+        }
+    }
+}
+
+/// Inputs to [`AuditWriter::log_process_start`]. Caller computes the
+/// inode-tamper signal by passing the trailing state from
+/// [`crate::writer::self_check::read_trailing_state`] (run before `open`) and the
+/// current inode (run after `open`, via [`crate::writer::self_check::current_inode`]).
+#[derive(Debug, Clone)]
+pub struct ProcessStartInputs {
+    /// `CARGO_PKG_VERSION` of the running binary.
+    pub version: String,
+    /// Git commit SHA at build time. Empty string until `vergen` lands in
+    /// Sprint 5.
+    pub git_commit: String,
+    /// Effective base posture at startup (single-account mode).
+    /// Typed at the construction seam to keep the on-disk string form
+    /// in sync with the [`rimap_core::Posture`] taxonomy.
+    pub posture: Option<rimap_core::Posture>,
+    /// Per-account summaries (multi-account mode).
+    pub accounts: Option<Vec<crate::record::AccountSummary>>,
+    /// Absolute path of the loaded config file.
+    pub config_path: std::path::PathBuf,
+    /// SHA-256 of the config file contents at load time, hex-encoded.
+    pub config_hash_sha256: String,
+    /// Trailing state read from the audit file BEFORE this writer was opened.
+    pub trailing: crate::writer::self_check::TrailingState,
+    /// Inode of the audit file as observed AFTER this writer was opened
+    /// (call `crate::writer::self_check::current_inode` on the path).
+    pub current_inode: u64,
+}
