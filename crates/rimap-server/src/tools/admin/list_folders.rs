@@ -80,6 +80,7 @@ fn sanitize_folder_entry(
 
 /// A single folder entry in a `list_folders` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FolderEntry {
     /// Sanitized, display-safe folder name. Bidi / zero-width / Unicode
     /// Tag codepoints are stripped before this reaches the client.

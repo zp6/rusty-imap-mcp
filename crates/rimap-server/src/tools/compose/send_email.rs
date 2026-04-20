@@ -12,6 +12,7 @@ pub type SendEmailInput = ComposeInput;
 
 /// Copy-to-Sent result included in a `send_email` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct SentCopyInfo {
     /// Folder the copy was appended to.
     pub folder: String,
