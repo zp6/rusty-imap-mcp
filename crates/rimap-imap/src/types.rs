@@ -9,8 +9,14 @@ pub struct Uid(NonZeroU32);
 
 impl Uid {
     /// Construct from a raw integer. Returns `None` for `0`.
+    ///
+    /// Crate-private: new callers should take [`NonZeroU32`] at the
+    /// deserialize seam (schema-level non-zero guarantee) and use
+    /// [`Uid::from`] to convert. This fallible entry point remains
+    /// because the IMAP wire format delivers UIDs as `u32` and the
+    /// internal op layer has to convert those responses.
     #[must_use]
-    pub fn new(n: u32) -> Option<Self> {
+    pub(crate) fn new(n: u32) -> Option<Self> {
         NonZeroU32::new(n).map(Self)
     }
 

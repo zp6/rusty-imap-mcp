@@ -463,7 +463,7 @@ async fn case_14_store_batch_too_large() {
     };
 
     let uids: Vec<rimap_imap::types::Uid> = (1..=101)
-        .map(|n| rimap_imap::types::Uid::new(n).unwrap())
+        .map(|n| rimap_imap::types::Uid::from(core::num::NonZeroU32::new(n).unwrap()))
         .collect();
 
     let result = h

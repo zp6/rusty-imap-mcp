@@ -40,7 +40,7 @@ pub struct ComposeInput {
     /// Plain text body.
     pub body_text: String,
     /// UID of message to reply to (for threading headers).
-    pub in_reply_to_uid: Option<u32>,
+    pub in_reply_to_uid: Option<core::num::NonZeroU32>,
     /// Folder containing the message to reply to (default INBOX).
     pub in_reply_to_folder: Option<String>,
 }
@@ -189,12 +189,11 @@ pub(crate) fn cap_references(mut refs: Vec<String>) -> Vec<String> {
 pub(crate) async fn apply_threading_headers<'a>(
     account: &AccountState,
     builder: MessageBuilder<'a>,
-    reply_uid: u32,
+    reply_uid: core::num::NonZeroU32,
     in_reply_to_folder: Option<&str>,
 ) -> Result<MessageBuilder<'a>, rimap_core::RimapError> {
     let folder = in_reply_to_folder.unwrap_or("INBOX");
-    let uid = rimap_imap::types::Uid::new(reply_uid)
-        .ok_or_else(|| rimap_core::RimapError::invalid_input("in_reply_to_uid must be non-zero"))?;
+    let uid = rimap_imap::types::Uid::from(reply_uid);
 
     let raw = account.imap.fetch_body(folder, uid).await?;
     let headers = rimap_content::extract_threading_headers(&raw);
@@ -618,7 +617,7 @@ mod tests {
             name: None,
             address: "ok@example.com".into(),
         }]);
-        input.in_reply_to_uid = Some(1);
+        input.in_reply_to_uid = Some(core::num::NonZeroU32::new(1).unwrap());
         input.in_reply_to_folder = Some("bad\r\nfolder".into());
         let err = validate_compose_input(&input).unwrap_err();
         assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
@@ -630,7 +629,7 @@ mod tests {
             name: None,
             address: "ok@example.com".into(),
         }]);
-        input.in_reply_to_uid = Some(1);
+        input.in_reply_to_uid = Some(core::num::NonZeroU32::new(1).unwrap());
         input.in_reply_to_folder = Some("bad\0folder".into());
         let err = validate_compose_input(&input).unwrap_err();
         assert_eq!(err.code(), rimap_core::error::ErrorCode::InvalidInput);
@@ -642,7 +641,7 @@ mod tests {
             name: None,
             address: "ok@example.com".into(),
         }]);
-        input.in_reply_to_uid = Some(1);
+        input.in_reply_to_uid = Some(core::num::NonZeroU32::new(1).unwrap());
         input.in_reply_to_folder = Some("INBOX".into());
         validate_compose_input(&input).unwrap();
     }

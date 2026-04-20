@@ -67,7 +67,7 @@ mod tests {
     use rimap_core::error::ErrorCode;
 
     fn uid(n: u32) -> Uid {
-        Uid::new(n).expect("non-zero literal")
+        Uid::from(core::num::NonZeroU32::new(n).expect("non-zero literal"))
     }
 
     fn sample_message(u: Uid) -> FetchedMessage {
