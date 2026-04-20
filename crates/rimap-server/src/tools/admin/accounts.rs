@@ -44,7 +44,8 @@ pub struct ListAccountsMeta {
 /// # Errors
 ///
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` if
-/// `input.account` is not a valid account-name shape. Returns
+/// `input.account` contains bidi-control, zero-width, or Unicode Tag
+/// codepoints, or if it is not a valid account-name shape. Returns
 /// `RimapError::UnknownAccount { ... }` if the name does not match a
 /// configured account.
 #[expect(
@@ -55,8 +56,19 @@ pub async fn handle_use_account(
     registry: &AccountRegistry,
     input: UseAccountInput,
 ) -> Result<ToolResponse<UseAccountMeta>, rimap_core::RimapError> {
-    // Validate the account-name shape first so invalid input cannot be
-    // echoed into error messages or reach `set_active`'s lookup code.
+    // Validate the account-name defense-in-depth: reject display-spoofing
+    // codepoints first (so the audit record's error carries a specific
+    // diagnostic), then delegate shape validation to AccountId::new, which
+    // also enforces the ASCII-only constraint.
+    if input
+        .account
+        .chars()
+        .any(rimap_core::is_rejected_display_codepoint)
+    {
+        return Err(rimap_core::RimapError::invalid_input(
+            "account: disallowed bidi/zero-width/tag codepoint in name",
+        ));
+    }
     rimap_core::account::AccountId::new(&input.account)
         .map_err(|_| rimap_core::RimapError::invalid_input("invalid account name"))?;
     let previous = registry.set_active(&input.account)?;
@@ -194,5 +206,40 @@ mod tests {
         let resp = handle_list_accounts(&reg).await.expect("infallible");
         assert_eq!(resp.meta.count, 0);
         assert!(resp.meta.accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn use_account_rejects_bidi_override_in_name() {
+        let registry = empty_registry();
+        let input = UseAccountInput {
+            account: "work\u{202e}cnyS".to_string(),
+        };
+        let err = handle_use_account(&registry, input)
+            .await
+            .expect_err("must reject");
+        assert_invalid_input(&err);
+        // Pin the pre-check as the rejecting layer, not AccountId::new's ASCII
+        // gate. If the pre-check is removed, AccountId::new still rejects but
+        // with a different message — this assertion catches that regression.
+        assert!(
+            err.to_string().contains("bidi"),
+            "expected bidi-specific rejection, got: {err}",
+        );
+    }
+
+    #[tokio::test]
+    async fn use_account_rejects_zero_width_space_in_name() {
+        let registry = empty_registry();
+        let input = UseAccountInput {
+            account: "work\u{200b}mail".to_string(),
+        };
+        let err = handle_use_account(&registry, input)
+            .await
+            .expect_err("must reject");
+        assert_invalid_input(&err);
+        assert!(
+            err.to_string().contains("zero-width"),
+            "expected zero-width-specific rejection, got: {err}",
+        );
     }
 }
