@@ -74,6 +74,8 @@ pub async fn handle(
     account: &AccountState,
     input: ListAttachmentsInput,
 ) -> Result<ToolResponse<ListAttachmentsMeta, ListAttachmentsUntrusted>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let uid = Uid::from(input.uid);
 
     let spec = FetchSpec {

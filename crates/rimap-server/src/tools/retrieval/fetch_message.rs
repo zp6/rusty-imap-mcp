@@ -88,6 +88,8 @@ pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse<FetchMessageMeta, FetchMessageUntrusted>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     // The `FetchMessageHtml` posture check happens upstream in
     // `refine_tool_name` + `DispatchGuard::pre_dispatch`; this handler just reads
     // the include_html flag.

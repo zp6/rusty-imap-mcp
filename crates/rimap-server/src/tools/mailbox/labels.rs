@@ -172,6 +172,7 @@ async fn handle_label_op(
     input: LabelInput,
     action: FlagAction,
 ) -> Result<ToolResponse<LabelsMeta>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
     validate_label(&input.label)?;
     let uids: Vec<Uid> = input
         .target
@@ -209,6 +210,8 @@ pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,
 ) -> Result<ToolResponse<ListLabelsMeta>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let uid = rimap_imap::types::Uid::from(input.uid);
 
     let spec = FetchSpec {

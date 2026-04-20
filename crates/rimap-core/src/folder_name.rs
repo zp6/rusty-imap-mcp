@@ -45,7 +45,9 @@ impl FolderNameError {
 /// - no path traversal: no segment is exactly `.` or `..` when split
 ///   on `/` (the IMAP hierarchy delimiter)
 /// - no bidi control codepoints (U+202A–U+202E, U+2066–U+2069)
-/// - no zero-width or BOM codepoints (U+200B, U+200C, U+200D, U+FEFF)
+/// - no zero-width or BOM codepoints (U+200B, U+200C, U+200D, U+2060,
+///   U+FEFF)
+/// - no Unicode Tag Characters (U+E0000–U+E007F)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderName(String);
 
@@ -117,7 +119,7 @@ fn validate(raw: &str) -> Result<(), FolderNameError> {
     // These have no legitimate use in client-supplied folder names and
     // are a common spoofing vector (e.g., `INBOX\u{202e}txt.exe`).
     for c in raw.chars() {
-        if is_bidi_or_zero_width(c) {
+        if is_rejected_codepoint(c) {
             return Err(FolderNameError::new(
                 "folder name contains disallowed Unicode character",
             ));
@@ -126,29 +128,34 @@ fn validate(raw: &str) -> Result<(), FolderNameError> {
     Ok(())
 }
 
-/// Returns `true` for bidi control codepoints (U+202A–U+202E, U+2066–
-/// U+2069) and zero-width / formatting codepoints (U+200B, U+200C,
-/// U+200D, U+2060, U+FEFF).
+/// Returns `true` for codepoints that `rimap-content::unicode` would
+/// silently strip from a display string: bidi controls (U+202A–U+202E,
+/// U+2066–U+2069), zero-width and formatting codepoints (U+200B,
+/// U+200C, U+200D, U+2060, U+FEFF), and the Unicode Tag Characters
+/// block (U+E0000–U+E007F, used for invisible instruction smuggling
+/// and prompt-injection payloads).
 ///
-/// Stays in lock-step with `rimap-content::unicode`'s `ZERO_WIDTH` and
-/// `BIDI_OVERRIDE` tables so a codepoint cannot slip through here
+/// Stays in lock-step with the `ZERO_WIDTH` + `BIDI_OVERRIDE` tables
+/// and the `is_unicode_tag` check in `rimap-content::unicode::
+/// filter_codepoints` so a codepoint cannot slip through here
 /// (folder-name validation) that the response-boundary sanitizer
-/// would strip. U+2060 WORD JOINER was silently missing from the
-/// first cut; adding it closes the gap.
+/// would strip. U+2060 WORD JOINER and the Tag Characters block were
+/// silently missing from earlier cuts; both are now covered.
 ///
 /// Pulled out as a free function so the property tests can reuse the
 /// same predicate when generating positive / negative cases.
 #[must_use]
-pub(crate) fn is_bidi_or_zero_width(c: char) -> bool {
+pub(crate) fn is_rejected_codepoint(c: char) -> bool {
     matches!(
         c,
-        '\u{202a}'..='\u{202e}'   // bidi embedding / override
-        | '\u{2066}'..='\u{2069}' // bidi isolate
-        | '\u{200b}'              // zero-width space
-        | '\u{200c}'              // zero-width non-joiner
-        | '\u{200d}'              // zero-width joiner
-        | '\u{2060}'              // word joiner
-        | '\u{feff}'              // byte-order mark
+        '\u{202a}'..='\u{202e}'    // bidi embedding / override
+        | '\u{2066}'..='\u{2069}'  // bidi isolate
+        | '\u{200b}'               // zero-width space
+        | '\u{200c}'               // zero-width non-joiner
+        | '\u{200d}'               // zero-width joiner
+        | '\u{2060}'               // word joiner
+        | '\u{feff}'               // byte-order mark
+        | '\u{e0000}'..='\u{e007f}' // Unicode Tag Characters block
     )
 }
 
@@ -257,6 +264,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unicode_tag_characters() {
+        // U+E0041 TAG LATIN CAPITAL LETTER A — used for invisible
+        // instruction smuggling and prompt-injection payloads. Both
+        // endpoints of the range and a middle codepoint are tested
+        // to pin the full U+E0000..=U+E007F span.
+        assert!(FolderName::new("Work\u{e0041}").is_err());
+        assert!(FolderName::new("\u{e0000}").is_err());
+        assert!(FolderName::new("end\u{e007f}").is_err());
+        // Boundary: U+E0080 is outside the Tag block and must pass
+        // every other check (Tag-block-only behavior).
+        assert!(FolderName::new("just-outside-\u{e0080}").is_ok());
+    }
+
+    #[test]
     fn folder_name_error_display_includes_reason() {
         let err = FolderNameError::new("custom reason");
         assert_eq!(err.to_string(), "invalid folder name: custom reason");
@@ -276,7 +297,7 @@ mod proptests {
 
     use proptest::prelude::*;
 
-    use super::{FolderName, is_bidi_or_zero_width};
+    use super::{FolderName, is_rejected_codepoint};
 
     /// Reference implementation: an independent re-derivation of the
     /// rules from the [`super::FolderName::new`] doc comment, used to
@@ -308,7 +329,7 @@ mod proptests {
             }
         }
         for c in s.chars() {
-            if is_bidi_or_zero_width(c) {
+            if is_rejected_codepoint(c) {
                 return false;
             }
         }
@@ -353,6 +374,26 @@ mod proptests {
         fn any_c0_byte_is_rejected(prefix in r"[A-Za-z]{0,10}", suffix in r"[A-Za-z]{0,10}", b in 0x00u8..=0x1F) {
             let s = format!("{prefix}{}{suffix}", char::from(b));
             prop_assert!(FolderName::new(&s).is_err());
+        }
+
+        /// Every codepoint in the Unicode Tag Characters block
+        /// (U+E0000..=U+E007F) is rejected, independent of the shared
+        /// [`is_rejected_codepoint`] predicate — if the predicate is
+        /// silently edited to drop the Tag range, this test fails.
+        #[test]
+        fn any_unicode_tag_codepoint_is_rejected(
+            prefix in r"[A-Za-z]{0,10}",
+            suffix in r"[A-Za-z]{0,10}",
+            cp in 0xE0000u32..=0xE007F,
+        ) {
+            let Some(tag_char) = char::from_u32(cp) else {
+                return Ok(());
+            };
+            let s = format!("{prefix}{tag_char}{suffix}");
+            prop_assert!(
+                FolderName::new(&s).is_err(),
+                "U+{cp:04X} must be rejected but {s:?} was accepted",
+            );
         }
     }
 }

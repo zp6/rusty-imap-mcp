@@ -114,6 +114,8 @@ async fn handle_flag_op(
     flags: &[Flag],
     action: FlagAction,
 ) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let uids: Vec<Uid> = input
         .target
         .into_uids()

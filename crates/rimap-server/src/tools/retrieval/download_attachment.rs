@@ -90,6 +90,8 @@ pub async fn handle(
     input: DownloadAttachmentInput,
 ) -> Result<ToolResponse<DownloadAttachmentMeta, DownloadAttachmentUntrusted>, rimap_core::RimapError>
 {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let uid = Uid::from(input.uid);
 
     if input.part_id.is_empty() {

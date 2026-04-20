@@ -64,6 +64,8 @@ pub async fn handle(
     account: &AccountState,
     input: DeleteMessageInput,
 ) -> Result<ToolResponse<DeleteMessageMeta>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let uid = rimap_imap::types::Uid::from(input.uid);
 
     let result = account
