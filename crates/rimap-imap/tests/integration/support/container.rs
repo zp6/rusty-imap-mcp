@@ -479,7 +479,9 @@ fn uuid_like() -> String {
 // ── Task 15 additions ────────────────────────────────────────────────────────
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
-use rimap_config::credential::CredentialStore;
+use rimap_config::credential::{CredentialStore, KeyringCredentialResolver};
+use rimap_core::auth_sink::AuthEventSink;
+use rimap_core::credential::CredentialResolver;
 use rimap_imap::{Connection, ConnectionConfig};
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -537,7 +539,6 @@ impl ConnectedHarness {
         let cfg = ConnectionConfig {
             account: None,
             account_id: rimap_core::account::AccountId::default_account(),
-            fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
             host: DovecotHarness::host().to_string(),
             port: harness.port(),
             username: DovecotHarness::username().to_string(),
@@ -547,9 +548,14 @@ impl ConnectedHarness {
             max_fetch_body_bytes: 5_242_880,
             max_append_bytes: 10_485_760,
         };
-        let creds: Arc<dyn CredentialStore> =
+        let store: Arc<dyn CredentialStore> =
             Arc::new(StaticCreds(DovecotHarness::password().to_string()));
-        let connection = Connection::new(cfg, audit.clone(), creds);
+        let creds: Arc<dyn CredentialResolver> = Arc::new(KeyringCredentialResolver::new(
+            store,
+            rimap_config::model::FallbackMode::KeyringThenEnv,
+        ));
+        let sink: Arc<dyn AuthEventSink> = Arc::new(audit.clone());
+        let connection = Connection::new(cfg, sink, creds);
         Ok(Self {
             harness,
             audit_dir,

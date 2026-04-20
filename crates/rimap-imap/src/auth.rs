@@ -1,9 +1,10 @@
-//! Builders that translate connect-flow outcomes into `rimap_audit::Auth`
-//! records. Pure functions — no I/O, no audit emission. The caller
-//! (`connection.rs`) hands the result to `AuditWriter::log_auth`.
+//! Builders that translate connect-flow outcomes into
+//! [`rimap_core::AuthEvent`] records. Pure functions — no I/O, no
+//! audit emission. The caller (`connection.rs`) hands the result to
+//! [`rimap_core::auth_sink::AuthEventSink::emit_auth`].
 
-use rimap_audit::record::{Auth, AuthResult};
 use rimap_core::TlsFingerprint;
+use rimap_core::auth_event::{AuthEvent, AuthResult};
 
 /// Inputs every `Auth` record needs.
 pub(crate) struct AuthContext<'a> {
@@ -38,9 +39,9 @@ impl AuthContext<'_> {
     }
 }
 
-/// Build a successful `Auth` record.
-pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
-    Auth {
+/// Build a successful [`AuthEvent`] record.
+pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> AuthEvent {
+    AuthEvent {
         account: ctx.account.map(str::to_string),
         result: AuthResult::Success,
         host: ctx.host.to_string(),
@@ -53,9 +54,9 @@ pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> Auth {
     }
 }
 
-/// Build a failure `Auth` record carrying the stable error code.
-pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorCode) -> Auth {
-    Auth {
+/// Build a failure [`AuthEvent`] record carrying the stable error code.
+pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorCode) -> AuthEvent {
+    AuthEvent {
         account: ctx.account.map(str::to_string),
         result: AuthResult::Failure,
         host: ctx.host.to_string(),
@@ -71,8 +72,8 @@ pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorC
 #[cfg(test)]
 mod tests {
     use super::{AuthContext, auth_failure, auth_success};
-    use rimap_audit::record::AuthResult;
     use rimap_core::TlsFingerprint;
+    use rimap_core::auth_event::AuthResult;
 
     fn fp(seed: &[u8]) -> TlsFingerprint {
         TlsFingerprint::from_cert_der(seed)

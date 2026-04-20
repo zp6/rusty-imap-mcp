@@ -169,50 +169,11 @@ pub struct AuditRecord {
     pub payload: Payload,
 }
 
-/// Outcome of an IMAP authentication attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthResult {
-    /// Credential resolved and server accepted it.
-    Success,
-    /// Credential resolved but server rejected it.
-    Failure,
-}
-
-/// Payload of the `auth` kind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Auth {
-    /// Account name this auth attempt belongs to.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub account: Option<String>,
-    /// Outcome.
-    pub result: AuthResult,
-    /// IMAP host attempted.
-    pub host: String,
-    /// IMAP port attempted.
-    pub port: u16,
-    /// IMAP login identity (typically a username or email address).
-    ///
-    /// **This field MUST NEVER carry a password, OAuth / SASL token, auth
-    /// blob, or any other credential material.** Sprint 3's rimap-imap
-    /// wiring is required to populate this from the config-resolved
-    /// principal only; a copy-paste typo that lands a secret here leaks
-    /// it to disk via the audit log.
-    pub username: String,
-    /// Observed TLS certificate fingerprint (SHA-256 hex, lowercase, no colons).
-    /// `None` if the connection never reached TLS handshake completion.
-    pub tls_fingerprint_sha256: Option<String>,
-    /// Whether the observed fingerprint matched `imap.tls_fingerprint_sha256`
-    /// from the config. `None` means the config did not pin a fingerprint.
-    pub fingerprint_match: Option<bool>,
-    /// On failure, the stable error code (`ERR_TLS`, `ERR_AUTH`, …); `None`
-    /// on success.
-    pub error_code: Option<ErrorCode>,
-    /// Credential source on success; `None` on failure (credential was never
-    /// resolved) or on `auth` records from code paths that predate #78.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_source: Option<rimap_core::CredentialSource>,
-}
+// `Auth` and `AuthResult` were moved to `rimap_core::auth_event` so
+// `rimap-imap` can build them without depending on this crate. They
+// are re-exported below at their historical names for compatibility
+// with existing call sites and on-disk format tests.
+pub use rimap_core::auth_event::{AuthEvent as Auth, AuthResult};
 
 /// Payload of the `tool_start` kind. Recorded before dispatch begins so a
 /// crash mid-call still leaves a breadcrumb.

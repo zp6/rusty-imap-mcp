@@ -132,7 +132,6 @@ async fn case_04_login_rejected_emits_audit() {
     let cfg = ConnectionConfig {
         account: None,
         account_id: rimap_core::account::AccountId::default_account(),
-        fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
         host: DovecotHarness::host().to_string(),
         port: h.harness.port(),
         username: DovecotHarness::username().to_string(),
@@ -142,11 +141,17 @@ async fn case_04_login_rejected_emits_audit() {
         max_fetch_body_bytes: 5_242_880,
         max_append_bytes: 10_485_760,
     };
-    let creds: Arc<dyn CredentialStore> = Arc::new(WrongPass);
+    let store: Arc<dyn CredentialStore> = Arc::new(WrongPass);
+    let creds: Arc<dyn rimap_core::CredentialResolver> =
+        Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+            store,
+            rimap_config::model::FallbackMode::KeyringThenEnv,
+        ));
+    let sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(h.audit.clone());
     // Reuse h.audit so the rejected-auth record lands in the same file
     // the audit assertions below read from. Opening a fresh AuditWriter
     // here would emit the record to a different file and break the test.
-    let conn = Connection::new(cfg, h.audit.clone(), creds);
+    let conn = Connection::new(cfg, sink, creds);
 
     let result = conn.list_folders("*").await;
     match result {
@@ -271,7 +276,6 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
     let cfg = ConnectionConfig {
         account: None,
         account_id: rimap_core::account::AccountId::default_account(),
-        fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
         host: DovecotHarness::host().to_string(),
         port: h.harness.port(),
         username: DovecotHarness::username().to_string(),
@@ -281,13 +285,19 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         max_fetch_body_bytes: 10,
         max_append_bytes: 10_485_760,
     };
-    let creds: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
+    let store: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
         DovecotHarness::password().to_string(),
     ));
+    let creds: Arc<dyn rimap_core::CredentialResolver> =
+        Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+            store,
+            rimap_config::model::FallbackMode::KeyringThenEnv,
+        ));
+    let sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(h.audit.clone());
     // Reuse h.audit so the size-limit / connection-loss records land in
     // the file the audit assertions below read from. The override here
     // is `max_fetch_body_bytes`, not the audit writer.
-    let conn = Connection::new(cfg, h.audit.clone(), creds);
+    let conn = Connection::new(cfg, sink, creds);
 
     let q = SearchQuery::Structured(StructuredQuery {
         subject: Some("Sprint 3 multipart fixture".to_string()),

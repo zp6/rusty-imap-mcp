@@ -1,16 +1,18 @@
 //! `Connection`: lazy-connect IMAP session with TLS fingerprint pinning,
-//! command timeout enforcement, and `Auth` audit emission.
+//! command timeout enforcement, and `AuthEvent` audit emission.
 //!
 //! ## Locking discipline
 //!
 //! - The `tokio::sync::Mutex` around `Option<Session>` IS held across `.await`
 //!   points (it has to be — async-imap commands are themselves `.await`).
-//! - The `rimap_audit::AuditWriter` lock (a `std::sync::Mutex`) is NEVER held
-//!   across an `.await`. Every audit emission goes through
+//! - The injected [`AuthEventSink`] may hold its own internal
+//!   `std::sync::Mutex` (the production `rimap-audit::AuditWriter`
+//!   does). That lock is NEVER held across an `.await` because every
+//!   call to [`AuthEventSink::emit_auth`] goes through
 //!   `tokio::task::spawn_blocking`.
 //!
 //! These two rules are independent and both must hold. See
-//! `docs/architecture/audit-locking.md` (added in Task 17).
+//! `docs/architecture/audit-locking.md`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,10 +21,10 @@ use std::time::Duration;
 use async_imap::Session;
 use async_imap::imap_proto::{Capability as ImapCapability, Response, Status};
 use async_imap::types::UnsolicitedResponse;
-use rimap_audit::AuditWriter;
-use rimap_audit::record::Auth;
-use rimap_config::credential::{CredentialStore, resolve_credential};
 use rimap_core::TlsFingerprint;
+use rimap_core::auth_event::AuthEvent;
+use rimap_core::auth_sink::AuthEventSink;
+use rimap_core::credential::CredentialResolver;
 use secrecy::ExposeSecret;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -35,22 +37,22 @@ use crate::auth::{AuthContext, auth_failure, auth_success};
 use crate::error::{AuthFailure, ImapError};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
-/// Everything `Connection` needs to open a session, pulled out of a
-/// `rimap_config::ValidatedAccountConfig` entry inside the overall
-/// `ValidatedMultiConfig` by the caller. `Connection` clones this value
-/// once at construction time.
+/// Everything `Connection` needs to open a session. The caller pulls
+/// these fields from a validated config entry; `Connection` clones
+/// the value once at construction time and never re-reads it.
+///
+/// Credential-fallback policy is NOT in this struct — that's a config
+/// concern baked into the [`CredentialResolver`] handed to
+/// [`Connection::new`].
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
     /// Account name this connection belongs to. `None` for the legacy
     /// single-account `"default"` deployment; `Some(name)` in multi-account
-    /// configs. Populated into `Auth` audit records.
+    /// configs. Populated into [`AuthEvent`] audit records.
     pub account: Option<String>,
     /// Account id used for keyring lookups. Always set — the default account
     /// uses `AccountId::default_account()`.
     pub account_id: rimap_core::account::AccountId,
-    /// Credential fallback policy: whether to consult the env var when the
-    /// keyring has no entry.
-    pub fallback_mode: rimap_config::model::FallbackMode,
     /// IMAP server host.
     pub host: String,
     /// IMAP server port (typically 993 for IMAPS).
@@ -81,8 +83,8 @@ pub struct Connection {
 
 struct ConnectionInner {
     cfg: ConnectionConfig,
-    audit: AuditWriter,
-    credentials: Arc<dyn CredentialStore>,
+    audit: Arc<dyn AuthEventSink>,
+    credentials: Arc<dyn CredentialResolver>,
     /// `None` = never connected, or last command tore down the connection.
     /// `Some(_)` = live session ready for the next command.
     session: Mutex<Option<ImapSession>>,
@@ -112,11 +114,17 @@ impl std::fmt::Debug for Connection {
 
 impl Connection {
     /// Build a connection handle. Does NOT open a socket.
+    ///
+    /// `audit` and `credentials` are trait objects so the transport
+    /// crate stays decoupled from any specific audit-log or credential
+    /// store implementation. Production wiring uses the `rimap-audit`
+    /// `AuditWriter` (which implements [`AuthEventSink`]) and the
+    /// `rimap-config` `KeyringCredentialResolver`.
     #[must_use]
     pub fn new(
         cfg: ConnectionConfig,
-        audit: AuditWriter,
-        credentials: Arc<dyn CredentialStore>,
+        audit: Arc<dyn AuthEventSink>,
+        credentials: Arc<dyn CredentialResolver>,
     ) -> Self {
         Self {
             inner: Arc::new(ConnectionInner {
@@ -381,26 +389,23 @@ impl Connection {
             ));
         }
 
-        // Resolve the password from the credential store. A missing
-        // credential is an authentication failure, not a network failure —
-        // map it to ERR_AUTH so retry logic and operator messages stay
-        // accurate. Pre-resolve; carry `None`.
+        // Resolve the password from the injected resolver. A missing
+        // credential is an authentication failure, not a network
+        // failure — map it to ERR_AUTH so retry logic and operator
+        // messages stay accurate. Pre-resolve; carry `None`.
         let cfg = &self.inner.cfg;
-        let (password, credential_source) = resolve_credential(
-            &*self.inner.credentials,
-            &cfg.account_id,
-            &cfg.username,
-            &cfg.host,
-            cfg.fallback_mode,
-        )
-        .map_err(|e| {
-            (
-                ImapError::Auth {
-                    reason: AuthFailure::CredentialUnavailable(e.to_string()),
-                },
-                None,
-            )
-        })?;
+        let (password, credential_source) = self
+            .inner
+            .credentials
+            .resolve(&cfg.account_id, &cfg.username, &cfg.host)
+            .map_err(|e| {
+                (
+                    ImapError::Auth {
+                        reason: AuthFailure::CredentialUnavailable(e.reason),
+                    },
+                    None,
+                )
+            })?;
 
         // From here on, all errors carry `Some(credential_source)` because
         // resolution succeeded.
@@ -449,9 +454,11 @@ impl Connection {
         Ok((session, credential_source))
     }
 
-    /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside
-    /// `spawn_blocking` so the `std::sync::Mutex` inside `AuditWriter` is
-    /// never held across an `.await` boundary.
+    /// Emit an [`AuthEvent`] through the injected sink. Runs the
+    /// (sync) `emit_auth` call inside `spawn_blocking` so any
+    /// `std::sync::Mutex` the sink holds (the production
+    /// `AuditWriter` impl does) is never held across an `.await`
+    /// boundary.
     ///
     /// ## Cancellation behavior
     ///
@@ -466,38 +473,34 @@ impl Connection {
     ///
     /// ## `ImapError` message sanitization
     ///
-    /// The `ImapError::Audit { message }` uses the short error code
-    /// (`audit_err.code()`) rather than the full `Display`, because
-    /// `AuditError::Write` / `Fsync` / `Rotate` include the audit file
-    /// path, which is operator-configured filesystem layout and should
-    /// not propagate into MCP tool responses or client-visible error
-    /// chains. The full error is still preserved in the `source` field
-    /// for observability and log inspection.
-    async fn emit_auth(&self, record: Auth) -> Result<(), ImapError> {
-        let audit = self.inner.audit.clone();
-        let join_result = tokio::task::spawn_blocking(move || audit.log_auth(record)).await;
+    /// The [`AuthEventSink`] contract requires implementations to
+    /// pre-sanitize the `message` field on [`rimap_core::AuthSinkError`]
+    /// (no filesystem paths or operator-configured layout). This
+    /// function forwards that `message` verbatim — the full
+    /// underlying error is preserved on the `source` chain for
+    /// observability.
+    async fn emit_auth(&self, event: AuthEvent) -> Result<(), ImapError> {
+        let sink = self.inner.audit.clone();
+        let join_result = tokio::task::spawn_blocking(move || sink.emit_auth(event)).await;
         match join_result {
             Err(join_err) => Err(ImapError::Audit {
                 op: "emit_auth",
                 message: "tokio join error during audit write".to_string(),
                 source: Box::new(join_err),
             }),
-            Ok(Err(audit_err)) => {
+            Ok(Err(sink_err)) => {
                 tracing::error!(
-                    error = %audit_err,
-                    "audit log_auth failed; converting to ImapError::Audit",
+                    error = %sink_err,
+                    "AuthEventSink::emit_auth failed; converting to ImapError::Audit",
                 );
-                // Sanitized message: use only the stable error code, not
-                // the Display (which may include the audit file path).
-                // The full error is preserved in source.
-                let message = format!("emit_auth: {}", audit_err.code());
+                let message = sink_err.message.clone();
                 Err(ImapError::Audit {
                     op: "emit_auth",
                     message,
-                    source: Box::new(audit_err),
+                    source: Box::new(sink_err),
                 })
             }
-            Ok(Ok(_seq)) => Ok(()),
+            Ok(Ok(())) => Ok(()),
         }
     }
 

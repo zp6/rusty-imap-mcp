@@ -21,9 +21,33 @@
 //! when it is. Do not pass positional arguments. The rule is also
 //! pinned in `AGENTS.md` so future additions do not drift.
 
+use rimap_core::auth_sink::{AuthEventSink, AuthSinkError};
+
 use crate::AuditError;
 
 use super::AuditWriter;
+
+impl AuthEventSink for AuditWriter {
+    /// Record `event` as an `auth` audit record. Maps
+    /// [`AuditError`] into [`AuthSinkError`] using the underlying
+    /// audit error code; the sanitized `message` deliberately omits
+    /// the audit file path (operator-configured layout) so it can
+    /// flow into transport-layer error chains without leaking it.
+    fn emit_auth(&self, event: rimap_core::AuthEvent) -> Result<(), AuthSinkError> {
+        match self.log_auth(event) {
+            Ok(_seq) => Ok(()),
+            Err(err) => {
+                let code = err.code();
+                let message = format!("audit emit_auth: {code}");
+                Err(AuthSinkError {
+                    code,
+                    message,
+                    source: Box::new(err),
+                })
+            }
+        }
+    }
+}
 
 impl AuditWriter {
     /// Build an `auth` record from `payload`, allocate a seq, and write it.

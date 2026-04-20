@@ -3,8 +3,10 @@
 #![deny(missing_docs)]
 
 pub mod account;
+pub mod auth_event;
+pub mod auth_sink;
 pub mod credential;
-pub use credential::CredentialSource;
+pub use credential::{CredentialResolver, CredentialResolverError, CredentialSource};
 pub mod error;
 pub mod folder_name;
 pub mod posture;
@@ -14,6 +16,8 @@ pub mod tool;
 pub mod uid_selector;
 pub mod warning;
 
+pub use crate::auth_event::{AuthEvent, AuthResult};
+pub use crate::auth_sink::{AuthEventSink, AuthSinkError};
 pub use crate::error::{ErrorCode, RimapError};
 pub use crate::folder_name::{FolderName, FolderNameError};
 pub use crate::posture::{Posture, UnknownPosture};

@@ -170,6 +170,61 @@ fn build_no_credential_reason(
     }
 }
 
+/// Adapter implementing [`rimap_core::CredentialResolver`] over the
+/// lower-level [`CredentialStore`] + [`crate::model::FallbackMode`]
+/// pair. Bakes the keyring-vs-env-var fallback policy in at
+/// construction time so the IMAP transport never sees `FallbackMode`.
+///
+/// Cheaply cloneable; the `Arc<dyn CredentialStore>` shares a single
+/// keyring handle across every per-account resolver in a process.
+#[derive(Clone)]
+pub struct KeyringCredentialResolver {
+    store: std::sync::Arc<dyn CredentialStore>,
+    fallback_mode: crate::model::FallbackMode,
+}
+
+impl std::fmt::Debug for KeyringCredentialResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // CredentialStore is not Debug (production impls wrap a
+        // `keyring::Entry` which doesn't implement it either), so the
+        // store is shown as an opaque pointer rather than expanded.
+        f.debug_struct("KeyringCredentialResolver")
+            .field("store", &"<dyn CredentialStore>")
+            .field("fallback_mode", &self.fallback_mode)
+            .finish()
+    }
+}
+
+impl KeyringCredentialResolver {
+    /// Build a resolver that walks `store` and falls back to the
+    /// configured policy.
+    #[must_use]
+    pub fn new(
+        store: std::sync::Arc<dyn CredentialStore>,
+        fallback_mode: crate::model::FallbackMode,
+    ) -> Self {
+        Self {
+            store,
+            fallback_mode,
+        }
+    }
+}
+
+impl rimap_core::CredentialResolver for KeyringCredentialResolver {
+    fn resolve(
+        &self,
+        account: &AccountId,
+        username: &str,
+        host: &str,
+    ) -> Result<(SecretString, rimap_core::CredentialSource), rimap_core::CredentialResolverError>
+    {
+        resolve_credential(&*self.store, account, username, host, self.fallback_mode).map_err(|e| {
+            let reason = e.to_string();
+            rimap_core::CredentialResolverError::with_source(reason, e)
+        })
+    }
+}
+
 /// Keychain-backed [`CredentialStore`] using the `keyring` crate. Not
 /// constructed in unit tests (keychain access is unreliable in CI).
 #[derive(Debug, Default)]

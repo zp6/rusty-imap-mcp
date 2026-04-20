@@ -2174,6 +2174,7 @@ dependencies = [
  "hex",
  "proptest",
  "schemars",
+ "secrecy",
  "serde",
  "serde_json",
  "sha2",

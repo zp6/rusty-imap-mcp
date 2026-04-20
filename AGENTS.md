@@ -96,8 +96,11 @@ crates/
 
 Each library crate has one clear responsibility and communicates through typed
 interfaces. `rimap-content` has zero network dependencies; `rimap-authz` has
-zero IMAP dependencies. This isolation is load-bearing for testability — do
-not introduce cross-crate coupling that breaks it.
+zero IMAP dependencies; `rimap-imap` is a pure transport crate that depends
+only on `rimap-core` (`AuthEventSink` + `CredentialResolver` trait seams) —
+the audit log and credential keyring sit on the other side of those traits
+and are wired by `rimap-server` at boot. This isolation is load-bearing for
+testability — do not introduce cross-crate coupling that breaks it.
 
 ## Coding standards
 

@@ -179,10 +179,16 @@ async fn build_registry(
     download_dir: &Arc<std::path::Path>,
 ) -> anyhow::Result<registry::AccountRegistry> {
     let mut account_states = std::collections::BTreeMap::new();
+    let auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
     for (id, acfg) in &multi.accounts {
         let guard = build_account_guard(acfg).context("building dispatch guard")?;
         let conn_cfg = build_account_connection(id, acfg);
-        let imap = Connection::new(conn_cfg, audit.clone(), credentials.clone());
+        let resolver: Arc<dyn rimap_core::CredentialResolver> =
+            Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+                credentials.clone(),
+                acfg.fallback_mode,
+            ));
+        let imap = Connection::new(conn_cfg, auth_sink.clone(), resolver);
 
         let special_use = rimap_server::boot::discovery::resolve_special_use(&imap)
             .await
@@ -279,7 +285,6 @@ fn build_account_connection(
     ConnectionConfig {
         account,
         account_id: id.clone(),
-        fallback_mode: acfg.fallback_mode,
         host: acfg.imap.host.clone(),
         port: acfg.imap.port,
         username: acfg.imap.username.clone(),
