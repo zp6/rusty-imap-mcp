@@ -7,10 +7,15 @@
 //!   - Audit directory exists and is writable (parent dir of `audit.path`).
 //!   - Attachment download dir, if non-empty, is writable.
 //!   - All numeric limits are positive and cap/default invariants hold.
+//!
+//! Submodules group helpers by concern:
+//!   - [`identity`] — username and TLS fingerprint
+//!   - [`limits`]   — numeric-limits zero/cap checks
+//!   - [`paths`]    — audit and download-dir filesystem probes
+//!   - [`rules`]    — folder safety, SMTP requirement and encryption,
+//!     per-tool override resolution
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
 
 use rimap_core::account::AccountId;
 use rimap_core::tls::TlsFingerprint;
@@ -19,8 +24,13 @@ use rimap_core::tool::ToolName;
 use crate::error::ConfigError;
 use crate::model::{
     AttachmentsConfig, AuditConfig, Config, FallbackMode, ImapConfig, LimitsConfig,
-    MultiAccountConfig, SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
+    MultiAccountConfig, SecurityConfig, SmtpConfig, Verdict,
 };
+
+mod identity;
+mod limits;
+mod paths;
+mod rules;
 
 /// Validated per-account config with resolved overrides and fingerprint.
 #[derive(Debug, Clone)]
@@ -89,8 +99,8 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
         accounts.insert(id, validated);
     }
 
-    validate_audit_config(&config.audit)?;
-    validate_paths_multi(&config.audit, &config.attachments)?;
+    paths::validate_audit_config(&config.audit)?;
+    paths::validate_paths_multi(&config.audit, &config.attachments)?;
 
     Ok(ValidatedMultiConfig {
         accounts,
@@ -116,8 +126,8 @@ pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, 
         config.limits,
         FallbackMode::default(),
     )?;
-    validate_audit_config(&config.audit)?;
-    validate_paths_multi(&config.audit, &config.attachments)?;
+    paths::validate_audit_config(&config.audit)?;
+    paths::validate_paths_multi(&config.audit, &config.attachments)?;
 
     let mut accounts = BTreeMap::new();
     accounts.insert(id, account);
@@ -138,16 +148,16 @@ fn validate_account(
     limits: LimitsConfig,
     fallback_mode: FallbackMode,
 ) -> Result<ValidatedAccountConfig, ConfigError> {
-    let tls_fingerprint = parse_fingerprint(imap.tls_fingerprint_sha256.as_deref())?;
-    validate_imap_username(&imap.username)?;
+    let tls_fingerprint = identity::parse_fingerprint(imap.tls_fingerprint_sha256.as_deref())?;
+    identity::validate_imap_username(&imap.username)?;
     if let Some(ref smtp_cfg) = smtp {
-        validate_smtp_username(&smtp_cfg.username)?;
+        identity::validate_smtp_username(&smtp_cfg.username)?;
     }
-    validate_limits(&limits)?;
-    validate_folder_safety(&security)?;
-    let tool_overrides = resolve_tool_overrides(&security)?;
-    validate_smtp_required(&security, &tool_overrides, smtp.as_ref())?;
-    validate_smtp_encryption(smtp.as_ref())?;
+    limits::validate_limits(&limits)?;
+    rules::validate_folder_safety(&security)?;
+    let tool_overrides = rules::resolve_tool_overrides(&security)?;
+    rules::validate_smtp_required(&security, &tool_overrides, smtp.as_ref())?;
+    rules::validate_smtp_encryption(smtp.as_ref())?;
 
     Ok(ValidatedAccountConfig {
         id,
@@ -159,282 +169,6 @@ fn validate_account(
         tls_fingerprint,
         fallback_mode,
     })
-}
-
-fn validate_imap_username(username: &str) -> Result<(), ConfigError> {
-    validate_username_field(username, "imap.username")
-}
-
-fn validate_smtp_username(username: &str) -> Result<(), ConfigError> {
-    validate_username_field(username, "smtp.username")
-}
-
-fn validate_username_field(username: &str, field: &'static str) -> Result<(), ConfigError> {
-    if username.is_empty() {
-        return Err(ConfigError::InvalidLimit {
-            field,
-            reason: "username must not be empty".to_string(),
-        });
-    }
-    if username
-        .chars()
-        .any(|c| c == '\r' || c == '\n' || c == '\0')
-    {
-        return Err(ConfigError::InvalidLimit {
-            field,
-            reason: "username must not contain CR, LF, or NUL".to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn parse_fingerprint(maybe_fp: Option<&str>) -> Result<Option<TlsFingerprint>, ConfigError> {
-    let Some(raw) = maybe_fp else {
-        return Ok(None);
-    };
-    let fp = TlsFingerprint::from_hex(raw).map_err(|e| ConfigError::TlsFingerprint {
-        reason: e.to_string(),
-    })?;
-    Ok(Some(fp))
-}
-
-fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
-    if audit.retention_seconds == Some(0) {
-        return Err(ConfigError::InvalidLimit {
-            field: "audit.retention_seconds",
-            reason: "must be > 0 (use None / omit the field to disable \
-                     time-based retention)"
-                .to_string(),
-        });
-    }
-    Ok(())
-}
-
-/// Accessor for one field on `LimitsConfig` for the zero-check table.
-type LimitAccessor = fn(&LimitsConfig) -> u64;
-
-fn validate_limits(limits: &LimitsConfig) -> Result<(), ConfigError> {
-    /// Table of `(field_name, accessor)` for zero-value checks. New limits
-    /// that must be `> 0` get added here rather than as another `if` block.
-    const ZERO_CHECKS: &[(&str, LimitAccessor)] = &[
-        ("limits.commands_per_second", |l| {
-            u64::from(l.commands_per_second)
-        }),
-        ("limits.drafts_per_minute", |l| {
-            u64::from(l.drafts_per_minute)
-        }),
-        ("limits.sends_per_minute", |l| u64::from(l.sends_per_minute)),
-        ("limits.circuit_breaker_error_threshold", |l| {
-            u64::from(l.circuit_breaker_error_threshold)
-        }),
-        ("limits.circuit_breaker_window_seconds", |l| {
-            u64::from(l.circuit_breaker_window_seconds)
-        }),
-        ("limits.max_search_results", |l| {
-            u64::from(l.max_search_results)
-        }),
-        ("limits.max_fetch_body_bytes", |l| l.max_fetch_body_bytes),
-        ("limits.max_attachment_bytes", |l| l.max_attachment_bytes),
-        ("limits.max_append_bytes", |l| l.max_append_bytes),
-    ];
-    for (field, accessor) in ZERO_CHECKS {
-        if accessor(limits) == 0 {
-            return Err(ConfigError::InvalidLimit {
-                field,
-                reason: "must be > 0".to_string(),
-            });
-        }
-    }
-    if limits.max_search_results > limits.max_search_results_cap {
-        return Err(ConfigError::InvalidLimit {
-            field: "limits.max_search_results",
-            reason: format!(
-                "default {} exceeds cap {}",
-                limits.max_search_results, limits.max_search_results_cap
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn validate_paths_multi(
-    audit: &AuditConfig,
-    attachments: &AttachmentsConfig,
-) -> Result<(), ConfigError> {
-    let audit_parent = audit
-        .path
-        .parent()
-        .ok_or_else(|| ConfigError::PathNotWritable {
-            path: audit.path.clone(),
-            reason: "audit path has no parent directory".to_string(),
-        })?;
-    require_writable_dir(audit_parent)?;
-    enforce_audit_containment(audit)?;
-    if !attachments.download_dir.is_empty() {
-        require_writable_dir(Path::new(&attachments.download_dir))?;
-    }
-    Ok(())
-}
-
-/// Compute the default audit base when `audit.allowed_base_dir` is unset.
-/// Returns `$XDG_STATE_HOME/rusty-imap-mcp/` on platforms where
-/// `directories::ProjectDirs` resolves; returns `None` otherwise (which
-/// causes the containment check to fail with a clear error).
-///
-/// ## macOS Time Machine caveat (LOCAL-PRI-06)
-///
-/// On macOS, `ProjectDirs::data_local_dir()` resolves to
-/// `~/Library/Application Support/rusty-imap-mcp/`, which is covered by
-/// Time Machine backups by default. The audit log appears in every
-/// backup snapshot and is readable from any restore. A stolen laptop or
-/// stolen Time Machine disk gives cold-attacker access to the full audit
-/// history even if the live process was never touched.
-///
-/// The backup-exclude xattr fix (setting
-/// `com.apple.metadata:com_apple_backup_excludeItem` on the audit path)
-/// is tracked in issue #45. Until that lands, operators on macOS should
-/// either (a) set `audit.allowed_base_dir` explicitly to a path that
-/// Time Machine does not back up (e.g., under `~/Library/Caches/`), or
-/// (b) manually exclude `~/Library/Application Support/rusty-imap-mcp/`
-/// via `tmutil addexclusion`.
-fn default_audit_base() -> Option<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "rusty-imap-mcp")?;
-    Some(dirs.data_local_dir().to_path_buf())
-}
-
-/// Canonicalize the audit path and verify it is contained in the allowed
-/// base. Called after `require_writable_dir` so the parent dir is known to
-/// exist. The parent is canonicalized first (not the path itself, which
-/// may not exist yet), then joined with the file name to produce the
-/// canonical audit path.
-fn enforce_audit_containment(audit: &AuditConfig) -> Result<(), ConfigError> {
-    let audit_path = &audit.path;
-    let parent = audit_path
-        .parent()
-        .ok_or_else(|| ConfigError::PathNotWritable {
-            path: audit_path.clone(),
-            reason: "audit path has no parent directory".to_string(),
-        })?;
-    let canon_parent = std::fs::canonicalize(parent).map_err(|e| ConfigError::PathNotWritable {
-        path: parent.to_path_buf(),
-        reason: format!("canonicalize parent: {e}"),
-    })?;
-    let file_name = audit_path
-        .file_name()
-        .ok_or_else(|| ConfigError::PathNotWritable {
-            path: audit_path.clone(),
-            reason: "audit path has no file name".to_string(),
-        })?;
-    let canon_path = canon_parent.join(file_name);
-
-    let base = audit
-        .allowed_base_dir
-        .clone()
-        .or_else(default_audit_base)
-        .ok_or_else(|| ConfigError::PathNotWritable {
-            path: audit_path.clone(),
-            reason: "no allowed_base_dir configured and platform default unavailable".to_string(),
-        })?;
-    let canon_base = std::fs::canonicalize(&base).map_err(|e| ConfigError::PathNotWritable {
-        path: base.clone(),
-        reason: format!("canonicalize allowed_base_dir: {e}"),
-    })?;
-
-    if !canon_path.starts_with(&canon_base) {
-        return Err(ConfigError::AuditPathOutsideBase {
-            path: canon_path,
-            base: canon_base,
-        });
-    }
-    Ok(())
-}
-
-fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
-    if !dir.exists() {
-        return Err(ConfigError::PathNotWritable {
-            path: dir.to_path_buf(),
-            reason: "directory does not exist".to_string(),
-        });
-    }
-    let meta = std::fs::metadata(dir).map_err(|e| ConfigError::PathNotWritable {
-        path: dir.to_path_buf(),
-        reason: format!("stat failed: {e}"),
-    })?;
-    if !meta.is_dir() {
-        return Err(ConfigError::PathNotWritable {
-            path: dir.to_path_buf(),
-            reason: "not a directory".to_string(),
-        });
-    }
-    if meta.permissions().readonly() {
-        return Err(ConfigError::PathNotWritable {
-            path: dir.to_path_buf(),
-            reason: "directory is read-only".to_string(),
-        });
-    }
-    Ok(())
-}
-
-fn validate_folder_safety(security: &SecurityConfig) -> Result<(), ConfigError> {
-    let mut protected: Vec<String> = security
-        .protected_folders
-        .iter()
-        .map(|f| utf7_imap::decode_utf7_imap(f.clone()).to_lowercase())
-        .collect();
-    protected.push("inbox".to_string());
-
-    for folder in &security.expunge_folders {
-        let norm = utf7_imap::decode_utf7_imap(folder.clone()).to_lowercase();
-        if protected.contains(&norm) {
-            return Err(ConfigError::ConflictingFolders {
-                folder: folder.clone(),
-            });
-        }
-    }
-    Ok(())
-}
-
-fn validate_smtp_required(
-    security: &SecurityConfig,
-    tool_overrides: &BTreeMap<ToolName, Verdict>,
-    smtp: Option<&SmtpConfig>,
-) -> Result<(), ConfigError> {
-    let posture = security.posture;
-    let send_email_base = rimap_core::base_allows(posture, ToolName::SendEmail);
-    let send_email_effective = match tool_overrides.get(&ToolName::SendEmail) {
-        Some(Verdict::Allow) => true,
-        Some(Verdict::Deny) => false,
-        None => send_email_base,
-    };
-    if send_email_effective && smtp.is_none() {
-        return Err(ConfigError::SmtpRequired { posture });
-    }
-    Ok(())
-}
-
-fn validate_smtp_encryption(smtp: Option<&SmtpConfig>) -> Result<(), ConfigError> {
-    let Some(smtp) = smtp else {
-        return Ok(());
-    };
-    if smtp.encryption == SmtpEncryption::None {
-        let host = &smtp.host;
-        let is_localhost = host == "localhost" || host == "127.0.0.1" || host == "::1";
-        if !is_localhost {
-            return Err(ConfigError::SmtpPlaintextDenied { host: host.clone() });
-        }
-    }
-    Ok(())
-}
-
-fn resolve_tool_overrides(
-    security: &SecurityConfig,
-) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
-    let mut out = BTreeMap::new();
-    for (name, verdict) in &security.tools {
-        let tool = ToolName::from_str(name)?;
-        out.insert(tool, *verdict);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -1116,7 +850,7 @@ allowed_base_dir = "{}"
     // Username validation tests (CR/LF/NUL rejection)
     // -----------------------------------------------------------------------
 
-    use crate::validate::{validate_imap_username, validate_smtp_username};
+    use crate::validate::identity::{validate_imap_username, validate_smtp_username};
 
     #[test]
     fn username_with_crlf_rejected() {
