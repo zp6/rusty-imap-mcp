@@ -81,6 +81,12 @@ pub struct Connection {
     inner: Arc<ConnectionInner>,
 }
 
+// Field order is drop-order-significant. Fields drop in declaration
+// order; reorder only with care. Today the order is: config scalars
+// first (cheap), then the Arc'd sink and resolver (refcount
+// decrements — the real destructors run wherever the last handle is
+// dropped), then the live IMAP session (so its teardown cannot observe
+// dropped audit/credential sinks), then the capability atomics.
 struct ConnectionInner {
     cfg: ConnectionConfig,
     audit: Arc<dyn AuthEventSink>,

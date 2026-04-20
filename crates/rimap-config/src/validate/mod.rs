@@ -88,14 +88,14 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
             .credentials
             .map_or(config.defaults.credentials.fallback, |c| c.fallback);
 
-        let validated = validate_account(
-            id.clone(),
-            raw.imap,
-            raw.smtp,
+        let validated = validate_account(ValidateAccountInputs {
+            id: id.clone(),
+            imap: raw.imap,
+            smtp: raw.smtp,
             security,
             limits,
             fallback_mode,
-        )?;
+        })?;
         accounts.insert(id, validated);
     }
 
@@ -118,14 +118,14 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
 /// Returns `ConfigError` on any validation failure.
 pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, ConfigError> {
     let id = AccountId::default_account();
-    let account = validate_account(
-        id.clone(),
-        config.imap,
-        config.smtp,
-        config.security,
-        config.limits,
-        FallbackMode::default(),
-    )?;
+    let account = validate_account(ValidateAccountInputs {
+        id: id.clone(),
+        imap: config.imap,
+        smtp: config.smtp,
+        security: config.security,
+        limits: config.limits,
+        fallback_mode: FallbackMode::default(),
+    })?;
     paths::validate_audit_config(&config.audit)?;
     paths::validate_paths_multi(&config.audit, &config.attachments)?;
 
@@ -139,15 +139,29 @@ pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, 
     })
 }
 
-/// Validate a single account's worth of config fields.
-fn validate_account(
+/// Inputs to [`validate_account`]. Bundles the six per-account fields
+/// a caller would otherwise pass positionally, matching the workspace
+/// `*Inputs` convention (see `AuditWriter::log_*` family).
+struct ValidateAccountInputs {
     id: AccountId,
     imap: ImapConfig,
     smtp: Option<SmtpConfig>,
     security: SecurityConfig,
     limits: LimitsConfig,
     fallback_mode: FallbackMode,
-) -> Result<ValidatedAccountConfig, ConfigError> {
+}
+
+/// Validate a single account's worth of config fields.
+fn validate_account(inputs: ValidateAccountInputs) -> Result<ValidatedAccountConfig, ConfigError> {
+    let ValidateAccountInputs {
+        id,
+        imap,
+        smtp,
+        security,
+        limits,
+        fallback_mode,
+    } = inputs;
+
     let tls_fingerprint = identity::parse_fingerprint(imap.tls_fingerprint_sha256.as_deref())?;
     identity::validate_imap_username(&imap.username)?;
     if let Some(ref smtp_cfg) = smtp {

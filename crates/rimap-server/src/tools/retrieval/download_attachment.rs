@@ -15,7 +15,7 @@ use crate::tools::retrieval::sandbox;
 ///
 /// # Shape
 ///
-/// This tool intentionally takes a single scalar `uid: u32` rather than a
+/// This tool intentionally takes a single scalar `uid` (non-zero) rather than a
 /// batch. The asymmetry with batch-capable tools (`flag`, `add_label`,
 /// `move_message`) is deliberate: batch shapes (`uid` XOR `uids`) are
 /// reserved for commutative, idempotent mutations where per-UID ordering

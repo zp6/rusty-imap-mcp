@@ -48,6 +48,24 @@ impl FolderNameError {
 /// - no zero-width or BOM codepoints (U+200B, U+200C, U+200D, U+2060,
 ///   U+FEFF)
 /// - no Unicode Tag Characters (U+E0000–U+E007F)
+///
+/// # Scope
+///
+/// **Delimiter.** Traversal splits on `/` only — the common hierarchy
+/// delimiter used by Gmail, Proton Bridge, and every pinned target.
+/// Servers that use `.` as the hierarchy delimiter (some Cyrus
+/// deployments) are out of the pinned target set; if support is added,
+/// revisit the traversal check to split on the server-advertised
+/// delimiter.
+///
+/// **Modified UTF-7.** This validator operates on raw wire bytes and
+/// does NOT decode RFC 3501 Modified UTF-7 before applying the
+/// Unicode checks. `FolderGuard::check_protected` decodes mUTF-7 as
+/// part of its case-insensitive compare against the protected list;
+/// the two layers have different responsibilities. A name like
+/// `"&AP8-"` passes `FolderName::new` as pure ASCII (and is fine to
+/// pass to IMAP) but its decoded form (`"\u{00FF}"`) is only seen by
+/// the guard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderName(String);
 
@@ -144,6 +162,12 @@ fn validate(raw: &str) -> Result<(), FolderNameError> {
 ///
 /// Pulled out as a free function so the property tests can reuse the
 /// same predicate when generating positive / negative cases.
+///
+/// `matches!` is used intentionally here: every arm is a single
+/// codepoint or a non-overlapping range with no binding, so the macro
+/// is the shortest form that avoids a wildcard arm (the workspace
+/// style forbids `_ =>` in normal `match` expressions). Adding a new
+/// codepoint is a single-line edit either way.
 #[must_use]
 pub(crate) fn is_rejected_codepoint(c: char) -> bool {
     matches!(
