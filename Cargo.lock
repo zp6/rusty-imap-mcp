@@ -2226,6 +2226,7 @@ dependencies = [
  "rimap-content",
  "rimap-core",
  "rimap-imap",
+ "rimap-server",
  "rimap-smtp",
  "rmcp",
  "schemars",

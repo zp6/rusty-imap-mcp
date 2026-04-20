@@ -11,6 +11,13 @@ description = "Rusty IMAP MCP server: security-first MCP server for IMAP email a
 [lints]
 workspace = true
 
+[features]
+default = []
+# Gated entry points for integration tests that need to exercise the
+# full dispatch pipeline (posture → breaker → rate → audit envelope →
+# handler) without re-implementing the composition in each test.
+test-support = []
+
 [lib]
 name = "rimap_server"
 path = "src/lib.rs"
@@ -52,5 +59,9 @@ predicates = { workspace = true }
 mail-parser = { workspace = true }
 rimap-audit = { path = "../rimap-audit", version = "1.0.0", features = ["test-injection"] }
 rimap-config = { path = "../rimap-config", version = "1.0.0", features = ["test-support"] }
+# Self dev-dep enables the `test-support` feature unconditionally for
+# integration tests, so `ImapMcpServer::execute_tool_for_test` is in
+# scope without every test harness passing `--features test-support`.
+rimap-server = { path = ".", version = "1.0.0", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }

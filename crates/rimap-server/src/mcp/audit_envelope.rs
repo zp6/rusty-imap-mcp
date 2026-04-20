@@ -18,7 +18,7 @@ use rimap_audit::{CancelledToolEndSender, ToolEndInputs, ToolStartInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
 
-use crate::mcp::dispatch::PostureContext;
+use crate::mcp::dispatch::{DispatchTicket, PostureContext};
 use crate::mcp::server::ImapMcpServer;
 
 impl ImapMcpServer {
@@ -26,7 +26,7 @@ impl ImapMcpServer {
     /// redact+hash args, emit `tool_start`, time the body, emit
     /// `tool_end` with the status/error code derived from the body's
     /// result. Returns the MCP-shaped `CallToolResult` or `ErrorData`.
-    pub(super) async fn run_with_audit_envelope<F>(
+    pub(super) async fn run_with_audit_envelope<F, Fut>(
         &self,
         tool: ToolName,
         audit_account: Option<String>,
@@ -35,7 +35,8 @@ impl ImapMcpServer {
         body: F,
     ) -> Result<CallToolResult, ErrorData>
     where
-        F: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
+        F: FnOnce(DispatchTicket) -> Fut,
+        Fut: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
     {
         let args_value = serde_json::Value::Object(args.clone());
         let redacted = self.redact_tool_args(tool, &args_value);
@@ -54,7 +55,11 @@ impl ImapMcpServer {
             self.cancellation_sender.clone(),
         );
 
-        let result = body.await;
+        // Mint a `DispatchTicket` only now that the envelope is open.
+        // Consuming it by value inside `dispatch_tool` makes "forgot
+        // the envelope" a compile error.
+        let ticket = DispatchTicket::new();
+        let result = body(ticket).await;
 
         // Body completed normally. Disarm before any further await points so
         // a drop of THIS future between here and emit_tool_end does not cause

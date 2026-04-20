@@ -360,17 +360,7 @@ async fn call_tool(
     let tool = std::str::FromStr::from_str(tool_name).map_err(
         |e: rimap_core::tool::ParseToolNameError| rimap_core::RimapError::Internal(e.to_string()),
     )?;
-
-    let account = server.registry.resolve(None)?;
-
-    account.guard.pre_dispatch(tool)?;
-
-    let args_map = match args {
-        serde_json::Value::Object(m) => m,
-        _ => serde_json::Map::new(),
-    };
-
-    server.dispatch_tool(account, tool, &args_map).await
+    server.execute_tool_for_test(None, tool, args).await
 }
 
 /// Extract a u32 from a JSON value (safe truncation check).
