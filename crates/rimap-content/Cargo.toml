@@ -54,6 +54,7 @@ tempfile = { workspace = true }
 
 [dev-dependencies.rimap-content]
 path = "."
+version = "1.0.0"
 features = ["test-util"]
 
 # `phf` is consumed by the `include!`-expanded output of `build.rs`, so
