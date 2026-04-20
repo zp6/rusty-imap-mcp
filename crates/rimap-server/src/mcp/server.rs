@@ -6,13 +6,12 @@
 //! (posture-filtered union across accounts) and `call_tool` (account
 //! resolution + dispatch pipeline).
 
-use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
 use rimap_audit::AuditWriter;
 use rimap_audit::CancelledToolEndSender;
-use rimap_audit::redact::{RedactionSalt, RedactionSchema, schemas};
+use rimap_audit::redact::RedactionSalt;
 use rimap_core::account::AccountId;
 use rimap_core::tool::ToolName;
 use rmcp::RoleServer;
@@ -45,28 +44,23 @@ pub struct ImapMcpServer {
     /// Per-process salt used when applying `Redactor` to tool arguments.
     /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
     pub(crate) redaction_salt: Arc<RedactionSalt>,
-    /// Redaction schemas keyed by tool name (matches `ToolName::as_str`).
-    /// Built once at construction from `rimap_audit::redact::schemas()`.
-    pub(crate) redaction_schemas: Arc<HashMap<ToolName, RedactionSchema>>,
 }
 
 impl ImapMcpServer {
-    /// Construct a new server. Builds the redaction salt and schema map
-    /// from [`rimap_audit::redact::schemas`].
+    /// Construct a new server. Builds the per-process redaction salt;
+    /// per-tool schemas are dispatched on demand via
+    /// [`rimap_audit::redact::ToolRedactionSchema::redaction_schema`].
     #[must_use]
     pub fn new(
         registry: AccountRegistry,
         audit: AuditWriter,
         cancellation_sender: CancelledToolEndSender,
     ) -> Self {
-        let schema_map: HashMap<ToolName, RedactionSchema> =
-            schemas().into_iter().map(|s| (s.tool, s)).collect();
         Self {
             registry,
             audit,
             cancellation_sender,
             redaction_salt: Arc::new(RedactionSalt::new_random()),
-            redaction_schemas: Arc::new(schema_map),
         }
     }
 }

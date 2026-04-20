@@ -27,8 +27,9 @@ type ToolSpec = (&'static str, serde_json::Map<String, serde_json::Value>);
 pub(super) fn ser<T: serde::Serialize>(
     resp: T,
 ) -> Result<serde_json::Value, rimap_core::RimapError> {
-    serde_json::to_value(&resp).map_err(|e| {
-        rimap_core::RimapError::Internal(format!("response serialization failed: {e}"))
+    serde_json::to_value(&resp).map_err(|e| rimap_core::RimapError::InternalSourced {
+        message: "response serialization failed".into(),
+        source: Box::new(e),
     })
 }
 

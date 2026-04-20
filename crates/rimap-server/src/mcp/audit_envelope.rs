@@ -13,7 +13,7 @@
 //! emission and the normal `emit_tool_end` call (#71, #99).
 
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
-use rimap_audit::redact::{Redactor, hash_arguments};
+use rimap_audit::redact::{Redactor, ToolRedactionSchema, hash_arguments};
 use rimap_audit::{CancelledToolEndSender, ToolEndInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
@@ -86,20 +86,12 @@ impl ImapMcpServer {
         }
     }
 
-    /// Apply the registered [`rimap_audit::redact::Redactor`] schema for
-    /// `tool`. If no schema matches, returns an empty object and emits
-    /// a `warn!` — the schema registry is expected to cover every
-    /// advertised tool.
+    /// Apply the [`RedactionSchema`][rimap_audit::RedactionSchema] dispatched
+    /// from [`ToolRedactionSchema::redaction_schema`] to `tool`'s arguments.
+    /// The dispatch is exhaustive, so a missing schema is a compile error
+    /// rather than a runtime warn-and-drop.
     fn redact_tool_args(&self, tool: ToolName, args: &serde_json::Value) -> serde_json::Value {
-        if let Some(schema) = self.redaction_schemas.get(&tool) {
-            Redactor::new(schema, self.redaction_salt.as_ref()).apply(args)
-        } else {
-            tracing::warn!(
-                tool = tool.as_str(),
-                "no redaction schema for tool; recording empty arguments_redacted",
-            );
-            serde_json::Value::Object(serde_json::Map::new())
-        }
+        Redactor::new(&tool.redaction_schema(), self.redaction_salt.as_ref()).apply(args)
     }
 
     /// Emit a `tool_start` audit record via `spawn_blocking`. Returns the
@@ -135,7 +127,7 @@ impl ImapMcpServer {
             }
             Err(join_err) => {
                 tracing::error!(error = %join_err, "tool_start join error");
-                let rimap_err = crate::mcp::spawn_blocking_panic_error(&join_err);
+                let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
                 Err(crate::mcp::error::to_mcp_error(&rimap_err))
             }
         }
@@ -179,7 +171,7 @@ impl ImapMcpServer {
                 tracing::error!(error = %audit_err, "tool_end audit write failed");
             }
             Err(join_err) => {
-                let rimap_err = crate::mcp::spawn_blocking_panic_error(&join_err);
+                let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
                 tracing::error!(error = %rimap_err, "tool_end join error");
             }
         }

@@ -12,6 +12,7 @@ use crate::types::Uid;
 ///
 /// # Errors
 ///
+/// Returns `ImapError::InvalidInput` if `folder` fails `validate_folder_name`.
 /// Propagates connection-lost or protocol errors.
 pub(crate) async fn count_deleted(
     session: &mut ImapSession,

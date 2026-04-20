@@ -11,9 +11,14 @@ pub(crate) mod tool_catalog;
 pub(crate) mod tool_name;
 
 /// Render a `tokio::task::JoinError` from `spawn_blocking` as
-/// `RimapError::Internal`. Shared by every `mcp/*` async wrapper so
+/// `RimapError::InternalSourced`. Shared by every `mcp/*` async wrapper so
 /// panics in the blocking threadpool always surface with the same code
-/// and message prefix — infrastructure failure, not user input.
-pub(crate) fn spawn_blocking_panic_error(err: &tokio::task::JoinError) -> rimap_core::RimapError {
-    rimap_core::RimapError::Internal(format!("spawn_blocking panicked: {err}"))
+/// and message prefix — infrastructure failure, not user input. The
+/// original `JoinError` is preserved via the `#[source]` chain so
+/// tracing subscribers can walk to the underlying panic payload.
+pub(crate) fn spawn_blocking_panic_error(err: tokio::task::JoinError) -> rimap_core::RimapError {
+    rimap_core::RimapError::InternalSourced {
+        message: "spawn_blocking panicked".to_string(),
+        source: Box::new(err),
+    }
 }

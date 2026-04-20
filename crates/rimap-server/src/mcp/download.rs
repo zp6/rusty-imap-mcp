@@ -87,8 +87,10 @@ pub(crate) fn write_attachment(
     // containment is enforced by `resolve_dest_dir` for the initial
     // `dir`, not here — a re-canonicalize at this point compares `dir`
     // against itself and cannot fail meaningfully.
-    std::fs::write(&path, data)
-        .map_err(|e| RimapError::Internal(format!("failed to write attachment: {e}")))?;
+    std::fs::write(&path, data).map_err(|e| RimapError::InternalSourced {
+        message: "failed to write attachment".into(),
+        source: Box::new(e),
+    })?;
 
     Ok(path)
 }
@@ -108,7 +110,7 @@ pub async fn resolve_dest_dir_async(
 ) -> Result<PathBuf, RimapError> {
     tokio::task::spawn_blocking(move || resolve_dest_dir(dest_dir.as_deref(), &root, &root))
         .await
-        .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))
+        .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(e)))
 }
 
 /// Async wrapper around [`write_attachment`] that runs on a
@@ -127,7 +129,7 @@ pub async fn write_attachment_async(
 ) -> Result<PathBuf, RimapError> {
     tokio::task::spawn_blocking(move || write_attachment(&dir, &filename, &data))
         .await
-        .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(&e)))
+        .unwrap_or_else(|e| Err(crate::mcp::spawn_blocking_panic_error(e)))
 }
 
 /// MIME-sniff `data` using magic bytes.

@@ -722,6 +722,8 @@ impl Connection {
     /// # Errors
     /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
     /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
+    /// Returns `ImapError::InvalidInput` if any flag fails `flags_string`
+    /// (keyword contains non-atom characters).
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn store_flags(
         &self,
@@ -819,6 +821,8 @@ impl Connection {
     ///
     /// # Errors
     ///
+    /// Returns `ImapError::InvalidInput` if `folder` or `trash_folder` fails
+    /// `validate_folder_name`.
     /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
     pub async fn delete_message(
@@ -852,6 +856,7 @@ impl Connection {
     ///
     /// # Errors
     ///
+    /// Returns `ImapError::InvalidInput` if `folder` fails `validate_folder_name`.
     /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
     pub async fn expunge(&self, folder: &str) -> Result<(Vec<crate::types::Uid>, u32), ImapError> {

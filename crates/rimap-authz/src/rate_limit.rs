@@ -10,6 +10,7 @@
 
 use std::num::NonZeroU32;
 
+use governor::NotUntil;
 use governor::clock::{Clock, DefaultClock};
 use governor::middleware::NoOpMiddleware;
 use governor::state::{InMemoryState, NotKeyed};
@@ -19,6 +20,20 @@ use rimap_core::tool::ToolName;
 use crate::error::AuthzError;
 
 type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
+
+/// Instant type used by the `DefaultClock`. Extracted as an alias so the
+/// [`rate_limited`] helper's signature reads cleanly without repeating the
+/// `<DefaultClock as Clock>::Instant` projection.
+type DefaultInstant = <DefaultClock as Clock>::Instant;
+
+/// Translate a `governor` rejection into [`AuthzError::RateLimited`] with a
+/// millisecond retry hint. Shared by the three per-bucket `check` calls in
+/// [`Governor::check`] so the retry-hint math lives in exactly one place.
+fn rate_limited(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> AuthzError {
+    let retry_after_ms =
+        u64::try_from(not_until.wait_time_from(clock.now()).as_millis()).unwrap_or(u64::MAX);
+    AuthzError::RateLimited { retry_after_ms }
+}
 
 /// Combined global + draft + send rate limiter.
 pub struct Governor {
@@ -66,73 +81,18 @@ impl Governor {
     /// # Errors
     /// `AuthzError::RateLimited` when the relevant bucket is empty.
     pub fn check(&self, tool: ToolName) -> Result<(), AuthzError> {
-        self.global.check().map_err(|nu| AuthzError::RateLimited {
-            retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
-                .unwrap_or(u64::MAX),
-        })?;
-        let is_draft = match tool {
-            ToolName::CreateDraft => true,
-            ToolName::ListFolders
-            | ToolName::Search
-            | ToolName::SearchAdvanced
-            | ToolName::FetchMessage
-            | ToolName::FetchMessageHtml
-            | ToolName::ListAttachments
-            | ToolName::DownloadAttachment
-            | ToolName::MarkRead
-            | ToolName::MarkUnread
-            | ToolName::Flag
-            | ToolName::Unflag
-            | ToolName::AddLabel
-            | ToolName::RemoveLabel
-            | ToolName::ListLabels
-            | ToolName::MoveMessage
-            | ToolName::SendEmail
-            | ToolName::DeleteMessage
-            | ToolName::Expunge
-            | ToolName::CreateFolder
-            | ToolName::RenameFolder
-            | ToolName::DeleteFolder
-            | ToolName::UseAccount
-            | ToolName::ListAccounts => false,
-        };
-        if is_draft {
-            self.drafts.check().map_err(|nu| AuthzError::RateLimited {
-                retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
-                    .unwrap_or(u64::MAX),
-            })?;
+        self.global
+            .check()
+            .map_err(|nu| rate_limited(&nu, &self.clock))?;
+        if tool.is_draft_quota_gated() {
+            self.drafts
+                .check()
+                .map_err(|nu| rate_limited(&nu, &self.clock))?;
         }
-        let is_send = match tool {
-            ToolName::SendEmail => true,
-            ToolName::ListFolders
-            | ToolName::Search
-            | ToolName::SearchAdvanced
-            | ToolName::FetchMessage
-            | ToolName::FetchMessageHtml
-            | ToolName::ListAttachments
-            | ToolName::DownloadAttachment
-            | ToolName::MarkRead
-            | ToolName::MarkUnread
-            | ToolName::Flag
-            | ToolName::Unflag
-            | ToolName::AddLabel
-            | ToolName::RemoveLabel
-            | ToolName::ListLabels
-            | ToolName::MoveMessage
-            | ToolName::CreateDraft
-            | ToolName::DeleteMessage
-            | ToolName::Expunge
-            | ToolName::CreateFolder
-            | ToolName::RenameFolder
-            | ToolName::DeleteFolder
-            | ToolName::UseAccount
-            | ToolName::ListAccounts => false,
-        };
-        if is_send {
-            self.sends.check().map_err(|nu| AuthzError::RateLimited {
-                retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
-                    .unwrap_or(u64::MAX),
-            })?;
+        if tool.is_send_quota_gated() {
+            self.sends
+                .check()
+                .map_err(|nu| rate_limited(&nu, &self.clock))?;
         }
         Ok(())
     }

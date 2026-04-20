@@ -237,7 +237,10 @@ pub(crate) async fn build_message(
 
     builder
         .write_to_vec()
-        .map_err(|e| rimap_core::RimapError::Internal(format!("failed to build message: {e}")))
+        .map_err(|e| rimap_core::RimapError::InternalSourced {
+            message: "failed to build message".into(),
+            source: Box::new(e),
+        })
 }
 
 #[cfg(test)]
