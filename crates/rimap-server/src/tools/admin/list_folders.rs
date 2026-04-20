@@ -44,10 +44,18 @@ fn sanitize_folder_entry(
     // NFKC normalization, bidi stripping, or any sanitize transform counts
     // as a "name change" — the server owns the canonical wire bytes, so
     // the client must round-trip `name_wire` for subsequent commands.
+    //
+    // Cap raw input before escape. A hostile IMAP server can send a
+    // multi-MB mailbox name; `clean_name` is already capped by
+    // sanitize, but `folder.name` is not. Without this cap a 100 MB
+    // name with bidi codepoints could force a ~270 MB allocation in
+    // `escape_wire_name` (MCP-PRIV-04 / MAIL-DOS-04).
     let name_wire = if clean_name == folder.name {
         None
     } else {
-        Some(escape_wire_name(&folder.name))
+        let capped =
+            rimap_content::unicode::truncate_graphemes(&folder.name, MAX_FOLDER_NAME_BYTES * 4);
+        Some(escape_wire_name(&capped))
     };
     warnings.extend(name_warnings);
 
@@ -273,6 +281,42 @@ mod tests {
             entries[0].name_wire.is_none(),
             "clean name should have no wire-name field, got: {:?}",
             entries[0].name_wire,
+        );
+    }
+
+    #[test]
+    #[expect(
+        clippy::expect_used,
+        reason = "test assertion — None is a hard failure"
+    )]
+    fn name_wire_is_bounded_for_oversized_raw_name() {
+        // Construct a 100 KiB folder name. Sanitize will truncate the
+        // display form to MAX_FOLDER_NAME_BYTES (1024 bytes), so the
+        // inequality branch fires and `escape_wire_name` runs on whatever
+        // raw slice we forward. The cap in `sanitize_folder_entry` bounds
+        // that input to at most MAX_FOLDER_NAME_BYTES * 4 bytes of raw
+        // input, which at worst-case ~10x expansion produces a bounded
+        // wire name.
+        let oversized: String = "A\u{202e}".repeat(20_000); // ~80 KB
+        let folders = vec![Folder {
+            name: oversized,
+            attributes: vec![FolderAttribute::HasNoChildren],
+            delimiter: Some('/'),
+            special_use: None,
+        }];
+        let (entries, _warnings) = sanitize_folder_entries(folders);
+        assert_eq!(entries.len(), 1);
+        // Worst-case cap: 4 * MAX_FOLDER_NAME_BYTES raw bytes, each
+        // expanding to at most ~10 chars in the escape, plus a small
+        // margin for format overhead.
+        let wire = entries[0]
+            .name_wire
+            .as_ref()
+            .expect("sanitizer-modified name should have name_wire");
+        assert!(
+            wire.len() <= 50 * 1024,
+            "name_wire grew to {} bytes; cap not enforced",
+            wire.len(),
         );
     }
 }
