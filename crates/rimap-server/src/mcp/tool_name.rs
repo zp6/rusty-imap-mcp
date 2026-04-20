@@ -75,6 +75,27 @@ pub(super) fn refine_tool_name(
     }
 }
 
+/// Whether `raw` is a bare simple (undotted) tool name for a non-infrastructure
+/// tool. Used by `call_tool` to reject bare forms in multi-account mode
+/// where the advertised contract is `<account>.<tool>` (#73).
+///
+/// Returns `true` only if ALL of:
+/// - `raw` contains no `.` (so sub-capability dotted tools like
+///   `search.advanced_query` return `false` — they must remain valid bare).
+/// - `raw` parses as a known `ToolName`.
+/// - The resolved tool is NOT `UseAccount` / `ListAccounts` (infrastructure
+///   tools are always addressed bare regardless of account mode).
+#[must_use]
+pub(crate) fn is_bare_simple_tool_name(raw: &str) -> bool {
+    if raw.contains('.') {
+        return false;
+    }
+    let Ok(tool) = ToolName::from_str(raw) else {
+        return false;
+    };
+    !matches!(tool, ToolName::UseAccount | ToolName::ListAccounts)
+}
+
 /// Split a possibly-namespaced MCP tool name into `(account, tool)`.
 ///
 /// Preserves sub-capability tool names that contain dots (e.g.
@@ -105,7 +126,7 @@ fn is_valid_account_prefix(s: &str) -> bool {
 mod tests {
     use rimap_core::tool::ToolName;
 
-    use super::{refine_tool_name, split_tool_name};
+    use super::{is_bare_simple_tool_name, refine_tool_name, split_tool_name};
 
     #[test]
     fn split_tool_name_bare() {
@@ -168,6 +189,39 @@ mod tests {
             refine_tool_name(ToolName::Search, Some(&args)),
             ToolName::SearchAdvanced,
         );
+    }
+
+    #[test]
+    fn is_bare_simple_tool_name_rejects_namespaced() {
+        assert!(!is_bare_simple_tool_name("work.send_email"));
+        assert!(!is_bare_simple_tool_name("personal.list_folders"));
+    }
+
+    #[test]
+    fn is_bare_simple_tool_name_rejects_sub_capability_dotted() {
+        assert!(!is_bare_simple_tool_name("search.advanced_query"));
+        assert!(!is_bare_simple_tool_name("fetch_message.include_html"));
+    }
+
+    #[test]
+    fn is_bare_simple_tool_name_rejects_infrastructure_tools() {
+        assert!(!is_bare_simple_tool_name("use_account"));
+        assert!(!is_bare_simple_tool_name("list_accounts"));
+    }
+
+    #[test]
+    fn is_bare_simple_tool_name_rejects_unknown_names() {
+        assert!(!is_bare_simple_tool_name("nuke_inbox"));
+    }
+
+    #[test]
+    fn is_bare_simple_tool_name_accepts_bare_simple_tool_names() {
+        for name in ["send_email", "list_folders", "search", "mark_read"] {
+            assert!(
+                is_bare_simple_tool_name(name),
+                "expected bare simple: {name}",
+            );
+        }
     }
 
     #[test]
