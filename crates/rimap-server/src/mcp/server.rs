@@ -159,6 +159,39 @@ impl ImapMcpServer {
 
         Ok(extract_json_from_call_tool_result(call_tool_result))
     }
+
+    /// Drive `run_with_audit_envelope` with a caller-supplied async
+    /// factory. The factory receives no ticket (infrastructure posture,
+    /// no account) and returns a future that can suspend at will.
+    ///
+    /// Used in integration tests that need a body that actually yields
+    /// at an `.await` point — e.g. to verify the `AuditEnvelopeGuard`
+    /// fires when the dispatch future is aborted mid-body. Real tool
+    /// handlers complete synchronously so the abort never lands mid-body;
+    /// this method lets the test inject a never-resolving body instead.
+    pub async fn run_envelope_with_body_for_test<Fut>(
+        &self,
+        tool: ToolName,
+        body_fut: Fut,
+    ) -> Result<CallToolResult, ErrorData>
+    where
+        Fut: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
+    {
+        debug_assert!(
+            tool.is_infrastructure(),
+            "run_envelope_with_body_for_test only supports infrastructure tools; \
+             use execute_tool_for_test for account-scoped tools"
+        );
+        let args = serde_json::Map::new();
+        self.run_with_audit_envelope(
+            tool,
+            None,
+            crate::mcp::dispatch::PostureContext::Infrastructure,
+            &args,
+            |_ticket| body_fut,
+        )
+        .await
+    }
 }
 
 /// Extract the structured JSON body from a [`CallToolResult`]. Prefers
