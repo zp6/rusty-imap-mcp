@@ -39,6 +39,17 @@ lands, one of the following changes is required:
 
 Issue #81 tracks this commitment.
 
+**Scope extension — credential-unavailable errors.**
+`RimapError::Auth::CredentialUnavailable` carries the reason
+produced by `rimap-config::credential::resolve_credential`, which
+embeds `<account-id>/<username>@<host>` (the keyring lookup key) so
+operators can correlate the error with the exact entry to create.
+The same stdio-only / single-trusted-client trade-off justifies the
+disclosure under v1.0. The transport revisit above must also narrow
+this string — either to the 16-hex `account_tag` already computed in
+`ConfigError::NoCredential`, or behind the same
+`expose_account_names_in_errors` flag.
+
 **The server does not trust:** email bodies, headers, sender addresses,
 display names, attachment filenames, link targets, or any
 server-provided content. All of these are treated as untrusted input

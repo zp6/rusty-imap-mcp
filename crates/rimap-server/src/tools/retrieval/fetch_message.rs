@@ -11,7 +11,7 @@ use crate::mcp::response::ToolResponse;
 ///
 /// # Shape
 ///
-/// This tool intentionally takes a single scalar `uid: u32` rather than a
+/// This tool intentionally takes a single scalar `uid` (non-zero) rather than a
 /// batch. The asymmetry with batch-capable tools (`flag`, `add_label`,
 /// `move_message`) is deliberate: batch shapes (`uid` XOR `uids`) are
 /// reserved for commutative, idempotent mutations where per-UID ordering
@@ -23,7 +23,7 @@ pub struct FetchMessageInput {
     /// IMAP folder containing the message.
     pub folder: String,
     /// UID of the message to fetch.
-    pub uid: u32,
+    pub uid: core::num::NonZeroU32,
     /// Include sanitized HTML body in the response.
     pub include_html: Option<bool>,
     /// Truncate body text (and HTML if included) to this many bytes.
@@ -73,8 +73,8 @@ pub struct FetchMessageUntrusted {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`
-/// or when `rimap-content` rejects the body as malformed RFC 5322.
+/// Returns `RimapError::Authz { code: InvalidInput, ... }` when
+/// `rimap-content` rejects the body as malformed RFC 5322.
 /// Returns `RimapError::Authz { code: AttachmentTooLarge, ... }` when a
 /// content-pipeline cap (MIME depth/parts, header count, HTML size) is
 /// exceeded during parse. Returns `RimapError::Internal` if the
@@ -88,13 +88,14 @@ pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse<FetchMessageMeta, FetchMessageUntrusted>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     // The `FetchMessageHtml` posture check happens upstream in
     // `refine_tool_name` + `DispatchGuard::pre_dispatch`; this handler just reads
     // the include_html flag.
     let include_html = input.include_html.unwrap_or(false);
 
-    let uid = Uid::new(input.uid)
-        .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
+    let uid = Uid::from(input.uid);
 
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
     let raw_size = raw.len();
@@ -125,7 +126,7 @@ pub async fn handle(
 
     Ok(ToolResponse::meta_only(FetchMessageMeta {
         folder: input.folder,
-        uid: input.uid,
+        uid: input.uid.get(),
         message_id: content.meta.message_id,
         size: raw_size,
         truncated,

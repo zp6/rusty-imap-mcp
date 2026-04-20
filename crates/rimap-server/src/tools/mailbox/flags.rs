@@ -56,7 +56,6 @@ pub struct FlagsMeta {
     pub uid_validity: Option<u32>,
 }
 
-/// `mark_read` handler.
 pub async fn handle_mark_read(
     account: &AccountState,
     input: FlagInput,
@@ -70,7 +69,6 @@ pub async fn handle_mark_read(
     .await
 }
 
-/// `mark_unread` handler.
 pub async fn handle_mark_unread(
     account: &AccountState,
     input: FlagInput,
@@ -84,7 +82,6 @@ pub async fn handle_mark_unread(
     .await
 }
 
-/// `flag` handler.
 pub async fn handle_flag(
     account: &AccountState,
     input: FlagInput,
@@ -98,7 +95,6 @@ pub async fn handle_flag(
     .await
 }
 
-/// `unflag` handler.
 pub async fn handle_unflag(
     account: &AccountState,
     input: FlagInput,
@@ -118,6 +114,8 @@ async fn handle_flag_op(
     flags: &[Flag],
     action: FlagAction,
 ) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let uids: Vec<Uid> = input
         .target
         .into_uids()

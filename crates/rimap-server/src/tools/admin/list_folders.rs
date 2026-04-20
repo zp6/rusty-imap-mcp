@@ -1,11 +1,45 @@
 //! `list_folders` tool handler.
 
+use rimap_content::output::SecurityWarning;
 use serde::Serialize;
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
 
 const MAX_FOLDER_NAME_BYTES: usize = 1024;
+
+/// Sanitize a single `Folder` entry, returning the cleaned name and flag
+/// list while appending any security warnings to `warnings`.
+fn sanitize_folder_entry(
+    folder: &rimap_imap::types::Folder,
+    warnings: &mut Vec<SecurityWarning>,
+) -> (String, Vec<String>) {
+    let (clean_name, name_warnings) = rimap_content::unicode::sanitize(
+        folder.name.as_bytes(),
+        None,
+        MAX_FOLDER_NAME_BYTES,
+        "folder.name",
+    );
+    warnings.extend(name_warnings);
+
+    let flags: Vec<String> = folder
+        .attributes
+        .iter()
+        .map(|attr| {
+            let raw = attr.as_wire_str();
+            let (clean, flag_warnings) = rimap_content::unicode::sanitize(
+                raw.as_bytes(),
+                None,
+                MAX_FOLDER_NAME_BYTES,
+                "folder.flag",
+            );
+            warnings.extend(flag_warnings);
+            clean
+        })
+        .collect();
+
+    (clean_name, flags)
+}
 
 /// A single folder entry in a `list_folders` response.
 #[derive(Debug, Serialize)]
@@ -33,7 +67,7 @@ pub struct ListFoldersMeta {
     /// flags against bidi overrides, zero-width characters, and C0/C1
     /// control bytes (#98). Serialized only when non-empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub security_warnings: Vec<rimap_content::output::SecurityWarning>,
+    pub security_warnings: Vec<SecurityWarning>,
 }
 
 /// Sanitize a list of `Folder` entries for inclusion in the `list_folders`
@@ -44,43 +78,15 @@ pub struct ListFoldersMeta {
 /// so server-controlled bidi overrides, zero-width characters, and C0/C1
 /// stripping are surfaced as structured warnings rather than riding
 /// unfiltered under the trusted `meta` envelope (#98).
-///
-/// Used only from unit tests; `handle` inlines the same logic to merge
-/// `FolderStatus` data at construction time.
 #[cfg(test)]
 pub(crate) fn sanitize_folder_entries(
     folders: Vec<rimap_imap::types::Folder>,
-) -> (
-    Vec<FolderEntry>,
-    Vec<rimap_content::output::SecurityWarning>,
-) {
+) -> (Vec<FolderEntry>, Vec<SecurityWarning>) {
     let mut entries = Vec::with_capacity(folders.len());
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<SecurityWarning> = Vec::new();
 
     for folder in folders {
-        let (clean_name, name_warnings) = rimap_content::unicode::sanitize(
-            folder.name.as_bytes(),
-            None,
-            MAX_FOLDER_NAME_BYTES,
-            "folder.name",
-        );
-        warnings.extend(name_warnings);
-
-        let flags: Vec<String> = folder
-            .attributes
-            .iter()
-            .map(|attr| {
-                let raw = attr.as_wire_str();
-                let (clean, flag_warnings) = rimap_content::unicode::sanitize(
-                    raw.as_bytes(),
-                    None,
-                    MAX_FOLDER_NAME_BYTES,
-                    "folder.flag",
-                );
-                warnings.extend(flag_warnings);
-                clean
-            })
-            .collect();
+        let (clean_name, flags) = sanitize_folder_entry(&folder, &mut warnings);
 
         entries.push(FolderEntry {
             name: clean_name,
@@ -113,32 +119,10 @@ pub async fn handle(
     let pairs = account.imap.list_folders_with_status("*").await?;
 
     let mut entries = Vec::with_capacity(pairs.len());
-    let mut warnings: Vec<rimap_content::output::SecurityWarning> = Vec::new();
+    let mut warnings: Vec<SecurityWarning> = Vec::new();
 
     for (folder, status) in pairs {
-        let (clean_name, name_warnings) = rimap_content::unicode::sanitize(
-            folder.name.as_bytes(),
-            None,
-            MAX_FOLDER_NAME_BYTES,
-            "folder.name",
-        );
-        warnings.extend(name_warnings);
-
-        let flags: Vec<String> = folder
-            .attributes
-            .iter()
-            .map(|attr| {
-                let raw = attr.as_wire_str();
-                let (clean, flag_warnings) = rimap_content::unicode::sanitize(
-                    raw.as_bytes(),
-                    None,
-                    MAX_FOLDER_NAME_BYTES,
-                    "folder.flag",
-                );
-                warnings.extend(flag_warnings);
-                clean
-            })
-            .collect();
+        let (clean_name, flags) = sanitize_folder_entry(&folder, &mut warnings);
 
         entries.push(FolderEntry {
             name: clean_name,

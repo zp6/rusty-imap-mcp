@@ -16,6 +16,8 @@ const MAX_BATCH: usize = 100;
 /// # Errors
 ///
 /// Returns `ImapError::BatchTooLarge` if `uids.len() > MAX_BATCH`.
+/// Returns `ImapError::InvalidInput` if any flag fails `flags_string`
+/// (keyword contains non-atom characters).
 /// Propagates connection-lost or protocol errors from async-imap.
 pub(crate) async fn store(
     session: &mut ImapSession,

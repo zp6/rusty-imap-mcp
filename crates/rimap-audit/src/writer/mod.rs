@@ -19,9 +19,13 @@ use std::sync::{Arc, Mutex};
 
 use fs4::fs_std::FileExt;
 
+pub(crate) mod emit;
+pub(crate) mod log;
 pub(crate) mod provenance;
 pub(crate) mod rotation;
 pub(crate) mod self_check;
+
+pub use log::{ProcessStartInputs, ToolEndInputs, ToolStartInputs};
 
 use crate::AuditError;
 
@@ -180,168 +184,6 @@ impl AuditWriter {
         self.process_id
     }
 
-    /// Allocate the next monotonic `Seq` value. Locks the inner mutex
-    /// briefly; never crosses an `.await`.
-    ///
-    /// ## Ordering contract
-    ///
-    /// `allocate_seq` and `write_record` each acquire the inner lock
-    /// independently. Two concurrent `log_auth` / `log_process_start`
-    /// callers can therefore produce a file where physical line order
-    /// disagrees with `seq` order (allocation races with the write).
-    ///
-    /// Readers of the audit log MUST sort by the `seq` field rather
-    /// than relying on line order. `read_trailing_state` and the Sprint 3
-    /// consumers (`Connection::ensure_connected`, `rimap-server::audit_init`)
-    /// are all single-writer through a serializing outer mutex, so the
-    /// inversion does not occur in practice today. The contract is
-    /// documented here so a future multi-writer call site cannot silently
-    /// break downstream readers.
-    ///
-    /// # Errors
-    /// Returns `AuditError::Write` if the internal mutex is poisoned.
-    #[must_use = "the seq value should be stored in the audit record"]
-    pub fn allocate_seq(&self) -> Result<crate::record::ids::Seq, AuditError> {
-        let mut guard = self.lock_inner()?;
-        let seq = guard.next_seq;
-        guard.next_seq = seq.next();
-        Ok(seq)
-    }
-
-    /// Acquire the inner mutex, translating poisoning into a typed
-    /// `AuditError::Write`. The poisoned-path message is deliberately
-    /// generic — the mutex guards both the sequence counter and the
-    /// write buffer, so "poisoned" is the only meaningful signal.
-    fn lock_inner(&self) -> Result<std::sync::MutexGuard<'_, Inner>, AuditError> {
-        self.inner.lock().map_err(|_| AuditError::Write {
-            path: self.path.clone(),
-            source: std::io::Error::other("audit mutex poisoned"),
-        })
-    }
-
-    /// Allocate a seq, build an `AuditRecord` wrapping `payload`, stamp it
-    /// with the writer's `process_id` and `Timestamp::now()`, and write it
-    /// as a single JSONL line. All `log_*` methods route through this helper
-    /// so the allocate-build-write skeleton lives in one place.
-    fn emit(&self, payload: crate::record::Payload) -> Result<crate::record::ids::Seq, AuditError> {
-        let seq = self.allocate_seq()?;
-        let record = crate::record::AuditRecord {
-            seq,
-            ts: crate::record::ids::Timestamp::now(),
-            process_id: self.process_id,
-            payload,
-        };
-        self.write_record(&record)?;
-        Ok(seq)
-    }
-
-    /// Build an `auth` record from `payload`, allocate a seq, and write it.
-    ///
-    /// # Errors
-    /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_auth(
-        &self,
-        payload: crate::record::Auth,
-    ) -> Result<crate::record::ids::Seq, AuditError> {
-        self.emit(crate::record::Payload::Auth(payload))
-    }
-
-    /// Serialize `record` as one JSONL line, append it to the active file,
-    /// flush the buffer, and fsync on `process_*` / `auth` / `config` kinds.
-    ///
-    /// If `fail_open` is `true`, write/flush/fsync failures are logged via
-    /// `tracing::error!` and converted to `Ok(())`. Serialization errors are
-    /// programmer errors and never suppressed regardless of `fail_open`.
-    /// Suppressed failures are counted via [`Self::suppressed_failures`].
-    ///
-    /// # Blocking
-    ///
-    /// This function performs synchronous filesystem I/O: at minimum a
-    /// `write_all` + `flush` + (conditionally) `fsync`, and on rotation
-    /// additionally `rename`, `open`, `try_lock_exclusive`, `read_dir`,
-    /// `symlink_metadata`, and `remove_file`. Callers in an async context
-    /// MUST invoke this inside `tokio::task::spawn_blocking` to avoid
-    /// stalling the runtime executor. The existing production call sites
-    /// (`Connection::emit_auth` and future tool-audit emitters) route
-    /// through `spawn_blocking` for this reason. (RUST-ASYNC-04)
-    ///
-    /// # Errors
-    /// - [`AuditError::Serialize`] on JSON failure (never suppressed).
-    /// - [`AuditError::Write`] / [`AuditError::Fsync`] / [`AuditError::Rotate`]
-    ///   when `fail_open == false`.
-    pub fn write_record(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
-        match self.write_record_inner(record) {
-            Ok(()) => Ok(()),
-            Err(AuditError::Serialize(e)) => {
-                // Serialization failures are programmer errors, not storage
-                // failures. Never suppressed regardless of fail_open.
-                Err(AuditError::Serialize(e))
-            }
-            Err(err) if self.fail_open => {
-                // Emit only the stable error code, not the full Display
-                // chain which would duplicate the audit path (already in
-                // the explicit `path` field below) and any filesystem
-                // layout contained in an underlying io::Error. Operators
-                // who want the full Display can enable TRACE-level
-                // logging where `write_record_inner` records it.
-                // (LOCAL-ERR-05)
-                tracing::error!(
-                    path = %self.path.display(),
-                    error_code = %err.code(),
-                    "audit write failed; fail_open=true so suppressing and continuing",
-                );
-                self.suppressed_failures.fetch_add(1, Ordering::Relaxed);
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    fn write_record_inner(&self, record: &crate::record::AuditRecord) -> Result<(), AuditError> {
-        #[cfg(any(test, feature = "test-injection"))]
-        if self
-            .failure_injection
-            .fail_next
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
-            return Err(AuditError::Write {
-                path: self.path.clone(),
-                source: std::io::Error::other("injected failure (test)"),
-            });
-        }
-
-        let mut bytes = serde_json::to_vec(record).map_err(AuditError::Serialize)?;
-        bytes.push(b'\n');
-
-        let mut guard = self.lock_inner()?;
-
-        // Rotation check happens inside the same critical section as the write.
-        // This prevents two clones of AuditWriter from both observing "needs
-        // rotation" and racing on the rename.
-        if self.rotate_bytes > 0 && guard.bytes_written >= self.rotate_bytes {
-            let (new_buf, new_len) =
-                self::rotation::rotate_file(&self.path, self.rotate_keep, self.retention_seconds)?;
-            guard.buf = new_buf;
-            guard.bytes_written = new_len;
-            tracing::info!(path = %self.path.display(), "audit file rotated");
-        }
-
-        write_under_lock(&mut guard, &bytes, &self.path)?;
-
-        if needs_fsync(&record.payload) {
-            guard
-                .buf
-                .get_ref()
-                .sync_data()
-                .map_err(|source| AuditError::Fsync {
-                    path: self.path.clone(),
-                    source,
-                })?;
-        }
-
-        Ok(())
-    }
-
     /// Number of write/flush/fsync failures suppressed by `fail_open = true`
     /// since this writer was opened. Accumulated via `Relaxed` atomic
     /// increments inside `write_record`.
@@ -396,206 +238,6 @@ impl AuditWriter {
                 source,
             })?;
         Ok(meta.len())
-    }
-}
-
-impl AuditWriter {
-    /// Build a `tool_start` record, allocate a seq, and write it. Returns
-    /// the allocated `seq` — the caller should retain this value and pass
-    /// it back to [`AuditWriter::log_tool_end`] as `start_seq` so the two
-    /// records can be paired.
-    ///
-    /// `tool_start` is NOT fsynced per existing policy; see the private `needs_fsync` helper.
-    ///
-    /// # Errors
-    /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_tool_start(
-        &self,
-        tool: rimap_core::tool::ToolName,
-        account: Option<&str>,
-        posture_effective: Option<rimap_core::Posture>,
-        arguments_redacted: serde_json::Value,
-        arguments_hash_sha256: String,
-    ) -> Result<crate::record::ids::Seq, AuditError> {
-        // `None` models the infrastructure-tool dispatch path (`use_account`,
-        // `list_accounts`) which bypasses per-account posture gating by
-        // design. `PostureEffective` serializes as the historical on-disk
-        // strings (`"infrastructure"` or the kebab-case posture) so readers
-        // can distinguish these records from per-account tool calls.
-        self.emit(crate::record::Payload::ToolStart(
-            crate::record::ToolStart {
-                account: account.map(str::to_string),
-                tool,
-                posture_effective: crate::record::PostureEffective::from_optional(
-                    posture_effective,
-                ),
-                arguments_redacted,
-                arguments_hash_sha256,
-            },
-        ))
-    }
-
-    /// Build a `tool_end` record, allocate a seq, and write it.
-    /// `inputs.start_seq` must be the seq returned by the paired
-    /// [`AuditWriter::log_tool_start`].
-    ///
-    /// `tool_end` is NOT fsynced per existing policy; see the private `needs_fsync` helper.
-    ///
-    /// # Errors
-    /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_tool_end(
-        &self,
-        inputs: ToolEndInputs,
-    ) -> Result<crate::record::ids::Seq, AuditError> {
-        self.emit(crate::record::Payload::ToolEnd(inputs.into()))
-    }
-
-    /// Build a `process_end` record, allocate a seq, and write it.
-    /// Stamps the record with the writer's stable `process_id` and
-    /// `Timestamp::now()`. Returns the allocated `seq` on success.
-    ///
-    /// # Errors
-    /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_process_end(
-        &self,
-        reason: crate::record::ProcessEndReason,
-        total_tool_calls: u64,
-    ) -> Result<crate::record::ids::Seq, AuditError> {
-        self.emit(crate::record::Payload::ProcessEnd(
-            crate::record::ProcessEnd {
-                reason,
-                total_tool_calls,
-            },
-        ))
-    }
-}
-
-/// Inputs to [`AuditWriter::log_tool_end`].
-#[derive(Debug)]
-pub struct ToolEndInputs {
-    /// Seq returned by the paired [`AuditWriter::log_tool_start`].
-    pub start_seq: crate::record::ids::Seq,
-    /// Which tool completed.
-    pub tool: rimap_core::tool::ToolName,
-    /// Account scope (`None` for infrastructure tools).
-    pub account: Option<String>,
-    /// Terminal outcome (ok / error / ...).
-    pub status: crate::record::ToolStatus,
-    /// Error classification, if any.
-    pub error_code: Option<rimap_core::ErrorCode>,
-    /// Wall-clock milliseconds.
-    pub duration_ms: u64,
-    /// Outbound result counts and sizes.
-    pub result_summary: crate::record::ResultSummary,
-    /// Recently-read message IDs and window.
-    pub provenance: crate::record::Provenance,
-}
-
-impl From<ToolEndInputs> for crate::record::ToolEnd {
-    fn from(i: ToolEndInputs) -> Self {
-        Self {
-            account: i.account,
-            start_seq: i.start_seq,
-            tool: i.tool,
-            status: i.status,
-            error_code: i.error_code,
-            duration_ms: i.duration_ms,
-            result_summary: i.result_summary,
-            provenance: i.provenance,
-        }
-    }
-}
-
-/// Inputs to [`AuditWriter::log_process_start`]. Caller computes the
-/// inode-tamper signal by passing the trailing state from
-/// [`crate::writer::self_check::read_trailing_state`] (run before `open`) and the
-/// current inode (run after `open`, via [`crate::writer::self_check::current_inode`]).
-#[derive(Debug, Clone)]
-pub struct ProcessStartInputs {
-    /// `CARGO_PKG_VERSION` of the running binary.
-    pub version: String,
-    /// Git commit SHA at build time. Empty string until `vergen` lands in
-    /// Sprint 5.
-    pub git_commit: String,
-    /// Effective base posture at startup (single-account mode).
-    /// Typed at the construction seam to keep the on-disk string form
-    /// in sync with the [`rimap_core::Posture`] taxonomy.
-    pub posture: Option<rimap_core::Posture>,
-    /// Per-account summaries (multi-account mode).
-    pub accounts: Option<Vec<crate::record::AccountSummary>>,
-    /// Absolute path of the loaded config file.
-    pub config_path: std::path::PathBuf,
-    /// SHA-256 of the config file contents at load time, hex-encoded.
-    pub config_hash_sha256: String,
-    /// Trailing state read from the audit file BEFORE this writer was opened.
-    pub trailing: crate::writer::self_check::TrailingState,
-    /// Inode of the audit file as observed AFTER this writer was opened
-    /// (call `crate::writer::self_check::current_inode` on the path).
-    pub current_inode: u64,
-}
-
-impl AuditWriter {
-    /// Build a `process_start` record from `inputs` and the writer's own
-    /// `process_id`, allocate a seq, and write it. Computes the
-    /// `audit_file_inode_changed` tamper signal from
-    /// `inputs.trailing.last_recorded_inode` vs `inputs.current_inode`.
-    ///
-    /// # Errors
-    /// Propagates any error from `allocate_seq` or `write_record`.
-    pub fn log_process_start(
-        &self,
-        inputs: ProcessStartInputs,
-    ) -> Result<crate::record::ids::Seq, AuditError> {
-        let inode_changed = inputs
-            .trailing
-            .last_recorded_inode
-            .is_some_and(|prior| prior != inputs.current_inode);
-        let payload = crate::record::ProcessStart {
-            version: inputs.version,
-            git_commit: inputs.git_commit,
-            posture: inputs.posture,
-            accounts: inputs.accounts,
-            config_path: inputs.config_path,
-            config_hash_sha256: inputs.config_hash_sha256,
-            previous_last_seq: inputs.trailing.last_seq,
-            previous_process_id: inputs.trailing.last_process_id,
-            previous_file_inode: inputs.current_inode,
-            audit_file_inode_changed: inode_changed,
-        };
-        self.emit(crate::record::Payload::ProcessStart(payload))
-    }
-}
-
-/// Write `bytes` to `guard.buf`, flush, and update `bytes_written`.
-fn write_under_lock(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), AuditError> {
-    use std::io::Write;
-
-    guard
-        .buf
-        .write_all(bytes)
-        .map_err(|source| AuditError::Write {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    guard.buf.flush().map_err(|source| AuditError::Write {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    // bytes.len() is usize; on 64-bit targets this always fits in u64.
-    // On hypothetical 128-bit targets, saturate rather than panic.
-    let written = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    guard.bytes_written = guard.bytes_written.saturating_add(written);
-    Ok(())
-}
-
-fn needs_fsync(payload: &crate::record::Payload) -> bool {
-    use crate::record::Payload;
-    match payload {
-        Payload::ProcessStart(_)
-        | Payload::ProcessEnd(_)
-        | Payload::Auth(_)
-        | Payload::Config(_) => true,
-        Payload::ToolStart(_) | Payload::ToolEnd(_) => false,
     }
 }
 
@@ -1103,7 +745,7 @@ mod tests {
 
     #[test]
     fn log_process_end_writes_valid_record() {
-        use crate::record::ProcessEndReason;
+        use crate::record::{ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -1117,7 +759,12 @@ mod tests {
         })
         .unwrap();
 
-        let seq = writer.log_process_end(ProcessEndReason::Eof, 42).unwrap();
+        let seq = writer
+            .log_process_end(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 42,
+            })
+            .unwrap();
         assert_eq!(seq, crate::record::ids::Seq::FIRST);
         drop(writer);
 
@@ -1130,7 +777,7 @@ mod tests {
 
     #[test]
     fn log_process_end_uses_writer_process_id() {
-        use crate::record::ProcessEndReason;
+        use crate::record::{ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -1146,7 +793,10 @@ mod tests {
         let pid = writer.process_id();
 
         writer
-            .log_process_end(ProcessEndReason::SignalTerm, 7)
+            .log_process_end(ProcessEnd {
+                reason: ProcessEndReason::SignalTerm,
+                total_tool_calls: 7,
+            })
             .unwrap();
         drop(writer);
 

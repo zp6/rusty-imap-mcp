@@ -28,8 +28,11 @@ pub use crate::record::{
     ProcessEndReason, ProcessStart, Provenance, ResultSummary, ToolEnd, ToolStart, ToolStatus,
 };
 pub use crate::redact::{
-    FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments, schemas,
+    FieldPolicy, RedactionSalt, RedactionSchema, Redactor, ToolRedactionSchema, hash_arguments,
+    schemas,
 };
 pub use crate::writer::provenance::ProvenanceBuffer;
 pub use crate::writer::self_check::{TrailingState, current_inode, read_trailing_state};
-pub use crate::writer::{AuditOptions, AuditWriter, ProcessStartInputs, ToolEndInputs};
+pub use crate::writer::{
+    AuditOptions, AuditWriter, ProcessStartInputs, ToolEndInputs, ToolStartInputs,
+};

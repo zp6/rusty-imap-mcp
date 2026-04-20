@@ -199,6 +199,20 @@ pub enum RimapError {
     /// Bug / invariant violation.
     #[error("ERR_INTERNAL: {0}")]
     Internal(String),
+    /// Bug / invariant violation with an underlying source error. Use this
+    /// instead of [`Self::Internal`] when wrapping a `?`-style upstream
+    /// failure so the source chain is preserved for `tracing` and reporters.
+    /// `message` should be the short operation context (e.g. `"join task"`,
+    /// `"serialize tool catalog"`), not the formatted source.
+    #[error("ERR_INTERNAL: {message}")]
+    InternalSourced {
+        /// Short operation context. Excludes the source string — reporters
+        /// walk the `#[source]` chain to render it.
+        message: String,
+        /// The underlying error.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
     /// Multiple accounts configured but none selected.
     ///
     /// The `available` list is surfaced in the Display form. This is a
@@ -250,7 +264,7 @@ impl RimapError {
             | Self::Smtp { code, .. }
             | Self::Audit { code, .. } => *code,
             Self::Config(_) => ErrorCode::Config,
-            Self::Internal(_) => ErrorCode::Internal,
+            Self::Internal(_) | Self::InternalSourced { .. } => ErrorCode::Internal,
             Self::NoAccount { .. } => ErrorCode::NoAccount,
             Self::UnknownAccount { .. } => ErrorCode::UnknownAccount,
         }
@@ -258,6 +272,7 @@ impl RimapError {
 }
 
 #[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use crate::error::{ErrorCode, RimapError};
 
@@ -317,6 +332,11 @@ mod tests {
         assert_eq!(authz.code(), ErrorCode::RateLimited);
         assert_eq!(RimapError::Config("x".into()).code(), ErrorCode::Config);
         assert_eq!(RimapError::Internal("x".into()).code(), ErrorCode::Internal);
+        let sourced = RimapError::InternalSourced {
+            message: "wrap".into(),
+            source: Box::new(std::io::Error::other("inner")),
+        };
+        assert_eq!(sourced.code(), ErrorCode::Internal);
     }
 
     #[test]
@@ -343,5 +363,24 @@ mod tests {
         // The display string should contain "disk full" exactly once.
         assert_eq!(displayed.matches("disk full").count(), 1);
         assert!(displayed.starts_with("ERR_INTERNAL: "));
+    }
+
+    #[test]
+    fn rimap_error_internal_sourced_display_omits_source() {
+        use std::error::Error as _;
+        use std::io;
+
+        let err = RimapError::InternalSourced {
+            message: "serialize tool catalog".into(),
+            source: Box::new(io::Error::other("disk full")),
+        };
+        let displayed = err.to_string();
+        // Display renders the message only; "disk full" is reachable via
+        // the source chain so reporters can walk it without duplication.
+        assert_eq!(displayed, "ERR_INTERNAL: serialize tool catalog");
+        assert!(displayed.contains("serialize tool catalog"));
+        assert!(!displayed.contains("disk full"));
+        let source = err.source().expect("source present");
+        assert_eq!(source.to_string(), "disk full");
     }
 }

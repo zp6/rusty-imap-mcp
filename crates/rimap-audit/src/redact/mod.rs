@@ -195,296 +195,321 @@ pub fn hash_arguments(args: &Value) -> String {
     hex::encode(digest)
 }
 
-/// Registry of per-tool redaction schemas. Called once at startup; Sprint 5's
-/// dispatch layer will store the result alongside the per-process `RedactionSalt`.
+/// Extension trait adding a total redaction-schema dispatch on
+/// [`ToolName`]. Implemented for `ToolName` in this crate; bring the trait
+/// into scope to call `tool.redaction_schema()`.
 ///
-/// Schemas cover every v1 `ToolName` variant per design spec §10 "Argument
-/// redaction". Field lists mirror the tool argument shapes documented in
-/// spec §5 (v1 tool surface). A field not listed here defaults to
-/// `FieldPolicy::RedactString` at runtime, so forgetting to list a structural
-/// field only produces an overly-conservative log entry, never a leak.
+/// The `impl` uses one exhaustive match on every `ToolName` variant so
+/// forgetting to wire a schema for a new variant is a compile error, not a
+/// runtime warn-and-drop.
+pub trait ToolRedactionSchema {
+    /// Return the [`RedactionSchema`] covering this tool's arguments.
+    ///
+    /// Field lists mirror the tool argument shapes documented in design
+    /// spec §5 (v1 tool surface). A field not listed defaults to
+    /// [`FieldPolicy::RedactString`] at runtime, so forgetting to list a
+    /// structural field only produces an overly-conservative log entry,
+    /// never a leak.
+    fn redaction_schema(self) -> RedactionSchema;
+}
+
+impl ToolRedactionSchema for ToolName {
+    fn redaction_schema(self) -> RedactionSchema {
+        // Dispatch is split into per-group helpers to keep each function
+        // short and to collapse variants whose argument shapes are
+        // identical (folder+uid, flag shape, etc.) without masking tool
+        // identity in the schema (each helper still builds the schema
+        // with `self` as the tool).
+        match self {
+            Self::ListFolders => list_folders_schema(self),
+            Self::Search => search_schema(self),
+            Self::SearchAdvanced => search_advanced_schema(self),
+            Self::FetchMessage | Self::FetchMessageHtml => fetch_message_schema(self),
+            Self::ListAttachments | Self::MarkRead | Self::MarkUnread => folder_uid_schema(self),
+            Self::DownloadAttachment => download_attachment_schema(self),
+            Self::Flag | Self::Unflag => flag_schema(self),
+            Self::MoveMessage => move_message_schema(self),
+            Self::CreateDraft => create_draft_schema(self),
+            Self::SendEmail => send_email_schema(self),
+            Self::DeleteMessage => delete_message_schema(self),
+            Self::Expunge => expunge_schema(self),
+            Self::CreateFolder => create_folder_schema(self),
+            Self::RenameFolder => rename_folder_schema(self),
+            Self::DeleteFolder => delete_folder_schema(self),
+            Self::AddLabel | Self::RemoveLabel => add_remove_label_schema(self),
+            Self::ListLabels => list_labels_schema(self),
+            Self::UseAccount => use_account_schema(self),
+            Self::ListAccounts => list_accounts_schema(self),
+        }
+    }
+}
+
+fn list_folders_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::Forbidden;
+    RedactionSchema::new(tool, &[("password", Forbidden), ("token", Forbidden)])
+}
+
+// SEARCH criteria policy: from/to/subject/body use `RedactString`,
+// not `SaltedHash`. The Sprint 2 review brief recommended SaltedHash
+// so incident responders could answer "did this LLM session search
+// for the same string twice?" — but that adds within-process
+// correlation surface for low-entropy queries (e.g. `{"from":"alice@x"}`)
+// and offers little forensic value beyond what `arguments_hash_sha256`
+// already provides at the record level. RedactString is the more
+// conservative choice (less leakage, no correlation by design) and
+// still records the byte length for unusual-payload detection.
+// Decision recorded in #22.
+fn search_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, RedactString, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("limit", Verbatim),
+            ("include_seen", Verbatim),
+            ("since", Verbatim),
+            ("until", Verbatim),
+            ("from", RedactString),
+            ("to", RedactString),
+            ("subject", RedactString),
+            ("body", RedactString),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+// See [`search_schema`] for the RedactString rationale (#22).
+fn search_advanced_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, RedactString, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("limit", Verbatim),
+            ("advanced_query", RedactString),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn fetch_message_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("include_html", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+/// Shared schema for tools whose v1 argument shape is just
+/// `{folder, uid}` plus the credential tombstones: `list_attachments`,
+/// `mark_read`, `mark_unread`.
+fn folder_uid_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn download_attachment_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("part", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn flag_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("flag", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn move_message_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("destination", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn create_draft_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, RedactString, SaltedHash, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("in_reply_to_uid", Verbatim),
+            ("to", SaltedHash),
+            ("cc", SaltedHash),
+            ("bcc", SaltedHash),
+            ("subject", RedactString),
+            ("body_text", RedactString),
+            ("body_html", RedactString),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn send_email_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, RedactString, SaltedHash, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("to", SaltedHash),
+            ("cc", SaltedHash),
+            ("bcc", SaltedHash),
+            ("subject", RedactString),
+            ("body", RedactString),
+            ("in_reply_to", Verbatim),
+            ("references", Verbatim),
+            ("message_id", Verbatim),
+            ("smtp_response", RedactString),
+            ("sent_copy_uid", Verbatim),
+            ("folder", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn delete_message_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("message_id", Verbatim),
+            ("destination", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn expunge_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("expunged_count", Verbatim),
+            ("expunged_uids", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn create_folder_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("name", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn rename_folder_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("old_name", Verbatim),
+            ("new_name", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn delete_folder_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::{Forbidden, Verbatim};
+    RedactionSchema::new(
+        tool,
+        &[
+            ("name", Verbatim),
+            ("message_count", Verbatim),
+            ("password", Forbidden),
+            ("token", Forbidden),
+        ],
+    )
+}
+
+fn add_remove_label_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::Verbatim;
+    RedactionSchema::new(
+        tool,
+        &[
+            ("folder", Verbatim),
+            ("uid", Verbatim),
+            ("uids", Verbatim),
+            ("label", Verbatim),
+        ],
+    )
+}
+
+fn list_labels_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::Verbatim;
+    RedactionSchema::new(tool, &[("folder", Verbatim), ("uid", Verbatim)])
+}
+
+fn use_account_schema(tool: ToolName) -> RedactionSchema {
+    use FieldPolicy::Verbatim;
+    RedactionSchema::new(tool, &[("account", Verbatim)])
+}
+
+fn list_accounts_schema(tool: ToolName) -> RedactionSchema {
+    RedactionSchema::new(tool, &[])
+}
+
+/// Registry of per-tool redaction schemas. Built by iterating every
+/// [`ToolName`] variant and calling [`ToolRedactionSchema::redaction_schema`],
+/// so the list cannot desync from the enum.
 #[must_use]
 pub fn schemas() -> Vec<RedactionSchema> {
-    let mut out = read_tool_schemas();
-    out.extend(write_tool_schemas());
-    out.extend(v2_tool_schemas());
-    out.extend(label_tool_schemas());
-    out.extend(account_tool_schemas());
-    out
-}
-
-/// Schemas for read-only tools: `list_folders` through `download_attachment`.
-fn read_tool_schemas() -> Vec<RedactionSchema> {
-    use FieldPolicy::{Forbidden, RedactString, Verbatim};
-
-    vec![
-        RedactionSchema::new(
-            ToolName::ListFolders,
-            &[("password", Forbidden), ("token", Forbidden)],
-        ),
-        // SEARCH criteria policy: from/to/subject/body use `RedactString`,
-        // not `SaltedHash`. The Sprint 2 review brief recommended SaltedHash
-        // so incident responders could answer "did this LLM session search
-        // for the same string twice?" — but that adds within-process
-        // correlation surface for low-entropy queries (e.g. `{"from":"alice@x"}`)
-        // and offers little forensic value beyond what `arguments_hash_sha256`
-        // already provides at the record level. RedactString is the more
-        // conservative choice (less leakage, no correlation by design) and
-        // still records the byte length for unusual-payload detection.
-        // Decision recorded in #22.
-        RedactionSchema::new(
-            ToolName::Search,
-            &[
-                ("folder", Verbatim),
-                ("limit", Verbatim),
-                ("include_seen", Verbatim),
-                ("since", Verbatim),
-                ("until", Verbatim),
-                ("from", RedactString),
-                ("to", RedactString),
-                ("subject", RedactString),
-                ("body", RedactString),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        // SEE search schema above for the RedactString rationale (#22).
-        RedactionSchema::new(
-            ToolName::SearchAdvanced,
-            &[
-                ("folder", Verbatim),
-                ("limit", Verbatim),
-                ("advanced_query", RedactString),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::FetchMessage,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("include_html", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::FetchMessageHtml,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("include_html", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::ListAttachments,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::DownloadAttachment,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("part", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-    ]
-}
-
-/// Schemas for mutation tools: `mark_read` through `create_draft`.
-fn write_tool_schemas() -> Vec<RedactionSchema> {
-    use FieldPolicy::{Forbidden, RedactString, SaltedHash, Verbatim};
-
-    vec![
-        RedactionSchema::new(
-            ToolName::MarkRead,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::MarkUnread,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::Flag,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("flag", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::Unflag,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("flag", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::MoveMessage,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("destination", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::CreateDraft,
-            &[
-                ("folder", Verbatim),
-                ("in_reply_to_uid", Verbatim),
-                ("to", SaltedHash),
-                ("cc", SaltedHash),
-                ("bcc", SaltedHash),
-                ("subject", RedactString),
-                ("body_text", RedactString),
-                ("body_html", RedactString),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-    ]
-}
-
-/// Schemas for v2 tools: `send_email` through `delete_folder`.
-fn v2_tool_schemas() -> Vec<RedactionSchema> {
-    use FieldPolicy::{Forbidden, RedactString, SaltedHash, Verbatim};
-
-    vec![
-        RedactionSchema::new(
-            ToolName::SendEmail,
-            &[
-                ("to", SaltedHash),
-                ("cc", SaltedHash),
-                ("bcc", SaltedHash),
-                ("subject", RedactString),
-                ("body", RedactString),
-                ("in_reply_to", Verbatim),
-                ("references", Verbatim),
-                ("message_id", Verbatim),
-                ("smtp_response", RedactString),
-                ("sent_copy_uid", Verbatim),
-                ("folder", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::DeleteMessage,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("message_id", Verbatim),
-                ("destination", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::Expunge,
-            &[
-                ("folder", Verbatim),
-                ("expunged_count", Verbatim),
-                ("expunged_uids", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::CreateFolder,
-            &[
-                ("name", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::RenameFolder,
-            &[
-                ("old_name", Verbatim),
-                ("new_name", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::DeleteFolder,
-            &[
-                ("name", Verbatim),
-                ("message_count", Verbatim),
-                ("password", Forbidden),
-                ("token", Forbidden),
-            ],
-        ),
-    ]
-}
-
-/// Schemas for v3 label tools: `add_label`, `remove_label`,
-/// `list_labels`.
-fn label_tool_schemas() -> Vec<RedactionSchema> {
-    use FieldPolicy::Verbatim;
-
-    vec![
-        RedactionSchema::new(
-            ToolName::AddLabel,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("uids", Verbatim),
-                ("label", Verbatim),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::RemoveLabel,
-            &[
-                ("folder", Verbatim),
-                ("uid", Verbatim),
-                ("uids", Verbatim),
-                ("label", Verbatim),
-            ],
-        ),
-        RedactionSchema::new(
-            ToolName::ListLabels,
-            &[("folder", Verbatim), ("uid", Verbatim)],
-        ),
-    ]
-}
-
-/// Schemas for infrastructure account tools: `use_account`,
-/// `list_accounts`.
-fn account_tool_schemas() -> Vec<RedactionSchema> {
-    use FieldPolicy::Verbatim;
-
-    vec![
-        RedactionSchema::new(ToolName::UseAccount, &[("account", Verbatim)]),
-        RedactionSchema::new(ToolName::ListAccounts, &[]),
-    ]
+    ToolName::all()
+        .into_iter()
+        .map(ToolRedactionSchema::redaction_schema)
+        .collect()
 }
 
 #[cfg(test)]

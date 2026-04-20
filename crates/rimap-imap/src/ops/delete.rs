@@ -16,6 +16,8 @@ use crate::types::{Flag, FlagAction, Uid};
 ///
 /// # Errors
 ///
+/// Returns `ImapError::InvalidInput` if `source_folder` or `trash_folder`
+/// fails `validate_folder_name`.
 /// Propagates connection-lost or protocol errors from async-imap.
 pub(crate) async fn delete_message(
     session: &mut ImapSession,

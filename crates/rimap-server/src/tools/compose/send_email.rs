@@ -69,30 +69,84 @@ pub async fn handle(
     // Extract Message-ID for the response
     let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
-    // Best-effort: APPEND copy to Sent folder
+    // Best-effort: APPEND copy to Sent folder. SMTP has already delivered
+    // by this point — any failure (including a malformed resolved folder
+    // name) must route through `sent_copy.failed` so the response does
+    // not misleadingly report delivery failure. Each error is logged at
+    // the failure site, then collapsed to `()` so the pure helper that
+    // builds `SentCopyInfo` stays non-generic and trivially testable.
     let sent_folder: &str = account.special_use.sent().unwrap_or("Sent");
-    let (sent_uid, sent_copy_failed) = match account
-        .imap
-        .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])
-        .await
-    {
-        Ok(result) => (result.uid.map(rimap_imap::types::Uid::get), false),
-        Err(e) => {
-            tracing::warn!("failed to append to Sent folder: {e}");
-            (None, true)
-        }
-    };
+    let append_outcome: Option<Result<Option<u32>, ()>> =
+        if let Err(e) = rimap_authz::folder_name::FolderName::new(sent_folder) {
+            // Stable warn fields go in the structured record; the full
+            // Display goes to DEBUG so it is available when tracing is
+            // configured verbose but not piped into the default stderr
+            // subscriber operator dashboards read.
+            tracing::warn!(
+                tool = "send_email",
+                error_code = "invalid_sent_folder",
+                "resolved Sent folder failed validation",
+            );
+            tracing::debug!(sent_folder, error = %e, "sent-folder validation detail");
+            None
+        } else {
+            match account
+                .imap
+                .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])
+                .await
+            {
+                Ok(result) => Some(Ok(result.uid.map(rimap_imap::types::Uid::get))),
+                Err(e) => {
+                    tracing::warn!(
+                        tool = "send_email",
+                        error_code = %e.code(),
+                        "failed to append to Sent folder",
+                    );
+                    tracing::debug!(error = %e, "sent-folder append detail");
+                    Some(Err(()))
+                }
+            }
+        };
 
     Ok(ToolResponse::meta_only(SendEmailMeta {
         sent: true,
         message_id: generated_msg_id,
         smtp_status: "delivered".to_string(),
-        sent_copy: SentCopyInfo {
-            folder: sent_folder.to_string(),
-            uid: sent_uid,
-            failed: sent_copy_failed,
-        },
+        sent_copy: build_sent_copy_info(sent_folder, append_outcome),
     }))
+}
+
+/// Translate a best-effort APPEND-to-Sent outcome into a [`SentCopyInfo`].
+///
+/// `append_outcome` encodes three cases the handler can produce:
+/// - `None` — the resolved Sent folder name failed structural validation,
+///   so APPEND was never attempted.
+/// - `Some(Ok(uid))` — APPEND succeeded; `uid` is the server-assigned UID
+///   if the server returned one in the `APPENDUID` response code.
+/// - `Some(Err(_))` — APPEND was attempted and failed; the error has been
+///   logged elsewhere and is intentionally discarded here so SMTP's
+///   already-successful delivery is reported accurately.
+///
+/// In every failure case (`None` or `Some(Err)`), `failed = true` and
+/// `uid = None`. Pure: enables direct unit testing without an
+/// `AccountState` fixture.
+fn build_sent_copy_info(
+    sent_folder: &str,
+    append_outcome: Option<Result<Option<u32>, ()>>,
+) -> SentCopyInfo {
+    // `if let` (rather than `match`) keeps the two failure shapes
+    // (`None`, `Some(Err(()))`) on the same `else` branch without
+    // tripping the workspace's no-wildcard-arm policy via `_ =>`.
+    let (uid, failed) = if let Some(Ok(uid)) = append_outcome {
+        (uid, false)
+    } else {
+        (None, true)
+    };
+    SentCopyInfo {
+        folder: sent_folder.to_string(),
+        uid,
+        failed,
+    }
 }
 
 /// Build a rimap-smtp `SendEnvelope` from the compose input addresses.
@@ -165,5 +219,56 @@ mod tests {
         let env = build_envelope("not-an-email", &compose(vec![addr("also-bad")]));
         assert_eq!(env.from, "not-an-email");
         assert_eq!(env.to, vec!["also-bad"]);
+    }
+
+    use super::build_sent_copy_info;
+
+    #[test]
+    fn sent_copy_marks_failed_when_folder_validation_skipped_append() {
+        // The handler signals "Sent folder name was invalid; APPEND was
+        // never attempted" by passing `None`. SMTP delivery already
+        // succeeded by this point, so the Meta still reports `sent: true`
+        // upstream — only the sent_copy carries the failure.
+        let info = build_sent_copy_info("Sent", None);
+        assert_eq!(info.folder, "Sent");
+        assert!(info.failed);
+        assert_eq!(info.uid, None);
+    }
+
+    #[test]
+    fn sent_copy_carries_uid_on_successful_append() {
+        let info = build_sent_copy_info("Sent", Some(Ok(Some(42))));
+        assert_eq!(info.folder, "Sent");
+        assert!(!info.failed);
+        assert_eq!(info.uid, Some(42));
+    }
+
+    #[test]
+    fn sent_copy_succeeds_without_uid_when_server_omits_appenduid() {
+        // Some IMAP servers omit the APPENDUID response code; the handler
+        // forwards `Ok(None)` and the resulting copy is marked successful
+        // but UID-less.
+        let info = build_sent_copy_info("Sent", Some(Ok(None)));
+        assert_eq!(info.folder, "Sent");
+        assert!(!info.failed);
+        assert_eq!(info.uid, None);
+    }
+
+    #[test]
+    fn sent_copy_marks_failed_when_append_errored() {
+        let info = build_sent_copy_info("Sent", Some(Err(())));
+        assert_eq!(info.folder, "Sent");
+        assert!(info.failed);
+        assert_eq!(info.uid, None);
+    }
+
+    #[test]
+    fn sent_copy_preserves_resolved_folder_string() {
+        // Confirms the response surfaces the *resolved* Sent folder name
+        // (e.g. account.special_use.sent() result), not a hard-coded
+        // "Sent" literal — important when the server uses non-default
+        // SPECIAL-USE mappings like "[Gmail]/Sent Mail".
+        let info = build_sent_copy_info("[Gmail]/Sent Mail", Some(Ok(Some(7))));
+        assert_eq!(info.folder, "[Gmail]/Sent Mail");
     }
 }

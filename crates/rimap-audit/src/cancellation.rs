@@ -91,7 +91,7 @@ mod tests {
     use super::cancellation_channel;
     use crate::record::{Provenance, ResultSummary, ToolStatus};
     use crate::writer::AuditOptions;
-    use crate::{AuditWriter, Seq, ToolEndInputs};
+    use crate::{AuditWriter, Seq, ToolEndInputs, ToolStartInputs};
     use rimap_core::ErrorCode;
     use rimap_core::tool::ToolName;
     use tempfile::tempdir;
@@ -146,13 +146,13 @@ mod tests {
 
         // Prime an earlier tool_start so the tool_end has a plausible start_seq.
         let start_seq = writer
-            .log_tool_start(
-                ToolName::Search,
-                Some("a"),
-                Some(rimap_core::Posture::DraftSafe),
-                serde_json::Value::Object(serde_json::Map::new()),
-                "0".repeat(64),
-            )
+            .log_tool_start(ToolStartInputs {
+                tool: ToolName::Search,
+                account: Some("a".to_string()),
+                posture_effective: Some(rimap_core::Posture::DraftSafe),
+                arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
+                arguments_hash_sha256: "0".repeat(64),
+            })
             .unwrap();
 
         let (tx, rx) = cancellation_channel();

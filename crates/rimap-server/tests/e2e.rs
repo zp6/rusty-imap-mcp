@@ -18,7 +18,7 @@
 //! The tradeoff is that individual input-shape and error-branch
 //! coverage is NOT the job of this file. Those belong to unit tests
 //! next to each handler — see e.g. `tools::admin::accounts::tests`
-//! and `tools::support::tests` for the input-validation and
+//! and `tools::fetch_by_uid::tests` for the input-validation and
 //! empty-result branches that used to rely on this e2e for coverage.
 
 #![expect(clippy::unwrap_used, reason = "tests")]
@@ -319,7 +319,6 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
     let conn_cfg = ConnectionConfig {
         account: None,
         account_id: rimap_core::account::AccountId::default_account(),
-        fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
         host: "127.0.0.1".into(),
         port: harness.port,
         username: "rimap-test".into(),
@@ -329,8 +328,14 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
         max_fetch_body_bytes: 5_242_880,
         max_append_bytes: 10_485_760,
     };
-    let creds: Arc<dyn CredentialStore> = Arc::new(StaticCreds("testpass".into()));
-    Connection::new(conn_cfg, audit.clone(), creds)
+    let store: Arc<dyn CredentialStore> = Arc::new(StaticCreds("testpass".into()));
+    let creds: Arc<dyn rimap_core::CredentialResolver> =
+        Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+            store,
+            rimap_config::model::FallbackMode::KeyringThenEnv,
+        ));
+    let sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
+    Connection::new(conn_cfg, sink, creds)
 }
 
 fn test_guard(config: &ValidatedAccountConfig) -> DispatchGuard<SystemClock> {

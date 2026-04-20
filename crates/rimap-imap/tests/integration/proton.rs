@@ -73,7 +73,6 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
     let conn_cfg = ConnectionConfig {
         account: None,
         account_id: rimap_core::account::AccountId::default_account(),
-        fallback_mode: rimap_config::model::FallbackMode::KeyringThenEnv,
         host: cfg.host.clone(),
         port: cfg.port,
         username: cfg.user.clone(),
@@ -83,8 +82,14 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
         max_fetch_body_bytes: 26_214_400,
         max_append_bytes: 10_485_760,
     };
-    let creds: Arc<dyn CredentialStore> = Arc::new(EnvCreds(cfg.pass.clone()));
-    Connection::new(conn_cfg, audit, creds)
+    let store: Arc<dyn CredentialStore> = Arc::new(EnvCreds(cfg.pass.clone()));
+    let creds: Arc<dyn rimap_core::CredentialResolver> =
+        Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+            store,
+            rimap_config::model::FallbackMode::KeyringThenEnv,
+        ));
+    let sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit);
+    Connection::new(conn_cfg, sink, creds)
 }
 
 #[tokio::test]

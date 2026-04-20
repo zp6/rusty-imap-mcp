@@ -80,7 +80,7 @@ pub fn hash_account_tag(username: &str, host: &str) -> String {
 /// Split a `username@host` account key back into `(host, account_tag)` for
 /// building error records. If the input has no `@` (malformed), treat the
 /// whole string as host and use an empty username for hashing.
-fn split_account_for_error(account: &str) -> (String, String) {
+pub(crate) fn split_account_for_error(account: &str) -> (String, String) {
     let (username, host) = account.split_once('@').unwrap_or(("", account));
     (host.to_string(), hash_account_tag(username, host))
 }
@@ -146,6 +146,16 @@ pub fn resolve_credential(
     })
 }
 
+/// Build the user-facing reason string for [`ConfigError::NoCredential`].
+///
+/// The string embeds `<account-id>/<username>@<host>` (the keyring
+/// lookup key) so operators can correlate the error with the exact
+/// keyring entry to create. This is disclosure-consistent with the
+/// #81 posture documented in `docs/security-model.md`: v1.0 is
+/// stdio-only with a single trusted client, and the username/host
+/// are already the inputs the operator typed into their own config.
+/// If an HTTP/SSE/WebSocket transport ships, this string must be
+/// revisited alongside the account-name disclosure in `UnknownAccount`.
 fn build_no_credential_reason(
     account_id: &AccountId,
     fallback_mode: crate::model::FallbackMode,
@@ -167,6 +177,61 @@ fn build_no_credential_reason(
              or set the environment variable",
             account_id.as_str(),
         ),
+    }
+}
+
+/// Adapter implementing [`rimap_core::CredentialResolver`] over the
+/// lower-level [`CredentialStore`] + [`crate::model::FallbackMode`]
+/// pair. Bakes the keyring-vs-env-var fallback policy in at
+/// construction time so the IMAP transport never sees `FallbackMode`.
+///
+/// Cheaply cloneable; the `Arc<dyn CredentialStore>` shares a single
+/// keyring handle across every per-account resolver in a process.
+#[derive(Clone)]
+pub struct KeyringCredentialResolver {
+    store: std::sync::Arc<dyn CredentialStore>,
+    fallback_mode: crate::model::FallbackMode,
+}
+
+impl std::fmt::Debug for KeyringCredentialResolver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // CredentialStore is not Debug (production impls wrap a
+        // `keyring::Entry` which doesn't implement it either), so the
+        // store is shown as an opaque pointer rather than expanded.
+        f.debug_struct("KeyringCredentialResolver")
+            .field("store", &"<dyn CredentialStore>")
+            .field("fallback_mode", &self.fallback_mode)
+            .finish()
+    }
+}
+
+impl KeyringCredentialResolver {
+    /// Build a resolver that walks `store` and falls back to the
+    /// configured policy.
+    #[must_use]
+    pub fn new(
+        store: std::sync::Arc<dyn CredentialStore>,
+        fallback_mode: crate::model::FallbackMode,
+    ) -> Self {
+        Self {
+            store,
+            fallback_mode,
+        }
+    }
+}
+
+impl rimap_core::CredentialResolver for KeyringCredentialResolver {
+    fn resolve(
+        &self,
+        account: &AccountId,
+        username: &str,
+        host: &str,
+    ) -> Result<(SecretString, rimap_core::CredentialSource), rimap_core::CredentialResolverError>
+    {
+        resolve_credential(&*self.store, account, username, host, self.fallback_mode).map_err(|e| {
+            let reason = e.to_string();
+            rimap_core::CredentialResolverError::with_source(reason, e)
+        })
     }
 }
 
@@ -223,16 +288,14 @@ impl CredentialStore for KeyringStore {
 #[expect(clippy::unwrap_used, reason = "tests")]
 #[expect(clippy::panic, reason = "tests")]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
     use secrecy::{ExposeSecret, SecretString};
 
     use rimap_core::account::AccountId;
 
-    use crate::credential::{CredentialStore, PASSWORD_ENV_VAR, account_key, resolve_credential};
+    use crate::credential::{PASSWORD_ENV_VAR, account_key, resolve_credential};
     use crate::error::ConfigError;
     use crate::model::FallbackMode;
+    use crate::test_support::MockStore;
 
     #[test]
     fn hash_account_tag_is_16_hex_and_deterministic() {
@@ -251,60 +314,6 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(a, c);
         assert_ne!(b, c);
-    }
-
-    #[derive(Default)]
-    struct MockStore {
-        entries: Mutex<HashMap<String, String>>,
-        fail_on_get: bool,
-    }
-
-    impl MockStore {
-        fn with(pairs: &[(&str, &str)]) -> Self {
-            let mut map = HashMap::new();
-            for (k, v) in pairs {
-                map.insert((*k).to_string(), (*v).to_string());
-            }
-            Self {
-                entries: Mutex::new(map),
-                fail_on_get: false,
-            }
-        }
-
-        fn failing() -> Self {
-            Self {
-                entries: Mutex::new(HashMap::new()),
-                fail_on_get: true,
-            }
-        }
-    }
-
-    impl CredentialStore for MockStore {
-        fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
-            if self.fail_on_get {
-                let (host, account_tag) = super::split_account_for_error(account);
-                return Err(ConfigError::Keychain {
-                    host,
-                    account_tag,
-                    source: "simulated failure".into(),
-                });
-            }
-            Ok(self
-                .entries
-                .lock()
-                .unwrap()
-                .get(account)
-                .cloned()
-                .map(SecretString::from))
-        }
-
-        fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(account.to_string(), password.to_string());
-            Ok(())
-        }
     }
 
     #[test]

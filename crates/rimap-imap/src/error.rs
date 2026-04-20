@@ -107,7 +107,8 @@ pub enum AuthFailure {
     /// The credential store had no entry for this `<user>@<host>` and the
     /// `RUSTY_IMAP_MCP_PASSWORD` env var fallback was empty or absent.
     /// The inner string is the operator-actionable reason from
-    /// `rimap_config::credential::resolve_credential`.
+    /// the injected [`rimap_core::CredentialResolver`] (production
+    /// implementation: `rimap_config::credential::KeyringCredentialResolver`).
     CredentialUnavailable(String),
 }
 

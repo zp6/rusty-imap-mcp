@@ -144,6 +144,74 @@ impl ToolName {
             | Self::DeleteFolder => false,
         }
     }
+
+    /// Whether this tool consumes a token from the per-minute *draft* rate
+    /// bucket. Only `create_draft` appends to a Drafts folder, so it is the
+    /// only variant gated by that bucket. Exhaustive match so a new variant
+    /// forces an explicit decision at compile time.
+    #[must_use]
+    pub fn is_draft_quota_gated(self) -> bool {
+        match self {
+            Self::CreateDraft => true,
+            Self::ListFolders
+            | Self::Search
+            | Self::SearchAdvanced
+            | Self::FetchMessage
+            | Self::FetchMessageHtml
+            | Self::ListAttachments
+            | Self::DownloadAttachment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Flag
+            | Self::Unflag
+            | Self::AddLabel
+            | Self::RemoveLabel
+            | Self::ListLabels
+            | Self::MoveMessage
+            | Self::SendEmail
+            | Self::DeleteMessage
+            | Self::Expunge
+            | Self::CreateFolder
+            | Self::RenameFolder
+            | Self::DeleteFolder
+            | Self::UseAccount
+            | Self::ListAccounts => false,
+        }
+    }
+
+    /// Whether this tool consumes a token from the per-minute *send* rate
+    /// bucket. Only `send_email` dispatches through SMTP, so it is the only
+    /// variant gated by that bucket. Exhaustive match so a new variant
+    /// forces an explicit decision at compile time.
+    #[must_use]
+    pub fn is_send_quota_gated(self) -> bool {
+        match self {
+            Self::SendEmail => true,
+            Self::ListFolders
+            | Self::Search
+            | Self::SearchAdvanced
+            | Self::FetchMessage
+            | Self::FetchMessageHtml
+            | Self::ListAttachments
+            | Self::DownloadAttachment
+            | Self::MarkRead
+            | Self::MarkUnread
+            | Self::Flag
+            | Self::Unflag
+            | Self::AddLabel
+            | Self::RemoveLabel
+            | Self::ListLabels
+            | Self::MoveMessage
+            | Self::CreateDraft
+            | Self::DeleteMessage
+            | Self::Expunge
+            | Self::CreateFolder
+            | Self::RenameFolder
+            | Self::DeleteFolder
+            | Self::UseAccount
+            | Self::ListAccounts => false,
+        }
+    }
 }
 
 impl fmt::Display for ToolName {

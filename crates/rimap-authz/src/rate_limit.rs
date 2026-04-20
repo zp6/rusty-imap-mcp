@@ -10,6 +10,7 @@
 
 use std::num::NonZeroU32;
 
+use governor::NotUntil;
 use governor::clock::{Clock, DefaultClock};
 use governor::middleware::NoOpMiddleware;
 use governor::state::{InMemoryState, NotKeyed};
@@ -19,6 +20,37 @@ use rimap_core::tool::ToolName;
 use crate::error::AuthzError;
 
 type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
+
+/// Instant type used by the `DefaultClock`. Extracted as an alias so the
+/// [`retry_after_ms`] helper's signature reads cleanly without repeating the
+/// `<DefaultClock as Clock>::Instant` projection.
+pub type DefaultInstant = <DefaultClock as Clock>::Instant;
+
+/// Compute the millisecond retry hint from a `governor` rejection against
+/// the given clock. Saturates at `u64::MAX` on the hypothetical >500M-year
+/// overflow. Exposed so rate-limit sites in other crates (e.g.,
+/// `rimap-server`'s infrastructure governor) produce identical hints
+/// without duplicating the cast.
+#[must_use]
+pub fn retry_after_ms(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> u64 {
+    saturating_millis_to_u64(not_until.wait_time_from(clock.now()).as_millis())
+}
+
+/// Saturating `u128` → `u64` cast: returns the value on success,
+/// `u64::MAX` on overflow. Factored out of [`retry_after_ms`] so the
+/// saturation contract (the only non-trivial logic in the wrapper) is
+/// unit-testable without fabricating a multi-hundred-million-year
+/// `NotUntil` value.
+#[must_use]
+pub(crate) fn saturating_millis_to_u64(millis: u128) -> u64 {
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
+fn rate_limited(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> AuthzError {
+    AuthzError::RateLimited {
+        retry_after_ms: retry_after_ms(not_until, clock),
+    }
+}
 
 /// Combined global + draft + send rate limiter.
 pub struct Governor {
@@ -66,73 +98,18 @@ impl Governor {
     /// # Errors
     /// `AuthzError::RateLimited` when the relevant bucket is empty.
     pub fn check(&self, tool: ToolName) -> Result<(), AuthzError> {
-        self.global.check().map_err(|nu| AuthzError::RateLimited {
-            retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
-                .unwrap_or(u64::MAX),
-        })?;
-        let is_draft = match tool {
-            ToolName::CreateDraft => true,
-            ToolName::ListFolders
-            | ToolName::Search
-            | ToolName::SearchAdvanced
-            | ToolName::FetchMessage
-            | ToolName::FetchMessageHtml
-            | ToolName::ListAttachments
-            | ToolName::DownloadAttachment
-            | ToolName::MarkRead
-            | ToolName::MarkUnread
-            | ToolName::Flag
-            | ToolName::Unflag
-            | ToolName::AddLabel
-            | ToolName::RemoveLabel
-            | ToolName::ListLabels
-            | ToolName::MoveMessage
-            | ToolName::SendEmail
-            | ToolName::DeleteMessage
-            | ToolName::Expunge
-            | ToolName::CreateFolder
-            | ToolName::RenameFolder
-            | ToolName::DeleteFolder
-            | ToolName::UseAccount
-            | ToolName::ListAccounts => false,
-        };
-        if is_draft {
-            self.drafts.check().map_err(|nu| AuthzError::RateLimited {
-                retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
-                    .unwrap_or(u64::MAX),
-            })?;
+        self.global
+            .check()
+            .map_err(|nu| rate_limited(&nu, &self.clock))?;
+        if tool.is_draft_quota_gated() {
+            self.drafts
+                .check()
+                .map_err(|nu| rate_limited(&nu, &self.clock))?;
         }
-        let is_send = match tool {
-            ToolName::SendEmail => true,
-            ToolName::ListFolders
-            | ToolName::Search
-            | ToolName::SearchAdvanced
-            | ToolName::FetchMessage
-            | ToolName::FetchMessageHtml
-            | ToolName::ListAttachments
-            | ToolName::DownloadAttachment
-            | ToolName::MarkRead
-            | ToolName::MarkUnread
-            | ToolName::Flag
-            | ToolName::Unflag
-            | ToolName::AddLabel
-            | ToolName::RemoveLabel
-            | ToolName::ListLabels
-            | ToolName::MoveMessage
-            | ToolName::CreateDraft
-            | ToolName::DeleteMessage
-            | ToolName::Expunge
-            | ToolName::CreateFolder
-            | ToolName::RenameFolder
-            | ToolName::DeleteFolder
-            | ToolName::UseAccount
-            | ToolName::ListAccounts => false,
-        };
-        if is_send {
-            self.sends.check().map_err(|nu| AuthzError::RateLimited {
-                retry_after_ms: u64::try_from(nu.wait_time_from(self.clock.now()).as_millis())
-                    .unwrap_or(u64::MAX),
-            })?;
+        if tool.is_send_quota_gated() {
+            self.sends
+                .check()
+                .map_err(|nu| rate_limited(&nu, &self.clock))?;
         }
         Ok(())
     }
@@ -144,7 +121,24 @@ mod tests {
     use rimap_core::tool::ToolName;
 
     use crate::error::AuthzError;
-    use crate::rate_limit::Governor;
+    use crate::rate_limit::{Governor, saturating_millis_to_u64};
+
+    #[test]
+    fn saturating_millis_exact_cast_when_in_u64() {
+        assert_eq!(saturating_millis_to_u64(0), 0);
+        assert_eq!(saturating_millis_to_u64(1_500), 1_500);
+        assert_eq!(saturating_millis_to_u64(u128::from(u64::MAX)), u64::MAX);
+    }
+
+    #[test]
+    fn saturating_millis_saturates_above_u64_max() {
+        // Any `u128` value > u64::MAX pins the retry hint at u64::MAX
+        // rather than panicking or wrapping. Covers the unwrap_or(u64::MAX)
+        // branch of retry_after_ms that `NotUntil::as_millis()` could
+        // in principle hit (hypothetical >584M-year overflow).
+        assert_eq!(saturating_millis_to_u64(u128::from(u64::MAX) + 1), u64::MAX);
+        assert_eq!(saturating_millis_to_u64(u128::MAX), u64::MAX);
+    }
 
     #[test]
     fn zero_rate_rejected_at_build() {

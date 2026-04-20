@@ -96,8 +96,11 @@ crates/
 
 Each library crate has one clear responsibility and communicates through typed
 interfaces. `rimap-content` has zero network dependencies; `rimap-authz` has
-zero IMAP dependencies. This isolation is load-bearing for testability — do
-not introduce cross-crate coupling that breaks it.
+zero IMAP dependencies; `rimap-imap` is a pure transport crate that depends
+only on `rimap-core` (`AuthEventSink` + `CredentialResolver` trait seams) —
+the audit log and credential keyring sit on the other side of those traits
+and are wired by `rimap-server` at boot. This isolation is load-bearing for
+testability — do not introduce cross-crate coupling that breaks it.
 
 ## Coding standards
 
@@ -180,7 +183,11 @@ Some changes deserve extra scrutiny. When touching:
 - **`rimap-audit` writer:** the audit log is append-only with an exclusive OS
   advisory lock. Never hold the lock across awaits. Never silently swallow
   write errors — audit failures must surface as `ERR_INTERNAL` tool errors by
-  default.
+  default. New `AuditWriter::log_*` methods take a single argument: pass the
+  record struct directly (`Auth`, `ProcessEnd`) when no derivation is needed,
+  or introduce a `<Kind>Inputs` shim with `From<Inputs> for record::<Kind>`
+  when the on-disk record carries derived fields. Never positional. The rule
+  is documented on `AuditWriter::log_auth`.
 - **`rimap-authz` posture matrix:** the matrix has 22 tools x 4 postures
   (readonly, draft-safe, full, destructive) plus 2 infrastructure tools
   (use_account, list_accounts) that bypass posture checks. Additions to the

@@ -9,6 +9,7 @@
 
 pub(crate) mod admin;
 pub(crate) mod compose;
+pub(crate) mod fetch_by_uid;
 pub(crate) mod mailbox;
 pub(crate) mod retrieval;
-pub(crate) mod support;
+pub(crate) mod validation;

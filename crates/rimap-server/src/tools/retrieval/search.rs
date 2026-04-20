@@ -111,6 +111,8 @@ pub async fn handle(
     account: &AccountState,
     input: SearchInput,
 ) -> Result<ToolResponse<SearchMeta, SearchUntrusted>, rimap_core::RimapError> {
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+
     let query = build_query(account, &input)?;
 
     let uids = Box::pin(account.imap.search(&input.folder, query)).await?;

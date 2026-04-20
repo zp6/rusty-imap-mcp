@@ -1,16 +1,18 @@
 //! `Connection`: lazy-connect IMAP session with TLS fingerprint pinning,
-//! command timeout enforcement, and `Auth` audit emission.
+//! command timeout enforcement, and `AuthEvent` audit emission.
 //!
 //! ## Locking discipline
 //!
 //! - The `tokio::sync::Mutex` around `Option<Session>` IS held across `.await`
 //!   points (it has to be — async-imap commands are themselves `.await`).
-//! - The `rimap_audit::AuditWriter` lock (a `std::sync::Mutex`) is NEVER held
-//!   across an `.await`. Every audit emission goes through
+//! - The injected [`AuthEventSink`] may hold its own internal
+//!   `std::sync::Mutex` (the production `rimap-audit::AuditWriter`
+//!   does). That lock is NEVER held across an `.await` because every
+//!   call to [`AuthEventSink::emit_auth`] goes through
 //!   `tokio::task::spawn_blocking`.
 //!
 //! These two rules are independent and both must hold. See
-//! `docs/architecture/audit-locking.md` (added in Task 17).
+//! `docs/architecture/audit-locking.md`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,10 +21,10 @@ use std::time::Duration;
 use async_imap::Session;
 use async_imap::imap_proto::{Capability as ImapCapability, Response, Status};
 use async_imap::types::UnsolicitedResponse;
-use rimap_audit::AuditWriter;
-use rimap_audit::record::Auth;
-use rimap_config::credential::{CredentialStore, resolve_credential};
 use rimap_core::TlsFingerprint;
+use rimap_core::auth_event::AuthEvent;
+use rimap_core::auth_sink::AuthEventSink;
+use rimap_core::credential::CredentialResolver;
 use secrecy::ExposeSecret;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -35,22 +37,22 @@ use crate::auth::{AuthContext, auth_failure, auth_success};
 use crate::error::{AuthFailure, ImapError};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
-/// Everything `Connection` needs to open a session, pulled out of a
-/// `rimap_config::ValidatedAccountConfig` entry inside the overall
-/// `ValidatedMultiConfig` by the caller. `Connection` clones this value
-/// once at construction time.
+/// Everything `Connection` needs to open a session. The caller pulls
+/// these fields from a validated config entry; `Connection` clones
+/// the value once at construction time and never re-reads it.
+///
+/// Credential-fallback policy is NOT in this struct — that's a config
+/// concern baked into the [`CredentialResolver`] handed to
+/// [`Connection::new`].
 #[derive(Debug, Clone)]
 pub struct ConnectionConfig {
     /// Account name this connection belongs to. `None` for the legacy
     /// single-account `"default"` deployment; `Some(name)` in multi-account
-    /// configs. Populated into `Auth` audit records.
+    /// configs. Populated into [`AuthEvent`] audit records.
     pub account: Option<String>,
     /// Account id used for keyring lookups. Always set — the default account
     /// uses `AccountId::default_account()`.
     pub account_id: rimap_core::account::AccountId,
-    /// Credential fallback policy: whether to consult the env var when the
-    /// keyring has no entry.
-    pub fallback_mode: rimap_config::model::FallbackMode,
     /// IMAP server host.
     pub host: String,
     /// IMAP server port (typically 993 for IMAPS).
@@ -79,10 +81,16 @@ pub struct Connection {
     inner: Arc<ConnectionInner>,
 }
 
+// Field order is drop-order-significant. Fields drop in declaration
+// order; reorder only with care. Today the order is: config scalars
+// first (cheap), then the Arc'd sink and resolver (refcount
+// decrements — the real destructors run wherever the last handle is
+// dropped), then the live IMAP session (so its teardown cannot observe
+// dropped audit/credential sinks), then the capability atomics.
 struct ConnectionInner {
     cfg: ConnectionConfig,
-    audit: AuditWriter,
-    credentials: Arc<dyn CredentialStore>,
+    audit: Arc<dyn AuthEventSink>,
+    credentials: Arc<dyn CredentialResolver>,
     /// `None` = never connected, or last command tore down the connection.
     /// `Some(_)` = live session ready for the next command.
     session: Mutex<Option<ImapSession>>,
@@ -112,11 +120,17 @@ impl std::fmt::Debug for Connection {
 
 impl Connection {
     /// Build a connection handle. Does NOT open a socket.
+    ///
+    /// `audit` and `credentials` are trait objects so the transport
+    /// crate stays decoupled from any specific audit-log or credential
+    /// store implementation. Production wiring uses the `rimap-audit`
+    /// `AuditWriter` (which implements [`AuthEventSink`]) and the
+    /// `rimap-config` `KeyringCredentialResolver`.
     #[must_use]
     pub fn new(
         cfg: ConnectionConfig,
-        audit: AuditWriter,
-        credentials: Arc<dyn CredentialStore>,
+        audit: Arc<dyn AuthEventSink>,
+        credentials: Arc<dyn CredentialResolver>,
     ) -> Self {
         Self {
             inner: Arc::new(ConnectionInner {
@@ -381,26 +395,23 @@ impl Connection {
             ));
         }
 
-        // Resolve the password from the credential store. A missing
-        // credential is an authentication failure, not a network failure —
-        // map it to ERR_AUTH so retry logic and operator messages stay
-        // accurate. Pre-resolve; carry `None`.
+        // Resolve the password from the injected resolver. A missing
+        // credential is an authentication failure, not a network
+        // failure — map it to ERR_AUTH so retry logic and operator
+        // messages stay accurate. Pre-resolve; carry `None`.
         let cfg = &self.inner.cfg;
-        let (password, credential_source) = resolve_credential(
-            &*self.inner.credentials,
-            &cfg.account_id,
-            &cfg.username,
-            &cfg.host,
-            cfg.fallback_mode,
-        )
-        .map_err(|e| {
-            (
-                ImapError::Auth {
-                    reason: AuthFailure::CredentialUnavailable(e.to_string()),
-                },
-                None,
-            )
-        })?;
+        let (password, credential_source) = self
+            .inner
+            .credentials
+            .resolve(&cfg.account_id, &cfg.username, &cfg.host)
+            .map_err(|e| {
+                (
+                    ImapError::Auth {
+                        reason: AuthFailure::CredentialUnavailable(e.into_reason()),
+                    },
+                    None,
+                )
+            })?;
 
         // From here on, all errors carry `Some(credential_source)` because
         // resolution succeeded.
@@ -449,9 +460,11 @@ impl Connection {
         Ok((session, credential_source))
     }
 
-    /// Emit an `Auth` audit record. Runs `AuditWriter::log_auth` inside
-    /// `spawn_blocking` so the `std::sync::Mutex` inside `AuditWriter` is
-    /// never held across an `.await` boundary.
+    /// Emit an [`AuthEvent`] through the injected sink. Runs the
+    /// (sync) `emit_auth` call inside `spawn_blocking` so any
+    /// `std::sync::Mutex` the sink holds (the production
+    /// `AuditWriter` impl does) is never held across an `.await`
+    /// boundary.
     ///
     /// ## Cancellation behavior
     ///
@@ -466,38 +479,34 @@ impl Connection {
     ///
     /// ## `ImapError` message sanitization
     ///
-    /// The `ImapError::Audit { message }` uses the short error code
-    /// (`audit_err.code()`) rather than the full `Display`, because
-    /// `AuditError::Write` / `Fsync` / `Rotate` include the audit file
-    /// path, which is operator-configured filesystem layout and should
-    /// not propagate into MCP tool responses or client-visible error
-    /// chains. The full error is still preserved in the `source` field
-    /// for observability and log inspection.
-    async fn emit_auth(&self, record: Auth) -> Result<(), ImapError> {
-        let audit = self.inner.audit.clone();
-        let join_result = tokio::task::spawn_blocking(move || audit.log_auth(record)).await;
+    /// The [`AuthEventSink`] contract requires implementations to
+    /// pre-sanitize the `message` field on [`rimap_core::AuthSinkError`]
+    /// (no filesystem paths or operator-configured layout). This
+    /// function forwards that `message` verbatim — the full
+    /// underlying error is preserved on the `source` chain for
+    /// observability.
+    async fn emit_auth(&self, event: AuthEvent) -> Result<(), ImapError> {
+        let sink = self.inner.audit.clone();
+        let join_result = tokio::task::spawn_blocking(move || sink.emit_auth(event)).await;
         match join_result {
             Err(join_err) => Err(ImapError::Audit {
                 op: "emit_auth",
                 message: "tokio join error during audit write".to_string(),
                 source: Box::new(join_err),
             }),
-            Ok(Err(audit_err)) => {
+            Ok(Err(sink_err)) => {
                 tracing::error!(
-                    error = %audit_err,
-                    "audit log_auth failed; converting to ImapError::Audit",
+                    error = %sink_err,
+                    "AuthEventSink::emit_auth failed; converting to ImapError::Audit",
                 );
-                // Sanitized message: use only the stable error code, not
-                // the Display (which may include the audit file path).
-                // The full error is preserved in source.
-                let message = format!("emit_auth: {}", audit_err.code());
+                let message = sink_err.message().to_string();
                 Err(ImapError::Audit {
                     op: "emit_auth",
                     message,
-                    source: Box::new(audit_err),
+                    source: Box::new(sink_err),
                 })
             }
-            Ok(Ok(_seq)) => Ok(()),
+            Ok(Ok(())) => Ok(()),
         }
     }
 
@@ -722,6 +731,8 @@ impl Connection {
     /// # Errors
     /// Returns `ImapError::BatchTooLarge` if more than 100 UIDs are passed.
     /// Returns `ImapError::UidValidityChanged` on a UIDVALIDITY mismatch.
+    /// Returns `ImapError::InvalidInput` if any flag fails `flags_string`
+    /// (keyword contains non-atom characters).
     /// Propagates timeout, connection-lost, or protocol errors.
     pub async fn store_flags(
         &self,
@@ -819,6 +830,8 @@ impl Connection {
     ///
     /// # Errors
     ///
+    /// Returns `ImapError::InvalidInput` if `folder` or `trash_folder` fails
+    /// `validate_folder_name`.
     /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
     pub async fn delete_message(
@@ -852,6 +865,7 @@ impl Connection {
     ///
     /// # Errors
     ///
+    /// Returns `ImapError::InvalidInput` if `folder` fails `validate_folder_name`.
     /// Returns `ImapError::ConnectionLost` or `ImapError::Timeout` on transport failure,
     /// or a protocol error if the server rejects the command.
     pub async fn expunge(&self, folder: &str) -> Result<(Vec<crate::types::Uid>, u32), ImapError> {
@@ -1025,5 +1039,121 @@ mod tests {
             }
             other => panic!("expected TlsHandshake variant, got {other:?}"),
         }
+    }
+
+    /// Regression test for the cancellation contract on
+    /// [`Connection::emit_auth`]: the sink still observes the event even
+    /// when the awaiting future is dropped before `spawn_blocking`
+    /// completes. The rustdoc on `emit_auth` documents this; if a future
+    /// refactor replaces `spawn_blocking` with a direct await or changes
+    /// the join-handle semantics, this test fails.
+    #[tokio::test]
+    async fn emit_auth_completes_despite_caller_cancellation() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use rimap_core::auth_event::{AuthEvent, AuthResult};
+        use rimap_core::auth_sink::{AuthEventSink, AuthSinkError};
+        use rimap_core::credential::{
+            CredentialResolver, CredentialResolverError, CredentialSource,
+        };
+        use secrecy::SecretString;
+
+        use super::{Connection, ConnectionConfig};
+
+        /// Blocks for `delay` inside `emit_auth`, then increments
+        /// `recorded`. Simulates a slow synchronous sink (the real
+        /// `AuditWriter` can block on fsync when the disk is slow).
+        struct BlockingSink {
+            delay: Duration,
+            recorded: Arc<AtomicUsize>,
+        }
+
+        impl std::fmt::Debug for BlockingSink {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("BlockingSink").finish()
+            }
+        }
+
+        impl AuthEventSink for BlockingSink {
+            fn emit_auth(&self, _event: AuthEvent) -> Result<(), AuthSinkError> {
+                std::thread::sleep(self.delay);
+                self.recorded.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        /// Minimal resolver; never invoked in this test because we call
+        /// `emit_auth` directly, but `Connection::new` requires one.
+        #[derive(Debug)]
+        struct DummyResolver;
+
+        impl CredentialResolver for DummyResolver {
+            fn resolve(
+                &self,
+                _: &rimap_core::account::AccountId,
+                _: &str,
+                _: &str,
+            ) -> Result<(SecretString, CredentialSource), CredentialResolverError> {
+                Err(CredentialResolverError::new("dummy resolver"))
+            }
+        }
+
+        let recorded = Arc::new(AtomicUsize::new(0));
+        let sink: Arc<dyn AuthEventSink> = Arc::new(BlockingSink {
+            delay: Duration::from_millis(80),
+            recorded: Arc::clone(&recorded),
+        });
+        let resolver: Arc<dyn CredentialResolver> = Arc::new(DummyResolver);
+        let conn = Connection::new(
+            ConnectionConfig {
+                account: None,
+                account_id: rimap_core::account::AccountId::default_account(),
+                host: "127.0.0.1".into(),
+                port: 1,
+                username: "test".into(),
+                pinned_fingerprint: None,
+                connect_timeout: Duration::from_secs(1),
+                command_timeout: Duration::from_secs(1),
+                max_fetch_body_bytes: 1024,
+                max_append_bytes: 1024,
+            },
+            sink,
+            resolver,
+        );
+
+        let event = AuthEvent {
+            account: None,
+            result: AuthResult::Success,
+            host: "127.0.0.1".into(),
+            port: 1,
+            username: "test".into(),
+            tls_fingerprint_sha256: None,
+            fingerprint_match: None,
+            error_code: None,
+            credential_source: None,
+        };
+
+        let handle = tokio::spawn(async move {
+            // Dropping this future between `spawn_blocking` dispatch and
+            // completion is the cancellation we want to exercise.
+            let _ = conn.emit_auth(event).await;
+        });
+
+        // Give the future just long enough to enter `spawn_blocking`
+        // (far less than the sink's 80ms delay). The abort then drops
+        // the JoinHandle mid-blocking-task.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        handle.abort();
+
+        // Wait past the sink's total blocking time, then verify the
+        // event was recorded even though the caller was cancelled.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            recorded.load(Ordering::SeqCst),
+            1,
+            "sink must record the event even if the caller future was dropped",
+        );
     }
 }

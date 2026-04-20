@@ -14,9 +14,10 @@ workspace = true
 
 [dependencies]
 # Internal — direct path + explicit version to satisfy cargo-deny's wildcard ban.
+# Transport-only: rimap-imap depends on rimap-core for the AuthEventSink
+# and CredentialResolver trait seams; rimap-audit and rimap-config sit
+# on the other side of those seams and are wired by rimap-server.
 rimap-core = { path = "../rimap-core", version = "1.0.0" }
-rimap-config = { path = "../rimap-config", version = "1.0.0" }
-rimap-audit = { path = "../rimap-audit", version = "1.0.0" }
 
 # Async runtime
 tokio = { workspace = true }
@@ -42,6 +43,11 @@ time = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+# Integration tests build the production wiring (AuditWriter implementing
+# AuthEventSink, KeyringCredentialResolver implementing CredentialResolver)
+# to drive Connection through a real Dovecot/Proton container.
+rimap-audit = { path = "../rimap-audit", version = "1.0.0" }
+rimap-config = { path = "../rimap-config", version = "1.0.0" }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 serde_json = { workspace = true }

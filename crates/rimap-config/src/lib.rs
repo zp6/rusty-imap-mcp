@@ -9,6 +9,9 @@ pub mod login;
 pub mod model;
 pub mod validate;
 
+#[cfg(any(feature = "test-support", test))]
+pub mod test_support;
+
 pub use crate::credential::{
     CredentialStore, KEYCHAIN_SERVICE, KeyringStore, PASSWORD_ENV_VAR, account_key,
     resolve_credential,

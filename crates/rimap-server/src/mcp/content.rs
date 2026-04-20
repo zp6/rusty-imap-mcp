@@ -85,11 +85,14 @@ where
     let _permit = PARSE_SEMAPHORE
         .acquire()
         .await
-        .map_err(|_| RimapError::Internal("parse semaphore closed".into()))?;
+        .map_err(|e| RimapError::InternalSourced {
+            message: "parse semaphore closed".into(),
+            source: Box::new(e),
+        })?;
     match tokio::task::spawn_blocking(work).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(e)) => Err(classify_content_error(&e)),
-        Err(join_err) => Err(crate::mcp::spawn_blocking_panic_error(&join_err)),
+        Err(join_err) => Err(crate::mcp::spawn_blocking_panic_error(join_err)),
     }
 }
 
