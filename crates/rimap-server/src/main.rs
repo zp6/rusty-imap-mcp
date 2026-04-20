@@ -148,7 +148,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     };
     // total_tool_calls is not tracked yet — use 0 as placeholder.
     // A future PR can add an AtomicU64 counter to ImapMcpServer.
-    match audit_for_shutdown.log_process_end(reason, 0) {
+    let process_end = rimap_audit::ProcessEnd {
+        reason,
+        total_tool_calls: 0,
+    };
+    match audit_for_shutdown.log_process_end(process_end) {
         Ok(seq) => tracing::info!(seq = %seq, "process_end audit record written"),
         Err(e) => tracing::error!(error = %e, "failed to write process_end audit record"),
     }

@@ -165,7 +165,7 @@ allowed_base_dir = "{}"
 
     #[test]
     fn process_end_writes_after_start() {
-        use rimap_audit::ProcessEndReason;
+        use rimap_audit::{ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
         let config_path = write_config(&dir);
@@ -175,7 +175,12 @@ allowed_base_dir = "{}"
 
         {
             let writer = init_audit_writer_multi(&validated, &config_path).unwrap();
-            writer.log_process_end(ProcessEndReason::Eof, 0).unwrap();
+            writer
+                .log_process_end(ProcessEnd {
+                    reason: ProcessEndReason::Eof,
+                    total_tool_calls: 0,
+                })
+                .unwrap();
         }
 
         let contents = std::fs::read_to_string(&audit_path).unwrap();

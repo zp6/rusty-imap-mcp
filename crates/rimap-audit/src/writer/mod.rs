@@ -237,6 +237,25 @@ impl AuditWriter {
 
     /// Build an `auth` record from `payload`, allocate a seq, and write it.
     ///
+    /// # `log_*` family input convention
+    ///
+    /// All `log_*` methods take a single argument so the family stays
+    /// uniform at the call site. Two shapes are accepted:
+    ///
+    /// - **Record struct directly** (`Auth`, `ProcessEnd`) — the on-disk
+    ///   record has no derived fields and the caller can construct it
+    ///   verbatim. Adding a `<Kind>Inputs` shim would be a redirect with
+    ///   no behavior.
+    /// - **`<Kind>Inputs` shim with `From<Inputs> for record::<Kind>`**
+    ///   ([`ProcessStartInputs`], [`ToolStartInputs`], [`ToolEndInputs`])
+    ///   — the on-disk record carries derived state (`PostureEffective::
+    ///   from_optional`, inode-change computation) that the caller would
+    ///   otherwise have to re-derive at every site.
+    ///
+    /// New `log_*` methods MUST follow this rule: pick the record struct
+    /// directly when no translation is needed; introduce a `*Inputs`
+    /// shim when it is. Do not pass positional arguments.
+    ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.
     pub fn log_auth(
@@ -437,23 +456,22 @@ impl AuditWriter {
         self.emit(crate::record::Payload::ToolEnd(inputs.into()))
     }
 
-    /// Build a `process_end` record, allocate a seq, and write it.
-    /// Stamps the record with the writer's stable `process_id` and
-    /// `Timestamp::now()`. Returns the allocated `seq` on success.
+    /// Build a `process_end` record from `payload`, allocate a seq, and
+    /// write it. Stamps the record with the writer's stable `process_id`
+    /// and `Timestamp::now()`. Returns the allocated `seq` on success.
+    ///
+    /// `ProcessEnd` is taken directly per the `log_*` family convention
+    /// documented on [`Self::log_auth`]: the on-disk record has no
+    /// derived fields, so a `<Kind>Inputs` shim would add a redirect
+    /// without behavior.
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.
     pub fn log_process_end(
         &self,
-        reason: crate::record::ProcessEndReason,
-        total_tool_calls: u64,
+        payload: crate::record::ProcessEnd,
     ) -> Result<crate::record::ids::Seq, AuditError> {
-        self.emit(crate::record::Payload::ProcessEnd(
-            crate::record::ProcessEnd {
-                reason,
-                total_tool_calls,
-            },
-        ))
+        self.emit(crate::record::Payload::ProcessEnd(payload))
     }
 }
 
@@ -1124,7 +1142,7 @@ mod tests {
 
     #[test]
     fn log_process_end_writes_valid_record() {
-        use crate::record::ProcessEndReason;
+        use crate::record::{ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -1138,7 +1156,12 @@ mod tests {
         })
         .unwrap();
 
-        let seq = writer.log_process_end(ProcessEndReason::Eof, 42).unwrap();
+        let seq = writer
+            .log_process_end(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 42,
+            })
+            .unwrap();
         assert_eq!(seq, crate::record::ids::Seq::FIRST);
         drop(writer);
 
@@ -1151,7 +1174,7 @@ mod tests {
 
     #[test]
     fn log_process_end_uses_writer_process_id() {
-        use crate::record::ProcessEndReason;
+        use crate::record::{ProcessEnd, ProcessEndReason};
 
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("audit.jsonl");
@@ -1167,7 +1190,10 @@ mod tests {
         let pid = writer.process_id();
 
         writer
-            .log_process_end(ProcessEndReason::SignalTerm, 7)
+            .log_process_end(ProcessEnd {
+                reason: ProcessEndReason::SignalTerm,
+                total_tool_calls: 7,
+            })
             .unwrap();
         drop(writer);
 
