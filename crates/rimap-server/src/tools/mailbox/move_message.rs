@@ -69,27 +69,27 @@ pub struct MoveMessageMeta {
 
 /// Execute the `move_message` tool.
 ///
-/// `move_message` does not invoke [`rimap_authz::FolderGuard`] directly
-/// because `FolderGuard`'s `check_protected` / `check_expunge` API is
-/// single-name: it asks whether one folder may be created, renamed, or
-/// expunged, which does not fit a pairwise `(source, dest)` move. The
-/// posture matrix gates the capability itself — `move_message` is
-/// allowed in the `DraftSafe`, `Full`, and `Destructive` postures and
-/// denied in `Readonly` — and per-folder rules for the destination are
-/// enforced by the IMAP server's own ACLs when the COPY+EXPUNGE
-/// fallback runs. If richer per-folder policy is ever needed for move,
-/// extend `FolderGuard` with a `check_move(src, dst)` method rather
-/// than open-coding the two individual checks here.
+/// In addition to the posture-matrix gate in `DispatchGuard::pre_dispatch`,
+/// this handler calls [`rimap_authz::FolderGuard::check_move`] to reject
+/// moves whose source or destination is INBOX or listed in
+/// `protected_folders`. Per-folder ACLs on the IMAP server still apply
+/// when the COPY+EXPUNGE fallback runs.
 ///
 /// # Errors
 ///
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
-/// `uid`/`uids` (zero, both/neither set, batch over 100). Returns
-/// `RimapError::Imap { ... }` for IMAP-layer failures.
+/// `uid`/`uids` (zero, both/neither set, batch over 100) or malformed
+/// folder names. Returns `RimapError::Authz { code: ProtectedFolder, ...
+/// }` when either `folder` or `destination` is INBOX or in the
+/// configured protected list. Returns `RimapError::Imap { ... }` for
+/// IMAP-layer failures.
 pub async fn handle(
     account: &AccountState,
     input: MoveMessageInput,
 ) -> Result<ToolResponse<MoveMessageMeta>, rimap_core::RimapError> {
+    account
+        .folder_guard
+        .check_move(&input.folder, &input.destination)?;
     let uids: Vec<Uid> = input
         .target
         .into_uids()

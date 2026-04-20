@@ -65,6 +65,21 @@ impl FolderGuard {
         Ok(())
     }
 
+    /// Check that neither the source nor the destination of a move is
+    /// protected. Both names are validated and compared using
+    /// IMAP-aware normalization. Delegates to [`Self::check_protected`]
+    /// so INBOX is always rejected as either side of a move.
+    ///
+    /// # Errors
+    /// Returns [`AuthzError::InvalidFolderName`] if either name
+    /// fails validation. Returns [`AuthzError::ProtectedFolder`]
+    /// if either name is in the protected list or is INBOX.
+    pub fn check_move(&self, src: &str, dst: &str) -> Result<(), AuthzError> {
+        self.check_protected(src, "move")?;
+        self.check_protected(dst, "move")?;
+        Ok(())
+    }
+
     /// Check whether folder is in the expunge allowlist. Validates
     /// folder name structure before comparison.
     ///
@@ -208,5 +223,51 @@ mod tests {
     fn rename_allows_unprotected_both() {
         let g = guard();
         assert!(g.check_rename("Old", "New").is_ok());
+    }
+
+    #[test]
+    fn move_rejects_protected_source() {
+        let g = guard();
+        assert!(matches!(
+            g.check_move("Sent", "Archive"),
+            Err(AuthzError::ProtectedFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn move_rejects_protected_destination() {
+        let g = guard();
+        assert!(matches!(
+            g.check_move("MyFolder", "INBOX"),
+            Err(AuthzError::ProtectedFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn move_rejects_inbox_source_even_when_not_listed() {
+        let g = FolderGuard::new(&[], &[]);
+        assert!(matches!(
+            g.check_move("INBOX", "Archive"),
+            Err(AuthzError::ProtectedFolder { .. })
+        ));
+    }
+
+    #[test]
+    fn move_allows_unprotected_both() {
+        let g = guard();
+        assert!(g.check_move("Old", "New").is_ok());
+    }
+
+    #[test]
+    fn move_validates_folder_names() {
+        let g = FolderGuard::new(&[], &[]);
+        assert!(matches!(
+            g.check_move("test\0folder", "Archive"),
+            Err(AuthzError::InvalidFolderName { .. })
+        ));
+        assert!(matches!(
+            g.check_move("Archive", "test\0folder"),
+            Err(AuthzError::InvalidFolderName { .. })
+        ));
     }
 }

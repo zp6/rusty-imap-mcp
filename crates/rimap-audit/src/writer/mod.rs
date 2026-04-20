@@ -411,28 +411,15 @@ impl AuditWriter {
     /// Propagates any error from `allocate_seq` or `write_record`.
     pub fn log_tool_start(
         &self,
-        tool: rimap_core::tool::ToolName,
-        account: Option<&str>,
-        posture_effective: Option<rimap_core::Posture>,
-        arguments_redacted: serde_json::Value,
-        arguments_hash_sha256: String,
+        inputs: ToolStartInputs,
     ) -> Result<crate::record::ids::Seq, AuditError> {
-        // `None` models the infrastructure-tool dispatch path (`use_account`,
+        // `inputs.account = None` + `inputs.posture_effective = None` models
+        // the infrastructure-tool dispatch path (`use_account`,
         // `list_accounts`) which bypasses per-account posture gating by
         // design. `PostureEffective` serializes as the historical on-disk
         // strings (`"infrastructure"` or the kebab-case posture) so readers
         // can distinguish these records from per-account tool calls.
-        self.emit(crate::record::Payload::ToolStart(
-            crate::record::ToolStart {
-                account: account.map(str::to_string),
-                tool,
-                posture_effective: crate::record::PostureEffective::from_optional(
-                    posture_effective,
-                ),
-                arguments_redacted,
-                arguments_hash_sha256,
-            },
-        ))
+        self.emit(crate::record::Payload::ToolStart(inputs.into()))
     }
 
     /// Build a `tool_end` record, allocate a seq, and write it.
@@ -502,6 +489,40 @@ impl From<ToolEndInputs> for crate::record::ToolEnd {
             duration_ms: i.duration_ms,
             result_summary: i.result_summary,
             provenance: i.provenance,
+        }
+    }
+}
+
+/// Inputs to [`AuditWriter::log_tool_start`].
+///
+/// Mirrors [`ToolEndInputs`] so the call sites use a consistent
+/// construction shape instead of a long positional argument list.
+#[derive(Debug)]
+pub struct ToolStartInputs {
+    /// Which tool is being dispatched.
+    pub tool: rimap_core::tool::ToolName,
+    /// Account scope (`None` for infrastructure tools like `use_account` /
+    /// `list_accounts`, which bypass per-account posture gating).
+    pub account: Option<String>,
+    /// Effective posture at dispatch time (`None` for infrastructure tools).
+    /// Serializes as the historical on-disk strings (`"infrastructure"` or
+    /// the kebab-case posture) via [`crate::record::PostureEffective`].
+    pub posture_effective: Option<rimap_core::Posture>,
+    /// Redacted arguments object produced by `redact::Redactor`.
+    pub arguments_redacted: serde_json::Value,
+    /// SHA-256 of the canonical JSON serialization of the *unredacted*
+    /// payload, hex-encoded.
+    pub arguments_hash_sha256: String,
+}
+
+impl From<ToolStartInputs> for crate::record::ToolStart {
+    fn from(i: ToolStartInputs) -> Self {
+        Self {
+            account: i.account,
+            tool: i.tool,
+            posture_effective: crate::record::PostureEffective::from_optional(i.posture_effective),
+            arguments_redacted: i.arguments_redacted,
+            arguments_hash_sha256: i.arguments_hash_sha256,
         }
     }
 }

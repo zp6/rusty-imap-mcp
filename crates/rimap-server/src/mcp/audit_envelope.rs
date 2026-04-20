@@ -14,7 +14,7 @@
 
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
 use rimap_audit::redact::{Redactor, ToolRedactionSchema, hash_arguments};
-use rimap_audit::{CancelledToolEndSender, ToolEndInputs};
+use rimap_audit::{CancelledToolEndSender, ToolEndInputs, ToolStartInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
 
@@ -113,7 +113,13 @@ impl ImapMcpServer {
         let audit = self.audit.clone();
         let posture_effective = posture.posture();
         let join = tokio::task::spawn_blocking(move || {
-            audit.log_tool_start(tool, account.as_deref(), posture_effective, redacted, hash)
+            audit.log_tool_start(ToolStartInputs {
+                tool,
+                account,
+                posture_effective,
+                arguments_redacted: redacted,
+                arguments_hash_sha256: hash,
+            })
         })
         .await;
         match join {
@@ -260,7 +266,9 @@ impl Drop for AuditEnvelopeGuard {
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use rimap_audit::writer::AuditOptions;
-    use rimap_audit::{AuditWriter, Seq, cancellation_channel, spawn_drainer};
+    use rimap_audit::{
+        AuditWriter, Seq, ToolStartInputs, cancellation_channel, spawn_drainer,
+    };
     use rimap_core::tool::ToolName;
     use tempfile::tempdir;
 
@@ -290,13 +298,13 @@ mod tests {
 
         // Prime a tool_start so the resulting tool_end references a real seq.
         let start_seq = writer
-            .log_tool_start(
-                ToolName::Search,
-                Some("test"),
-                Some(rimap_core::Posture::Readonly),
-                serde_json::Value::Object(serde_json::Map::new()),
-                "0".repeat(64),
-            )
+            .log_tool_start(ToolStartInputs {
+                tool: ToolName::Search,
+                account: Some("test".to_string()),
+                posture_effective: Some(rimap_core::Posture::Readonly),
+                arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
+                arguments_hash_sha256: "0".repeat(64),
+            })
             .unwrap();
 
         let (tx, rx) = cancellation_channel();

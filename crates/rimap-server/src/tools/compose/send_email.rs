@@ -69,19 +69,28 @@ pub async fn handle(
     // Extract Message-ID for the response
     let generated_msg_id = rimap_content::extract_message_id(&raw_msg);
 
-    // Best-effort: APPEND copy to Sent folder
+    // Best-effort: APPEND copy to Sent folder. SMTP has already delivered
+    // by this point — any failure (including a malformed resolved folder
+    // name) must route through `sent_copy.failed` so the response does
+    // not misleadingly report delivery failure.
     let sent_folder: &str = account.special_use.sent().unwrap_or("Sent");
-    let (sent_uid, sent_copy_failed) = match account
-        .imap
-        .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])
-        .await
-    {
-        Ok(result) => (result.uid.map(rimap_imap::types::Uid::get), false),
-        Err(e) => {
-            tracing::warn!("failed to append to Sent folder: {e}");
+    let (sent_uid, sent_copy_failed) =
+        if let Err(e) = rimap_authz::folder_name::FolderName::new(sent_folder) {
+            tracing::warn!("resolved Sent folder `{sent_folder}` failed validation: {e}");
             (None, true)
-        }
-    };
+        } else {
+            match account
+                .imap
+                .append_message(sent_folder, &raw_msg, &[rimap_imap::types::Flag::Seen], &[])
+                .await
+            {
+                Ok(result) => (result.uid.map(rimap_imap::types::Uid::get), false),
+                Err(e) => {
+                    tracing::warn!("failed to append to Sent folder: {e}");
+                    (None, true)
+                }
+            }
+        };
 
     Ok(ToolResponse::meta_only(SendEmailMeta {
         sent: true,
