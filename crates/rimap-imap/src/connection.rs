@@ -401,7 +401,7 @@ impl Connection {
             .map_err(|e| {
                 (
                     ImapError::Auth {
-                        reason: AuthFailure::CredentialUnavailable(e.reason),
+                        reason: AuthFailure::CredentialUnavailable(e.into_reason()),
                     },
                     None,
                 )
@@ -493,7 +493,7 @@ impl Connection {
                     error = %sink_err,
                     "AuthEventSink::emit_auth failed; converting to ImapError::Audit",
                 );
-                let message = sink_err.message.clone();
+                let message = sink_err.message().to_string();
                 Err(ImapError::Audit {
                     op: "emit_auth",
                     message,

@@ -44,8 +44,7 @@ pub async fn handle(
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
     let drafts_folder: &str = account.special_use.drafts().unwrap_or("Drafts");
-    rimap_authz::folder_name::FolderName::new(drafts_folder)
-        .map_err(|e| rimap_core::RimapError::invalid_input(format!("drafts folder: {e}")))?;
+    crate::tools::validation::validate_folder_input("drafts folder", drafts_folder)?;
     let result = account
         .imap
         .append_message(

@@ -87,10 +87,8 @@ pub async fn handle(
     account: &AccountState,
     input: MoveMessageInput,
 ) -> Result<ToolResponse<MoveMessageMeta>, rimap_core::RimapError> {
-    rimap_authz::folder_name::FolderName::new(&input.folder)
-        .map_err(|e| rimap_core::RimapError::invalid_input(format!("folder: {e}")))?;
-    rimap_authz::folder_name::FolderName::new(&input.destination)
-        .map_err(|e| rimap_core::RimapError::invalid_input(format!("destination: {e}")))?;
+    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::validation::validate_folder_input("destination", &input.destination)?;
     let uids: Vec<Uid> = input
         .target
         .into_uids()

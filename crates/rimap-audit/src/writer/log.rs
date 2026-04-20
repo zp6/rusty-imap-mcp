@@ -39,11 +39,7 @@ impl AuthEventSink for AuditWriter {
             Err(err) => {
                 let code = err.code();
                 let message = format!("audit emit_auth: {code}");
-                Err(AuthSinkError {
-                    code,
-                    message,
-                    source: Box::new(err),
-                })
+                Err(AuthSinkError::new(code, message, Box::new(err)))
             }
         }
     }
@@ -51,8 +47,6 @@ impl AuthEventSink for AuditWriter {
 
 impl AuditWriter {
     /// Build an `auth` record from `payload`, allocate a seq, and write it.
-    /// See the module-level [`log_*` family input convention](self) for
-    /// when to pass the record struct directly versus an `Inputs` shim.
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.
@@ -104,10 +98,6 @@ impl AuditWriter {
     /// Build a `process_end` record from `payload`, allocate a seq, and
     /// write it. Stamps the record with the writer's stable `process_id`
     /// and `Timestamp::now()`. Returns the allocated `seq` on success.
-    ///
-    /// `ProcessEnd` is taken directly per the `log_*` family convention:
-    /// the on-disk record has no derived fields, so a `<Kind>Inputs`
-    /// shim would add a redirect without behavior.
     ///
     /// # Errors
     /// Propagates any error from `allocate_seq` or `write_record`.

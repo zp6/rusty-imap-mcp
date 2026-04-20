@@ -93,9 +93,7 @@ pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_c
         ));
     }
     if let Some(folder) = &input.in_reply_to_folder {
-        rimap_authz::folder_name::FolderName::new(folder).map_err(|e| {
-            rimap_core::RimapError::invalid_input(format!("in_reply_to_folder: {e}"))
-        })?;
+        crate::tools::validation::validate_folder_input("in_reply_to_folder", folder)?;
     }
     Ok(())
 }

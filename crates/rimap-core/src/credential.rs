@@ -38,15 +38,16 @@ pub enum CredentialSource {
 /// `rimap-imap`'s `Connection::connect_and_login` maps this into
 /// `ImapError::Auth { reason: AuthFailure::CredentialUnavailable }`
 /// without inspecting the source.
+///
+/// Fields are not `pub`; construct via [`Self::new`] /
+/// [`Self::with_source`] and read via [`Self::reason`] (the
+/// underlying error is available through `std::error::Error::source`).
 #[derive(Debug, Error)]
 #[error("credential unavailable: {reason}")]
 pub struct CredentialResolverError {
-    /// Short, sanitized human reason. Forwarded to the IMAP error
-    /// surface verbatim.
-    pub reason: String,
-    /// Underlying error for observability.
+    reason: String,
     #[source]
-    pub source: Option<Box<dyn StdError + Send + Sync + 'static>>,
+    source: Option<Box<dyn StdError + Send + Sync + 'static>>,
 }
 
 impl CredentialResolverError {
@@ -71,6 +72,22 @@ impl CredentialResolverError {
             reason: reason.into(),
             source: Some(Box::new(source)),
         }
+    }
+
+    /// Short, sanitized human reason, suitable for inclusion in
+    /// user-facing error messages. The underlying error is available
+    /// through `std::error::Error::source`.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// Consume this error and return the reason string. Lets
+    /// transport callers move the reason into their own error
+    /// surface without cloning.
+    #[must_use]
+    pub fn into_reason(self) -> String {
+        self.reason
     }
 }
 

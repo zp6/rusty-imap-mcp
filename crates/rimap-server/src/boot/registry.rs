@@ -8,11 +8,12 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use governor::NotUntil;
-use governor::clock::{Clock, DefaultClock};
+use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use rimap_authz::breaker::SystemClock;
+use rimap_authz::rate_limit::{DefaultInstant, retry_after_ms};
 use rimap_authz::{DispatchGuard, FolderGuard};
 use rimap_core::RimapError;
 use rimap_core::account::AccountId;
@@ -23,19 +24,13 @@ use rimap_smtp::SmtpClient;
 /// In-memory, unkeyed governor limiter used for infrastructure tools.
 type InfrastructureLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
-/// Instant type used by the infrastructure limiter's clock. Extracted so the
-/// [`infra_rate_limited`] helper signature does not repeat the associated-type
-/// projection.
-type DefaultInstant = <DefaultClock as Clock>::Instant;
-
 /// Translate a `governor` rejection into [`RimapError::Authz`] with a
-/// rate-limited error code and a human-readable retry hint. Parallel to
-/// `rimap_authz::rate_limit::rate_limited` but produces a `RimapError`
-/// directly so the infrastructure-tool path does not need an intermediate
-/// `AuthzError`.
+/// rate-limited error code and a human-readable retry hint. The
+/// underlying ms math is shared with the per-account governor via
+/// [`retry_after_ms`]; this wrapper adds the infrastructure-tool
+/// framing and skips the intermediate `AuthzError`.
 fn infra_rate_limited(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> RimapError {
-    let wait_ms =
-        u64::try_from(not_until.wait_time_from(clock.now()).as_millis()).unwrap_or(u64::MAX);
+    let wait_ms = retry_after_ms(not_until, clock);
     RimapError::Authz {
         code: ErrorCode::RateLimited,
         message: format!("infrastructure tool rate limit exceeded; retry in {wait_ms}ms"),

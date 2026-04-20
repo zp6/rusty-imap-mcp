@@ -127,9 +127,17 @@ fn validate(raw: &str) -> Result<(), FolderNameError> {
 }
 
 /// Returns `true` for bidi control codepoints (U+202A–U+202E, U+2066–
-/// U+2069) and zero-width / BOM codepoints (U+200B, U+200C, U+200D,
-/// U+FEFF). Pulled out as a free function so the property tests can
-/// reuse the same predicate when generating positive / negative cases.
+/// U+2069) and zero-width / formatting codepoints (U+200B, U+200C,
+/// U+200D, U+2060, U+FEFF).
+///
+/// Stays in lock-step with `rimap-content::unicode`'s `ZERO_WIDTH` and
+/// `BIDI_OVERRIDE` tables so a codepoint cannot slip through here
+/// (folder-name validation) that the response-boundary sanitizer
+/// would strip. U+2060 WORD JOINER was silently missing from the
+/// first cut; adding it closes the gap.
+///
+/// Pulled out as a free function so the property tests can reuse the
+/// same predicate when generating positive / negative cases.
 #[must_use]
 pub(crate) fn is_bidi_or_zero_width(c: char) -> bool {
     matches!(
@@ -139,6 +147,7 @@ pub(crate) fn is_bidi_or_zero_width(c: char) -> bool {
         | '\u{200b}'              // zero-width space
         | '\u{200c}'              // zero-width non-joiner
         | '\u{200d}'              // zero-width joiner
+        | '\u{2060}'              // word joiner
         | '\u{feff}'              // byte-order mark
     )
 }
@@ -236,6 +245,15 @@ mod tests {
     #[test]
     fn rejects_byte_order_mark() {
         assert!(FolderName::new("\u{feff}INBOX").is_err());
+    }
+
+    #[test]
+    fn rejects_word_joiner() {
+        // U+2060 WORD JOINER — stays in sync with
+        // rimap-content::unicode's ZERO_WIDTH table. The first cut of
+        // this validator silently allowed it while the response-boundary
+        // sanitizer stripped it.
+        assert!(FolderName::new("evil\u{2060}folder").is_err());
     }
 
     #[test]

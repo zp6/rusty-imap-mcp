@@ -25,20 +25,51 @@ use crate::error::ErrorCode;
 ///
 /// Carries a stable [`ErrorCode`] (so the IMAP layer can classify
 /// without inspecting the source) plus the underlying error for
-/// observability. Sinks should NOT include filesystem paths or
-/// other operator-configured strings in `message`; those go in the
+/// observability. Sinks MUST NOT include filesystem paths or other
+/// operator-configured strings in `message`; those go in the
 /// `source` chain via `tracing` at the implementation site.
+///
+/// Fields are not `pub` because callers only read them; use
+/// [`Self::new`] to construct and [`Self::code`] / [`Self::message`]
+/// to read.
 #[derive(Debug, Error)]
 #[error("auth-event sink failed: {message}")]
 pub struct AuthSinkError {
+    code: ErrorCode,
+    message: String,
+    #[source]
+    source: Box<dyn StdError + Send + Sync + 'static>,
+}
+
+impl AuthSinkError {
+    /// Build a sink error. `message` MUST be pre-sanitized (no
+    /// filesystem paths or other operator-configured layout) so it
+    /// can flow into transport-layer error chains.
+    #[must_use]
+    pub fn new(
+        code: ErrorCode,
+        message: impl Into<String>,
+        source: Box<dyn StdError + Send + Sync + 'static>,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            source,
+        }
+    }
+
     /// Stable classification of the failure.
-    pub code: ErrorCode,
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
+
     /// Short, sanitized human label (no filesystem paths, no
     /// operator-specific layout).
-    pub message: String,
-    /// Underlying error for observability.
-    #[source]
-    pub source: Box<dyn StdError + Send + Sync + 'static>,
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 /// Sink that durably records [`AuthEvent`] values.

@@ -22,17 +22,24 @@ use crate::error::AuthzError;
 type DirectLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
 /// Instant type used by the `DefaultClock`. Extracted as an alias so the
-/// [`rate_limited`] helper's signature reads cleanly without repeating the
+/// [`retry_after_ms`] helper's signature reads cleanly without repeating the
 /// `<DefaultClock as Clock>::Instant` projection.
-type DefaultInstant = <DefaultClock as Clock>::Instant;
+pub type DefaultInstant = <DefaultClock as Clock>::Instant;
 
-/// Translate a `governor` rejection into [`AuthzError::RateLimited`] with a
-/// millisecond retry hint. Shared by the three per-bucket `check` calls in
-/// [`Governor::check`] so the retry-hint math lives in exactly one place.
+/// Compute the millisecond retry hint from a `governor` rejection against
+/// the given clock. Saturates at `u64::MAX` on the hypothetical >500M-year
+/// overflow. Exposed so rate-limit sites in other crates (e.g.,
+/// `rimap-server`'s infrastructure governor) produce identical hints
+/// without duplicating the cast.
+#[must_use]
+pub fn retry_after_ms(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> u64 {
+    u64::try_from(not_until.wait_time_from(clock.now()).as_millis()).unwrap_or(u64::MAX)
+}
+
 fn rate_limited(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> AuthzError {
-    let retry_after_ms =
-        u64::try_from(not_until.wait_time_from(clock.now()).as_millis()).unwrap_or(u64::MAX);
-    AuthzError::RateLimited { retry_after_ms }
+    AuthzError::RateLimited {
+        retry_after_ms: retry_after_ms(not_until, clock),
+    }
 }
 
 /// Combined global + draft + send rate limiter.
