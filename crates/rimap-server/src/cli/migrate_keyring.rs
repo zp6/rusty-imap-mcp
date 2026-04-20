@@ -52,39 +52,12 @@ pub fn migrate_one<S: CredentialStore>(
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
     use rimap_config::credential::{CredentialStore, account_key, legacy_account_key};
-    use rimap_config::error::ConfigError;
+    use rimap_config::test_support::MockStore;
     use rimap_core::account::AccountId;
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::ExposeSecret;
 
     use super::migrate_one;
-
-    #[derive(Default)]
-    struct MockStore {
-        entries: Mutex<HashMap<String, String>>,
-    }
-
-    impl CredentialStore for MockStore {
-        fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
-            Ok(self
-                .entries
-                .lock()
-                .unwrap()
-                .get(account)
-                .cloned()
-                .map(SecretString::from))
-        }
-        fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(account.to_string(), password.to_string());
-            Ok(())
-        }
-    }
 
     #[test]
     fn migrate_copies_legacy_to_new_and_empties_legacy() {

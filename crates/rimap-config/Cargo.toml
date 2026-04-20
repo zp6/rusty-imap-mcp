@@ -11,6 +11,11 @@ description = "Configuration loading, validation, and credential resolution for 
 [lints]
 workspace = true
 
+[features]
+# Exposes test fixtures (in-memory `MockStore`, etc.) so downstream crates
+# can reuse them in their own dev-dependencies without copying.
+test-support = []
+
 [dependencies]
 rimap-core = { path = "../rimap-core", version = "1.0.0" }
 utf7-imap = { workspace = true }

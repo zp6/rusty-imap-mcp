@@ -54,40 +54,14 @@ pub fn tty_prompt(text: &str) -> std::io::Result<String> {
 #[expect(clippy::unwrap_used, reason = "tests")]
 #[expect(clippy::panic, reason = "tests")]
 mod tests {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    use secrecy::{ExposeSecret, SecretString};
+    use secrecy::ExposeSecret;
 
     use rimap_core::account::AccountId;
 
     use crate::credential::{CredentialStore, account_key};
     use crate::error::ConfigError;
     use crate::login::run_login;
-
-    #[derive(Default)]
-    struct MockStore {
-        entries: Mutex<HashMap<String, String>>,
-    }
-
-    impl CredentialStore for MockStore {
-        fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
-            Ok(self
-                .entries
-                .lock()
-                .unwrap()
-                .get(account)
-                .cloned()
-                .map(SecretString::from))
-        }
-        fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
-            self.entries
-                .lock()
-                .unwrap()
-                .insert(account.to_string(), password.to_string());
-            Ok(())
-        }
-    }
+    use crate::test_support::MockStore;
 
     #[test]
     fn login_writes_prompted_password_to_store() {
