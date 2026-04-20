@@ -447,6 +447,7 @@ mod tests {
         preflight_size_check, project_size,
     };
     use crate::error::ImapError;
+    use crate::types::tests::uid;
     use async_imap::imap_proto::{
         BodyContentCommon, BodyContentSinglePart, BodyStructure as ImapProtoBodyStructure,
         ContentEncoding, ContentType,
@@ -679,11 +680,6 @@ mod tests {
             Err(ImapError::SizeLimit { limit }) => assert_eq!(limit, 1000),
             other => panic!("expected SizeLimit, got {other:?}"),
         }
-    }
-
-    #[expect(clippy::unwrap_used, reason = "tests")]
-    fn uid(n: u32) -> crate::types::Uid {
-        crate::types::Uid::new(n).unwrap()
     }
 
     #[test]

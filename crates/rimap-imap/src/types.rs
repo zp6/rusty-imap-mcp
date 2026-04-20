@@ -429,7 +429,7 @@ impl FolderAttribute {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::FolderAttribute;
 
     #[test]
@@ -543,5 +543,28 @@ mod tests {
             special_use: None,
         };
         assert!(f.selectable());
+    }
+
+    /// Test-only UID constructor shared by the crate's unit tests. Panics
+    /// on `0`; callers pass pre-validated non-zero literals.
+    #[expect(clippy::expect_used, reason = "tests")]
+    pub(crate) fn uid(n: u32) -> super::Uid {
+        super::Uid::new(n).expect("non-zero")
+    }
+
+    #[test]
+    fn uid_helper_constructs_non_zero() {
+        // Regression: the shared test helper (#93) must accept any non-zero
+        // u32 and round-trip through Uid::get.
+        assert_eq!(uid(1).get(), 1);
+        assert_eq!(uid(u32::MAX).get(), u32::MAX);
+    }
+
+    #[test]
+    #[should_panic(expected = "non-zero")]
+    fn uid_helper_panics_on_zero() {
+        // Regression: the shared helper preserves the NonZeroU32 invariant
+        // by panicking on 0 (callers are test code).
+        let _ = uid(0);
     }
 }

@@ -216,13 +216,9 @@ fn build_results(uids: &[Uid]) -> Vec<MoveResult> {
 }
 
 #[cfg(test)]
-#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-
-    fn uid(n: u32) -> Uid {
-        Uid::new(n).expect("non-zero")
-    }
+    use crate::types::tests::uid;
 
     #[test]
     fn build_results_is_empty_for_empty_input() {
