@@ -285,13 +285,17 @@ where
             SampleOutcome::Ok(content) => {
                 summary.ok_count += 1;
                 for warning in content.security_warnings {
-                    let label = warning_code_to_label(warning.code).to_string();
+                    let label = rimap_content::testutil::warning_code_label(warning.code)
+                        .unwrap_or_else(|| unknown_warning_code_label(warning.code))
+                        .to_string();
                     *summary.warning_counts.entry(label).or_insert(0) += 1;
                 }
             }
             SampleOutcome::ParseError(err) => {
                 summary.parse_error_count += 1;
-                let label = error_kind_label(&err).to_string();
+                let label = rimap_content::testutil::error_kind_label(&err)
+                    .unwrap_or("Unknown")
+                    .to_string();
                 *summary.parse_error_counts.entry(label.clone()).or_insert(0) += 1;
                 record_failure(&mut summary, path, label, err.to_string());
             }
@@ -422,41 +426,6 @@ fn write_json_report(path: &Path, summary: &RunSummary) -> RunnerResult<()> {
 
 fn is_success(summary: &RunSummary) -> bool {
     summary.parse_error_count == 0 && summary.read_failure_count == 0 && summary.panic_count == 0
-}
-
-fn warning_code_to_label(code: WarningCode) -> &'static str {
-    match code {
-        WarningCode::UnicodeZeroWidthStripped => "unicode_zero_width_stripped",
-        WarningCode::UnicodeBidiOverrideStripped => "unicode_bidi_override_stripped",
-        WarningCode::UnicodeC0C1Stripped => "unicode_c0_c1_stripped",
-        WarningCode::ParseHeaderSmugglingBlocked => "parse_header_smuggling_blocked",
-        WarningCode::ParseMimeTypeMismatch => "parse_mime_type_mismatch",
-        WarningCode::ParseAttachmentPolyglot => "parse_attachment_polyglot",
-        WarningCode::ParseBodyTruncated => "parse_body_truncated",
-        WarningCode::ParseMimeDepthExceeded => "parse_mime_depth_exceeded",
-        WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
-        WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
-        WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
-        WarningCode::HtmlHiddenContentDetected => "html_hidden_content_detected",
-        WarningCode::HtmlLinkTextHrefMismatch => "html_link_text_href_mismatch",
-        WarningCode::HtmlScriptStripped => "html_script_stripped",
-        WarningCode::HtmlStyleStripped => "html_style_stripped",
-        WarningCode::HtmlRemoteImageStripped => "html_remote_image_stripped",
-        WarningCode::HtmlAnchorUnparsableHref => "html_anchor_unparsable_href",
-        WarningCode::LookalikeMixedScript => "lookalike_mixed_script",
-        WarningCode::LookalikeHomographDomain => "lookalike_homograph_domain",
-        WarningCode::LookalikeIdnPunycode => "lookalike_idn_punycode",
-        WarningCode::LookalikeFilenameExtensionSpoof => "lookalike_filename_extension_spoof",
-        _ => unknown_warning_code_label(code),
-    }
-}
-
-fn error_kind_label(err: &ContentError) -> &'static str {
-    match err {
-        ContentError::Malformed { .. } => "Malformed",
-        ContentError::LimitExceeded { .. } => "LimitExceeded",
-        _ => "Unknown",
-    }
 }
 
 #[cfg(test)]

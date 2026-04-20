@@ -16,6 +16,9 @@ pub mod unicode;
 mod html;
 mod lookalike;
 
+#[cfg(any(test, feature = "test-util"))]
+pub mod testutil;
+
 pub use error::ContentError;
 pub use output::{
     AttachmentMeta, Content, ContentMeta, MailingListInfo, SecurityWarning, Untrusted, WarningCode,
