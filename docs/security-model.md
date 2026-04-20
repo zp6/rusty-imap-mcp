@@ -14,6 +14,31 @@ Multi-account introduces a cross-account exfiltration vector: a
 compromised agent could read from one account and send via another.
 Per-account posture gates, rate limits, and audit logging mitigate this.
 
+**Account-name exposure in errors.** `ERR_NO_ACCOUNT` and
+`ERR_UNKNOWN_ACCOUNT` include the full list of configured account
+names in their user-facing message (see
+`RimapError::NoAccount` / `UnknownAccount`). This is deliberate: an
+agent that hits one of these errors can learn the available accounts
+and recover on its next call without operator intervention.
+
+For v1.0 (stdio-only, single trusted client) this is the right
+trade-off. Operators who run the server over stdio own both sides of
+the pipe, and the enumeration value is zero.
+
+**When this must be revisited:** if and when an HTTP/SSE/WebSocket
+transport ships, authenticated clients may have different trust
+levels, and one bad call would reveal every configured account name
+to any client that can reach the endpoint. Before that transport
+lands, one of the following changes is required:
+
+1. Narrow the disclosure — include only `count: N` in the user
+   message; move the full list to a debug-log-only path.
+2. Gate the disclosure on a config flag
+   (`expose_account_names_in_errors = true`, default off for
+   non-stdio transports).
+
+Issue #81 tracks this commitment.
+
 **The server does not trust:** email bodies, headers, sender addresses,
 display names, attachment filenames, link targets, or any
 server-provided content. All of these are treated as untrusted input

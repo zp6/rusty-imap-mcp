@@ -200,6 +200,11 @@ pub enum RimapError {
     #[error("ERR_INTERNAL: {0}")]
     Internal(String),
     /// Multiple accounts configured but none selected.
+    ///
+    /// The `available` list is surfaced in the Display form. This is a
+    /// deliberate usability choice for v1 stdio-only deployments — see
+    /// `docs/security-model.md` §"Account-name exposure in errors"
+    /// (issue #81). Revisit before any non-stdio transport ships.
     #[error(
         "multiple accounts configured; call `use_account` or pass \
          `account` parameter. Available: {}",
@@ -210,6 +215,10 @@ pub enum RimapError {
         available: Vec<String>,
     },
     /// Named account not found in registry.
+    ///
+    /// The `available` list is surfaced in the Display form — see the
+    /// `NoAccount` variant and `docs/security-model.md` for the posture
+    /// decision (issue #81).
     #[error("account '{name}' not found. Available: {}", available.join(", "))]
     UnknownAccount {
         /// The name that was looked up.

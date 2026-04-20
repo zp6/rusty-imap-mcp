@@ -10,12 +10,17 @@
 #![expect(clippy::unwrap_used, reason = "test code may unwrap on fixture I/O")]
 #![expect(clippy::expect_used, reason = "test code may expect on fixture I/O")]
 #![expect(clippy::panic, reason = "test failures are reported via panic")]
+#![expect(
+    clippy::panic_in_result_fn,
+    reason = "corpus harness panics on unclassified variants inside Result-returning helpers; \
+              this is intentional — an unknown variant is a harness gap, not a recoverable error"
+)]
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rimap_content::{Content, ContentError, WarningCode, parse_message};
+use rimap_content::{Content, ContentError, parse_message};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -99,47 +104,6 @@ fn load_fixtures() -> BTreeMap<String, (PathBuf, Expected)> {
     out
 }
 
-fn warning_code_to_label(code: WarningCode) -> &'static str {
-    match code {
-        WarningCode::UnicodeZeroWidthStripped => "unicode_zero_width_stripped",
-        WarningCode::UnicodeBidiOverrideStripped => "unicode_bidi_override_stripped",
-        WarningCode::UnicodeC0C1Stripped => "unicode_c0_c1_stripped",
-        WarningCode::ParseHeaderSmugglingBlocked => "parse_header_smuggling_blocked",
-        WarningCode::ParseMimeTypeMismatch => "parse_mime_type_mismatch",
-        WarningCode::ParseAttachmentPolyglot => "parse_attachment_polyglot",
-        WarningCode::ParseBodyTruncated => "parse_body_truncated",
-        WarningCode::ParseMimeDepthExceeded => "parse_mime_depth_exceeded",
-        WarningCode::ParseMimePartCountExceeded => "parse_mime_part_count_exceeded",
-        WarningCode::ParseHeaderCountExceeded => "parse_header_count_exceeded",
-        WarningCode::ParseAttachmentFilenameRewritten => "parse_attachment_filename_rewritten",
-        WarningCode::HtmlHiddenContentDetected => "html_hidden_content_detected",
-        WarningCode::HtmlLinkTextHrefMismatch => "html_link_text_href_mismatch",
-        WarningCode::HtmlScriptStripped => "html_script_stripped",
-        WarningCode::HtmlStyleStripped => "html_style_stripped",
-        WarningCode::HtmlRemoteImageStripped => "html_remote_image_stripped",
-        WarningCode::HtmlAnchorUnparsableHref => "html_anchor_unparsable_href",
-        WarningCode::LookalikeMixedScript => "lookalike_mixed_script",
-        WarningCode::LookalikeHomographDomain => "lookalike_homograph_domain",
-        WarningCode::LookalikeIdnPunycode => "lookalike_idn_punycode",
-        WarningCode::LookalikeFilenameExtensionSpoof => "lookalike_filename_extension_spoof",
-        // Required because WarningCode is #[non_exhaustive] (exhaustive
-        // match is not allowed outside the defining crate). Any future
-        // variant reaching this arm is a test-harness gap and should
-        // cause the corpus run to fail loudly.
-        _ => panic!("corpus harness encountered unclassified WarningCode variant {code:?}"),
-    }
-}
-
-fn error_kind_label(err: &ContentError) -> &'static str {
-    match err {
-        ContentError::Malformed { .. } => "Malformed",
-        ContentError::LimitExceeded { .. } => "LimitExceeded",
-        // Required because ContentError is #[non_exhaustive]. Any
-        // future variant reaching this arm should fail the corpus run.
-        _ => panic!("corpus harness encountered unclassified ContentError variant {err:?}"),
-    }
-}
-
 fn assert_fixture(name: &str, dir: &Path, expected: &Expected) -> Result<(), String> {
     let input_path = dir.join("input.eml");
     let raw = fs::read(&input_path).map_err(|e| format!("read {}: {e}", input_path.display()))?;
@@ -185,7 +149,14 @@ fn assert_warning_codes(
 ) -> Result<(), String> {
     let observed: Vec<&'static str> = warnings
         .iter()
-        .map(|w| warning_code_to_label(w.code))
+        .map(|w| {
+            rimap_content::testutil::warning_code_label(w.code).unwrap_or_else(|| {
+                panic!(
+                    "corpus harness encountered unclassified WarningCode variant {:?}",
+                    w.code
+                )
+            })
+        })
         .collect();
     for required in &expected.warning_codes {
         if !observed.contains(&required.as_str()) {
@@ -243,7 +214,9 @@ fn assert_err_kind(name: &str, err: &ContentError, expected: &Expected) -> Resul
     let Some(want) = expected.error_kind.as_deref() else {
         return Err(format!("{name}: expect=error requires error_kind field"));
     };
-    let got = error_kind_label(err);
+    let got = rimap_content::testutil::error_kind_label(err).unwrap_or_else(|| {
+        panic!("corpus harness encountered unclassified ContentError variant {err:?}")
+    });
     if got == want {
         Ok(())
     } else {

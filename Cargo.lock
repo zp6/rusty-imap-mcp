@@ -2154,6 +2154,7 @@ dependencies = [
  "phf 0.13.1",
  "phf_codegen 0.13.1",
  "proptest",
+ "rimap-content",
  "rimap-core",
  "scraper",
  "serde",
