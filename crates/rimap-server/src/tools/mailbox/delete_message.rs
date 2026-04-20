@@ -29,7 +29,7 @@ pub struct DeleteMessageInput {
     /// Source folder containing the message.
     pub folder: String,
     /// UID of the message to delete.
-    pub uid: u32,
+    pub uid: core::num::NonZeroU32,
 }
 
 /// Target folder for `delete_message`. Hard-coded per the module-level
@@ -56,7 +56,6 @@ pub struct DeleteMessageMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` when `uid == 0`.
 /// Returns `RimapError::Imap { ... }` for IMAP-layer failures (server
 /// rejects the MOVE/COPY/STORE or the source folder is missing). The
 /// upstream `DispatchGuard::pre_dispatch` gate may return
@@ -65,8 +64,7 @@ pub async fn handle(
     account: &AccountState,
     input: DeleteMessageInput,
 ) -> Result<ToolResponse<DeleteMessageMeta>, rimap_core::RimapError> {
-    let uid = rimap_imap::types::Uid::new(input.uid)
-        .ok_or_else(|| rimap_core::RimapError::invalid_input("uid must be non-zero"))?;
+    let uid = rimap_imap::types::Uid::from(input.uid);
 
     let result = account
         .imap
@@ -76,7 +74,7 @@ pub async fn handle(
     Ok(ToolResponse::meta_only(DeleteMessageMeta {
         deleted: true,
         folder: input.folder,
-        uid: input.uid,
+        uid: input.uid.get(),
         moved_to_trash: result.moved_to_trash,
         destination: TRASH_FOLDER,
     }))
@@ -85,9 +83,6 @@ pub async fn handle(
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use rimap_core::ErrorCode;
-    use rimap_core::RimapError;
-
     use super::{DeleteMessageInput, DeleteMessageMeta, TRASH_FOLDER};
 
     fn sample_meta(uid: u32, moved: bool) -> DeleteMessageMeta {
@@ -101,20 +96,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_uid_is_rejected_as_invalid_input() {
-        // Mirrors the guard inside `handle`: `Uid::new(0)` is `None`,
-        // which the handler maps to `RimapError::invalid_input`.
-        let input = DeleteMessageInput {
-            folder: "INBOX".into(),
-            uid: 0,
-        };
-        let err = rimap_imap::types::Uid::new(input.uid)
-            .ok_or_else(|| RimapError::invalid_input("uid must be non-zero"))
+    fn zero_uid_is_rejected_at_deserialize() {
+        // The NonZeroU32 field rejects 0 before the handler is called.
+        let err = serde_json::from_str::<DeleteMessageInput>(r#"{"folder": "INBOX", "uid": 0}"#)
             .unwrap_err();
-        assert_eq!(err.code(), ErrorCode::InvalidInput);
         assert!(
-            err.to_string().contains("uid must be non-zero"),
-            "message should identify the uid constraint: {err}"
+            err.to_string().contains("zero") || err.to_string().contains("non-zero"),
+            "deserialize error should call out the zero constraint: {err}"
         );
     }
 
@@ -122,9 +110,9 @@ mod tests {
     fn nonzero_uid_parses_through_to_typed_uid() {
         let input = DeleteMessageInput {
             folder: "INBOX".into(),
-            uid: 42,
+            uid: core::num::NonZeroU32::new(42).unwrap(),
         };
-        let uid = rimap_imap::types::Uid::new(input.uid).unwrap();
+        let uid = rimap_imap::types::Uid::from(input.uid);
         assert_eq!(uid.get(), 42);
     }
 
@@ -164,6 +152,6 @@ mod tests {
         let input: DeleteMessageInput =
             serde_json::from_str(r#"{"folder": "Archive", "uid": 123}"#).unwrap();
         assert_eq!(input.folder, "Archive");
-        assert_eq!(input.uid, 123);
+        assert_eq!(input.uid.get(), 123);
     }
 }

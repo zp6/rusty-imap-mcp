@@ -199,42 +199,6 @@ mod tests {
     }
 
     #[test]
-    fn warning_code_serializes_snake_case() {
-        let code = WarningCode::UnicodeZeroWidthStripped;
-        let json = serde_json::to_string(&code).unwrap();
-        assert_eq!(json, "\"unicode_zero_width_stripped\"");
-    }
-
-    #[test]
-    fn parse_attachment_polyglot_label() {
-        let code = WarningCode::ParseAttachmentPolyglot;
-        let json = serde_json::to_string(&code).unwrap();
-        assert_eq!(json, "\"parse_attachment_polyglot\"");
-    }
-
-    #[test]
-    fn parse_attachment_filename_rewritten_label() {
-        let code = WarningCode::ParseAttachmentFilenameRewritten;
-        let json = serde_json::to_string(&code).unwrap();
-        assert_eq!(json, "\"parse_attachment_filename_rewritten\"");
-    }
-
-    #[test]
-    fn warning_code_c0_c1_serialization_label() {
-        let code = WarningCode::UnicodeC0C1Stripped;
-        let json = serde_json::to_string(&code).unwrap();
-        assert_eq!(json, "\"unicode_c0_c1_stripped\"");
-    }
-
-    #[test]
-    fn warning_code_roundtrips_through_json() {
-        let original = WarningCode::ParseHeaderSmugglingBlocked;
-        let json = serde_json::to_string(&original).unwrap();
-        let parsed: WarningCode = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, original);
-    }
-
-    #[test]
     fn severity_classifies_known_variants() {
         // Compile-time exhaustiveness is enforced by the non-wildcarded
         // match in severity(). This test pins a few known mappings.

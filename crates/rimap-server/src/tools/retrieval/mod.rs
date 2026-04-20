@@ -4,4 +4,5 @@ pub mod download_attachment;
 pub mod fetch_message;
 pub mod list_attachments;
 pub(crate) mod part_walker;
+pub(crate) mod sandbox;
 pub mod search;

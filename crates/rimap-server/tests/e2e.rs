@@ -18,7 +18,7 @@
 //! The tradeoff is that individual input-shape and error-branch
 //! coverage is NOT the job of this file. Those belong to unit tests
 //! next to each handler — see e.g. `tools::admin::accounts::tests`
-//! and `tools::support::tests` for the input-validation and
+//! and `tools::fetch_by_uid::tests` for the input-validation and
 //! empty-result branches that used to rely on this e2e for coverage.
 
 #![expect(clippy::unwrap_used, reason = "tests")]

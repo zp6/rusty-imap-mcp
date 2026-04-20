@@ -99,7 +99,7 @@ pub struct ListLabelsInput {
     /// Target folder.
     pub folder: String,
     /// Message UID.
-    pub uid: u32,
+    pub uid: core::num::NonZeroU32,
     /// When set, the handler verifies the folder's UIDVALIDITY matches this
     /// value before fetching labels. A mismatch returns
     /// `ERR_UID_VALIDITY_CHANGED`. Omit to skip the guard.
@@ -203,21 +203,19 @@ async fn handle_label_op(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput }` for zero UID,
-/// `Authz { code: NotFound }` if the message UID is missing in the
-/// folder, and `Imap { ... }` for IMAP-layer failures.
+/// Returns `RimapError::Authz { code: NotFound }` if the message UID is
+/// missing in the folder, and `Imap { ... }` for IMAP-layer failures.
 pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,
 ) -> Result<ToolResponse<ListLabelsMeta>, rimap_core::RimapError> {
-    let uid = rimap_imap::types::Uid::new(input.uid)
-        .ok_or_else(|| invalid_input("UID must be non-zero"))?;
+    let uid = rimap_imap::types::Uid::from(input.uid);
 
     let spec = FetchSpec {
         flags: true,
         ..FetchSpec::default()
     };
-    let (msg, uid_validity) = crate::tools::support::fetch_single_by_uid(
+    let (msg, uid_validity) = crate::tools::fetch_by_uid::fetch_single_by_uid(
         account,
         &input.folder,
         uid,
@@ -247,7 +245,7 @@ pub async fn handle_list_labels(
 
     Ok(ToolResponse::meta_only(ListLabelsMeta {
         folder: input.folder,
-        uid: input.uid,
+        uid: input.uid.get(),
         labels,
         uid_validity,
     }))

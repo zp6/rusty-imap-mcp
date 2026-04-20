@@ -1,9 +1,8 @@
-//! MCP runtime: server handler, response/error types, content parsing, attachment download.
+//! MCP runtime: server handler, response/error types, content parsing.
 
 pub(crate) mod audit_envelope;
 pub mod content;
 pub(crate) mod dispatch;
-pub mod download;
 pub mod error;
 pub mod response;
 pub mod server;

@@ -143,11 +143,11 @@ fn validate_account(
     if let Some(ref smtp_cfg) = smtp {
         validate_smtp_username(&smtp_cfg.username)?;
     }
-    validate_limits_fields(&limits)?;
-    validate_folder_safety_fields(&security)?;
-    let tool_overrides = resolve_tool_overrides_fields(&security)?;
-    validate_smtp_required_fields(&security, &tool_overrides, smtp.as_ref())?;
-    validate_smtp_encryption_fields(smtp.as_ref())?;
+    validate_limits(&limits)?;
+    validate_folder_safety(&security)?;
+    let tool_overrides = resolve_tool_overrides(&security)?;
+    validate_smtp_required(&security, &tool_overrides, smtp.as_ref())?;
+    validate_smtp_encryption(smtp.as_ref())?;
 
     Ok(ValidatedAccountConfig {
         id,
@@ -213,7 +213,7 @@ fn validate_audit_config(audit: &AuditConfig) -> Result<(), ConfigError> {
 /// Accessor for one field on `LimitsConfig` for the zero-check table.
 type LimitAccessor = fn(&LimitsConfig) -> u64;
 
-fn validate_limits_fields(limits: &LimitsConfig) -> Result<(), ConfigError> {
+fn validate_limits(limits: &LimitsConfig) -> Result<(), ConfigError> {
     /// Table of `(field_name, accessor)` for zero-value checks. New limits
     /// that must be `> 0` get added here rather than as another `if` block.
     const ZERO_CHECKS: &[(&str, LimitAccessor)] = &[
@@ -269,7 +269,7 @@ fn validate_paths_multi(
             reason: "audit path has no parent directory".to_string(),
         })?;
     require_writable_dir(audit_parent)?;
-    enforce_audit_containment_fields(audit)?;
+    enforce_audit_containment(audit)?;
     if !attachments.download_dir.is_empty() {
         require_writable_dir(Path::new(&attachments.download_dir))?;
     }
@@ -307,7 +307,7 @@ fn default_audit_base() -> Option<PathBuf> {
 /// exist. The parent is canonicalized first (not the path itself, which
 /// may not exist yet), then joined with the file name to produce the
 /// canonical audit path.
-fn enforce_audit_containment_fields(audit: &AuditConfig) -> Result<(), ConfigError> {
+fn enforce_audit_containment(audit: &AuditConfig) -> Result<(), ConfigError> {
     let audit_path = &audit.path;
     let parent = audit_path
         .parent()
@@ -375,7 +375,7 @@ fn require_writable_dir(dir: &Path) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), ConfigError> {
+fn validate_folder_safety(security: &SecurityConfig) -> Result<(), ConfigError> {
     let mut protected: Vec<String> = security
         .protected_folders
         .iter()
@@ -394,7 +394,7 @@ fn validate_folder_safety_fields(security: &SecurityConfig) -> Result<(), Config
     Ok(())
 }
 
-fn validate_smtp_required_fields(
+fn validate_smtp_required(
     security: &SecurityConfig,
     tool_overrides: &BTreeMap<ToolName, Verdict>,
     smtp: Option<&SmtpConfig>,
@@ -412,7 +412,7 @@ fn validate_smtp_required_fields(
     Ok(())
 }
 
-fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), ConfigError> {
+fn validate_smtp_encryption(smtp: Option<&SmtpConfig>) -> Result<(), ConfigError> {
     let Some(smtp) = smtp else {
         return Ok(());
     };
@@ -426,7 +426,7 @@ fn validate_smtp_encryption_fields(smtp: Option<&SmtpConfig>) -> Result<(), Conf
     Ok(())
 }
 
-fn resolve_tool_overrides_fields(
+fn resolve_tool_overrides(
     security: &SecurityConfig,
 ) -> Result<BTreeMap<ToolName, Verdict>, ConfigError> {
     let mut out = BTreeMap::new();

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
 use crate::mcp::response::ToolResponse;
+use crate::tools::retrieval::part_walker::walk_body_structure;
 
 /// Input for the `list_attachments` tool.
 ///
@@ -23,7 +24,7 @@ pub struct ListAttachmentsInput {
     /// IMAP folder containing the message.
     pub folder: String,
     /// UID of the message.
-    pub uid: u32,
+    pub uid: core::num::NonZeroU32,
 }
 
 /// Metadata for a single attachment discovered in the MIME tree.
@@ -64,7 +65,6 @@ pub struct ListAttachmentsUntrusted {
 ///
 /// # Errors
 ///
-/// - `RimapError::Authz { code: InvalidInput, ... }` if `uid` is zero.
 /// - `RimapError::Authz { code: NotFound, ... }` if the UID is absent
 ///   from `folder`.
 /// - `RimapError::Internal` if the server accepted the FETCH but did
@@ -74,15 +74,15 @@ pub async fn handle(
     account: &AccountState,
     input: ListAttachmentsInput,
 ) -> Result<ToolResponse<ListAttachmentsMeta, ListAttachmentsUntrusted>, rimap_core::RimapError> {
-    let uid = Uid::new(input.uid)
-        .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
+    let uid = Uid::from(input.uid);
 
     let spec = FetchSpec {
         bodystructure: true,
         ..FetchSpec::default()
     };
     let (msg, _uid_validity) =
-        crate::tools::support::fetch_single_by_uid(account, &input.folder, uid, spec, None).await?;
+        crate::tools::fetch_by_uid::fetch_single_by_uid(account, &input.folder, uid, spec, None)
+            .await?;
 
     let bodystructure = msg.bodystructure.ok_or_else(|| {
         rimap_core::RimapError::Internal("server did not return BODYSTRUCTURE".into())
@@ -93,13 +93,11 @@ pub async fn handle(
 
     Ok(ToolResponse::meta_only(ListAttachmentsMeta {
         folder: input.folder,
-        uid: input.uid,
+        uid: input.uid.get(),
         attachment_count: attachments.len(),
     })
     .with_untrusted(ListAttachmentsUntrusted { attachments }))
 }
-
-use crate::tools::retrieval::part_walker::walk_body_structure;
 
 /// Walk the `BodyStructure` tree and collect non-inline-text parts.
 fn collect_attachments(bs: &BodyStructure, out: &mut Vec<AttachmentInfo>) {

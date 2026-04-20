@@ -7,9 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountState;
-use crate::mcp::download;
 use crate::mcp::response::ToolResponse;
 use crate::tools::retrieval::part_walker::walk_body_structure;
+use crate::tools::retrieval::sandbox;
 
 /// Input for the `download_attachment` tool.
 ///
@@ -27,7 +27,7 @@ pub struct DownloadAttachmentInput {
     /// IMAP folder containing the message.
     pub folder: String,
     /// UID of the message.
-    pub uid: u32,
+    pub uid: core::num::NonZeroU32,
     /// MIME part ID of the attachment (e.g. "2", "1.2").
     pub part_id: String,
     /// Optional destination directory. Must be within the
@@ -73,9 +73,9 @@ pub struct DownloadAttachmentUntrusted {
 ///
 /// # Errors
 ///
-/// - `RimapError::Authz { code: InvalidInput, ... }` if `uid` is zero
-///   or the resolved `dest_dir` cannot be canonicalized / escapes the
-///   configured download sandbox.
+/// - `RimapError::Authz { code: InvalidInput, ... }` if the resolved
+///   `dest_dir` cannot be canonicalized or escapes the configured
+///   download sandbox.
 /// - `RimapError::Authz { code: NotFound, ... }` if the `part_id` is
 ///   not present in the message.
 /// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH.
@@ -90,8 +90,7 @@ pub async fn handle(
     input: DownloadAttachmentInput,
 ) -> Result<ToolResponse<DownloadAttachmentMeta, DownloadAttachmentUntrusted>, rimap_core::RimapError>
 {
-    let uid = Uid::new(input.uid)
-        .ok_or_else(|| rimap_core::RimapError::invalid_input("UID must be non-zero"))?;
+    let uid = Uid::from(input.uid);
 
     if input.part_id.is_empty() {
         return Err(rimap_core::RimapError::invalid_input(
@@ -100,7 +99,7 @@ pub async fn handle(
     }
 
     let dest =
-        download::resolve_dest_dir_async(input.dest_dir, Arc::clone(&account.download_dir)).await?;
+        sandbox::resolve_dest_dir_async(input.dest_dir, Arc::clone(&account.download_dir)).await?;
 
     let raw = account.imap.fetch_body(&input.folder, uid).await?;
 
@@ -121,9 +120,9 @@ pub async fn handle(
     let safe_filename = original_filename.as_deref().unwrap_or("attachment");
 
     let size = part_body.len();
-    let sha256 = download::sha256_hex(&part_body);
-    let mime_sniffed = download::sniff_mime(&part_body);
-    let path = download::write_attachment_async(dest, safe_filename.to_string(), part_body).await?;
+    let sha256 = sandbox::sha256_hex(&part_body);
+    let mime_sniffed = sandbox::sniff_mime(&part_body);
+    let path = sandbox::write_attachment_async(dest, safe_filename.to_string(), part_body).await?;
 
     let path_str = path.to_string_lossy().to_string();
 
@@ -151,7 +150,7 @@ pub async fn handle(
 
     Ok(ToolResponse::meta_only(DownloadAttachmentMeta {
         folder: input.folder,
-        uid: input.uid,
+        uid: input.uid.get(),
         part_id: input.part_id,
         path: path_str,
         size_bytes: size,
