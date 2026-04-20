@@ -2172,6 +2172,7 @@ name = "rimap-core"
 version = "1.0.0"
 dependencies = [
  "hex",
+ "proptest",
  "schemars",
  "serde",
  "serde_json",

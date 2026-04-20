@@ -3,66 +3,25 @@
 use crate::connection::ImapSession;
 use crate::error::ImapError;
 
-const MAX_FOLDER_NAME_BYTES: usize = 255;
-
-/// Validate a folder name for CREATE or RENAME target.
+/// Validate a folder name for CREATE / RENAME / DELETE / STORE.
+///
+/// Thin wrapper around [`rimap_core::FolderName::new`]: the actual
+/// rule set is the workspace-canonical one, this function only maps
+/// [`rimap_core::FolderNameError`] into [`ImapError::InvalidInput`].
+/// Server-returned names go through the separate, intentionally more
+/// permissive [`super::folders::validate_server_folder_name`] instead.
 ///
 /// # Errors
 ///
-/// Returns `ImapError::InvalidInput` for empty names, names exceeding
-/// 255 bytes, names containing control characters, path traversal attempts
-/// (`.` or `..` segments), or bidi/zero-width Unicode characters.
+/// Returns [`ImapError::InvalidInput`] when the canonical validator
+/// rejects the name. The original `reason` is collapsed to a static
+/// label because [`ImapError::InvalidInput::reason`] is `&'static str`;
+/// the rejected codepoints/characters are not echoed back to clients.
 pub(crate) fn validate_folder_name(name: &str) -> Result<(), ImapError> {
-    if name.is_empty() {
-        return Err(ImapError::InvalidInput {
-            field: "folder_name",
-            reason: "folder name must not be empty",
-        });
-    }
-    if name.len() > MAX_FOLDER_NAME_BYTES {
-        return Err(ImapError::InvalidInput {
-            field: "folder_name",
-            reason: "folder name exceeds 255 bytes",
-        });
-    }
-    if name.bytes().any(|b| b == 0 || b < 0x20 || b == 0x7f) {
-        return Err(ImapError::InvalidInput {
-            field: "folder_name",
-            reason: "folder name contains control characters",
-        });
-    }
-
-    // Delimiter-aware traversal check: split on '/' and reject any
-    // path segment that is exactly '.' or '..'. Preserves legitimate
-    // names like "Receipts..2024" that merely contain a `..` substring.
-    for segment in name.split('/') {
-        if segment == "." || segment == ".." {
-            return Err(ImapError::InvalidInput {
-                field: "folder_name",
-                reason: "folder name contains path traversal segment",
-            });
-        }
-    }
-
-    // Reject bidi control characters and zero-width joiners. These have
-    // no legitimate use in client-supplied folder names and are a common
-    // spoofing vector (e.g., INBOX\u{202e}txt.exe).
-    for c in name.chars() {
-        if matches!(
-            c,
-            '\u{202a}'..='\u{202e}'   // bidi embedding / override
-            | '\u{2066}'..='\u{2069}' // isolate
-            | '\u{200b}'              // zero-width space
-            | '\u{200c}'              // zero-width non-joiner
-            | '\u{200d}'              // zero-width joiner
-            | '\u{feff}'              // byte-order mark
-        ) {
-            return Err(ImapError::InvalidInput {
-                field: "folder_name",
-                reason: "folder name contains disallowed Unicode character",
-            });
-        }
-    }
+    rimap_core::FolderName::new(name).map_err(|_| ImapError::InvalidInput {
+        field: "folder_name",
+        reason: "folder name failed structural validation",
+    })?;
     Ok(())
 }
 

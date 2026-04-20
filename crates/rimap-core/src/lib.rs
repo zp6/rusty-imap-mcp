@@ -6,6 +6,7 @@ pub mod account;
 pub mod credential;
 pub use credential::CredentialSource;
 pub mod error;
+pub mod folder_name;
 pub mod posture;
 pub mod posture_matrix;
 pub mod tls;
@@ -14,6 +15,7 @@ pub mod uid_selector;
 pub mod warning;
 
 pub use crate::error::{ErrorCode, RimapError};
+pub use crate::folder_name::{FolderName, FolderNameError};
 pub use crate::posture::{Posture, UnknownPosture};
 pub use crate::posture_matrix::base_allows;
 pub use crate::tls::{FingerprintParseError, TlsFingerprint};
