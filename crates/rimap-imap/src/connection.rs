@@ -1040,4 +1040,120 @@ mod tests {
             other => panic!("expected TlsHandshake variant, got {other:?}"),
         }
     }
+
+    /// Regression test for the cancellation contract on
+    /// [`Connection::emit_auth`]: the sink still observes the event even
+    /// when the awaiting future is dropped before `spawn_blocking`
+    /// completes. The rustdoc on `emit_auth` documents this; if a future
+    /// refactor replaces `spawn_blocking` with a direct await or changes
+    /// the join-handle semantics, this test fails.
+    #[tokio::test]
+    async fn emit_auth_completes_despite_caller_cancellation() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use rimap_core::auth_event::{AuthEvent, AuthResult};
+        use rimap_core::auth_sink::{AuthEventSink, AuthSinkError};
+        use rimap_core::credential::{
+            CredentialResolver, CredentialResolverError, CredentialSource,
+        };
+        use secrecy::SecretString;
+
+        use super::{Connection, ConnectionConfig};
+
+        /// Blocks for `delay` inside `emit_auth`, then increments
+        /// `recorded`. Simulates a slow synchronous sink (the real
+        /// `AuditWriter` can block on fsync when the disk is slow).
+        struct BlockingSink {
+            delay: Duration,
+            recorded: Arc<AtomicUsize>,
+        }
+
+        impl std::fmt::Debug for BlockingSink {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("BlockingSink").finish()
+            }
+        }
+
+        impl AuthEventSink for BlockingSink {
+            fn emit_auth(&self, _event: AuthEvent) -> Result<(), AuthSinkError> {
+                std::thread::sleep(self.delay);
+                self.recorded.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        /// Minimal resolver; never invoked in this test because we call
+        /// `emit_auth` directly, but `Connection::new` requires one.
+        #[derive(Debug)]
+        struct DummyResolver;
+
+        impl CredentialResolver for DummyResolver {
+            fn resolve(
+                &self,
+                _: &rimap_core::account::AccountId,
+                _: &str,
+                _: &str,
+            ) -> Result<(SecretString, CredentialSource), CredentialResolverError> {
+                Err(CredentialResolverError::new("dummy resolver"))
+            }
+        }
+
+        let recorded = Arc::new(AtomicUsize::new(0));
+        let sink: Arc<dyn AuthEventSink> = Arc::new(BlockingSink {
+            delay: Duration::from_millis(80),
+            recorded: Arc::clone(&recorded),
+        });
+        let resolver: Arc<dyn CredentialResolver> = Arc::new(DummyResolver);
+        let conn = Connection::new(
+            ConnectionConfig {
+                account: None,
+                account_id: rimap_core::account::AccountId::default_account(),
+                host: "127.0.0.1".into(),
+                port: 1,
+                username: "test".into(),
+                pinned_fingerprint: None,
+                connect_timeout: Duration::from_secs(1),
+                command_timeout: Duration::from_secs(1),
+                max_fetch_body_bytes: 1024,
+                max_append_bytes: 1024,
+            },
+            sink,
+            resolver,
+        );
+
+        let event = AuthEvent {
+            account: None,
+            result: AuthResult::Success,
+            host: "127.0.0.1".into(),
+            port: 1,
+            username: "test".into(),
+            tls_fingerprint_sha256: None,
+            fingerprint_match: None,
+            error_code: None,
+            credential_source: None,
+        };
+
+        let handle = tokio::spawn(async move {
+            // Dropping this future between `spawn_blocking` dispatch and
+            // completion is the cancellation we want to exercise.
+            let _ = conn.emit_auth(event).await;
+        });
+
+        // Give the future just long enough to enter `spawn_blocking`
+        // (far less than the sink's 80ms delay). The abort then drops
+        // the JoinHandle mid-blocking-task.
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        handle.abort();
+
+        // Wait past the sink's total blocking time, then verify the
+        // event was recorded even though the caller was cancelled.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(
+            recorded.load(Ordering::SeqCst),
+            1,
+            "sink must record the event even if the caller future was dropped",
+        );
+    }
 }
