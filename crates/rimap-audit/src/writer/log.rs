@@ -39,7 +39,22 @@ impl AuthEventSink for AuditWriter {
             Err(err) => {
                 let code = err.code();
                 let message = format!("audit emit_auth: {code}");
-                Err(AuthSinkError::new(code, message, Box::new(err)))
+                // The full `AuditError` carries the audit-file path
+                // (operator-configured filesystem layout) in its
+                // Display chain. Log the raw error with
+                // `error_code = %code` at error level here — the
+                // `AuthSinkError` handed to callers carries only an
+                // opaque source that stringifies to the same stable
+                // code, so a downstream `tracing::error!(error = ?e)`
+                // or `anyhow::Error::chain()` walk can never leak
+                // the path.
+                tracing::error!(
+                    error_code = %code,
+                    path = %self.path().display(),
+                    "audit emit_auth failed",
+                );
+                let opaque = std::io::Error::other(format!("rimap-audit emit_auth: {code}"));
+                Err(AuthSinkError::new(code, message, Box::new(opaque)))
             }
         }
     }

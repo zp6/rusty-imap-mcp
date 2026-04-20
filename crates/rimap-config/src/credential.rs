@@ -146,6 +146,16 @@ pub fn resolve_credential(
     })
 }
 
+/// Build the user-facing reason string for [`ConfigError::NoCredential`].
+///
+/// The string embeds `<account-id>/<username>@<host>` (the keyring
+/// lookup key) so operators can correlate the error with the exact
+/// keyring entry to create. This is disclosure-consistent with the
+/// #81 posture documented in `docs/security-model.md`: v1.0 is
+/// stdio-only with a single trusted client, and the username/host
+/// are already the inputs the operator typed into their own config.
+/// If an HTTP/SSE/WebSocket transport ships, this string must be
+/// revisited alongside the account-name disclosure in `UnknownAccount`.
 fn build_no_credential_reason(
     account_id: &AccountId,
     fallback_mode: crate::model::FallbackMode,

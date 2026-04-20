@@ -78,7 +78,16 @@ pub async fn handle(
     let sent_folder: &str = account.special_use.sent().unwrap_or("Sent");
     let append_outcome: Option<Result<Option<u32>, ()>> =
         if let Err(e) = rimap_authz::folder_name::FolderName::new(sent_folder) {
-            tracing::warn!("resolved Sent folder `{sent_folder}` failed validation: {e}");
+            // Stable warn fields go in the structured record; the full
+            // Display goes to DEBUG so it is available when tracing is
+            // configured verbose but not piped into the default stderr
+            // subscriber operator dashboards read.
+            tracing::warn!(
+                tool = "send_email",
+                error_code = "invalid_sent_folder",
+                "resolved Sent folder failed validation",
+            );
+            tracing::debug!(sent_folder, error = %e, "sent-folder validation detail");
             None
         } else {
             match account
@@ -88,7 +97,12 @@ pub async fn handle(
             {
                 Ok(result) => Some(Ok(result.uid.map(rimap_imap::types::Uid::get))),
                 Err(e) => {
-                    tracing::warn!("failed to append to Sent folder: {e}");
+                    tracing::warn!(
+                        tool = "send_email",
+                        error_code = %e.code(),
+                        "failed to append to Sent folder",
+                    );
+                    tracing::debug!(error = %e, "sent-folder append detail");
                     Some(Err(()))
                 }
             }
