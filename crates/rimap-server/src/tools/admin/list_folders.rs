@@ -1,5 +1,7 @@
 //! `list_folders` tool handler.
 
+use std::fmt::Write as _;
+
 use rimap_content::output::SecurityWarning;
 use serde::Serialize;
 
@@ -8,18 +10,45 @@ use crate::mcp::response::ToolResponse;
 
 const MAX_FOLDER_NAME_BYTES: usize = 1024;
 
-/// Sanitize a single `Folder` entry, returning the cleaned name and flag
-/// list while appending any security warnings to `warnings`.
+/// Escape a folder name as a JSON-safe Unicode-escape string. Each
+/// non-ASCII-printable codepoint becomes `\u{H..}` (one or more
+/// lowercase hex digits); ASCII printables in 0x20..0x7E (excluding
+/// backslash) are emitted literally. Clients round-trip by applying
+/// the inverse of this escape convention. Backslash is always escaped
+/// so the output can be safely embedded in a JSON string.
+fn escape_wire_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        if (c as u32) >= 0x20 && (c as u32) < 0x7f && c != '\\' {
+            out.push(c);
+        } else {
+            let _ = write!(out, "\\u{{{:x}}}", c as u32);
+        }
+    }
+    out
+}
+
+/// Sanitize a single `Folder` entry, returning the cleaned name, optional
+/// wire name, and flag list while appending any security warnings to
+/// `warnings`.
 fn sanitize_folder_entry(
     folder: &rimap_imap::types::Folder,
     warnings: &mut Vec<SecurityWarning>,
-) -> (String, Vec<String>) {
+) -> (String, Option<String>, Vec<String>) {
     let (clean_name, name_warnings) = rimap_content::unicode::sanitize(
         folder.name.as_bytes(),
         None,
         MAX_FOLDER_NAME_BYTES,
         "folder.name",
     );
+    // NFKC normalization, bidi stripping, or any sanitize transform counts
+    // as a "name change" — the server owns the canonical wire bytes, so
+    // the client must round-trip `name_wire` for subsequent commands.
+    let name_wire = if clean_name == folder.name {
+        None
+    } else {
+        Some(escape_wire_name(&folder.name))
+    };
     warnings.extend(name_warnings);
 
     let flags: Vec<String> = folder
@@ -38,14 +67,22 @@ fn sanitize_folder_entry(
         })
         .collect();
 
-    (clean_name, flags)
+    (clean_name, name_wire, flags)
 }
 
 /// A single folder entry in a `list_folders` response.
 #[derive(Debug, Serialize)]
 pub struct FolderEntry {
-    /// Folder name.
+    /// Sanitized, display-safe folder name. Bidi / zero-width / Unicode
+    /// Tag codepoints are stripped before this reaches the client.
     pub name: String,
+    /// Raw wire form of the folder name encoded as `\u{H..}` Unicode
+    /// escape sequences (see `escape_wire_name`), populated only when
+    /// `name` differs from what the server sent. Clients pass this back
+    /// for SELECT / STATUS / MOVE / FETCH when `name_wire` is `Some(_)`;
+    /// otherwise they pass `name` directly.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_wire: Option<String>,
     /// Hierarchy delimiter character reported by the server.
     pub delimiter: Option<char>,
     /// IMAP folder attribute flags (e.g. `"\\HasNoChildren"`).
@@ -86,10 +123,11 @@ pub(crate) fn sanitize_folder_entries(
     let mut warnings: Vec<SecurityWarning> = Vec::new();
 
     for folder in folders {
-        let (clean_name, flags) = sanitize_folder_entry(&folder, &mut warnings);
+        let (clean_name, name_wire, flags) = sanitize_folder_entry(&folder, &mut warnings);
 
         entries.push(FolderEntry {
             name: clean_name,
+            name_wire,
             delimiter: folder.delimiter,
             flags,
             exists: None,
@@ -122,10 +160,11 @@ pub async fn handle(
     let mut warnings: Vec<SecurityWarning> = Vec::new();
 
     for (folder, status) in pairs {
-        let (clean_name, flags) = sanitize_folder_entry(&folder, &mut warnings);
+        let (clean_name, name_wire, flags) = sanitize_folder_entry(&folder, &mut warnings);
 
         entries.push(FolderEntry {
             name: clean_name,
+            name_wire,
             delimiter: folder.delimiter,
             flags,
             exists: status.as_ref().and_then(|s| s.messages),
@@ -180,6 +219,60 @@ mod tests {
         assert!(
             warnings.is_empty(),
             "clean name should produce no warnings, got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn escape_wire_name_passes_ascii_printables_literally() {
+        assert_eq!(super::escape_wire_name("INBOX/Sent"), "INBOX/Sent");
+    }
+
+    #[test]
+    fn escape_wire_name_escapes_backslash() {
+        assert_eq!(
+            super::escape_wire_name("Archive\\2024"),
+            "Archive\\u{5c}2024"
+        );
+    }
+
+    #[test]
+    fn escape_wire_name_escapes_supplementary_codepoint() {
+        // U+1F4E7 ENVELOPE — supplementary plane. Confirms variable-width
+        // hex output, not fixed four-digit HHHH.
+        assert_eq!(super::escape_wire_name("\u{1f4e7}"), "\\u{1f4e7}");
+    }
+
+    #[test]
+    fn wire_name_preserved_when_sanitizer_modifies_name() {
+        let folders = vec![Folder {
+            name: "Inbox\u{202e}gnilleS".to_string(),
+            attributes: vec![FolderAttribute::HasNoChildren],
+            delimiter: Some('/'),
+            special_use: None,
+        }];
+        let (entries, _warnings) = sanitize_folder_entries(folders);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].name_wire.as_deref(),
+            Some("Inbox\\u{202e}gnilleS"),
+            "wire name should preserve the original codepoints as escapes",
+        );
+    }
+
+    #[test]
+    fn wire_name_absent_for_clean_folder_name() {
+        let folders = vec![Folder {
+            name: "INBOX".to_string(),
+            attributes: vec![FolderAttribute::HasNoChildren],
+            delimiter: Some('/'),
+            special_use: None,
+        }];
+        let (entries, _warnings) = sanitize_folder_entries(folders);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].name_wire.is_none(),
+            "clean name should have no wire-name field, got: {:?}",
+            entries[0].name_wire,
         );
     }
 }
