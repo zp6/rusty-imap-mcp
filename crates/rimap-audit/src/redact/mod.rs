@@ -493,8 +493,14 @@ fn list_labels_schema(tool: ToolName) -> RedactionSchema {
 }
 
 fn use_account_schema(tool: ToolName) -> RedactionSchema {
-    use FieldPolicy::Verbatim;
-    RedactionSchema::new(tool, &[("account", Verbatim)])
+    // `account` is redacted — NOT verbatim — because the handler's
+    // bidi/zero-width pre-check runs AFTER `tool_start` is emitted,
+    // so a spoofed name would otherwise land in the audit log verbatim.
+    // Operators reviewing audit records see `<redacted:N>`; the handler
+    // still returns `ERR_INVALID_INPUT` for spoofed input so downstream
+    // correlation via `tool_end.code` is unaffected (#111).
+    use FieldPolicy::RedactString;
+    RedactionSchema::new(tool, &[("account", RedactString)])
 }
 
 fn list_accounts_schema(tool: ToolName) -> RedactionSchema {
@@ -746,6 +752,22 @@ mod tests {
         assert!(
             !schema.policies.contains_key("in_reply_to_folder"),
             "in_reply_to_folder is not a spec field",
+        );
+    }
+
+    #[test]
+    fn use_account_schema_redacts_account_field() {
+        // MCP-INJ-03 / MAIL-AUD-02: `account` must be RedactString so
+        // spoofed bidi/zero-width codepoints cannot reach the JSONL
+        // audit log before the handler's pre-check runs.
+        let table = crate::redact::schemas();
+        let schema = table
+            .iter()
+            .find(|s| s.tool == ToolName::UseAccount)
+            .expect("use_account schema exists");
+        assert_eq!(
+            schema.policies.get("account").copied(),
+            Some(FieldPolicy::RedactString),
         );
     }
 

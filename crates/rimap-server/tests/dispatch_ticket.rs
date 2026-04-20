@@ -103,3 +103,67 @@ async fn execute_tool_for_test_emits_audit_envelope() {
         "tool_end.start_seq must correlate back to tool_start.seq; otherwise the envelope's pairing guarantee is broken",
     );
 }
+
+#[tokio::test]
+async fn use_account_rejected_spoof_is_not_in_audit_log() {
+    let fixture = build_test_server();
+
+    // Spoofed account name containing RLO (U+202E) and ZWSP (U+200B).
+    // After rejection, the audit log must contain neither the raw
+    // account string nor the JSON-escaped form of the spoof codepoints —
+    // only the `<redacted:N>` placeholder.
+    let _ = fixture
+        .server
+        .execute_tool_for_test(
+            None,
+            ToolName::UseAccount,
+            serde_json::json!({ "account": "work\u{202e}\u{200b}cnyS" }),
+        )
+        .await;
+
+    drop(fixture.server);
+
+    let raw = std::fs::read_to_string(&fixture.audit_path).expect("read audit log");
+
+    // serde_json may or may not escape non-ASCII as \uXXXX depending on
+    // configuration. Check both the literal UTF-8 bytes AND the JSON-escape
+    // forms so a regression is caught regardless of serializer behavior.
+    assert!(
+        !raw.contains('\u{202e}'),
+        "RTL-override literal codepoint leaked into audit log: {raw}",
+    );
+    assert!(
+        !raw.contains('\u{200b}'),
+        "zero-width-space literal codepoint leaked into audit log: {raw}",
+    );
+    assert!(
+        !raw.contains("\\u202e"),
+        "RTL-override escape form leaked into audit log: {raw}",
+    );
+    assert!(
+        !raw.contains("\\u200b"),
+        "zero-width-space escape form leaked into audit log: {raw}",
+    );
+    assert!(
+        !raw.contains("\"work"),
+        "raw account string prefix leaked into audit log: {raw}",
+    );
+
+    // Walk the structured records. The `tool_start` for `use_account`
+    // must carry the redacted placeholder in `arguments_redacted.account`,
+    // proving the `RedactString` policy is active.
+    let start = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|r| r["kind"] == "tool_start" && r["tool"] == "use_account")
+        .expect("tool_start record for use_account");
+    let account_field = start
+        .pointer("/arguments_redacted/account")
+        .expect("tool_start must expose arguments_redacted.account")
+        .as_str()
+        .expect("arguments_redacted.account must be a string");
+    assert!(
+        account_field.starts_with("<redacted:"),
+        "account field must be redacted placeholder, got: {account_field:?}",
+    );
+}
