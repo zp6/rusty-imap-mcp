@@ -304,27 +304,44 @@ impl Connection {
         .map_err(|_| (ImapError::Timeout { op: "tcp_connect" }, None))?
         .map_err(|e| (ImapError::Connect(e), None))?;
 
-        // Step 2: TLS handshake. Pre-resolve; failures carry `None`.
-        let server_name = ServerName::try_from(cfg.host.clone()).map_err(|_| {
-            (
-                ImapError::Connect(std::io::Error::other("invalid server name for TLS")),
-                None,
-            )
-        })?;
-        let connector = TlsConnector::from(bundle.config.clone());
+        // Step 2: TLS establishment. Branches on encryption mode.
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
-        let tls_stream = timeout(remaining, connector.connect(server_name, tcp))
-            .await
-            .map_err(|_| {
-                (
-                    ImapError::Timeout {
-                        op: "tls_handshake",
-                    },
-                    None,
-                )
-            })?
-            .map_err(|e| (map_tls_handshake_error(&e), None))?;
+        let tls_stream = match cfg.encryption {
+            ImapEncryption::Tls => {
+                let server_name = ServerName::try_from(cfg.host.clone()).map_err(|_| {
+                    (
+                        ImapError::Connect(std::io::Error::other("invalid server name for TLS")),
+                        None,
+                    )
+                })?;
+                let connector = TlsConnector::from(bundle.config.clone());
+                timeout(remaining, connector.connect(server_name, tcp))
+                    .await
+                    .map_err(|_| {
+                        (
+                            ImapError::Timeout {
+                                op: "tls_handshake",
+                            },
+                            None,
+                        )
+                    })?
+                    .map_err(|e| (map_tls_handshake_error(&e), None))?
+            }
+            ImapEncryption::Starttls => {
+                timeout(remaining, starttls_upgrade(tcp, bundle, &cfg.host))
+                    .await
+                    .map_err(|_| {
+                        (
+                            ImapError::Timeout {
+                                op: "starttls_upgrade",
+                            },
+                            None,
+                        )
+                    })?
+                    .map_err(|e| (e, None))?
+            }
+        };
 
         // Step 3: IMAP greeting + capability check + login. The login step
         // may return a credential source on both success and certain failures.
@@ -967,10 +984,6 @@ fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) ->
 /// `async_imap::Client` (and its buffer) is dropped by `into_inner()`,
 /// which is the structural defense against CVE-2011-0411-class
 /// buffered-plaintext injection.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into connect_with_bundle in Task 12")
-)]
 async fn starttls_negotiate(tcp: TcpStream) -> Result<TcpStream, ImapError> {
     use async_imap::Client as ImapPlainClient;
 
@@ -1048,6 +1061,24 @@ fn drain_for_starttls(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool
         }
     }
     found
+}
+
+/// Full STARTTLS upgrade: plaintext negotiation + TLS handshake with the
+/// same `TlsConfigBundle` the implicit-TLS path uses. Pin verification
+/// runs inside `TlsConnector::connect`.
+async fn starttls_upgrade(
+    tcp: TcpStream,
+    bundle: &TlsConfigBundle,
+    host: &str,
+) -> Result<TlsStream<TcpStream>, ImapError> {
+    let tcp = starttls_negotiate(tcp).await?;
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|_| ImapError::Connect(std::io::Error::other("invalid server name for TLS")))?;
+    let connector = TlsConnector::from(bundle.config.clone());
+    connector
+        .connect(server_name, tcp)
+        .await
+        .map_err(|e| map_tls_handshake_error(&e))
 }
 
 /// Map an `io::ImapError` from the TLS connect call to `ImapError::TlsHandshake`.
