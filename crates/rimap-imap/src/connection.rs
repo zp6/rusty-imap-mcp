@@ -1470,6 +1470,43 @@ mod starttls_unit_tests {
     }
 
     #[tokio::test]
+    async fn negotiate_returns_bare_tcpstream_and_drops_client_wrapper() {
+        // Regression test for CVE-2011-0411 class: verifies that
+        // `starttls_negotiate` returns a raw `TcpStream` (not a
+        // `Client<TcpStream>`), which means the plaintext client's
+        // internal `ImapStream` buffer was dropped by `into_inner()`.
+        // A caller that re-wraps with `Client::new(tls_stream)` after
+        // TLS gets a fresh buffer — no buffered plaintext can be
+        // replayed against the post-TLS stream.
+        //
+        // We further simulate a MITM-style injection by having the mock
+        // send trailing bytes in the SAME turn as the tagged OK for
+        // STARTTLS. If the plaintext parser buffered them, they are
+        // lost with `into_inner()`; if not, they remain on the kernel
+        // socket but cannot enter any `ImapStream` buffer the caller
+        // holds, because none is returned.
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            Step::Send(b"* CAPABILITY IMAP4rev1 STARTTLS\r\n"),
+            Step::Send(b"A0001 OK CAPABILITY completed\r\n"),
+            Step::ExpectCommand("STARTTLS"),
+            // Tagged OK + trailing injected bytes in the SAME server turn.
+            Step::Send(b"A0002 OK Begin TLS negotiation\r\n* INJECTED garbage\r\n"),
+        ])
+        .await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        // Explicit type annotation: `returned` must be TcpStream, not
+        // Client<TcpStream>. This is checked by the compiler; the
+        // annotation documents the CVE-defense guarantee.
+        let returned: tokio::net::TcpStream = super::starttls_negotiate(tcp).await.unwrap();
+        let _ = returned;
+
+        let _ = mock.finish().await;
+    }
+
+    #[tokio::test]
     async fn mock_server_round_trips_a_line() {
         // Smoke test: mock sends a greeting, reads one line, returns.
         let mock = MockImap::start(vec![
