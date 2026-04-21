@@ -6,8 +6,10 @@
 //! the matrix to stdout is both acceptable and the most useful destination
 //! (it can be piped to `less`, etc.).
 //!
-//! Output format is stable text: one header line and one row per tool, in
-//! declaration order. Sample:
+//! Output format is stable text: one header line and one row per content
+//! tool in declaration order, followed by a separate section listing
+//! infrastructure tools (which bypass the posture matrix at runtime and
+//! are always available). Sample:
 //!
 //! ```text
 //! Effective matrix (posture = draft-safe)
@@ -15,6 +17,9 @@
 //!   [ok ] search
 //!   [deny] search.advanced_query
 //!   ...
+//! Infrastructure tools (always available):
+//!   [ok ] use_account
+//!   [ok ] list_accounts
 //! ```
 
 use std::io::Write;
@@ -24,6 +29,7 @@ use anyhow::Context;
 use rimap_audit::{AuditOptions, AuditWriter};
 use rimap_authz::matrix::EffectiveMatrix;
 use rimap_config::loader::load_and_validate;
+use rimap_core::tool::ToolName;
 
 /// Load `path`, validate, acquire an exclusive audit lock, build the effective
 /// matrix, print to `out`, and return. The audit lock is held for the duration
@@ -57,8 +63,18 @@ pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
         }
         writeln!(out, "Effective matrix (posture = {})", matrix.posture())?;
         for (tool, allowed) in matrix.rows() {
+            if tool.is_infrastructure() {
+                continue;
+            }
             let tag = if allowed { "[ok ]" } else { "[deny]" };
             writeln!(out, "  {tag} {tool}")?;
+        }
+        writeln!(out, "Infrastructure tools (always available):")?;
+        for tool in ToolName::all()
+            .into_iter()
+            .filter(|t| t.is_infrastructure())
+        {
+            writeln!(out, "  [ok ] {tool}")?;
         }
     }
     Ok(())
@@ -142,6 +158,40 @@ allowed_base_dir = "{}"
         assert!(
             chain.contains("already locked") || chain.contains("opening audit log"),
             "unexpected error chain: {chain}",
+        );
+    }
+
+    #[test]
+    fn dry_run_lists_infrastructure_tools_separately() {
+        // Infrastructure tools (use_account, list_accounts) bypass the posture
+        // matrix at runtime, so printing them as `[deny]` alongside content
+        // tools misleads users into thinking the tools are unavailable. They
+        // should appear in their own "always available" section instead.
+        let dir = TempDir::new().unwrap();
+        let path = write_minimal_config(&dir);
+        let mut out = Vec::new();
+        run(&path, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+
+        assert!(
+            !text.contains("[deny] use_account"),
+            "use_account must not appear as denied in the matrix:\n{text}"
+        );
+        assert!(
+            !text.contains("[deny] list_accounts"),
+            "list_accounts must not appear as denied in the matrix:\n{text}"
+        );
+        assert!(
+            text.contains("Infrastructure tools (always available)"),
+            "expected infrastructure section header:\n{text}"
+        );
+        assert!(
+            text.contains("use_account"),
+            "use_account must still be listed somewhere:\n{text}"
+        );
+        assert!(
+            text.contains("list_accounts"),
+            "list_accounts must still be listed somewhere:\n{text}"
         );
     }
 
