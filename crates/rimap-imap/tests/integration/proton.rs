@@ -75,7 +75,7 @@ fn build_connection(cfg: &ProtonConfig) -> Connection {
         account_id: rimap_core::account::AccountId::default_account(),
         host: cfg.host.clone(),
         port: cfg.port,
-        encryption: rimap_imap::ImapEncryption::Tls,
+        encryption: rimap_imap::ImapEncryption::Starttls,
         username: cfg.user.clone(),
         pinned_fingerprint: Some(cfg.fingerprint),
         connect_timeout: Duration::from_secs(15),
