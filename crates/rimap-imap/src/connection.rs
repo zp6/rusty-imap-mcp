@@ -1184,3 +1184,126 @@ mod encryption_tests {
         assert_eq!(ImapEncryption::default(), ImapEncryption::Tls);
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod starttls_unit_tests {
+    use std::io::{Error as IoError, ErrorKind};
+    use std::net::SocketAddr;
+
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::task::JoinHandle;
+
+    /// A one-shot scripted IMAP server. Each step either writes bytes or
+    /// reads one CRLF-terminated line and checks its prefix. Returns on
+    /// script completion or client disconnect.
+    pub(super) struct MockImap {
+        addr: SocketAddr,
+        join: JoinHandle<Result<Vec<String>, IoError>>,
+    }
+
+    /// One script step.
+    pub(super) enum Step {
+        /// Server sends these bytes verbatim (append to response).
+        Send(&'static [u8]),
+        /// Server reads one CRLF-terminated line; asserts the line
+        /// (after the tag) starts with the given uppercase command.
+        ExpectCommand(&'static str),
+        /// Server reads one CRLF-terminated line; records it but does
+        /// not assert anything.
+        #[expect(dead_code, reason = "used by Task 7+ STARTTLS unit tests")]
+        RecordLine,
+    }
+
+    impl MockImap {
+        /// Start a listener bound to 127.0.0.1:0 and spawn a task that
+        /// accepts one connection and runs the script.
+        pub(super) async fn start(script: Vec<Step>) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let addr = listener.local_addr().expect("local_addr");
+            let join = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await?;
+                run_script(stream, script).await
+            });
+            Self { addr, join }
+        }
+
+        pub(super) fn addr(&self) -> SocketAddr {
+            self.addr
+        }
+
+        /// Wait for the server task to finish; return the list of lines
+        /// it read from the client (in the order it read them).
+        pub(super) async fn finish(self) -> Result<Vec<String>, IoError> {
+            self.join.await.map_err(IoError::other)?
+        }
+    }
+
+    async fn run_script(stream: TcpStream, script: Vec<Step>) -> Result<Vec<String>, IoError> {
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        let mut recorded: Vec<String> = Vec::new();
+        for step in script {
+            match step {
+                Step::Send(bytes) => {
+                    write.write_all(bytes).await?;
+                    write.flush().await?;
+                }
+                Step::ExpectCommand(cmd) => {
+                    let mut line = String::new();
+                    let n = reader.read_line(&mut line).await?;
+                    if n == 0 {
+                        return Err(IoError::new(ErrorKind::UnexpectedEof, "client closed"));
+                    }
+                    recorded.push(line.clone());
+                    // Line is "<tag> <COMMAND> ...\r\n". Split off tag.
+                    let rest = line.split_once(' ').map_or("", |(_, r)| r);
+                    if !rest.trim_start().to_ascii_uppercase().starts_with(cmd) {
+                        return Err(IoError::other(format!(
+                            "expected command `{cmd}` but got `{}`",
+                            line.trim()
+                        )));
+                    }
+                }
+                Step::RecordLine => {
+                    let mut line = String::new();
+                    let n = reader.read_line(&mut line).await?;
+                    if n == 0 {
+                        return Err(IoError::new(ErrorKind::UnexpectedEof, "client closed"));
+                    }
+                    recorded.push(line);
+                }
+            }
+        }
+        Ok(recorded)
+    }
+
+    #[tokio::test]
+    async fn mock_server_round_trips_a_line() {
+        // Smoke test: mock sends a greeting, reads one line, returns.
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK hi\r\n"),
+            Step::ExpectCommand("NOOP"),
+            Step::Send(b"a1 OK NOOP done\r\n"),
+        ])
+        .await;
+
+        let stream = TcpStream::connect(mock.addr()).await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let mut reader = BufReader::new(read);
+        let mut greeting = String::new();
+        reader.read_line(&mut greeting).await.unwrap();
+        assert!(greeting.contains("OK hi"));
+        write.write_all(b"a1 NOOP\r\n").await.unwrap();
+        let mut resp = String::new();
+        reader.read_line(&mut resp).await.unwrap();
+        assert!(resp.contains("NOOP done"));
+
+        drop((reader, write));
+        let recorded = mock.finish().await.unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].contains("NOOP"));
+    }
+}
