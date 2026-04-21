@@ -38,10 +38,14 @@ pub struct Config {
 pub struct ImapConfig {
     /// Server host.
     pub host: String,
-    /// Server port (IMAPS).
+    /// Server port (993 for TLS, 143/1143 for STARTTLS).
     pub port: u16,
     /// IMAP username.
     pub username: String,
+    /// Transport encryption mode. Defaults to implicit TLS for
+    /// backward-compatibility with pre-STARTTLS configs.
+    #[serde(default)]
+    pub encryption: ImapEncryption,
     /// Optional pinned TLS certificate SHA-256 fingerprint. Hex, colons
     /// optional (e.g. `"ab:cd:…"` or `"abcd…"`).
     #[serde(default)]
@@ -423,6 +427,63 @@ pub struct RawAccountConfig {
     /// Per-account credential policy; `None` inherits from `[defaults.credentials]`.
     #[serde(default)]
     pub credentials: Option<CredentialsConfig>,
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod imap_config_encryption_tests {
+    use super::*;
+
+    const MINIMAL: &str = r#"
+host = "imap.example.com"
+port = 993
+username = "alice"
+"#;
+
+    const WITH_STARTTLS: &str = r#"
+host = "imap.example.com"
+port = 1143
+username = "alice"
+encryption = "starttls"
+"#;
+
+    #[test]
+    fn omitted_encryption_defaults_to_tls() {
+        let cfg: ImapConfig = toml::from_str(MINIMAL).unwrap();
+        assert_eq!(cfg.encryption, ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn explicit_starttls_round_trips() {
+        let cfg: ImapConfig = toml::from_str(WITH_STARTTLS).unwrap();
+        assert_eq!(cfg.encryption, ImapEncryption::Starttls);
+        assert_eq!(cfg.port, 1143);
+    }
+
+    #[test]
+    fn explicit_tls_round_trips() {
+        let cfg: ImapConfig = toml::from_str(
+            r#"
+host = "imap.gmail.com"
+port = 993
+username = "alice"
+encryption = "tls"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.encryption, ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn rejects_unknown_encryption_value() {
+        let toml = r#"
+host = "h"
+port = 993
+username = "u"
+encryption = "mutual-tls"
+"#;
+        assert!(toml::from_str::<ImapConfig>(toml).is_err());
+    }
 }
 
 #[cfg(test)]

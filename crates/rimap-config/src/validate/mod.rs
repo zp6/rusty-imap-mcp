@@ -196,7 +196,7 @@ mod tests {
     use crate::error::ConfigError;
     use crate::model::{
         AttachmentsConfig, AuditConfig, Config, CredentialsConfig, FallbackMode, ImapConfig,
-        LimitsConfig, SecurityConfig, SmtpEncryption, Verdict,
+        ImapEncryption, LimitsConfig, SecurityConfig, SmtpEncryption, Verdict,
     };
     use crate::validate::{ValidatedAccountConfig, validate_legacy_as_multi};
     use rimap_core::account::AccountId;
@@ -217,6 +217,7 @@ mod tests {
                 host: "127.0.0.1".into(),
                 port: 1143,
                 username: "alice@example.test".into(),
+                encryption: ImapEncryption::Tls,
                 tls_fingerprint_sha256: None,
                 command_timeout_seconds: 30,
                 connect_timeout_seconds: 10,
@@ -653,6 +654,7 @@ path = "/tmp/audit.jsonl"
                 host: "127.0.0.1".into(),
                 port: 1143,
                 username: format!("{name}@example.test"),
+                encryption: ImapEncryption::Tls,
                 tls_fingerprint_sha256: None,
                 command_timeout_seconds: 30,
                 connect_timeout_seconds: 10,
