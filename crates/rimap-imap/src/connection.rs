@@ -37,6 +37,18 @@ use crate::auth::{AuthContext, auth_failure, auth_success};
 use crate::error::{AuthFailure, ImapError};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
+/// IMAP transport encryption mode. Mirrors `rimap_config::model::ImapEncryption`
+/// to avoid a reverse dependency; `rimap-server` maps between the two at the
+/// crate boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImapEncryption {
+    /// Implicit TLS (IMAPS).
+    #[default]
+    Tls,
+    /// STARTTLS upgrade on the IMAP port.
+    Starttls,
+}
+
 /// Everything `Connection` needs to open a session. The caller pulls
 /// these fields from a validated config entry; `Connection` clones
 /// the value once at construction time and never re-reads it.
@@ -1155,5 +1167,15 @@ mod tests {
             1,
             "sink must record the event even if the caller future was dropped",
         );
+    }
+}
+
+#[cfg(test)]
+mod encryption_tests {
+    use super::ImapEncryption;
+
+    #[test]
+    fn default_is_tls() {
+        assert_eq!(ImapEncryption::default(), ImapEncryption::Tls);
     }
 }
