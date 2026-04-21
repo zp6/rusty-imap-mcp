@@ -91,25 +91,36 @@ pub enum ImapEncryption { #[default] Tls, Starttls }
 
 Add `pub encryption: ImapEncryption` to `ConnectionConfig`.
 
-### 5.4 `starttls_upgrade` helper (new, `rimap-imap::connection`)
+### 5.4 `starttls_upgrade` + `starttls_negotiate` helpers (new, `rimap-imap::connection`)
+
+Decomposed into two functions so unit tests can exercise the pre-TLS protocol without needing a self-signed TLS listener:
 
 ```rust
+/// Plaintext-protocol negotiation: greeting → CAPABILITY → STARTTLS.
+/// Returns the raw TcpStream with the plaintext client's buffer dropped.
+async fn starttls_negotiate(tcp: TcpStream) -> Result<TcpStream, ImapError>;
+
+/// Full STARTTLS upgrade: negotiate + TLS handshake + pin verification.
 async fn starttls_upgrade(
     tcp: TcpStream,
     bundle: &TlsConfigBundle,
     host: &str,
-) -> Result<TlsStream<TcpStream>, ImapError>
+) -> Result<TlsStream<TcpStream>, ImapError>;
 ```
 
-Steps, all inside the caller's `connect_timeout` budget:
+Steps performed by `starttls_negotiate`:
 
 1. `let mut client = async_imap::Client::new(tcp);` (plaintext)
 2. `client.read_response()` → consume greeting. `BYE` → `Err(Starttls { reason: UnexpectedBye })`. `OK` → continue.
 3. `run_command_and_check_ok("CAPABILITY", Some(tx))` + drain the unsolicited channel for `Response::Capabilities`. Token `STARTTLS` required; absent → `Err(Starttls { reason: CapabilityMissing })`.
 4. `run_command_and_check_ok("STARTTLS", None)`. Tagged `NO`/`BAD` → `Err(Starttls { reason: ServerRefused { tagged_status } })`.
-5. `let tcp = client.into_inner();` — drops the `Client` and its `ImapStream` buffer. This is the CVE-2011-0411 defense (see §8.4).
-6. `ServerName::try_from(host.to_string())` → `TlsConnector::from(bundle.config.clone()).connect(server_name, tcp).await`. Same call the TLS-mode path makes. Pin verification runs here.
-7. Return `TlsStream<TcpStream>`.
+5. `Ok(client.into_inner())` — drops the `Client` and its `ImapStream` buffer. This is the CVE-2011-0411 defense (see §8.4).
+
+Steps performed by `starttls_upgrade` (delegates to `starttls_negotiate`):
+
+1. `let tcp = starttls_negotiate(tcp).await?;`
+2. `ServerName::try_from(host.to_string())` → `TlsConnector::from(bundle.config.clone()).connect(server_name, tcp).await`. Same call the TLS-mode path makes. Pin verification runs here.
+3. Return `TlsStream<TcpStream>`.
 
 ### 5.5 `ImapError::Starttls` + `StarttlsFailure` (`rimap-imap::error`)
 
@@ -206,20 +217,23 @@ Per RFC 3501 §6.2.1, pre-TLS capabilities are invalidated after STARTTLS. `imap
 
 Targeted STARTTLS-specific tests (not a full matrix). The STARTTLS path diverges from implicit-TLS only at the pre-TLS handshake; once TLS is established, everything downstream is byte-identical to today's path and already covered.
 
-### 7.1 Unit tests (`rimap-imap`, no Docker)
+### 7.1 Unit tests (`rimap-imap`, no Docker, no TLS)
 
-In-process mock TCP server scripts plaintext IMAP bytes:
+Unit tests target `starttls_negotiate` with a plain TCP mock server (in-process `TcpListener` driven by the test). No TLS is stood up at the unit-test layer — the real TLS handshake is exercised by §7.2.
 
-- `starttls_upgrade_happy_path` — greeting + cap + tagged OK, then TLS handshake against a test-generated self-signed cert with matching pin. Asserts `TlsStream` returned.
-- `starttls_capability_missing` — cap list lacks `STARTTLS`. Assert `StarttlsFailure::CapabilityMissing`; no STARTTLS command issued.
-- `starttls_server_refused_no` — tagged `NO` on STARTTLS. Assert `ServerRefused { tagged_status: "NO" }`.
-- `starttls_server_refused_bad` — tagged `BAD`. Assert `tagged_status: "BAD"`.
-- `starttls_unexpected_bye` — greeting is `* BYE …`. Assert `UnexpectedBye`.
-- `starttls_no_credential_resolve_on_failure` — credential resolver panics if invoked; run each of the four failure cases; assert no panic (proves resolver unreached pre-TLS).
-- `starttls_buffer_injection_defense` — mock sends `a1 OK STARTTLS\r\n* BAD injected\r\n` in one TCP segment before client initiates TLS. Assert post-TLS client does not parse `* BAD injected` — bytes are dropped with `client.into_inner()`. Regression test for CVE-2011-0411 class.
-- `starttls_timeout` — mock greets, then stalls. Assert `ImapError::Timeout { op: "starttls_upgrade" }`.
+- `negotiate_happy_path` — mock serves `OK` greeting → CAPABILITY advertises `STARTTLS` → tagged OK on STARTTLS. Assert `starttls_negotiate` returns `Ok(TcpStream)`.
+- `negotiate_capability_missing` — CAPABILITY response lacks `STARTTLS`. Assert `StarttlsFailure::CapabilityMissing`; mock asserts no STARTTLS command was issued.
+- `negotiate_server_refused_no` — mock returns tagged `NO` on STARTTLS. Assert `ServerRefused { tagged_status: "NO" }`.
+- `negotiate_server_refused_bad` — same, `BAD`. Assert `tagged_status: "BAD"`.
+- `negotiate_unexpected_bye` — greeting is `* BYE …`. Assert `UnexpectedBye`.
+- `negotiate_buffer_is_dropped_on_success` — mock sends `a1 OK STARTTLS\r\n* BAD injected\r\n` in a single write *before* the client issues STARTTLS (i.e. appended to the earlier response). After `starttls_negotiate` returns `Ok(tcp)`, assert that the `async_imap::Client` it consumed has been dropped — verified by code-review-level invariant: `into_inner()` is the final expression on the success path. The returned `TcpStream` is freshly rewrapped by any caller into a new `Client`, which allocates a new empty buffer. Regression test for CVE-2011-0411 class.
 
-Uses `rcgen` (existing dev-dep) for the self-signed cert. No new crate deps.
+Callers of `starttls_negotiate` that go on to attempt TLS are covered by §7.2 (Dovecot) and §7.3 (Proton Bridge). The `starttls_no_credential_resolve_on_failure` and `starttls_timeout` properties are covered at the `connect_with_bundle` level:
+
+- `connect_with_bundle_starttls_no_credential_on_pre_tls_failure` — inject a credential resolver that panics if `resolve` is called. Point `connect_with_bundle` at a mock server that fails mid-negotiation. Assert no panic (proves resolver is not reached pre-TLS).
+- `connect_with_bundle_starttls_timeout` — mock greets then stalls; `connect_timeout` fires. Assert `ImapError::Timeout { op: "starttls_upgrade" }`.
+
+No new crate deps.
 
 ### 7.2 Dovecot STARTTLS integration (gated behind existing `DOVECOT_TEST=1`)
 
@@ -273,7 +287,7 @@ After the tagged OK for STARTTLS, a MITM could inject plaintext bytes *after* th
 
 `async_imap::Client::into_inner()` (verified against async-imap 0.11.2 `src/client.rs:147` and `src/imap_stream.rs:78`) returns the underlying `TcpStream` by moving it out of the `ImapStream` wrapper. The wrapper — including its `Buffer` — is dropped. Any buffered-but-unparsed plaintext bytes are unreachable from then on; `Client::new(tls)` constructs a fresh wrapper with an empty buffer.
 
-The defense is structural, not incidental. Test §7.1 `starttls_buffer_injection_defense` pins this property so a future refactor cannot silently regress it.
+The defense is structural, not incidental. Test §7.1 `negotiate_buffer_is_dropped_on_success` pins this invariant at the unit-test layer; Dovecot's `ssl = required` integration test (§7.2) verifies the end-to-end property that plaintext LOGIN cannot complete pre-STARTTLS.
 
 ### 8.5 Error-code stability
 
