@@ -18,6 +18,7 @@ services:
       # fixed port, recreate would get a fresh random port and the
       # client's pinned Connection could not reconnect.
       - "127.0.0.1:${RIMAP_DOVECOT_HOST_PORT}:993"
+      - "127.0.0.1:${RIMAP_DOVECOT_HOST_PORT_STARTTLS}:143"
     volumes:
       # `,z` asks podman to SELinux-relabel these host paths (shared label so
       # parallel nextest containers can all read the same sources). Docker
