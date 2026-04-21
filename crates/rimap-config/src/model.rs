@@ -102,6 +102,17 @@ pub enum SmtpEncryption {
     None,
 }
 
+/// IMAP transport encryption mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImapEncryption {
+    /// Implicit TLS (IMAPS), typical port 993.
+    #[default]
+    Tls,
+    /// STARTTLS upgrade on the IMAP port, typical port 143 or 1143.
+    Starttls,
+}
+
 /// `[smtp]` block. Optional — required only when `send_email` is enabled.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -412,6 +423,58 @@ pub struct RawAccountConfig {
     /// Per-account credential policy; `None` inherits from `[defaults.credentials]`.
     #[serde(default)]
     pub credentials: Option<CredentialsConfig>,
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod imap_encryption_tests {
+    use serde::Deserialize as _;
+    use serde::Serialize as _;
+
+    use super::*;
+
+    #[test]
+    fn default_is_tls() {
+        assert_eq!(ImapEncryption::default(), ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn serializes_as_lowercase_tls() {
+        let mut s = String::new();
+        ImapEncryption::Tls
+            .serialize(toml::ser::ValueSerializer::new(&mut s))
+            .unwrap();
+        assert_eq!(s.trim(), "\"tls\"");
+    }
+
+    #[test]
+    fn serializes_as_lowercase_starttls() {
+        let mut s = String::new();
+        ImapEncryption::Starttls
+            .serialize(toml::ser::ValueSerializer::new(&mut s))
+            .unwrap();
+        assert_eq!(s.trim(), "\"starttls\"");
+    }
+
+    #[test]
+    fn deserializes_starttls() {
+        let v =
+            ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"starttls\"")).unwrap();
+        assert_eq!(v, ImapEncryption::Starttls);
+    }
+
+    #[test]
+    fn deserializes_tls() {
+        let v = ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"tls\"")).unwrap();
+        assert_eq!(v, ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn rejects_unknown_value() {
+        let err = ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"mutual-tls\""))
+            .unwrap_err();
+        assert!(err.to_string().contains("mutual-tls"));
+    }
 }
 
 #[cfg(test)]
