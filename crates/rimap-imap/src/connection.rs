@@ -1275,6 +1275,7 @@ mod encryption_tests {
 
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod starttls_unit_tests {
     use std::io::{Error as IoError, ErrorKind};
@@ -1354,6 +1355,35 @@ mod starttls_unit_tests {
             }
         }
         Ok(recorded)
+    }
+
+    use super::{ImapError, StarttlsFailure};
+
+    #[tokio::test]
+    async fn negotiate_capability_missing() {
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK IMAP ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            // Advertise LOGIN-related caps but NOT STARTTLS.
+            Step::Send(b"* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\n"),
+            Step::Send(b"A0001 OK CAPABILITY completed\r\n"),
+        ])
+        .await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        let err = super::starttls_negotiate(tcp).await.unwrap_err();
+        match err {
+            ImapError::Starttls {
+                reason: StarttlsFailure::CapabilityMissing,
+            } => {}
+            other => panic!("expected CapabilityMissing, got {other:?}"),
+        }
+
+        // Server-side: no STARTTLS command was issued before the client
+        // errored out. `recorded` must be exactly one line (CAPABILITY).
+        let recorded = mock.finish().await.unwrap();
+        assert_eq!(recorded.len(), 1);
+        assert!(recorded[0].to_ascii_uppercase().contains("CAPABILITY"));
     }
 
     #[tokio::test]
