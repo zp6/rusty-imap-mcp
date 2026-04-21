@@ -1014,14 +1014,24 @@ async fn starttls_negotiate(tcp: TcpStream) -> Result<TcpStream, ImapError> {
         .ok_or(ImapError::Starttls {
             reason: StarttlsFailure::UnexpectedBye,
         })?;
-    if let Response::Data {
-        status: Status::Bye,
-        ..
-    } = greeting.parsed()
-    {
-        return Err(ImapError::Starttls {
-            reason: StarttlsFailure::UnexpectedBye,
-        });
+    match greeting.parsed() {
+        Response::Data {
+            status: Status::Bye,
+            ..
+        } => {
+            return Err(ImapError::Starttls {
+                reason: StarttlsFailure::UnexpectedBye,
+            });
+        }
+        Response::Data {
+            status: Status::PreAuth,
+            ..
+        } => {
+            return Err(ImapError::Starttls {
+                reason: StarttlsFailure::UnexpectedPreauth,
+            });
+        }
+        _ => {}
     }
 
     // CAPABILITY + drain for STARTTLS token.
@@ -1560,6 +1570,22 @@ mod starttls_unit_tests {
                 reason: StarttlsFailure::UnexpectedBye,
             } => {}
             other => panic!("expected UnexpectedBye, got {other:?}"),
+        }
+        let _ = mock.finish().await;
+    }
+
+    #[tokio::test]
+    async fn negotiate_unexpected_preauth() {
+        let mock =
+            MockImap::start(vec![Step::Send(b"* PREAUTH pre-authenticated session\r\n")]).await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        let err = super::starttls_negotiate(tcp).await.unwrap_err();
+        match err {
+            ImapError::Starttls {
+                reason: StarttlsFailure::UnexpectedPreauth,
+            } => {}
+            other => panic!("expected UnexpectedPreauth, got {other:?}"),
         }
         let _ = mock.finish().await;
     }

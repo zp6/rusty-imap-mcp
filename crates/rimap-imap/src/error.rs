@@ -150,6 +150,11 @@ pub enum StarttlsFailure {
     },
     /// Server greeted with BYE instead of OK.
     UnexpectedBye,
+    /// Server greeted with PREAUTH. RFC 3501 §6.2.1 requires STARTTLS
+    /// before authentication; a PREAUTH greeting means the server
+    /// considers us authenticated already, which is incompatible with
+    /// our STARTTLS-then-LOGIN flow.
+    UnexpectedPreauth,
 }
 
 impl std::fmt::Display for StarttlsFailure {
@@ -160,6 +165,9 @@ impl std::fmt::Display for StarttlsFailure {
                 write!(f, "server refused STARTTLS with tagged {tagged_status}")
             }
             Self::UnexpectedBye => f.write_str("server sent BYE greeting"),
+            Self::UnexpectedPreauth => {
+                f.write_str("server sent PREAUTH greeting; STARTTLS requires pre-auth state")
+            }
         }
     }
 }
@@ -254,6 +262,15 @@ mod tests {
         };
         let s = format!("{err}");
         assert!(s.to_lowercase().contains("bye"));
+    }
+
+    #[test]
+    fn starttls_unexpected_preauth_display() {
+        let err = ImapError::Starttls {
+            reason: StarttlsFailure::UnexpectedPreauth,
+        };
+        let s = format!("{err}");
+        assert!(s.to_uppercase().contains("PREAUTH"));
     }
 
     #[test]
