@@ -1124,6 +1124,7 @@ mod tests {
 
     #[test]
     fn error_code_for_covers_every_variant() {
+        use crate::error::StarttlsFailure;
         let cases: Vec<(ImapError, &str)> = vec![
             (
                 ImapError::Tls {
@@ -1134,6 +1135,12 @@ mod tests {
             ),
             (
                 ImapError::TlsHandshake(tokio_rustls::rustls::Error::General("x".into())),
+                "ERR_TLS",
+            ),
+            (
+                ImapError::Starttls {
+                    reason: StarttlsFailure::CapabilityMissing,
+                },
                 "ERR_TLS",
             ),
             (
@@ -1169,6 +1176,22 @@ mod tests {
                     limit: 100,
                 },
                 "ERR_INVALID_INPUT",
+            ),
+            (
+                ImapError::UidValidityChanged {
+                    folder: "INBOX".to_string(),
+                    expected: 100,
+                    actual: 101,
+                },
+                "ERR_UID_VALIDITY_CHANGED",
+            ),
+            (
+                ImapError::Audit {
+                    op: "test",
+                    message: "test".to_string(),
+                    source: Box::new(std::io::Error::other("test")),
+                },
+                "ERR_INTERNAL",
             ),
         ];
         for (err, expected) in &cases {

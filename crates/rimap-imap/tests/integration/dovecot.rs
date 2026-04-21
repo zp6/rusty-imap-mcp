@@ -829,10 +829,11 @@ mod starttls {
 
     #[tokio::test]
     async fn dovecot_starttls_port_advertises_starttls_capability() {
-        // Verify that port 143 greets with STARTTLS in its capability list.
-        // Dovecot 2.3 on loopback allows LOGIN even without STARTTLS (it trusts
-        // loopback connections), but the key correctness property is that STARTTLS
-        // is advertised — allowing RFC-compliant clients to upgrade before auth.
+        // Dovecot is configured with `disable_plaintext_auth = yes` and no
+        // trusted networks, so LOGIN on port 143 requires STARTTLS first.
+        // This test verifies that STARTTLS is advertised in the CAPABILITY
+        // response on the plaintext port, which is the structural precondition
+        // for our client's STARTTLS negotiation.
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
         let Some(h) = boot_starttls(PinChoice::Correct) else {
