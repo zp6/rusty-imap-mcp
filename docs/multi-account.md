@@ -19,6 +19,7 @@ name = "work"
 [accounts.imap]
 host = "127.0.0.1"
 port = 1143
+encryption = "starttls"
 username = "user@proton.me"
 tls_fingerprint_sha256 = "ab:cd:..."
 
