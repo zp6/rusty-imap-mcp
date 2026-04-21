@@ -541,6 +541,7 @@ impl ConnectedHarness {
             account_id: rimap_core::account::AccountId::default_account(),
             host: DovecotHarness::host().to_string(),
             port: harness.port(),
+            encryption: rimap_imap::ImapEncryption::Tls,
             username: DovecotHarness::username().to_string(),
             pinned_fingerprint: pinned,
             connect_timeout: std::time::Duration::from_secs(10),

@@ -322,6 +322,7 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
         account_id: rimap_core::account::AccountId::default_account(),
         host: "127.0.0.1".into(),
         port: harness.port,
+        encryption: rimap_imap::ImapEncryption::Tls,
         username: "rimap-test".into(),
         pinned_fingerprint: Some(harness.fingerprint),
         connect_timeout: Duration::from_secs(10),

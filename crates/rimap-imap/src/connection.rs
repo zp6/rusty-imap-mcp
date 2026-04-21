@@ -67,8 +67,10 @@ pub struct ConnectionConfig {
     pub account_id: rimap_core::account::AccountId,
     /// IMAP server host.
     pub host: String,
-    /// IMAP server port (typically 993 for IMAPS).
+    /// IMAP server port (typically 993 for IMAPS, 143/1143 for STARTTLS).
     pub port: u16,
+    /// Transport encryption mode.
+    pub encryption: ImapEncryption,
     /// IMAP username.
     pub username: String,
     /// Optional pinned TLS fingerprint. `None` = use system trust roots.
@@ -980,6 +982,7 @@ fn error_code_for(err: &ImapError) -> &'static str {
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::{error_code_for, map_tls_handshake_error};
+    use crate::ImapEncryption;
     use crate::error::{AuthFailure, ImapError};
     use rimap_core::TlsFingerprint;
 
@@ -1124,6 +1127,7 @@ mod tests {
                 account_id: rimap_core::account::AccountId::default_account(),
                 host: "127.0.0.1".into(),
                 port: 1,
+                encryption: ImapEncryption::Tls,
                 username: "test".into(),
                 pinned_fingerprint: None,
                 connect_timeout: Duration::from_secs(1),

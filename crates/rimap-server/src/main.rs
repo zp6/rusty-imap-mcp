@@ -287,6 +287,10 @@ fn build_account_connection(
         account_id: id.clone(),
         host: acfg.imap.host.clone(),
         port: acfg.imap.port,
+        encryption: match acfg.imap.encryption {
+            rimap_config::model::ImapEncryption::Tls => rimap_imap::ImapEncryption::Tls,
+            rimap_config::model::ImapEncryption::Starttls => rimap_imap::ImapEncryption::Starttls,
+        },
         username: acfg.imap.username.clone(),
         pinned_fingerprint: acfg.tls_fingerprint,
         connect_timeout: Duration::from_secs(u64::from(acfg.imap.connect_timeout_seconds)),
