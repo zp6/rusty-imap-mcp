@@ -716,6 +716,7 @@ impl Connection {
             Err(
                 ImapError::Tls { .. }
                 | ImapError::TlsHandshake(_)
+                | ImapError::Starttls { .. }
                 | ImapError::Connect(_)
                 | ImapError::Timeout { .. }
                 | ImapError::Auth { .. }
