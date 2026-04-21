@@ -36,13 +36,19 @@ system trust store. Pin the certificate fingerprint so the server can
 verify it.
 
 ```bash
-openssl s_client -connect 127.0.0.1:1143 < /dev/null 2>/dev/null \
+openssl s_client -connect 127.0.0.1:1143 -starttls imap < /dev/null 2>/dev/null \
   | openssl x509 -outform DER \
   | openssl dgst -sha256 -hex \
   | awk '{print $2}'
 ```
 
 This prints a 64-character hex string. Copy it for the next step.
+
+Bridge's IMAP port uses STARTTLS rather than implicit TLS, so `-starttls imap`
+is required — without it, `openssl` returns no certificate and the pipeline
+silently hashes empty bytes to the well-known constant
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+If you see that value, you forgot the flag.
 
 The fingerprint changes when Proton Bridge regenerates its certificate
 (after a Bridge update or reinstall). If the server later fails with
@@ -210,3 +216,53 @@ Bridge is slow to start or your mailbox is large, increase
 The fingerprint changes when Bridge regenerates its certificate (after
 updates or reinstalls). If you get `ERR_TLS` after a Bridge update,
 re-run the openssl command from Step 2 and update the config.
+
+### Running headless or over SSH
+
+Proton Bridge and `rusty-imap-mcp` both resolve credentials through the
+Linux Secret Service API (`libsecret` / gnome-keyring or KWallet). In a
+graphical session, PAM unlocks the login keyring automatically at sign-in;
+in a TTY or SSH session it does not, and Bridge fails to start with:
+
+```text
+Proton Mail Bridge is not able to detect a supported password manager
+(secret-service or pass). Please install and set up a supported password
+manager and restart the application.
+```
+
+Pick one of the following.
+
+**A. Log in graphically at least once.** Sign in via your display manager
+so `pam_gnome_keyring` unlocks the login keyring, then launch Bridge from a
+terminal inside that graphical session. SSH sessions spawned afterward also
+need `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus` exported so
+they can reach the running daemon.
+
+**B. Use `pass` as Bridge's backend (recommended for headless hosts).**
+Bridge tries `pass` after Secret Service fails, so a working `pass` store
+is sufficient on its own:
+
+```bash
+# 1. If you don't already have one, generate a local-use GPG key
+chmod 700 ~/.gnupg
+gpg --batch --quick-gen-key "bridge-local <you@localhost>" default default never
+
+# 2. Get the key fingerprint
+gpg --list-secret-keys --keyid-format=long
+
+# 3. Initialize the password store with that fingerprint
+pass init <KEY_FINGERPRINT>
+
+# 4. Re-launch Bridge
+protonmail-bridge -c
+```
+
+Bridge will store its own credentials under `pass` automatically. You can
+then store the Bridge password for `rusty-imap-mcp` the usual way
+(Step 4 above) — `rusty-imap-mcp` itself does not require `pass`, only
+Bridge does.
+
+**C. Capture the fingerprint from a TTY.** The `openssl` pipeline in
+Step 2 works over SSH as long as you can reach `127.0.0.1:1143` from
+the shell where Bridge is running. The `-starttls imap` flag is
+required regardless of session type.
