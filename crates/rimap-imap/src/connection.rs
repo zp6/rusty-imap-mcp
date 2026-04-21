@@ -1387,6 +1387,52 @@ mod starttls_unit_tests {
     }
 
     #[tokio::test]
+    async fn negotiate_server_refused_no() {
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK IMAP ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            Step::Send(b"* CAPABILITY IMAP4rev1 STARTTLS\r\n"),
+            Step::Send(b"A0001 OK CAPABILITY completed\r\n"),
+            Step::ExpectCommand("STARTTLS"),
+            Step::Send(b"A0002 NO STARTTLS currently unavailable\r\n"),
+        ])
+        .await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        let err = super::starttls_negotiate(tcp).await.unwrap_err();
+        match err {
+            ImapError::Starttls {
+                reason: StarttlsFailure::ServerRefused { tagged_status },
+            } => assert_eq!(tagged_status, "NO"),
+            other => panic!("expected ServerRefused NO, got {other:?}"),
+        }
+        let _ = mock.finish().await;
+    }
+
+    #[tokio::test]
+    async fn negotiate_server_refused_bad() {
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK IMAP ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            Step::Send(b"* CAPABILITY IMAP4rev1 STARTTLS\r\n"),
+            Step::Send(b"A0001 OK CAPABILITY completed\r\n"),
+            Step::ExpectCommand("STARTTLS"),
+            Step::Send(b"A0002 BAD command unknown\r\n"),
+        ])
+        .await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        let err = super::starttls_negotiate(tcp).await.unwrap_err();
+        match err {
+            ImapError::Starttls {
+                reason: StarttlsFailure::ServerRefused { tagged_status },
+            } => assert_eq!(tagged_status, "BAD"),
+            other => panic!("expected ServerRefused BAD, got {other:?}"),
+        }
+        let _ = mock.finish().await;
+    }
+
+    #[tokio::test]
     async fn negotiate_happy_path() {
         let mock = MockImap::start(vec![
             Step::Send(b"* OK IMAP server ready\r\n"),
