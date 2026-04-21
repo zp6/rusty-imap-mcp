@@ -118,6 +118,25 @@ pub enum AuthFailure {
     CredentialUnavailable(String),
 }
 
+/// Server-side STARTTLS refusal status. Tagged IMAP response classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StarttlsRefusal {
+    /// Server tagged NO response.
+    No,
+    /// Server tagged BAD response.
+    Bad,
+}
+
+impl std::fmt::Display for StarttlsRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::No => f.write_str("NO"),
+            Self::Bad => f.write_str("BAD"),
+        }
+    }
+}
+
 /// Specific STARTTLS negotiation failure mode for `ImapError::Starttls`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -126,8 +145,8 @@ pub enum StarttlsFailure {
     CapabilityMissing,
     /// Server returned a tagged NO or BAD in response to STARTTLS.
     ServerRefused {
-        /// The tagged response status ("NO" or "BAD").
-        tagged_status: &'static str,
+        /// The tagged response status.
+        tagged_status: StarttlsRefusal,
     },
     /// Server greeted with BYE instead of OK.
     UnexpectedBye,
@@ -192,7 +211,7 @@ impl From<ImapError> for RimapError {
 #[cfg(test)]
 mod tests {
     use super::ImapError;
-    use super::StarttlsFailure;
+    use super::{StarttlsFailure, StarttlsRefusal};
 
     #[test]
     fn uid_validity_changed_display_includes_numbers_and_folder() {
@@ -221,7 +240,7 @@ mod tests {
     fn starttls_server_refused_display_includes_status() {
         let err = ImapError::Starttls {
             reason: StarttlsFailure::ServerRefused {
-                tagged_status: "NO",
+                tagged_status: StarttlsRefusal::No,
             },
         };
         let s = format!("{err}");

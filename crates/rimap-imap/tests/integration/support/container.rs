@@ -508,8 +508,6 @@ fn uuid_like() -> String {
     format!("{nanos:x}")
 }
 
-// ── Task 15 additions ────────────────────────────────────────────────────────
-
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
 use rimap_config::credential::{CredentialStore, KeyringCredentialResolver};
 use rimap_core::auth_sink::AuthEventSink;
@@ -546,7 +544,8 @@ pub struct ConnectedHarness {
 }
 
 impl ConnectedHarness {
-    /// Back-compat shim: defaults to implicit TLS.
+    /// Build a harness using implicit TLS on port 993. For STARTTLS, call
+    /// `new_with_encryption` explicitly.
     pub fn new(pin_with: PinChoice) -> Result<Self, HarnessError> {
         Self::new_with_encryption(pin_with, rimap_imap::ImapEncryption::Tls)
     }

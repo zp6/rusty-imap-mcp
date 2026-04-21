@@ -34,7 +34,7 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::auth::{AuthContext, auth_failure, auth_success};
-use crate::error::{AuthFailure, ImapError, StarttlsFailure};
+use crate::error::{AuthFailure, ImapError, StarttlsFailure, StarttlsRefusal};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
 /// IMAP transport encryption mode. Mirrors `rimap_config::model::ImapEncryption`
@@ -305,18 +305,14 @@ impl Connection {
         .map_err(|e| (ImapError::Connect(e), None))?;
 
         // Step 2: TLS establishment. Branches on encryption mode.
+        // The `already_greeted` flag tracks whether the plaintext greeting was
+        // already consumed during STARTTLS negotiation (true) or must be read
+        // from the TLS stream (false).
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
-        let tls_stream = match cfg.encryption {
+        let (tls_stream, already_greeted): (TlsStream<TcpStream>, bool) = match cfg.encryption {
             ImapEncryption::Tls => {
-                let server_name = ServerName::try_from(cfg.host.clone()).map_err(|_| {
-                    (
-                        ImapError::Connect(std::io::Error::other("invalid server name for TLS")),
-                        None,
-                    )
-                })?;
-                let connector = TlsConnector::from(bundle.config.clone());
-                timeout(remaining, connector.connect(server_name, tcp))
+                let s = timeout(remaining, tls_handshake(tcp, bundle, &cfg.host))
                     .await
                     .map_err(|_| {
                         (
@@ -326,10 +322,11 @@ impl Connection {
                             None,
                         )
                     })?
-                    .map_err(|e| (map_tls_handshake_error(&e), None))?
+                    .map_err(|e| (e, None))?;
+                (s, false)
             }
             ImapEncryption::Starttls => {
-                timeout(remaining, starttls_upgrade(tcp, bundle, &cfg.host))
+                let s = timeout(remaining, starttls_upgrade(tcp, bundle, &cfg.host))
                     .await
                     .map_err(|_| {
                         (
@@ -339,7 +336,8 @@ impl Connection {
                             None,
                         )
                     })?
-                    .map_err(|e| (e, None))?
+                    .map_err(|e| (e, None))?;
+                (s, true)
             }
         };
 
@@ -347,7 +345,6 @@ impl Connection {
         // may return a credential source on both success and certain failures.
         // STARTTLS already consumed the plaintext greeting during negotiation;
         // `imap_login` must skip the greeting read in that case.
-        let already_greeted = matches!(cfg.encryption, ImapEncryption::Starttls);
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
         timeout(remaining, self.imap_login(tls_stream, already_greeted))
@@ -968,20 +965,22 @@ impl Connection {
     }
 }
 
-/// Drain the unsolicited-response channel and return `true` if any
-/// `Response::Capabilities` item contains the `LOGINDISABLED` atom.
+/// Walk the unsolicited-response channel and return `true` on the first
+/// `Response::Capabilities` item that contains an `ImapCapability::Atom`
+/// matching `atom` (case-insensitive). Returns `false` if the channel is
+/// drained without a match.
 ///
 /// The channel is non-blocking at this point: `run_command_and_check_ok`
 /// has already returned (the tagged Done was received), so all intermediate
 /// responses are already queued.
-fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool {
+fn capability_advertised(rx: &async_channel::Receiver<UnsolicitedResponse>, atom: &str) -> bool {
     while let Ok(item) = rx.try_recv() {
         if let UnsolicitedResponse::Other(resp) = item
             && let Response::Capabilities(caps) = resp.parsed()
         {
             for cap in caps {
                 if let ImapCapability::Atom(name) = cap
-                    && name.eq_ignore_ascii_case("LOGINDISABLED")
+                    && name.eq_ignore_ascii_case(atom)
                 {
                     return true;
                 }
@@ -989,6 +988,12 @@ fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) ->
         }
     }
     false
+}
+
+/// Drain the unsolicited-response channel and return `true` if any
+/// `Response::Capabilities` item contains the `LOGINDISABLED` atom.
+fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool {
+    capability_advertised(rx, "LOGINDISABLED")
 }
 
 /// Plaintext STARTTLS negotiation: greeting → CAPABILITY → STARTTLS.
@@ -1037,14 +1042,14 @@ async fn starttls_negotiate(tcp: TcpStream) -> Result<TcpStream, ImapError> {
         Err(async_imap::error::Error::No(_)) => {
             return Err(ImapError::Starttls {
                 reason: StarttlsFailure::ServerRefused {
-                    tagged_status: "NO",
+                    tagged_status: StarttlsRefusal::No,
                 },
             });
         }
         Err(async_imap::error::Error::Bad(_)) => {
             return Err(ImapError::Starttls {
                 reason: StarttlsFailure::ServerRefused {
-                    tagged_status: "BAD",
+                    tagged_status: StarttlsRefusal::Bad,
                 },
             });
         }
@@ -1055,35 +1060,19 @@ async fn starttls_negotiate(tcp: TcpStream) -> Result<TcpStream, ImapError> {
     Ok(client.into_inner())
 }
 
-/// Walk the unsolicited-response channel looking for a CAPABILITY list
-/// that contains the STARTTLS atom. Returns true when found.
+/// Drain the unsolicited-response channel and return `true` if any
+/// `Response::Capabilities` item contains the `STARTTLS` atom.
 fn drain_for_starttls(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool {
-    let mut found = false;
-    while let Ok(resp) = rx.try_recv() {
-        if let UnsolicitedResponse::Other(data) = &resp
-            && let Response::Capabilities(caps) = data.parsed()
-        {
-            for cap in caps {
-                if let ImapCapability::Atom(atom) = cap
-                    && atom.eq_ignore_ascii_case("STARTTLS")
-                {
-                    found = true;
-                }
-            }
-        }
-    }
-    found
+    capability_advertised(rx, "STARTTLS")
 }
 
-/// Full STARTTLS upgrade: plaintext negotiation + TLS handshake with the
-/// same `TlsConfigBundle` the implicit-TLS path uses. Pin verification
-/// runs inside `TlsConnector::connect`.
-async fn starttls_upgrade(
+/// Perform the TLS handshake over an established TCP stream using the
+/// provided `TlsConfigBundle`. Pin verification happens inside this call.
+async fn tls_handshake(
     tcp: TcpStream,
     bundle: &TlsConfigBundle,
     host: &str,
 ) -> Result<TlsStream<TcpStream>, ImapError> {
-    let tcp = starttls_negotiate(tcp).await?;
     let server_name = ServerName::try_from(host.to_string())
         .map_err(|_| ImapError::Connect(std::io::Error::other("invalid server name for TLS")))?;
     let connector = TlsConnector::from(bundle.config.clone());
@@ -1091,6 +1080,17 @@ async fn starttls_upgrade(
         .connect(server_name, tcp)
         .await
         .map_err(|e| map_tls_handshake_error(&e))
+}
+
+/// Full STARTTLS upgrade: plaintext negotiation + TLS handshake with the
+/// same `TlsConfigBundle` the implicit-TLS path uses.
+async fn starttls_upgrade(
+    tcp: TcpStream,
+    bundle: &TlsConfigBundle,
+    host: &str,
+) -> Result<TlsStream<TcpStream>, ImapError> {
+    let tcp = starttls_negotiate(tcp).await?;
+    tls_handshake(tcp, bundle, host).await
 }
 
 /// Map an `io::ImapError` from the TLS connect call to `ImapError::TlsHandshake`.
@@ -1330,16 +1330,6 @@ mod tests {
 }
 
 #[cfg(test)]
-mod encryption_tests {
-    use super::ImapEncryption;
-
-    #[test]
-    fn default_is_tls() {
-        assert_eq!(ImapEncryption::default(), ImapEncryption::Tls);
-    }
-}
-
-#[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
 #[expect(clippy::panic, reason = "tests")]
 #[expect(clippy::unwrap_used, reason = "tests")]
@@ -1443,7 +1433,7 @@ mod starttls_unit_tests {
     use secrecy::SecretString;
 
     use super::{Connection, ConnectionConfig, ImapEncryption};
-    use super::{ImapError, StarttlsFailure};
+    use super::{ImapError, StarttlsFailure, StarttlsRefusal};
 
     #[derive(Debug)]
     struct PanicResolver;
@@ -1591,7 +1581,7 @@ mod starttls_unit_tests {
         match err {
             ImapError::Starttls {
                 reason: StarttlsFailure::ServerRefused { tagged_status },
-            } => assert_eq!(tagged_status, "NO"),
+            } => assert_eq!(tagged_status, StarttlsRefusal::No),
             other => panic!("expected ServerRefused NO, got {other:?}"),
         }
         let _ = mock.finish().await;
@@ -1614,7 +1604,7 @@ mod starttls_unit_tests {
         match err {
             ImapError::Starttls {
                 reason: StarttlsFailure::ServerRefused { tagged_status },
-            } => assert_eq!(tagged_status, "BAD"),
+            } => assert_eq!(tagged_status, StarttlsRefusal::Bad),
             other => panic!("expected ServerRefused BAD, got {other:?}"),
         }
         let _ = mock.finish().await;
