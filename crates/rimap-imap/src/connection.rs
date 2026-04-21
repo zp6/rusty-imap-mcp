@@ -1387,6 +1387,21 @@ mod starttls_unit_tests {
     }
 
     #[tokio::test]
+    async fn negotiate_unexpected_bye() {
+        let mock = MockImap::start(vec![Step::Send(b"* BYE go away\r\n")]).await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        let err = super::starttls_negotiate(tcp).await.unwrap_err();
+        match err {
+            ImapError::Starttls {
+                reason: StarttlsFailure::UnexpectedBye,
+            } => {}
+            other => panic!("expected UnexpectedBye, got {other:?}"),
+        }
+        let _ = mock.finish().await;
+    }
+
+    #[tokio::test]
     async fn negotiate_server_refused_no() {
         let mock = MockImap::start(vec![
             Step::Send(b"* OK IMAP ready\r\n"),
