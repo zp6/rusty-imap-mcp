@@ -34,7 +34,7 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
 
 use crate::auth::{AuthContext, auth_failure, auth_success};
-use crate::error::{AuthFailure, ImapError};
+use crate::error::{AuthFailure, ImapError, StarttlsFailure};
 use crate::tls::{TlsConfigBundle, build_tls_config};
 
 /// IMAP transport encryption mode. Mirrors `rimap_config::model::ImapEncryption`
@@ -962,6 +962,94 @@ fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) ->
     false
 }
 
+/// Plaintext STARTTLS negotiation: greeting → CAPABILITY → STARTTLS.
+/// On success, returns the raw `TcpStream`. The intermediate
+/// `async_imap::Client` (and its buffer) is dropped by `into_inner()`,
+/// which is the structural defense against CVE-2011-0411-class
+/// buffered-plaintext injection.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "wired into connect_with_bundle in Task 12")
+)]
+async fn starttls_negotiate(tcp: TcpStream) -> Result<TcpStream, ImapError> {
+    use async_imap::Client as ImapPlainClient;
+
+    let mut client: ImapPlainClient<TcpStream> = ImapPlainClient::new(tcp);
+
+    // Read greeting. Must be OK; BYE → UnexpectedBye.
+    let greeting = client
+        .read_response()
+        .await
+        .map_err(|e| ImapError::Connect(std::io::Error::other(format!("read greeting: {e}"))))?
+        .ok_or(ImapError::Starttls {
+            reason: StarttlsFailure::UnexpectedBye,
+        })?;
+    if let Response::Data {
+        status: Status::Bye,
+        ..
+    } = greeting.parsed()
+    {
+        return Err(ImapError::Starttls {
+            reason: StarttlsFailure::UnexpectedBye,
+        });
+    }
+
+    // CAPABILITY + drain for STARTTLS token.
+    let (tx, rx) = async_channel::bounded::<UnsolicitedResponse>(32);
+    client
+        .run_command_and_check_ok("CAPABILITY", Some(tx))
+        .await
+        .map_err(ImapError::Protocol)?;
+    if !drain_for_starttls(&rx) {
+        return Err(ImapError::Starttls {
+            reason: StarttlsFailure::CapabilityMissing,
+        });
+    }
+
+    // Issue STARTTLS. Map NO/BAD to ServerRefused; other protocol errors pass through.
+    match client.run_command_and_check_ok("STARTTLS", None).await {
+        Ok(()) => {}
+        Err(async_imap::error::Error::No(_)) => {
+            return Err(ImapError::Starttls {
+                reason: StarttlsFailure::ServerRefused {
+                    tagged_status: "NO",
+                },
+            });
+        }
+        Err(async_imap::error::Error::Bad(_)) => {
+            return Err(ImapError::Starttls {
+                reason: StarttlsFailure::ServerRefused {
+                    tagged_status: "BAD",
+                },
+            });
+        }
+        Err(other) => return Err(ImapError::Protocol(other)),
+    }
+
+    // Drop Client (and its ImapStream buffer) by extracting the TcpStream.
+    Ok(client.into_inner())
+}
+
+/// Walk the unsolicited-response channel looking for a CAPABILITY list
+/// that contains the STARTTLS atom. Returns true when found.
+fn drain_for_starttls(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool {
+    let mut found = false;
+    while let Ok(resp) = rx.try_recv() {
+        if let UnsolicitedResponse::Other(data) = &resp
+            && let Response::Capabilities(caps) = data.parsed()
+        {
+            for cap in caps {
+                if let ImapCapability::Atom(atom) = cap
+                    && atom.eq_ignore_ascii_case("STARTTLS")
+                {
+                    found = true;
+                }
+            }
+        }
+    }
+    found
+}
+
 /// Map an `io::ImapError` from the TLS connect call to `ImapError::TlsHandshake`.
 /// `connect_inner` will enrich this into `ImapError::Tls { observed, expected }`
 /// when the `TlsConfigBundle`'s `last_observed` slot shows a mismatch.
@@ -1211,10 +1299,6 @@ mod starttls_unit_tests {
         /// Server reads one CRLF-terminated line; asserts the line
         /// (after the tag) starts with the given uppercase command.
         ExpectCommand(&'static str),
-        /// Server reads one CRLF-terminated line; records it but does
-        /// not assert anything.
-        #[expect(dead_code, reason = "used by Task 7+ STARTTLS unit tests")]
-        RecordLine,
     }
 
     impl MockImap {
@@ -1267,17 +1351,31 @@ mod starttls_unit_tests {
                         )));
                     }
                 }
-                Step::RecordLine => {
-                    let mut line = String::new();
-                    let n = reader.read_line(&mut line).await?;
-                    if n == 0 {
-                        return Err(IoError::new(ErrorKind::UnexpectedEof, "client closed"));
-                    }
-                    recorded.push(line);
-                }
             }
         }
         Ok(recorded)
+    }
+
+    #[tokio::test]
+    async fn negotiate_happy_path() {
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK IMAP server ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            Step::Send(b"* CAPABILITY IMAP4rev1 STARTTLS LOGINDISABLED\r\n"),
+            Step::Send(b"A0001 OK CAPABILITY completed\r\n"),
+            Step::ExpectCommand("STARTTLS"),
+            Step::Send(b"A0002 OK Begin TLS negotiation\r\n"),
+        ])
+        .await;
+
+        let tcp = tokio::net::TcpStream::connect(mock.addr()).await.unwrap();
+        let result = super::starttls_negotiate(tcp).await;
+        assert!(result.is_ok(), "expected Ok(_), got {result:?}");
+
+        let recorded = mock.finish().await.unwrap();
+        assert_eq!(recorded.len(), 2);
+        assert!(recorded[0].to_ascii_uppercase().contains("CAPABILITY"));
+        assert!(recorded[1].to_ascii_uppercase().contains("STARTTLS"));
     }
 
     #[tokio::test]
