@@ -546,7 +546,15 @@ pub struct ConnectedHarness {
 }
 
 impl ConnectedHarness {
+    /// Back-compat shim: defaults to implicit TLS.
     pub fn new(pin_with: PinChoice) -> Result<Self, HarnessError> {
+        Self::new_with_encryption(pin_with, rimap_imap::ImapEncryption::Tls)
+    }
+
+    pub fn new_with_encryption(
+        pin_with: PinChoice,
+        encryption: rimap_imap::ImapEncryption,
+    ) -> Result<Self, HarnessError> {
         let harness = DovecotHarness::try_start()?;
         let audit_dir = TempDir::new().expect("tempdir");
         let audit_path = audit_dir.path().join("audit.jsonl");
@@ -568,12 +576,17 @@ impl ConnectedHarness {
             PinChoice::None => None,
         };
 
+        let port = match encryption {
+            rimap_imap::ImapEncryption::Tls => harness.port(),
+            rimap_imap::ImapEncryption::Starttls => harness.starttls_port(),
+        };
+
         let cfg = ConnectionConfig {
             account: None,
             account_id: rimap_core::account::AccountId::default_account(),
             host: DovecotHarness::host().to_string(),
-            port: harness.port(),
-            encryption: rimap_imap::ImapEncryption::Tls,
+            port,
+            encryption,
             username: DovecotHarness::username().to_string(),
             pinned_fingerprint: pinned,
             connect_timeout: std::time::Duration::from_secs(10),
@@ -599,6 +612,10 @@ impl ConnectedHarness {
 
     pub fn audit_path(&self) -> std::path::PathBuf {
         self.audit_dir.path().join("audit.jsonl")
+    }
+
+    pub fn starttls_port(&self) -> u16 {
+        self.harness.starttls_port()
     }
 }
 

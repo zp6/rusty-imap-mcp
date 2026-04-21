@@ -345,20 +345,27 @@ impl Connection {
 
         // Step 3: IMAP greeting + capability check + login. The login step
         // may return a credential source on both success and certain failures.
+        // STARTTLS already consumed the plaintext greeting during negotiation;
+        // `imap_login` must skip the greeting read in that case.
+        let already_greeted = matches!(cfg.encryption, ImapEncryption::Starttls);
         let elapsed = started.elapsed();
         let remaining = total_deadline.saturating_sub(elapsed);
-        timeout(remaining, self.imap_login(tls_stream))
+        timeout(remaining, self.imap_login(tls_stream, already_greeted))
             .await
             .map_err(|_| (ImapError::Timeout { op: "imap_login" }, None))?
     }
 
     /// Run the IMAP greeting + CAPABILITY probe + LOGIN sequence.
     ///
+    /// `already_greeted` must be `true` for the STARTTLS path: the plaintext
+    /// greeting was already consumed during STARTTLS negotiation, so the server
+    /// does not send another greeting after the TLS handshake.
+    ///
     /// ## async-imap 0.11 API notes
     ///
     /// `capabilities()` is on `Session` (post-login), not on `Client`. To
     /// check LOGINDISABLED pre-login we:
-    ///   1. Read the greeting via `Connection::read_response()`.
+    ///   1. Read the greeting via `Connection::read_response()` (implicit TLS only).
     ///   2. Issue `CAPABILITY` via `Connection::run_command_and_check_ok(cmd, Some(tx))`
     ///      and drain the unsolicited channel for `Other(ResponseData)` items
     ///      containing `Response::Capabilities` data.
@@ -371,36 +378,41 @@ impl Connection {
     async fn imap_login(
         &self,
         tls_stream: TlsStream<TcpStream>,
+        already_greeted: bool,
     ) -> Result<
         (ImapSession, rimap_core::CredentialSource),
         (ImapError, Option<rimap_core::CredentialSource>),
     > {
         let mut client = async_imap::Client::new(tls_stream);
 
-        // Read the server greeting. An absent greeting (EOF) or BYE status
-        // means the server immediately rejected us. Pre-resolve; carry `None`.
-        let greeting = client
-            .read_response()
-            .await
-            .map_err(|e| (ImapError::Connect(e), None))?
-            .ok_or((
-                ImapError::Auth {
-                    reason: AuthFailure::ServerRejected,
-                },
-                None,
-            ))?;
+        // Read the server greeting — skipped for STARTTLS, which already
+        // consumed the greeting during plaintext negotiation. An absent greeting
+        // (EOF) or BYE status means the server immediately rejected us.
+        // Pre-resolve; carry `None`.
+        if !already_greeted {
+            let greeting = client
+                .read_response()
+                .await
+                .map_err(|e| (ImapError::Connect(e), None))?
+                .ok_or((
+                    ImapError::Auth {
+                        reason: AuthFailure::ServerRejected,
+                    },
+                    None,
+                ))?;
 
-        if let Response::Data {
-            status: Status::Bye,
-            ..
-        } = greeting.parsed()
-        {
-            return Err((
-                ImapError::Auth {
-                    reason: AuthFailure::ServerRejected,
-                },
-                None,
-            ));
+            if let Response::Data {
+                status: Status::Bye,
+                ..
+            } = greeting.parsed()
+            {
+                return Err((
+                    ImapError::Auth {
+                        reason: AuthFailure::ServerRejected,
+                    },
+                    None,
+                ));
+            }
         }
 
         // Issue CAPABILITY and scan responses for LOGINDISABLED.

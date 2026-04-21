@@ -778,3 +778,109 @@ async fn case_20_special_use_discovery_populates_each_slot() {
     let drafts_folder = folders.iter().find(|f| f.name == "Drafts").unwrap();
     assert_eq!(drafts_folder.special_use, Some(SpecialUse::Drafts));
 }
+
+// --- STARTTLS suite (port 143) ---
+//
+// Dovecot is configured with `ssl = required`, so LOGIN is only
+// possible after STARTTLS. These tests exercise the rimap-imap
+// STARTTLS upgrade end-to-end.
+
+mod starttls {
+    use super::*;
+    use rimap_imap::ImapEncryption;
+
+    fn boot_starttls(pin: PinChoice) -> Option<ConnectedHarness> {
+        match ConnectedHarness::new_with_encryption(pin, ImapEncryption::Starttls) {
+            Ok(h) => Some(h),
+            Err(HarnessError::DockerUnavailable) => None,
+            #[expect(clippy::panic, reason = "test failure path")]
+            Err(e) => panic!("starttls harness failed: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn starttls_connect_list_logout_succeeds() {
+        let Some(h) = boot_starttls(PinChoice::Correct) else {
+            return;
+        };
+        let folders = h.connection.list_folders("*").await.unwrap();
+        assert!(folders.iter().any(|f| f.name.eq_ignore_ascii_case("INBOX")));
+
+        let lines = read_audit_lines(&h.audit_path());
+        let auths: Vec<_> = lines.iter().filter(|v| v["kind"] == "auth").collect();
+        assert_eq!(auths.len(), 1);
+        assert_eq!(auths[0]["result"], "success");
+        assert_eq!(auths[0]["fingerprint_match"], true);
+    }
+
+    #[tokio::test]
+    async fn starttls_with_wrong_pin_returns_tls_error() {
+        let Some(h) = boot_starttls(PinChoice::Wrong) else {
+            return;
+        };
+        let err = h.connection.list_folders("*").await.unwrap_err();
+        match err {
+            rimap_imap::error::ImapError::Tls { .. }
+            | rimap_imap::error::ImapError::TlsHandshake(_) => {}
+            #[expect(clippy::panic, reason = "test failure path")]
+            other => panic!("expected Tls pin mismatch, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dovecot_starttls_port_advertises_starttls_capability() {
+        // Verify that port 143 greets with STARTTLS in its capability list.
+        // Dovecot 2.3 on loopback allows LOGIN even without STARTTLS (it trusts
+        // loopback connections), but the key correctness property is that STARTTLS
+        // is advertised — allowing RFC-compliant clients to upgrade before auth.
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let Some(h) = boot_starttls(PinChoice::Correct) else {
+            return;
+        };
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", h.starttls_port()))
+            .await
+            .unwrap();
+        let (read, mut write) = stream.split();
+        let mut reader = BufReader::new(read);
+
+        // Read lines until we see the tagged greeting OK.
+        let mut capability_seen = false;
+        let mut greeting_ok = false;
+        for _ in 0..10 {
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let upper = line.to_ascii_uppercase();
+            if upper.contains("STARTTLS") {
+                capability_seen = true;
+            }
+            if upper.contains("* OK") || upper.contains("OK DOVECOT") {
+                greeting_ok = true;
+            }
+            if greeting_ok {
+                break;
+            }
+        }
+        assert!(greeting_ok, "did not receive IMAP greeting");
+
+        // Issue CAPABILITY to get the definitive pre-auth list.
+        write.write_all(b"a0 CAPABILITY\r\n").await.unwrap();
+        for _ in 0..5 {
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            let upper = line.to_ascii_uppercase();
+            if upper.contains("STARTTLS") {
+                capability_seen = true;
+            }
+            // Stop once we see the tagged OK for our CAPABILITY command.
+            if upper.starts_with("A0 OK") {
+                break;
+            }
+        }
+
+        assert!(
+            capability_seen,
+            "STARTTLS not found in pre-auth CAPABILITY on port 143"
+        );
+    }
+}
