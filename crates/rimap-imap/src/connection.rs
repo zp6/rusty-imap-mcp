@@ -1331,6 +1331,10 @@ mod starttls_unit_tests {
         /// Server reads one CRLF-terminated line; asserts the line
         /// (after the tag) starts with the given uppercase command.
         ExpectCommand(&'static str),
+        /// Hold the connection open indefinitely (until the client closes it
+        /// or the test drops the mock). Use this as the final step when you
+        /// want the client to stall waiting for a reply that never arrives.
+        Stall,
     }
 
     impl MockImap {
@@ -1383,12 +1387,115 @@ mod starttls_unit_tests {
                         )));
                     }
                 }
+                Step::Stall => {
+                    // Hold the connection open until the peer closes it.
+                    // Discard any bytes; we just need the socket to stay alive.
+                    let mut discard = String::new();
+                    let _ = reader.read_line(&mut discard).await;
+                    // Stream is dropped here; return normally.
+                    return Ok(recorded);
+                }
             }
         }
         Ok(recorded)
     }
 
+    use std::sync::Arc;
+
+    use rimap_core::auth_event::AuthEvent;
+    use rimap_core::auth_sink::{AuthEventSink, AuthSinkError};
+    use rimap_core::credential::{CredentialResolver, CredentialResolverError, CredentialSource};
+    use secrecy::SecretString;
+
+    use super::{Connection, ConnectionConfig, ImapEncryption};
     use super::{ImapError, StarttlsFailure};
+
+    #[derive(Debug)]
+    struct PanicResolver;
+
+    impl CredentialResolver for PanicResolver {
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "deliberate: proves resolver is never called"
+        )]
+        fn resolve(
+            &self,
+            _account: &rimap_core::account::AccountId,
+            _username: &str,
+            _host: &str,
+        ) -> Result<(SecretString, CredentialSource), CredentialResolverError> {
+            panic!("credential resolver must not be invoked before TLS");
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoopAudit;
+
+    impl AuthEventSink for NoopAudit {
+        fn emit_auth(&self, _event: AuthEvent) -> Result<(), AuthSinkError> {
+            Ok(())
+        }
+    }
+
+    fn connection_for(addr: std::net::SocketAddr, timeout_ms: u64) -> Connection {
+        let cfg = ConnectionConfig {
+            account: None,
+            account_id: rimap_core::account::AccountId::default_account(),
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            encryption: ImapEncryption::Starttls,
+            username: "unused".to_string(),
+            pinned_fingerprint: None,
+            connect_timeout: std::time::Duration::from_millis(timeout_ms),
+            command_timeout: std::time::Duration::from_secs(1),
+            max_fetch_body_bytes: 1024,
+            max_append_bytes: 1024,
+        };
+        Connection::new(cfg, Arc::new(NoopAudit), Arc::new(PanicResolver))
+    }
+
+    #[tokio::test]
+    async fn connect_with_starttls_capability_missing_does_not_resolve_credentials() {
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            Step::Send(b"* CAPABILITY IMAP4rev1\r\n"),
+            Step::Send(b"A0001 OK CAPABILITY completed\r\n"),
+        ])
+        .await;
+
+        let conn = connection_for(mock.addr(), 5000);
+        let err = conn.list_folders("*").await.unwrap_err();
+        match err {
+            ImapError::Starttls {
+                reason: StarttlsFailure::CapabilityMissing,
+            } => {}
+            other => panic!("expected CapabilityMissing, got {other:?}"),
+        }
+        let _ = mock.finish().await;
+    }
+
+    #[tokio::test]
+    async fn connect_with_starttls_stall_times_out_with_starttls_upgrade_op() {
+        // Mock greets, reads CAPABILITY, then stalls (never sends a reply).
+        // The client waits for the CAPABILITY response. The 100ms
+        // connect_timeout fires and must surface the distinctive op tag.
+        let mock = MockImap::start(vec![
+            Step::Send(b"* OK ready\r\n"),
+            Step::ExpectCommand("CAPABILITY"),
+            // Stall: hold the connection open; never send the CAPABILITY reply.
+            Step::Stall,
+        ])
+        .await;
+
+        let conn = connection_for(mock.addr(), 100);
+        let err = conn.list_folders("*").await.unwrap_err();
+        match err {
+            ImapError::Timeout { op } => assert_eq!(op, "starttls_upgrade"),
+            other => panic!("expected Timeout(starttls_upgrade), got {other:?}"),
+        }
+        let _ = mock.finish().await;
+    }
 
     #[tokio::test]
     async fn negotiate_capability_missing() {
