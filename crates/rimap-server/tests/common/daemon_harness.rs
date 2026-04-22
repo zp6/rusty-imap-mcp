@@ -113,12 +113,18 @@ impl TestDaemon {
         }
     }
 
-    /// Signal graceful shutdown and wait for the daemon task to complete.
-    pub async fn shutdown(self) {
+    /// Signal graceful shutdown, wait for the daemon task to complete, and
+    /// return the audit log contents. The `TempDir` is dropped after reading,
+    /// so callers that need to inspect the audit log must use the returned
+    /// `String` rather than reading from `self.audit_path` after this call.
+    pub async fn shutdown(self) -> String {
         // notify_one stores a permit even if the daemon task hasn't yet reached
         // the select! — safe for both spawn (slow boot) and spawn_bare (fast boot).
         self.shutdown.notify_one();
         let _ = self.handle.await;
+        // Read the audit log while tempdir still owns the file; `self` drops
+        // (including self.tempdir) when this function returns.
+        std::fs::read_to_string(&self.audit_path).unwrap_or_default()
     }
 }
 

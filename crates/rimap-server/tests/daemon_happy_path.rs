@@ -21,7 +21,7 @@ async fn daemon_spawns_and_shuts_down_cleanly() {
     assert!(socket_path.exists(), "socket file should be bound");
     assert!(audit_path.exists(), "audit file should exist");
 
-    daemon.shutdown().await;
+    let _audit = daemon.shutdown().await;
 }
 
 #[tokio::test]
@@ -51,7 +51,7 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     let audit = std::fs::read_to_string(&audit_path).expect("read audit");
 
     // Shut down the daemon (consumes it, tempdir cleaned up here).
-    daemon.shutdown().await;
+    let _audit_after_shutdown = daemon.shutdown().await;
 
     let session_starts = audit
         .lines()
