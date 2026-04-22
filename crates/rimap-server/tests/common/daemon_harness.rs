@@ -2,7 +2,12 @@
 //! loop as a background tokio task against a tempdir-backed audit file
 //! and socket directory; returns a handle for clients to connect through.
 
-#![cfg(unix)] // Windows parity follows in Task 29.
+#![cfg(unix)]
+// Windows parity follows in Task 29.
+// Some items in this shared harness module are only used by specific test
+// binaries, not all of them. Allow dead_code at module level to avoid false
+// positives when a test binary uses only a subset of the harness API.
+#![allow(dead_code)]
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -110,8 +115,79 @@ impl TestDaemon {
 
     /// Signal graceful shutdown and wait for the daemon task to complete.
     pub async fn shutdown(self) {
-        self.shutdown.notify_waiters();
+        // notify_one stores a permit even if the daemon task hasn't yet reached
+        // the select! — safe for both spawn (slow boot) and spawn_bare (fast boot).
+        self.shutdown.notify_one();
         let _ = self.handle.await;
+    }
+}
+
+/// Build a minimal `DaemonState` suitable for integration tests that do not
+/// need a real `AccountRegistry`. Registry is empty; audit writer is real
+/// (backed by `audit_path`); download dir is `tempdir`.
+///
+/// # Panics
+///
+/// Panics if the audit file cannot be opened — intentional in a test helper.
+#[expect(clippy::expect_used, reason = "test helper — panics on setup failure")]
+pub fn test_daemon_state(
+    tempdir: &std::path::Path,
+    audit_path: &std::path::Path,
+) -> Arc<DaemonState> {
+    use rimap_server::boot::registry::AccountRegistry;
+
+    let audit = AuditWriter::open(&AuditOptions {
+        path: audit_path.to_owned(),
+        rotate_bytes: 0,
+        rotate_keep: 0,
+        retention_seconds: None,
+        fail_open: false,
+        initial_seq: rimap_audit::Seq::FIRST,
+    })
+    .expect("open audit");
+
+    let registry = Arc::new(AccountRegistry::new(std::collections::BTreeMap::new()));
+    let download_dir: Arc<std::path::Path> = Arc::from(tempdir.to_owned().into_boxed_path());
+    let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
+
+    Arc::new(DaemonState {
+        registry,
+        audit,
+        download_dir,
+        cancellation_tx,
+        started_at: std::time::Instant::now(),
+    })
+}
+
+impl TestDaemon {
+    /// Spawn a daemon with a caller-supplied `DaemonState`. Bypasses
+    /// `boot::registry::build` and its live-IMAP dependency. Suitable for
+    /// tests that exercise session/transport/audit/shutdown semantics
+    /// without needing a real IMAP server.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the socket cannot be bound — intentional in a test harness.
+    #[expect(clippy::expect_used, reason = "test harness — panics on setup failure")]
+    pub async fn spawn_bare(
+        tempdir: TempDir,
+        audit_path: PathBuf,
+        socket_path: PathBuf,
+        state: Arc<DaemonState>,
+    ) -> Self {
+        let listener = UnixSocketListener::bind(&socket_path)
+            .await
+            .expect("bind test socket");
+        let shutdown = Arc::new(Notify::new());
+        let shutdown_clone = Arc::clone(&shutdown);
+        let handle = tokio::spawn(async move { run(state, listener, shutdown_clone).await });
+        Self {
+            socket_path,
+            audit_path,
+            tempdir,
+            shutdown,
+            handle,
+        }
     }
 }
 
