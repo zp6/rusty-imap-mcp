@@ -53,6 +53,7 @@ impl ImapMcpServer {
             audit_account.clone(),
             start_time,
             self.cancellation_sender.clone(),
+            self.audit.session_id(),
         );
 
         // Mint a `DispatchTicket` only now that the envelope is open.
@@ -205,6 +206,7 @@ struct GuardInner {
     account: Option<String>,
     start_time: std::time::Instant,
     sender: CancelledToolEndSender,
+    session_id: rimap_core::SessionId,
 }
 
 impl AuditEnvelopeGuard {
@@ -214,6 +216,7 @@ impl AuditEnvelopeGuard {
         account: Option<String>,
         start_time: std::time::Instant,
         sender: CancelledToolEndSender,
+        session_id: rimap_core::SessionId,
     ) -> Self {
         Self {
             inner: Some(GuardInner {
@@ -222,6 +225,7 @@ impl AuditEnvelopeGuard {
                 account,
                 start_time,
                 sender,
+                session_id,
             }),
         }
     }
@@ -258,7 +262,7 @@ impl Drop for AuditEnvelopeGuard {
                 window_seconds: 60,
                 message_ids_recently_read: Vec::new(),
             },
-            session_id: None,
+            session_id: Some(inner.session_id),
         };
         if let Err(e) = inner.sender.try_send(cancellation) {
             tracing::warn!(
@@ -275,6 +279,7 @@ impl Drop for AuditEnvelopeGuard {
 mod tests {
     use rimap_audit::writer::AuditOptions;
     use rimap_audit::{AuditWriter, Seq, ToolStartInputs, cancellation_channel, spawn_drainer};
+    use rimap_core::SessionId;
     use rimap_core::tool::ToolName;
     use tempfile::tempdir;
 
@@ -293,14 +298,17 @@ mod tests {
     }
 
     /// Dropping an `AuditEnvelopeGuard` without disarming enqueues a
-    /// cancellation record with `status = cancelled` and
-    /// `error_code = ERR_CANCELLED`. The drainer writes it to the audit file.
-    /// This is the core invariant for #71 and #99.
+    /// cancellation record with `status = cancelled`,
+    /// `error_code = ERR_CANCELLED`, and the guard's `session_id`.
+    /// The drainer writes it to the audit file.
+    /// This is the core invariant for #71, #99, and the `session_id` fix.
     #[tokio::test]
     async fn dropped_guard_enqueues_cancellation_record() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
         let writer = test_writer(path.clone());
+
+        let session_id = SessionId::new();
 
         // Prime a tool_start so the resulting tool_end references a real seq.
         let start_seq = writer
@@ -324,6 +332,7 @@ mod tests {
                 Some("test".to_string()),
                 std::time::Instant::now(),
                 tx.clone(),
+                session_id,
             );
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             // Implicit drop of `_guard` here — undisarmed, so cancellation fires.
@@ -351,6 +360,12 @@ mod tests {
             last.contains(&format!(r#""start_seq":{start_seq}"#)),
             "last record should reference primed tool_start seq {start_seq}: {last}",
         );
+        let v: serde_json::Value = serde_json::from_str(last).unwrap();
+        assert_eq!(
+            v["session_id"],
+            serde_json::Value::String(session_id.to_string()),
+            "cancellation tool_end must carry the guard's session_id: {last}",
+        );
     }
 
     /// A disarmed guard's drop is a no-op: no cancellation record is written.
@@ -370,6 +385,7 @@ mod tests {
                 Some("test".to_string()),
                 std::time::Instant::now(),
                 tx.clone(),
+                SessionId::new(),
             );
             guard.disarm();
             // Drop here — disarmed, so no cancellation is enqueued.
