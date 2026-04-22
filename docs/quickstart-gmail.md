@@ -82,7 +82,10 @@ then exits.
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Config not found | Wrong file location | Verify the path matches your platform (see Step 2) or use `--config <path>` |
 
-## Step 5: Add to your MCP client
+## Step 5: Start the daemon and add to your MCP client
+
+Start the daemon once using your platform's service manager (see
+README.md's "Running the daemon" section).
 
 ### Claude Desktop
 
@@ -94,7 +97,8 @@ macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 {
   "mcpServers": {
     "email": {
-      "command": "rusty-imap-mcp"
+      "command": "rusty-imap-mcp",
+      "args": ["shim"]
     }
   }
 }
@@ -103,7 +107,7 @@ macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 ### Claude Code
 
 ```bash
-claude mcp add email rusty-imap-mcp
+claude mcp add email rusty-imap-mcp --args shim
 ```
 
 Restart your MCP client after adding the server.

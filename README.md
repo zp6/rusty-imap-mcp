@@ -153,6 +153,37 @@ Binaries are published for five targets on each
 `aarch64-apple-darwin`, `powerpc64le-unknown-linux-gnu`,
 `s390x-unknown-linux-gnu`. SHA256 checksums included.
 
+## Running the daemon
+
+`rusty-imap-mcp` runs as a long-lived daemon that MCP clients connect to
+via a thin stdio↔socket shim. Start the daemon once per user session via
+your platform's service manager:
+
+**Linux (systemd user unit):**
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp scripts/packaging/rusty-imap-mcp.service ~/.config/systemd/user/
+systemctl --user enable --now rusty-imap-mcp.service
+systemctl --user status rusty-imap-mcp
+```
+
+**macOS (launchd):**
+
+```bash
+cp scripts/packaging/com.rusty-imap-mcp.plist ~/Library/LaunchAgents/
+launchctl load -w ~/Library/LaunchAgents/com.rusty-imap-mcp.plist
+```
+
+**Windows (Task Scheduler):**
+
+```powershell
+pwsh scripts/packaging/register-task.ps1
+Start-ScheduledTask -TaskName "rusty-imap-mcp"
+```
+
+Then configure each MCP client to invoke `rusty-imap-mcp shim` (see below).
+
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)

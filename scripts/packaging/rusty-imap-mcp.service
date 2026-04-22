@@ -1,0 +1,16 @@
+[Unit]
+Description=Rusty IMAP MCP daemon
+After=default.target
+
+[Service]
+ExecStart=%h/.local/bin/rusty-imap-mcp daemon
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/rusty-imap-mcp %h/.config/rusty-imap-mcp %t
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
