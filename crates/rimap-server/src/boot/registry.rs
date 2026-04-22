@@ -6,7 +6,6 @@ use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
 
-use arc_swap::ArcSwapOption;
 use governor::NotUntil;
 use governor::clock::DefaultClock;
 use governor::middleware::NoOpMiddleware;
@@ -82,11 +81,9 @@ impl std::fmt::Debug for AccountState {
     }
 }
 
-/// Holds all configured accounts and the session-scoped active
-/// account selection.
+/// Holds all configured accounts and resolves which account a request targets.
 pub struct AccountRegistry {
     accounts: BTreeMap<AccountId, AccountState>,
-    active: ArcSwapOption<AccountId>,
     /// Process-wide rate limiter for infrastructure tools
     /// (`use_account`, `list_accounts`). Prevents an injected prompt
     /// from flip-flopping the active account faster than a human
@@ -104,7 +101,6 @@ impl AccountRegistry {
         let quota = Quota::per_second(INFRA_RATE_PER_SEC).allow_burst(INFRA_BURST);
         Self {
             accounts,
-            active: ArcSwapOption::empty(),
             infrastructure_limiter: RateLimiter::direct(quota),
             clock: DefaultClock::default(),
         }
@@ -129,9 +125,12 @@ impl AccountRegistry {
     ///
     /// Resolution order:
     /// 1. Explicit name passed by the caller.
-    /// 2. Session-scoped active account (set via `use_account`).
-    /// 3. Auto-select when exactly one account is configured.
-    /// 4. Error listing available accounts.
+    /// 2. Auto-select when exactly one account is configured.
+    /// 3. Error listing available accounts.
+    ///
+    /// For session-aware resolution (where a `use_account` call has
+    /// set a per-session default), use [`resolve_with_active`][Self::resolve_with_active]
+    /// instead, passing the active account from `SessionState`.
     ///
     /// # Errors
     ///
@@ -148,12 +147,6 @@ impl AccountRegistry {
                 });
         }
 
-        // Check session-scoped active account.
-        let active = self.active.load_full();
-        if let Some(state) = active.as_deref().and_then(|id| self.accounts.get(id)) {
-            return Ok(state);
-        }
-
         // Auto-select when there is exactly one account.
         if let Some((_, state)) = (self.accounts.len() == 1)
             .then(|| self.accounts.iter().next())
@@ -168,8 +161,7 @@ impl AccountRegistry {
     }
 
     /// Resolve which account a request targets, using a caller-supplied
-    /// session default (from [`crate::daemon::state::SessionState::active_account`])
-    /// instead of the registry's own `active` slot.
+    /// session default (from [`crate::daemon::state::SessionState::active_account`]).
     ///
     /// Resolution order:
     /// 1. Explicit name — same as [`resolve`][Self::resolve].
@@ -212,28 +204,6 @@ impl AccountRegistry {
         Err(RimapError::NoAccount {
             available: self.account_name_strings(),
         })
-    }
-
-    /// Set the session-scoped active account, returning the previous
-    /// account name (if any).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RimapError::UnknownAccount`] if `name` does not
-    /// match any configured account.
-    pub fn set_active(&self, name: &str) -> Result<Option<String>, RimapError> {
-        // Parse into AccountId first so the O(log n) BTreeMap lookup does
-        // typed comparison; falls back to `UnknownAccount` either way.
-        let id = AccountId::new(name)
-            .ok()
-            .filter(|id| self.accounts.contains_key(id))
-            .ok_or_else(|| RimapError::UnknownAccount {
-                name: name.to_string(),
-                available: self.account_name_strings(),
-            })?;
-
-        let prev = self.active.swap(Some(Arc::new(id)));
-        Ok(prev.as_deref().map(ToString::to_string))
     }
 
     /// List all configured account names as owned strings, in sorted
@@ -283,13 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn set_active_unknown_returns_error() {
-        let reg = AccountRegistry::new(BTreeMap::new());
-        let err = reg.set_active("nope").unwrap_err();
-        assert!(matches!(err, RimapError::UnknownAccount { name, .. } if name == "nope"));
-    }
-
-    #[test]
     fn account_name_strings_empty() {
         let reg = AccountRegistry::new(BTreeMap::new());
         assert!(reg.account_name_strings().is_empty());
@@ -299,47 +262,5 @@ mod tests {
     fn accounts_returns_map() {
         let reg = AccountRegistry::new(BTreeMap::new());
         assert!(reg.accounts().is_empty());
-    }
-
-    #[test]
-    fn concurrent_active_swap_and_resolve() {
-        // Exercises the ArcSwapOption-backed active slot under
-        // concurrent writers and readers. The registry is empty
-        // (AccountState requires live IMAP connections), so resolve()
-        // must always return NoAccount regardless of interleaving;
-        // the property under test is that readers never observe a
-        // torn or invalid state and the process does not panic.
-        use std::sync::Arc;
-        use std::thread;
-
-        let reg = Arc::new(AccountRegistry::new(BTreeMap::new()));
-        let mut handles = Vec::new();
-
-        for _ in 0..2 {
-            let reg = Arc::clone(&reg);
-            handles.push(thread::spawn(move || {
-                for _ in 0..100 {
-                    // set_active on an unknown name must return
-                    // UnknownAccount, not panic, even when other
-                    // threads are swapping or loading concurrently.
-                    let err = reg.set_active("nope").unwrap_err();
-                    assert!(matches!(err, RimapError::UnknownAccount { .. }));
-                }
-            }));
-        }
-
-        for _ in 0..2 {
-            let reg = Arc::clone(&reg);
-            handles.push(thread::spawn(move || {
-                for _ in 0..100 {
-                    let err = reg.resolve(None).unwrap_err();
-                    assert!(matches!(err, RimapError::NoAccount { .. }));
-                }
-            }));
-        }
-
-        for h in handles {
-            h.join().unwrap();
-        }
     }
 }
