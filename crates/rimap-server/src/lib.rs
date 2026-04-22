@@ -15,4 +15,6 @@ pub mod daemon;
 #[doc(hidden)]
 pub mod mcp;
 #[doc(hidden)]
+pub mod shim;
+#[doc(hidden)]
 pub mod tools;
