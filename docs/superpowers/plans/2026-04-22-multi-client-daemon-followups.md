@@ -1,12 +1,32 @@
 # Multi-client daemon — follow-up issues
 
 Captured during implementation of the multi-client daemon plan
-(`docs/superpowers/plans/2026-04-22-multi-client-daemon.md`). Each item
-below should become a GitHub issue after the main PR merges.
+(`docs/superpowers/plans/2026-04-22-multi-client-daemon.md`). All items
+below were filed as GitHub issues (#124–#139) after the implementation
+branch landed locally.
+
+| # | Title | Issue |
+|---|-------|-------|
+| 1 | Multi-UID support (scope B) | [#124](https://github.com/randomparity/rusty-imap-mcp/issues/124) |
+| 2 | HTTP/SSE listener (scope C1) | [#125](https://github.com/randomparity/rusty-imap-mcp/issues/125) |
+| 3 | Socket path config override | [#126](https://github.com/randomparity/rusty-imap-mcp/issues/126) |
+| 4 | SIGHUP config reload | [#127](https://github.com/randomparity/rusty-imap-mcp/issues/127) |
+| 5 | IMAP connection pool depth > 1 | [#128](https://github.com/randomparity/rusty-imap-mcp/issues/128) |
+| 6 | Windows Service (SCM) integration | [#129](https://github.com/randomparity/rusty-imap-mcp/issues/129) |
+| 7 | Daemon idle-timeout / lazy-spawn | [#130](https://github.com/randomparity/rusty-imap-mcp/issues/130) |
+| 8 | Provenance ring buffer scoping knob | [#131](https://github.com/randomparity/rusty-imap-mcp/issues/131) |
+| 9 | Real Windows peer-identity capture | [#132](https://github.com/randomparity/rusty-imap-mcp/issues/132) |
+| 10 | Custom DACL on Windows named pipe | [#133](https://github.com/randomparity/rusty-imap-mcp/issues/133) |
+| 11 | Shim e2e test: resolver-path harness | [#134](https://github.com/randomparity/rusty-imap-mcp/issues/134) |
+| 12 | `process_end.total_tool_calls` aggregator | [#135](https://github.com/randomparity/rusty-imap-mcp/issues/135) |
+| 13 | Full Dovecot-backed integration suite | [#136](https://github.com/randomparity/rusty-imap-mcp/issues/136) |
+| 14 | `session_end(DaemonShutdown)` for aborted sessions | [#137](https://github.com/randomparity/rusty-imap-mcp/issues/137) |
+| 15 | Config path resolution duplication | [#138](https://github.com/randomparity/rusty-imap-mcp/issues/138) |
+| 16 | Doc sweep: stale `AccountRegistry.active` refs | [#139](https://github.com/randomparity/rusty-imap-mcp/issues/139) |
 
 ## From the design spec (§12 — anticipated follow-ups)
 
-### 1. Multi-UID support (scope B)
+### 1. Multi-UID support (scope B) — [#124](https://github.com/randomparity/rusty-imap-mcp/issues/124)
 
 Per-identity posture mapping, socket permissions beyond same-UID,
 identity-allowlist config schema. Hooks already in place: peer-identity
