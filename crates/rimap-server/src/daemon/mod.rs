@@ -2,6 +2,7 @@
 //! a Unix domain socket (Linux/macOS) or Windows named pipe.
 
 pub mod audit_sink;
+pub mod run;
 pub mod socket_path;
 #[cfg(unix)]
 pub mod socket_setup;
