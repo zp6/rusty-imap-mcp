@@ -186,6 +186,33 @@ pub struct ProcessStart {
     pub audit_file_inode_changed: bool,
 }
 
+/// `session_start`: emitted on daemon-accepting-a-client. One per connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionStart {
+    /// Per-connection identifier.
+    pub session_id: rimap_core::SessionId,
+    /// Peer identity observed at accept time.
+    pub peer_identity: crate::record::PeerIdentity,
+    /// Resolved absolute socket / named-pipe path.
+    pub socket_path: String,
+}
+
+/// `session_end`: emitted when a client disconnects or daemon shuts down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEnd {
+    /// The session being closed.
+    pub session_id: rimap_core::SessionId,
+    /// Why the session ended.
+    pub reason: SessionEndReason,
+    /// Wall-clock milliseconds from `session_start` to this record.
+    pub duration_ms: u64,
+    /// Tool calls completed in this session.
+    pub total_tool_calls: u64,
+    /// Last error seen, if any. `None` unless `reason = Error`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_error: Option<String>,
+}
+
 /// Payload of the `process_end` kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessEnd {
@@ -329,6 +356,64 @@ pub enum Payload {
     ToolEnd(ToolEnd),
     /// Config-related event (declared for Sprint 5; not emitted in Sprint 2).
     Config(ConfigEvent),
+    /// `session_start` payload.
+    SessionStart(SessionStart),
+    /// `session_end` payload.
+    SessionEnd(SessionEnd),
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_record_tests {
+    use super::{PeerIdentity, SessionEnd, SessionEndReason, SessionStart};
+    use rimap_core::SessionId;
+
+    #[test]
+    fn session_start_serializes_with_all_fields() {
+        let id = SessionId::new();
+        let s = SessionStart {
+            session_id: id,
+            peer_identity: PeerIdentity::Unix { uid: 1000, pid: 42 },
+            socket_path: "/run/user/1000/rusty-imap-mcp/daemon.sock".to_string(),
+        };
+        let j: serde_json::Value = serde_json::to_value(&s).expect("ser");
+        assert_eq!(j["session_id"], serde_json::Value::String(id.to_string()));
+        assert_eq!(j["peer_identity"]["platform"], "unix");
+        assert_eq!(j["peer_identity"]["uid"], 1000);
+        assert_eq!(
+            j["socket_path"],
+            "/run/user/1000/rusty-imap-mcp/daemon.sock"
+        );
+    }
+
+    #[test]
+    fn session_end_omits_last_error_when_none() {
+        let s = SessionEnd {
+            session_id: SessionId::new(),
+            reason: SessionEndReason::Eof,
+            duration_ms: 12_345,
+            total_tool_calls: 7,
+            last_error: None,
+        };
+        let j = serde_json::to_string(&s).expect("ser");
+        assert!(
+            !j.contains("last_error"),
+            "last_error should be omitted when None; got {j}"
+        );
+    }
+
+    #[test]
+    fn session_end_includes_last_error_when_some() {
+        let s = SessionEnd {
+            session_id: SessionId::new(),
+            reason: SessionEndReason::Error,
+            duration_ms: 99,
+            total_tool_calls: 0,
+            last_error: Some("ioerr: EPIPE".to_string()),
+        };
+        let j = serde_json::to_string(&s).expect("ser");
+        assert!(j.contains(r#""last_error":"ioerr: EPIPE""#), "got {j}");
+    }
 }
 
 #[cfg(test)]

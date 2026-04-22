@@ -64,7 +64,9 @@ impl Filter {
                 Payload::ProcessStart(_)
                 | Payload::ProcessEnd(_)
                 | Payload::Auth(_)
-                | Payload::Config(_) => None,
+                | Payload::Config(_)
+                | Payload::SessionStart(_)
+                | Payload::SessionEnd(_) => None,
             };
             match got {
                 Some(name) if name == want => {}
@@ -76,7 +78,11 @@ impl Filter {
                 Payload::Auth(a) => a.account.as_deref(),
                 Payload::ToolStart(t) => t.account.as_deref(),
                 Payload::ToolEnd(t) => t.account.as_deref(),
-                Payload::ProcessStart(_) | Payload::ProcessEnd(_) | Payload::Config(_) => None,
+                Payload::ProcessStart(_)
+                | Payload::ProcessEnd(_)
+                | Payload::Config(_)
+                | Payload::SessionStart(_)
+                | Payload::SessionEnd(_) => None,
             };
             // Records that lack an account field pass through.
             if let Some(name) = got
@@ -97,6 +103,8 @@ fn kind_of(payload: &Payload) -> &'static str {
         Payload::ToolStart(_) => "tool_start",
         Payload::ToolEnd(_) => "tool_end",
         Payload::Config(_) => "config",
+        Payload::SessionStart(_) => "session_start",
+        Payload::SessionEnd(_) => "session_end",
     }
 }
 
@@ -406,6 +414,8 @@ mod tests {
                 Payload::ProcessEnd(_) => "process_end",
                 Payload::Auth(_) => "auth",
                 Payload::Config(_) => "config",
+                Payload::SessionStart(_) => "session_start",
+                Payload::SessionEnd(_) => "session_end",
             });
             Ok(())
         })
