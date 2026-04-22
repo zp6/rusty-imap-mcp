@@ -365,7 +365,8 @@ pub enum Payload {
 #[cfg(test)]
 #[expect(clippy::expect_used, reason = "tests")]
 mod session_record_tests {
-    use super::{PeerIdentity, SessionEnd, SessionEndReason, SessionStart};
+    use super::{AuditRecord, Payload, PeerIdentity, SessionEnd, SessionEndReason, SessionStart};
+    use crate::record::ids::{ProcessId, Seq, Timestamp};
     use rimap_core::SessionId;
 
     #[test]
@@ -411,8 +412,60 @@ mod session_record_tests {
             total_tool_calls: 0,
             last_error: Some("ioerr: EPIPE".to_string()),
         };
-        let j = serde_json::to_string(&s).expect("ser");
-        assert!(j.contains(r#""last_error":"ioerr: EPIPE""#), "got {j}");
+        let j: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&s).expect("ser")).expect("parse");
+        assert_eq!(j["last_error"], "ioerr: EPIPE");
+    }
+
+    #[test]
+    fn session_start_serializes_as_session_start_kind() {
+        let id = SessionId::new();
+        let rec = AuditRecord {
+            seq: Seq::FIRST,
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::SessionStart(SessionStart {
+                session_id: id,
+                peer_identity: PeerIdentity::Unix { uid: 501, pid: 99 },
+                socket_path: "/run/user/501/rusty-imap-mcp/daemon.sock".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&rec).expect("ser");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["kind"], "session_start");
+        assert_eq!(v["session_id"], serde_json::Value::String(id.to_string()));
+        assert_eq!(v["peer_identity"]["platform"], "unix");
+        assert_eq!(v["peer_identity"]["uid"], 501);
+        assert_eq!(v["socket_path"], "/run/user/501/rusty-imap-mcp/daemon.sock");
+        let back: AuditRecord = serde_json::from_str(&json).expect("deser");
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn session_end_serializes_as_session_end_kind() {
+        let id = SessionId::new();
+        let rec = AuditRecord {
+            seq: Seq(2),
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::SessionEnd(SessionEnd {
+                session_id: id,
+                reason: SessionEndReason::Error,
+                duration_ms: 8_500,
+                total_tool_calls: 3,
+                last_error: Some("ioerr: EPIPE".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&rec).expect("ser");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["kind"], "session_end");
+        assert_eq!(v["session_id"], serde_json::Value::String(id.to_string()));
+        assert_eq!(v["reason"], "error");
+        assert_eq!(v["duration_ms"], 8_500);
+        assert_eq!(v["total_tool_calls"], 3);
+        assert_eq!(v["last_error"], "ioerr: EPIPE");
+        let back: AuditRecord = serde_json::from_str(&json).expect("deser");
+        assert_eq!(back, rec);
     }
 }
 
