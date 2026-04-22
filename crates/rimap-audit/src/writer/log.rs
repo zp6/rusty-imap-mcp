@@ -196,6 +196,9 @@ pub struct ToolEndInputs {
     pub result_summary: crate::record::ResultSummary,
     /// Recently-read message IDs and window.
     pub provenance: crate::record::Provenance,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission.
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 impl From<ToolEndInputs> for crate::record::ToolEnd {
@@ -209,6 +212,7 @@ impl From<ToolEndInputs> for crate::record::ToolEnd {
             duration_ms: i.duration_ms,
             result_summary: i.result_summary,
             provenance: i.provenance,
+            session_id: i.session_id,
         }
     }
 }
@@ -233,6 +237,9 @@ pub struct ToolStartInputs {
     /// SHA-256 of the canonical JSON serialization of the *unredacted*
     /// payload, hex-encoded.
     pub arguments_hash_sha256: String,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission.
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 impl From<ToolStartInputs> for crate::record::ToolStart {
@@ -243,6 +250,7 @@ impl From<ToolStartInputs> for crate::record::ToolStart {
             posture_effective: crate::record::PostureEffective::from_optional(i.posture_effective),
             arguments_redacted: i.arguments_redacted,
             arguments_hash_sha256: i.arguments_hash_sha256,
+            session_id: i.session_id,
         }
     }
 }

@@ -392,6 +392,7 @@ mod tests {
                 ),
                 arguments_redacted: serde_json::json!({}),
                 arguments_hash_sha256: "0".repeat(64),
+                session_id: None,
             }),
         };
         let proc_rec = sample(2, pid);

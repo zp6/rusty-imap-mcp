@@ -124,6 +124,7 @@ impl ImapMcpServer {
                 posture_effective,
                 arguments_redacted: redacted,
                 arguments_hash_sha256: hash,
+                session_id: None,
             })
         })
         .await;
@@ -174,6 +175,7 @@ impl ImapMcpServer {
             duration_ms,
             result_summary: summary,
             provenance,
+            session_id: None,
         };
         let join = tokio::task::spawn_blocking(move || audit.log_tool_end(inputs)).await;
         match join {
@@ -256,6 +258,7 @@ impl Drop for AuditEnvelopeGuard {
                 window_seconds: 60,
                 message_ids_recently_read: Vec::new(),
             },
+            session_id: None,
         };
         if let Err(e) = inner.sender.try_send(cancellation) {
             tracing::warn!(
@@ -307,6 +310,7 @@ mod tests {
                 posture_effective: Some(rimap_core::Posture::Readonly),
                 arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
                 arguments_hash_sha256: "0".repeat(64),
+                session_id: None,
             })
             .unwrap();
 

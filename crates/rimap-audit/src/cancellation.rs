@@ -109,6 +109,7 @@ mod tests {
                 window_seconds: 60,
                 message_ids_recently_read: Vec::new(),
             },
+            session_id: None,
         }
     }
 
@@ -152,6 +153,7 @@ mod tests {
                 posture_effective: Some(rimap_core::Posture::DraftSafe),
                 arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
                 arguments_hash_sha256: "0".repeat(64),
+                session_id: None,
             })
             .unwrap();
 

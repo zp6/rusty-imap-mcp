@@ -62,4 +62,9 @@ pub struct AuthEvent {
     /// resolved) or on records from code paths that predate #78.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_source: Option<CredentialSource>,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission (e.g. `Auth` during boot-time
+    /// IMAP bootstrap before any session exists).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<crate::SessionId>,
 }

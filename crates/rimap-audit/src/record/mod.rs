@@ -261,6 +261,11 @@ pub struct ToolStart {
     /// SHA-256 of the canonical JSON serialization of the *unredacted* payload,
     /// hex-encoded. Enables integrity checks without leaking content.
     pub arguments_hash_sha256: String,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission (e.g. emitted before any session
+    /// exists, or from a pre-session context).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 /// Outcome status for a tool call. `Ok` means a structured result was
@@ -328,6 +333,11 @@ pub struct ToolEnd {
     pub result_summary: ResultSummary,
     /// Provenance snapshot at end-of-call time.
     pub provenance: Provenance,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission (e.g. emitted before any session
+    /// exists, or from a pre-session context).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 /// Payload of the `config` kind. Declared now so Sprint 5 can emit it; no
@@ -567,6 +577,7 @@ mod tests {
                 fingerprint_match: Some(true),
                 error_code: None,
                 credential_source: None,
+                session_id: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();
@@ -605,6 +616,7 @@ mod tests {
                     "include_html": false,
                 }),
                 arguments_hash_sha256: "de".repeat(32),
+                session_id: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();
@@ -639,6 +651,7 @@ mod tests {
                     window_seconds: 60,
                     message_ids_recently_read: vec!["<abc@example>".to_string()],
                 },
+                session_id: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();
@@ -684,5 +697,45 @@ mod tests {
         assert_eq!(j, "\"cancelled\"");
         let back: ToolStatus = serde_json::from_str(&j).unwrap();
         assert_eq!(back, ToolStatus::Cancelled);
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_id_threading_tests {
+    use crate::record::{PostureEffective, ToolStart};
+    use rimap_core::{SessionId, tool::ToolName};
+
+    #[test]
+    fn tool_start_with_session_id_serializes_it() {
+        let sid = SessionId::new();
+        let t = build_tool_start(Some(sid));
+        let j = serde_json::to_value(&t).expect("ser");
+        assert_eq!(j["session_id"], sid.to_string());
+    }
+
+    #[test]
+    fn tool_start_without_session_id_omits_it() {
+        let t = build_tool_start(None);
+        let j = serde_json::to_value(&t).expect("ser");
+        assert!(
+            j.get("session_id").is_none(),
+            "None should be omitted, got {j}"
+        );
+    }
+
+    fn build_tool_start(session_id: Option<SessionId>) -> ToolStart {
+        ToolStart {
+            account: None,
+            tool: ToolName::FetchMessage,
+            posture_effective: PostureEffective::Account(rimap_core::Posture::DraftSafe),
+            arguments_redacted: serde_json::json!({
+                "folder": "INBOX",
+                "uid": 12345,
+                "include_html": false,
+            }),
+            arguments_hash_sha256: "de".repeat(32),
+            session_id,
+        }
     }
 }
