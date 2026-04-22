@@ -5,8 +5,6 @@
 mod cli;
 
 use rimap_server::boot::{audit_init, logging, registry};
-use rimap_server::daemon::state::{DaemonState, SessionState};
-use rimap_server::mcp::server;
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -27,12 +25,22 @@ use rimap_config::validate::ValidatedAccountConfig;
 use rimap_imap::{Connection, ConnectionConfig};
 use secrecy::ExposeSecret;
 
+use clap::CommandFactory as _;
+
 use crate::cli::{AuditAction, Cli, Command};
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     logging::init();
     let cli = Cli::parse();
-    match run(cli) {
+
+    // Shim is special: it manages its own exit code rather than fitting the
+    // anyhow::Result pattern. Handle it here before entering `run`.
+    if matches!(cli.command, Some(Command::Shim)) {
+        return rimap_server::shim::run().await;
+    }
+
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
@@ -41,7 +49,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(Command::Login {
         account,
         host,
@@ -99,8 +107,32 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return cli::dry_run::run(&path, &mut stdout);
     }
 
-    // Server mode: load config, build subsystems, run MCP transport.
-    let config_path = resolve_cli_config_path(&cli)?;
+    if let Some(Command::Daemon) = cli.command {
+        return daemon_main(cli.config).await;
+    }
+
+    // No subcommand and not --dry-run: print help and bail.
+    // Shim is handled earlier in main() before this function is called.
+    Cli::command().print_help().context("print help")?;
+    writeln!(std::io::stderr().lock())?;
+    anyhow::bail!("no subcommand provided — see `rusty-imap-mcp daemon` and `rusty-imap-mcp shim`")
+}
+
+async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
+    use rimap_server::daemon::run::run;
+    use rimap_server::daemon::shutdown::install_shutdown_handler;
+    use rimap_server::daemon::socket_path;
+    use rimap_server::daemon::state::DaemonState;
+    #[cfg(windows)]
+    use rimap_server::daemon::transport::windows::NamedPipeListener;
+    #[cfg(unix)]
+    use rimap_server::daemon::{socket_setup, transport::unix::UnixSocketListener};
+
+    let config_path = config_override
+        .or_else(|| resolve_config_path(None))
+        .ok_or_else(|| {
+            anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
+        })?;
     let multi = load_and_validate(&config_path)
         .with_context(|| format!("loading config {}", config_path.display()))?;
     let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
@@ -110,83 +142,62 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let download_dir: Arc<std::path::Path> =
         Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
 
-    let audit_for_shutdown = audit.clone();
-    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
-
-    let mcp_result: anyhow::Result<()> = rt.block_on(run_stdio_mcp(
-        &multi,
-        audit.clone(),
-        credentials,
-        download_dir,
-    ));
-
-    // Best-effort process_end emission.
-    let reason = match &mcp_result {
-        Ok(()) => rimap_audit::ProcessEndReason::Eof,
-        Err(_) => rimap_audit::ProcessEndReason::Error,
-    };
-    // total_tool_calls is not tracked yet — use 0 as placeholder.
-    // A future PR can add an AtomicU64 counter to ImapMcpServer.
-    let process_end = rimap_audit::ProcessEnd {
-        reason,
-        total_tool_calls: 0,
-    };
-    match audit_for_shutdown.log_process_end(process_end) {
-        Ok(seq) => tracing::info!(seq = %seq, "process_end audit record written"),
-        Err(e) => tracing::error!(error = %e, "failed to write process_end audit record"),
-    }
-
-    mcp_result
-}
-
-/// Run the stdio MCP server. Accepts a pre-built `audit`, `credentials`,
-/// and `download_dir`; builds the registry, constructs the per-session
-/// server, and drives the MCP transport until EOF or error.
-///
-/// TEMPORARY for Phase 2 — replaced by Task 20 (main.rs rewrite). The
-/// `DaemonState`/`SessionState` construction here is a shim that keeps
-/// the single-session stdio path compiling after `ImapMcpServer::new`
-/// adopted the multi-session signature.
-async fn run_stdio_mcp(
-    multi: &rimap_config::validate::ValidatedMultiConfig,
-    audit: rimap_audit::AuditWriter,
-    credentials: Arc<dyn CredentialStore>,
-    download_dir: Arc<std::path::Path>,
-) -> anyhow::Result<()> {
-    let registry = build_registry(multi, &audit, &credentials, &download_dir)
+    let registry = build_registry(&multi, &audit, &credentials, &download_dir)
         .await
         .context("building account registry")?;
 
     let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
     let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
 
-    let daemon_state = Arc::new(DaemonState {
+    #[cfg(unix)]
+    let listener = {
+        let ep = socket_path::resolve();
+        let path = ep
+            .as_path_buf()
+            .ok_or_else(|| anyhow::anyhow!("unix path resolver returned non-path endpoint"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
+        let our_uid = rustix::process::geteuid().as_raw();
+        socket_setup::prepare_socket_dir(parent, our_uid)
+            .with_context(|| format!("preparing {}", parent.display()))?;
+        UnixSocketListener::bind(&path)
+            .await
+            .with_context(|| format!("binding daemon socket at {}", path.display()))?
+    };
+    #[cfg(windows)]
+    let listener = {
+        let ep = socket_path::resolve().context("resolving daemon pipe name")?;
+        NamedPipeListener::bind(ep.as_str())
+            .with_context(|| format!("creating named pipe {}", ep.as_str()))?
+    };
+
+    let state = Arc::new(DaemonState {
         registry: Arc::new(registry),
-        audit,
+        audit: audit.clone(),
         download_dir,
         cancellation_tx,
         started_at: std::time::Instant::now(),
     });
-    let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
-    let mcp_server = server::ImapMcpServer::new(daemon_state, session_state);
-    let transport = rmcp::transport::io::stdio();
-    let service = Box::pin(rmcp::serve_server(mcp_server, transport))
-        .await
-        .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
-    // waiting() takes ownership of service, consuming it and dropping the
-    // ImapMcpServer (including all cancellation sender clones) when it
-    // returns. The drainer task exits once all senders have dropped.
-    service
-        .waiting()
-        .await
-        .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
 
-    // All senders dropped above. Wait for the drainer to flush any
-    // remaining queued cancellation records before the runtime exits.
+    let shutdown = install_shutdown_handler();
+    let mcp_result = run(state, listener, shutdown).await;
+
+    let reason = match &mcp_result {
+        Ok(()) => rimap_audit::ProcessEndReason::Eof,
+        Err(_) => rimap_audit::ProcessEndReason::Error,
+    };
     if let Err(e) = drainer_handle.await {
         tracing::error!(error = %e, "cancellation drainer join error");
     }
-    Ok(())
+    if let Err(e) = audit.log_process_end(rimap_audit::ProcessEnd {
+        reason,
+        // Aggregation across sessions is a follow-up — leave 0 for v1.
+        total_tool_calls: 0,
+    }) {
+        tracing::error!(error = %e, "failed to write process_end");
+    }
+    mcp_result
 }
 
 /// Resolve the config file path from `--config` or the
