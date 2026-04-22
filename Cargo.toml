@@ -44,8 +44,6 @@ governor = "0.10"
 utf7-imap = "0.3.2"
 nonzero_ext = "0.3"
 parking_lot = "0.12"
-# Lock-free Arc swap for session-scoped mutable state. MIT OR Apache-2.0.
-arc-swap = "1"
 
 # Async runtime
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
