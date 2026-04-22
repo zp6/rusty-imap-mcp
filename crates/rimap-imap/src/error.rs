@@ -20,6 +20,12 @@ pub enum ImapError {
     /// (signature algorithm, protocol version, webpki path error in unpinned mode).
     #[error("handshake failed")]
     TlsHandshake(#[source] rustls::Error),
+    /// STARTTLS negotiation failed before TLS could be established.
+    #[error("STARTTLS failed: {reason}")]
+    Starttls {
+        /// Specific failure mode.
+        reason: StarttlsFailure,
+    },
     /// TCP connect failed.
     #[error("connect failed")]
     Connect(#[source] std::io::Error),
@@ -112,6 +118,60 @@ pub enum AuthFailure {
     CredentialUnavailable(String),
 }
 
+/// Server-side STARTTLS refusal status. Tagged IMAP response classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StarttlsRefusal {
+    /// Server tagged NO response.
+    No,
+    /// Server tagged BAD response.
+    Bad,
+}
+
+impl std::fmt::Display for StarttlsRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::No => f.write_str("NO"),
+            Self::Bad => f.write_str("BAD"),
+        }
+    }
+}
+
+/// Specific STARTTLS negotiation failure mode for `ImapError::Starttls`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StarttlsFailure {
+    /// Server's CAPABILITY response did not advertise STARTTLS.
+    CapabilityMissing,
+    /// Server returned a tagged NO or BAD in response to STARTTLS.
+    ServerRefused {
+        /// The tagged response status.
+        tagged_status: StarttlsRefusal,
+    },
+    /// Server greeted with BYE instead of OK.
+    UnexpectedBye,
+    /// Server greeted with PREAUTH. RFC 3501 §6.2.1 requires STARTTLS
+    /// before authentication; a PREAUTH greeting means the server
+    /// considers us authenticated already, which is incompatible with
+    /// our STARTTLS-then-LOGIN flow.
+    UnexpectedPreauth,
+}
+
+impl std::fmt::Display for StarttlsFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CapabilityMissing => f.write_str("server did not advertise STARTTLS capability"),
+            Self::ServerRefused { tagged_status } => {
+                write!(f, "server refused STARTTLS with tagged {tagged_status}")
+            }
+            Self::UnexpectedBye => f.write_str("server sent BYE greeting"),
+            Self::UnexpectedPreauth => {
+                f.write_str("server sent PREAUTH greeting; STARTTLS requires pre-auth state")
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for AuthFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -131,7 +191,7 @@ impl ImapError {
     #[must_use]
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Tls { .. } | Self::TlsHandshake(_) => ErrorCode::Tls,
+            Self::Tls { .. } | Self::TlsHandshake(_) | Self::Starttls { .. } => ErrorCode::Tls,
             Self::Connect(_) | Self::ConnectionLost => ErrorCode::ConnectionLost,
             Self::Timeout { .. } => ErrorCode::Timeout,
             Self::Auth { .. } => ErrorCode::Auth,
@@ -159,6 +219,7 @@ impl From<ImapError> for RimapError {
 #[cfg(test)]
 mod tests {
     use super::ImapError;
+    use super::{StarttlsFailure, StarttlsRefusal};
 
     #[test]
     fn uid_validity_changed_display_includes_numbers_and_folder() {
@@ -171,5 +232,53 @@ mod tests {
         assert!(display.contains("INBOX"));
         assert!(display.contains("100"));
         assert!(display.contains("101"));
+    }
+
+    #[test]
+    fn starttls_capability_missing_display_mentions_starttls() {
+        let err = ImapError::Starttls {
+            reason: StarttlsFailure::CapabilityMissing,
+        };
+        let s = format!("{err}");
+        assert!(s.contains("STARTTLS"));
+        assert!(s.to_lowercase().contains("capability"));
+    }
+
+    #[test]
+    fn starttls_server_refused_display_includes_status() {
+        let err = ImapError::Starttls {
+            reason: StarttlsFailure::ServerRefused {
+                tagged_status: StarttlsRefusal::No,
+            },
+        };
+        let s = format!("{err}");
+        assert!(s.contains("NO"));
+    }
+
+    #[test]
+    fn starttls_unexpected_bye_display() {
+        let err = ImapError::Starttls {
+            reason: StarttlsFailure::UnexpectedBye,
+        };
+        let s = format!("{err}");
+        assert!(s.to_lowercase().contains("bye"));
+    }
+
+    #[test]
+    fn starttls_unexpected_preauth_display() {
+        let err = ImapError::Starttls {
+            reason: StarttlsFailure::UnexpectedPreauth,
+        };
+        let s = format!("{err}");
+        assert!(s.to_uppercase().contains("PREAUTH"));
+    }
+
+    #[test]
+    fn starttls_maps_to_tls_error_code() {
+        use rimap_core::ErrorCode;
+        let err = ImapError::Starttls {
+            reason: StarttlsFailure::CapabilityMissing,
+        };
+        assert_eq!(err.code(), ErrorCode::Tls);
     }
 }

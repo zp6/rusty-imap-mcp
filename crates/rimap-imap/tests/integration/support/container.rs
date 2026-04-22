@@ -77,6 +77,7 @@ pub struct DovecotHarness {
     compose_dir: PathBuf,
     fingerprint: TlsFingerprint,
     port: u16,
+    starttls_port: u16,
 }
 
 impl DovecotHarness {
@@ -105,16 +106,18 @@ impl DovecotHarness {
 
         let project = format!("rimap-it-{}", uuid_like());
         let host_port = pick_free_port()?;
+        let host_starttls_port = pick_free_port()?;
 
-        compose_up(&project, &compose_dir, host_port)?;
+        compose_up(&project, &compose_dir, host_port, host_starttls_port)?;
 
-        let result = wait_for_ready(&project, &compose_dir, host_port);
+        let result = wait_for_ready(&project, &compose_dir, host_port, host_starttls_port);
         match result {
             Ok((fingerprint, port)) => Ok(Self {
                 project,
                 compose_dir,
                 fingerprint,
                 port,
+                starttls_port: host_starttls_port,
             }),
             Err(e) => {
                 compose_down(&project, &compose_dir);
@@ -131,6 +134,11 @@ impl DovecotHarness {
     #[must_use]
     pub fn port(&self) -> u16 {
         self.port
+    }
+
+    #[must_use]
+    pub fn starttls_port(&self) -> u16 {
+        self.starttls_port
     }
 
     #[must_use]
@@ -188,6 +196,10 @@ impl DovecotHarness {
             .arg("--no-deps")
             .arg("dovecot")
             .env("RIMAP_DOVECOT_HOST_PORT", self.port.to_string())
+            .env(
+                "RIMAP_DOVECOT_HOST_PORT_STARTTLS",
+                self.starttls_port.to_string(),
+            )
             .current_dir(&self.compose_dir)
             .status()
             .map_err(|e| HarnessError::DockerCommandFailed(format!("recreate: {e}")))?;
@@ -207,14 +219,19 @@ impl DovecotHarness {
             if started.elapsed() > timeout {
                 let logs = dump_logs(&self.project, &self.compose_dir);
                 return Err(HarnessError::DockerCommandFailed(format!(
-                    "dovecot did not rebind port {} within 45s after recreate. \
+                    "dovecot did not rebind ports {} and {} within 45s after recreate. \
                      Last container logs:\n{logs}",
-                    self.port
+                    self.port, self.starttls_port
                 )));
             }
             if probe_ready_marker(&self.project)
                 && std::net::TcpStream::connect_timeout(
                     &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
+                    Duration::from_millis(500),
+                )
+                .is_ok()
+                && std::net::TcpStream::connect_timeout(
+                    &std::net::SocketAddr::from(([127, 0, 0, 1], self.starttls_port)),
                     Duration::from_millis(500),
                 )
                 .is_ok()
@@ -253,7 +270,12 @@ fn check_prerequisites() -> Result<(), HarnessError> {
     Ok(())
 }
 
-fn compose_up(project: &str, compose_dir: &Path, host_port: u16) -> Result<(), HarnessError> {
+fn compose_up(
+    project: &str,
+    compose_dir: &Path,
+    host_port: u16,
+    host_starttls_port: u16,
+) -> Result<(), HarnessError> {
     let status = Command::new(runtime())
         .arg("compose")
         .arg("-p")
@@ -261,6 +283,10 @@ fn compose_up(project: &str, compose_dir: &Path, host_port: u16) -> Result<(), H
         .arg("up")
         .arg("-d")
         .env("RIMAP_DOVECOT_HOST_PORT", host_port.to_string())
+        .env(
+            "RIMAP_DOVECOT_HOST_PORT_STARTTLS",
+            host_starttls_port.to_string(),
+        )
         .current_dir(compose_dir)
         .status()
         .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
@@ -276,6 +302,7 @@ fn wait_for_ready(
     project: &str,
     compose_dir: &Path,
     host_port: u16,
+    host_starttls_port: u16,
 ) -> Result<(TlsFingerprint, u16), HarnessError> {
     let started = Instant::now();
     let timeout = Duration::from_secs(60);
@@ -290,6 +317,11 @@ fn wait_for_ready(
         if let Ok(fp) = read_fingerprint(project)
             && std::net::TcpStream::connect_timeout(
                 &std::net::SocketAddr::from(([127, 0, 0, 1], host_port)),
+                Duration::from_millis(500),
+            )
+            .is_ok()
+            && std::net::TcpStream::connect_timeout(
+                &std::net::SocketAddr::from(([127, 0, 0, 1], host_starttls_port)),
                 Duration::from_millis(500),
             )
             .is_ok()
@@ -476,8 +508,6 @@ fn uuid_like() -> String {
     format!("{nanos:x}")
 }
 
-// ── Task 15 additions ────────────────────────────────────────────────────────
-
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
 use rimap_config::credential::{CredentialStore, KeyringCredentialResolver};
 use rimap_core::auth_sink::AuthEventSink;
@@ -514,7 +544,16 @@ pub struct ConnectedHarness {
 }
 
 impl ConnectedHarness {
+    /// Build a harness using implicit TLS on port 993. For STARTTLS, call
+    /// `new_with_encryption` explicitly.
     pub fn new(pin_with: PinChoice) -> Result<Self, HarnessError> {
+        Self::new_with_encryption(pin_with, rimap_imap::ImapEncryption::Tls)
+    }
+
+    pub fn new_with_encryption(
+        pin_with: PinChoice,
+        encryption: rimap_imap::ImapEncryption,
+    ) -> Result<Self, HarnessError> {
         let harness = DovecotHarness::try_start()?;
         let audit_dir = TempDir::new().expect("tempdir");
         let audit_path = audit_dir.path().join("audit.jsonl");
@@ -536,11 +575,17 @@ impl ConnectedHarness {
             PinChoice::None => None,
         };
 
+        let port = match encryption {
+            rimap_imap::ImapEncryption::Tls => harness.port(),
+            rimap_imap::ImapEncryption::Starttls => harness.starttls_port(),
+        };
+
         let cfg = ConnectionConfig {
             account: None,
             account_id: rimap_core::account::AccountId::default_account(),
             host: DovecotHarness::host().to_string(),
-            port: harness.port(),
+            port,
+            encryption,
             username: DovecotHarness::username().to_string(),
             pinned_fingerprint: pinned,
             connect_timeout: std::time::Duration::from_secs(10),
@@ -566,6 +611,10 @@ impl ConnectedHarness {
 
     pub fn audit_path(&self) -> std::path::PathBuf {
         self.audit_dir.path().join("audit.jsonl")
+    }
+
+    pub fn starttls_port(&self) -> u16 {
+        self.harness.starttls_port()
     }
 }
 

@@ -59,10 +59,15 @@ The fingerprint changes when Proton Bridge regenerates its certificate
 Create `~/.config/rusty-imap-mcp/config.toml` (Linux) or
 `~/Library/Application Support/rusty-imap-mcp/config.toml` (macOS):
 
+Proton Bridge's default IMAP mode is STARTTLS on port 1143. The implicit-TLS
+alternative (port 1993) requires enabling "SSL" in Bridge's Advanced Settings.
+This config uses the default.
+
 ```toml
 [imap]
 host = "127.0.0.1"
 port = 1143
+encryption = "starttls"
 username = "you@proton.me"
 tls_fingerprint_sha256 = "paste-your-64-char-fingerprint-here"
 

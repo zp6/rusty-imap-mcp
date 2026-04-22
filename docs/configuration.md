@@ -99,11 +99,30 @@ single-account format).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `host` | string | (required) | IMAP server hostname or IP |
-| `port` | u16 | (required) | IMAP server port (IMAPS) |
+| `port` | u16 | (required) | IMAP server port (993 for implicit TLS, 143 or 1143 for STARTTLS) |
+| `encryption` | string | `"tls"` | `"tls"` (implicit TLS/IMAPS) or `"starttls"` (STARTTLS upgrade). See below. |
 | `username` | string | (required) | IMAP login identity |
 | `tls_fingerprint_sha256` | string | (none) | Pinned TLS certificate SHA-256 fingerprint. Hex, colons optional. Required for self-signed certs (e.g. Proton Bridge). Omit to use the system trust store. |
 | `command_timeout_seconds` | u32 | 30 | Per-command timeout for IMAP operations |
 | `connect_timeout_seconds` | u32 | 10 | TCP + TLS handshake + greeting + CAPABILITY probe deadline |
+
+### `imap.encryption`
+
+Transport encryption mode. Two values:
+
+- `"tls"` (default) — implicit TLS (IMAPS). Typical port 993. Used by Gmail,
+  most commercial providers, and Dovecot's default config.
+- `"starttls"` — plaintext connection upgraded via STARTTLS before LOGIN.
+  Typical port 143 (Dovecot default) or 1143 (Proton Bridge default).
+
+The field defaults to `"tls"` if omitted, preserving single-account configs
+written before STARTTLS support.
+
+Selecting `"starttls"` requires the server to advertise `STARTTLS` in its
+CAPABILITY response; there is no silent downgrade to plaintext. A STARTTLS
+failure surfaces as `ERR_TLS`.
+
+See also: `smtp.encryption` (symmetric field for the SMTP transport).
 
 ## `[smtp]` section
 

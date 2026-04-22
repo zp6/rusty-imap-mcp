@@ -38,10 +38,14 @@ pub struct Config {
 pub struct ImapConfig {
     /// Server host.
     pub host: String,
-    /// Server port (IMAPS).
+    /// Server port (993 for TLS, 143/1143 for STARTTLS).
     pub port: u16,
     /// IMAP username.
     pub username: String,
+    /// Transport encryption mode. Defaults to implicit TLS for
+    /// backward-compatibility with pre-STARTTLS configs.
+    #[serde(default)]
+    pub encryption: ImapEncryption,
     /// Optional pinned TLS certificate SHA-256 fingerprint. Hex, colons
     /// optional (e.g. `"ab:cd:…"` or `"abcd…"`).
     #[serde(default)]
@@ -100,6 +104,17 @@ pub enum SmtpEncryption {
     Tls,
     /// No encryption (testing only).
     None,
+}
+
+/// IMAP transport encryption mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImapEncryption {
+    /// Implicit TLS (IMAPS), typical port 993.
+    #[default]
+    Tls,
+    /// STARTTLS upgrade on the IMAP port, typical port 143 or 1143.
+    Starttls,
 }
 
 /// `[smtp]` block. Optional — required only when `send_email` is enabled.
@@ -412,6 +427,115 @@ pub struct RawAccountConfig {
     /// Per-account credential policy; `None` inherits from `[defaults.credentials]`.
     #[serde(default)]
     pub credentials: Option<CredentialsConfig>,
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod imap_config_encryption_tests {
+    use super::*;
+
+    const MINIMAL: &str = r#"
+host = "imap.example.com"
+port = 993
+username = "alice"
+"#;
+
+    const WITH_STARTTLS: &str = r#"
+host = "imap.example.com"
+port = 1143
+username = "alice"
+encryption = "starttls"
+"#;
+
+    #[test]
+    fn omitted_encryption_defaults_to_tls() {
+        let cfg: ImapConfig = toml::from_str(MINIMAL).unwrap();
+        assert_eq!(cfg.encryption, ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn explicit_starttls_round_trips() {
+        let cfg: ImapConfig = toml::from_str(WITH_STARTTLS).unwrap();
+        assert_eq!(cfg.encryption, ImapEncryption::Starttls);
+        assert_eq!(cfg.port, 1143);
+    }
+
+    #[test]
+    fn explicit_tls_round_trips() {
+        let cfg: ImapConfig = toml::from_str(
+            r#"
+host = "imap.gmail.com"
+port = 993
+username = "alice"
+encryption = "tls"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.encryption, ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn rejects_unknown_encryption_value() {
+        let toml = r#"
+host = "h"
+port = 993
+username = "u"
+encryption = "mutual-tls"
+"#;
+        assert!(toml::from_str::<ImapConfig>(toml).is_err());
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod imap_encryption_tests {
+    use serde::Deserialize as _;
+    use serde::Serialize as _;
+
+    use super::*;
+
+    #[test]
+    fn default_is_tls() {
+        assert_eq!(ImapEncryption::default(), ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn serializes_as_lowercase_tls() {
+        let mut s = String::new();
+        ImapEncryption::Tls
+            .serialize(toml::ser::ValueSerializer::new(&mut s))
+            .unwrap();
+        assert_eq!(s.trim(), "\"tls\"");
+    }
+
+    #[test]
+    fn serializes_as_lowercase_starttls() {
+        let mut s = String::new();
+        ImapEncryption::Starttls
+            .serialize(toml::ser::ValueSerializer::new(&mut s))
+            .unwrap();
+        assert_eq!(s.trim(), "\"starttls\"");
+    }
+
+    #[test]
+    fn deserializes_starttls() {
+        let v =
+            ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"starttls\"")).unwrap();
+        assert_eq!(v, ImapEncryption::Starttls);
+    }
+
+    #[test]
+    fn deserializes_tls() {
+        let v = ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"tls\"")).unwrap();
+        assert_eq!(v, ImapEncryption::Tls);
+    }
+
+    #[test]
+    fn rejects_unknown_value() {
+        let err = ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"mutual-tls\""))
+            .unwrap_err();
+        assert!(err.to_string().contains("mutual-tls"));
+    }
 }
 
 #[cfg(test)]

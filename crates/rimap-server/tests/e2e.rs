@@ -36,7 +36,7 @@ use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
 use rimap_authz::matrix::EffectiveMatrix;
 use rimap_authz::rate_limit::Governor;
 use rimap_config::credential::CredentialStore;
-use rimap_config::model::{ImapConfig, LimitsConfig, SecurityConfig};
+use rimap_config::model::{ImapConfig, ImapEncryption, LimitsConfig, SecurityConfig};
 use rimap_config::validate::ValidatedAccountConfig;
 use rimap_core::TlsFingerprint;
 use rimap_core::account::AccountId;
@@ -299,6 +299,7 @@ fn test_account_config(harness: &DovecotHarness) -> ValidatedAccountConfig {
             host: "127.0.0.1".into(),
             port: harness.port,
             username: "rimap-test".into(),
+            encryption: ImapEncryption::Tls,
             tls_fingerprint_sha256: None,
             connect_timeout_seconds: 10,
             command_timeout_seconds: 30,
@@ -321,6 +322,7 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
         account_id: rimap_core::account::AccountId::default_account(),
         host: "127.0.0.1".into(),
         port: harness.port,
+        encryption: rimap_imap::ImapEncryption::Tls,
         username: "rimap-test".into(),
         pinned_fingerprint: Some(harness.fingerprint),
         connect_timeout: Duration::from_secs(10),

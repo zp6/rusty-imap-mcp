@@ -37,6 +37,8 @@ The output is a 64-character lowercase hex string. Set it as
 | `PROTON_BRIDGE_PASS` | Bridge IMAP password (the per-app password Bridge generates, NOT your Proton account password). |
 | `PROTON_BRIDGE_FINGERPRINT` | The 64-char hex fingerprint extracted above. |
 
+Proton Bridge's default IMAP connection mode is **STARTTLS on port 1143**. This test harness connects with `encryption = "starttls"`.
+
 ## Running
 
 ```sh
