@@ -43,25 +43,20 @@ mod unix_resolver {
 
     /// Resolve the socket path for the current user.
     ///
-    /// # Errors
-    /// Returns an error only if neither `XDG_RUNTIME_DIR` nor `TMPDIR` is set
-    /// and no viable fallback exists, or if the effective UID cannot be
-    /// determined.
-    pub fn resolve() -> Result<EndpointPath, ResolveError> {
+    /// Always succeeds: prefers `$XDG_RUNTIME_DIR` when set and absolute,
+    /// otherwise falls back to `$TMPDIR/<uid>` (defaulting to `/tmp`).
+    #[must_use]
+    pub fn resolve() -> EndpointPath {
         if let Some(dir) = xdg_runtime_dir() {
-            return Ok(EndpointPath(
+            return EndpointPath(
                 dir.join("rusty-imap-mcp")
                     .join("daemon.sock")
                     .to_string_lossy()
                     .into_owned(),
-            ));
+            );
         }
-        if let Some(dir) = tmp_fallback()? {
-            return Ok(EndpointPath(
-                dir.join("daemon.sock").to_string_lossy().into_owned(),
-            ));
-        }
-        Err(ResolveError::NoSuitableDirectory)
+        let dir = tmp_fallback();
+        EndpointPath(dir.join("daemon.sock").to_string_lossy().into_owned())
     }
 
     fn xdg_runtime_dir() -> Option<PathBuf> {
@@ -70,52 +65,16 @@ mod unix_resolver {
             .filter(|p| p.is_absolute())
     }
 
-    fn euid() -> Result<u32, ResolveError> {
-        let output = std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .map_err(|e| ResolveError::UidLookupFailed(e.to_string()))?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout
-            .trim()
-            .parse::<u32>()
-            .map_err(|e| ResolveError::UidLookupFailed(e.to_string()))
-    }
-
-    fn tmp_fallback() -> Result<Option<PathBuf>, ResolveError> {
-        let uid = euid()?;
+    fn tmp_fallback() -> PathBuf {
+        let uid = rustix::process::geteuid().as_raw();
         let tmp = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
-        Ok(Some(tmp.join(format!("rusty-imap-mcp-{uid}"))))
-    }
-
-    /// Resolution error.
-    #[derive(Debug, thiserror::Error)]
-    pub enum ResolveError {
-        /// No suitable directory was found.
-        #[error("no suitable directory: neither XDG_RUNTIME_DIR nor TMPDIR is set")]
-        NoSuitableDirectory,
-        /// The effective user ID could not be determined.
-        #[error("could not determine effective UID: {0}")]
-        UidLookupFailed(String),
+        tmp.join(format!("rusty-imap-mcp-{uid}"))
     }
 }
 
 #[cfg(windows)]
 mod windows_resolver {
     use super::EndpointPath;
-
-    /// Resolve the named-pipe name for the current user.
-    ///
-    /// # Errors
-    /// Returns an error if the `USERNAME` environment variable is unset.
-    pub fn resolve() -> Result<EndpointPath, ResolveError> {
-        let user = current_user_name().map_err(|_| ResolveError::NoUserName)?;
-        Ok(EndpointPath(format!(r"\\.\pipe\rusty-imap-mcp-{user}")))
-    }
-
-    fn current_user_name() -> Result<String, std::io::Error> {
-        std::env::var("USERNAME").map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-    }
 
     /// Resolution error.
     #[derive(Debug, thiserror::Error)]
@@ -124,22 +83,34 @@ mod windows_resolver {
         #[error("could not determine current user: USERNAME env unset")]
         NoUserName,
     }
+
+    /// Resolve the named-pipe name for the current user.
+    ///
+    /// # Errors
+    /// Returns an error if the `USERNAME` environment variable is unset.
+    pub fn resolve() -> Result<EndpointPath, ResolveError> {
+        let user = current_user_name().ok_or(ResolveError::NoUserName)?;
+        Ok(EndpointPath(format!(r"\\.\pipe\rusty-imap-mcp-{user}")))
+    }
+
+    fn current_user_name() -> Option<String> {
+        std::env::var("USERNAME").ok()
+    }
 }
 
 #[cfg(unix)]
-pub use unix_resolver::{ResolveError, resolve};
+pub use unix_resolver::resolve;
 #[cfg(windows)]
 pub use windows_resolver::{ResolveError, resolve};
 
 #[cfg(all(test, unix))]
-#[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use super::*;
 
     #[test]
     fn uses_xdg_runtime_dir_when_set() {
         temp_env::with_var("XDG_RUNTIME_DIR", Some("/run/user/1000"), || {
-            let ep = resolve().unwrap();
+            let ep = resolve();
             assert_eq!(ep.as_str(), "/run/user/1000/rusty-imap-mcp/daemon.sock");
         });
     }
@@ -149,7 +120,7 @@ mod tests {
         temp_env::with_vars(
             [("XDG_RUNTIME_DIR", None), ("TMPDIR", Some("/alt-tmp"))],
             || {
-                let ep = resolve().unwrap();
+                let ep = resolve();
                 assert!(ep.as_str().starts_with("/alt-tmp/rusty-imap-mcp-"));
                 assert!(ep.as_str().ends_with("/daemon.sock"));
             },
