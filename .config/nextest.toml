@@ -1,0 +1,14 @@
+# nextest configuration.
+#
+# The Dovecot and Proton Bridge integration binaries each spawn Docker/Podman
+# containers per test. Running many in parallel triggers container-daemon
+# contention (port mapping races, mmap failures during dovecot worker startup,
+# volume-mount relabeling under SELinux). Cap those binaries to a small
+# concurrency so the rest of the workspace still runs at full parallelism.
+
+[test-groups]
+container-backed = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'binary(dovecot) + binary(proton)'
+test-group = 'container-backed'
