@@ -45,7 +45,7 @@ where
                     }
                 };
                 if !peer_gate(&identity) {
-                    handle_rejected_peer(&state, &identity);
+                    handle_rejected_peer(&state, &identity, &socket_path);
                     drop(stream);
                     continue;
                 }
@@ -57,14 +57,22 @@ where
     Ok(())
 }
 
-/// Returns the socket path string from a listener that exposes one, or a
-/// generic placeholder. Unix listeners carry the path; Windows placeholders
-/// are added in a follow-up.
+/// Returns the socket path string via [`crate::daemon::socket_path::resolve`].
 fn resolve_socket_path<L: PlatformListener>(_listener: &L) -> String {
-    // The trait does not expose a path accessor today. When UnixSocketListener
-    // gains a `path()` method in a future task, downcast or thread it here.
-    // For now use a fixed placeholder that integrations tests can detect.
-    "(daemon socket)".to_string()
+    #[cfg(unix)]
+    {
+        crate::daemon::socket_path::resolve().as_str().to_owned()
+    }
+    #[cfg(not(unix))]
+    {
+        match crate::daemon::socket_path::resolve() {
+            Ok(ep) => ep.as_str().to_owned(),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not resolve socket path for audit records");
+                "<unresolved>".to_owned()
+            }
+        }
+    }
 }
 
 /// Build the peer-identity gate for this platform.
@@ -95,12 +103,12 @@ fn make_peer_gate() -> impl Fn(&PeerIdentity) -> bool {
 
 /// Emit paired `session_start` + `session_end(PeerUidRejected)` for a
 /// connection whose peer identity does not match ours, then close it.
-fn handle_rejected_peer(state: &Arc<DaemonState>, identity: &PeerIdentity) {
+fn handle_rejected_peer(state: &Arc<DaemonState>, identity: &PeerIdentity, socket_path: &str) {
     let sid = SessionId::new();
     let start = rimap_audit::record::SessionStart {
         session_id: sid,
         peer_identity: identity.clone(),
-        socket_path: "(rejected before attach)".to_string(),
+        socket_path: socket_path.to_owned(),
     };
     if let Err(e) = state.audit.log_session_start(start) {
         tracing::warn!(error = %e, "failed to log session_start for rejected peer");
