@@ -145,26 +145,7 @@ impl AccountRegistry {
     /// does not match any configured account, or
     /// [`RimapError::NoAccount`] if no account can be determined.
     pub fn resolve(&self, explicit: Option<&str>) -> Result<&AccountState, RimapError> {
-        if let Some(name) = explicit {
-            return self
-                .find_by_name(name)
-                .ok_or_else(|| RimapError::UnknownAccount {
-                    name: name.to_string(),
-                    available: self.account_name_strings(),
-                });
-        }
-
-        // Auto-select when there is exactly one account.
-        if let Some((_, state)) = (self.accounts.len() == 1)
-            .then(|| self.accounts.iter().next())
-            .flatten()
-        {
-            return Ok(state);
-        }
-
-        Err(RimapError::NoAccount {
-            available: self.account_name_strings(),
-        })
+        self.resolve_with_active(explicit, None)
     }
 
     /// Resolve which account a request targets, using a caller-supplied

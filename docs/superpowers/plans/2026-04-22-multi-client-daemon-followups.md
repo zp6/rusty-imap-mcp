@@ -107,12 +107,12 @@ extend the shim to accept a socket-path argument for tests.
 ### 12. `process_end.total_tool_calls` aggregator
 
 `daemon_main` in `main.rs` emits `process_end` with `total_tool_calls: 0`
-as a placeholder (comment at line 187: "Aggregation across sessions is a
-follow-up — leave 0 for v1"). Each session has its own
-`AtomicU64` counter (`SessionState::tool_call_count`) that feeds
-`session_end` correctly, but summing into `process_end` requires either
-a daemon-level atomic counter (incremented by each session as it ends)
-or a snapshot across all active sessions at shutdown time.
+as a placeholder. Each session has its own `AtomicU64` counter
+(`SessionState::tool_call_count`, bumped per tool-call attempt inside
+`run_with_audit_envelope`) that feeds `session_end` correctly, but
+summing into `process_end` requires either a daemon-level atomic counter
+(incremented by each session as it ends) or a snapshot across all active
+sessions at shutdown time.
 
 ### 13. Full Dovecot-backed integration test suite
 

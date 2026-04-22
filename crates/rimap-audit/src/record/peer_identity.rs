@@ -11,19 +11,25 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "platform", rename_all = "lowercase")]
 pub enum PeerIdentity {
-    /// Unix socket peer: kernel-reported user and process IDs.
+    /// Unix socket peer: kernel-reported user and (best-effort) process IDs.
     Unix {
         /// Peer's effective user ID.
         uid: u32,
         /// Peer's process ID (informational; racy on short-lived peers).
-        pid: i32,
+        /// `None` when the kernel did not report one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<i32>,
     },
     /// Windows named-pipe peer: user SID + PID.
     Windows {
-        /// Peer's user SID in `S-R-I-S-...` form.
-        sid: String,
-        /// Peer's process ID from `GetNamedPipeClientProcessId`.
-        pid: u32,
+        /// Peer's user SID in `S-R-I-S-...` form. `None` until the
+        /// follow-up SID-lookup path lands.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sid: Option<String>,
+        /// Peer's process ID from `GetNamedPipeClientProcessId`. `None`
+        /// when capture is not yet implemented.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
     },
 }
 
@@ -36,7 +42,7 @@ mod tests {
     fn unix_variant_serializes_with_platform_tag() {
         let id = PeerIdentity::Unix {
             uid: 1000,
-            pid: 12345,
+            pid: Some(12345),
         };
         let s = serde_json::to_string(&id).expect("serialize");
         assert_eq!(s, r#"{"platform":"unix","uid":1000,"pid":12345}"#);
@@ -45,8 +51,8 @@ mod tests {
     #[test]
     fn windows_variant_serializes_with_platform_tag() {
         let id = PeerIdentity::Windows {
-            sid: "S-1-5-21-0-0-0-1000".to_string(),
-            pid: 67890,
+            sid: Some("S-1-5-21-0-0-0-1000".to_string()),
+            pid: Some(67890),
         };
         let s = serde_json::to_string(&id).expect("serialize");
         assert_eq!(
@@ -57,7 +63,10 @@ mod tests {
 
     #[test]
     fn unix_variant_round_trips() {
-        let id = PeerIdentity::Unix { uid: 1000, pid: -1 };
+        let id = PeerIdentity::Unix {
+            uid: 1000,
+            pid: None,
+        };
         let s = serde_json::to_string(&id).expect("serialize");
         let back: PeerIdentity = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(id, back);
@@ -66,10 +75,22 @@ mod tests {
     #[test]
     fn windows_variant_round_trips() {
         let id = PeerIdentity::Windows {
-            sid: "S-1-5-21-0-0-0-1000".to_string(),
-            pid: 42,
+            sid: Some("S-1-5-21-0-0-0-1000".to_string()),
+            pid: Some(42),
         };
         let s = serde_json::to_string(&id).expect("serialize");
+        let back: PeerIdentity = serde_json::from_str(&s).expect("deserialize");
+        assert_eq!(id, back);
+    }
+
+    #[test]
+    fn windows_variant_with_unknown_fields_round_trips() {
+        let id = PeerIdentity::Windows {
+            sid: None,
+            pid: None,
+        };
+        let s = serde_json::to_string(&id).expect("serialize");
+        assert_eq!(s, r#"{"platform":"windows"}"#);
         let back: PeerIdentity = serde_json::from_str(&s).expect("deserialize");
         assert_eq!(id, back);
     }

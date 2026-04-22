@@ -52,7 +52,7 @@ where
                     drop(stream);
                     continue;
                 }
-                if let Some(future) = build_session_future(&state, stream, identity, socket_path.clone()) {
+                if let Some(future) = build_session_future(&state, stream, identity, &socket_path) {
                     sessions.spawn(future);
                 }
             }
@@ -118,7 +118,7 @@ fn resolve_socket_path() -> String {
 /// Windows: OS-level DACL on the named pipe already restricts access; the
 /// SID comparison requires unsafe FFI that conflicts with the workspace
 /// `unsafe_code = "forbid"` policy, so we accept all callers and rely on
-/// the pipe ACL (scope A, v1 placeholder).
+/// the pipe ACL.
 #[cfg(unix)]
 fn make_peer_gate() -> impl Fn(&PeerIdentity) -> bool {
     let our_uid = rustix::process::geteuid().as_raw();
@@ -136,16 +136,29 @@ fn make_peer_gate() -> impl Fn(&PeerIdentity) -> bool {
     |_identity: &PeerIdentity| true
 }
 
+/// Emit a `session_start` record for `sid`. Failure is logged at the supplied
+/// level and otherwise ignored, so callers can choose whether to continue
+/// (reject path) or bail (accept path).
+fn log_session_start(
+    state: &DaemonState,
+    sid: SessionId,
+    identity: PeerIdentity,
+    socket_path: &str,
+) -> Result<rimap_audit::Seq, rimap_audit::AuditError> {
+    state
+        .audit
+        .log_session_start(rimap_audit::record::SessionStart {
+            session_id: sid,
+            peer_identity: identity,
+            socket_path: socket_path.to_owned(),
+        })
+}
+
 /// Emit paired `session_start` + `session_end(PeerUidRejected)` for a
 /// connection whose peer identity does not match ours, then close it.
 fn handle_rejected_peer(state: &Arc<DaemonState>, identity: &PeerIdentity, socket_path: &str) {
     let sid = SessionId::new();
-    let start = rimap_audit::record::SessionStart {
-        session_id: sid,
-        peer_identity: identity.clone(),
-        socket_path: socket_path.to_owned(),
-    };
-    if let Err(e) = state.audit.log_session_start(start) {
+    if let Err(e) = log_session_start(state, sid, identity.clone(), socket_path) {
         tracing::warn!(error = %e, "failed to log session_start for rejected peer");
     }
     let end = rimap_audit::record::SessionEnd {
@@ -170,19 +183,14 @@ fn build_session_future<S>(
     state: &Arc<DaemonState>,
     stream: S,
     identity: PeerIdentity,
-    socket_path: String,
+    socket_path: &str,
 ) -> Option<impl std::future::Future<Output = ()> + Send + 'static>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let sid = SessionId::new();
     let session = Arc::new(SessionState::new(sid));
-    let start = rimap_audit::record::SessionStart {
-        session_id: sid,
-        peer_identity: identity,
-        socket_path,
-    };
-    if let Err(e) = state.audit.log_session_start(start) {
+    if let Err(e) = log_session_start(state, sid, identity, socket_path) {
         tracing::error!(error = %e, "failed to log session_start; dropping connection");
         return None;
     }
@@ -241,7 +249,7 @@ fn emit_session_end(
     reason: rimap_audit::record::SessionEndReason,
     last_error: Option<String>,
 ) {
-    let duration_ms = u64::try_from(session.started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let duration_ms = crate::duration_ms_since(session.started_at);
     let total = session
         .tool_call_count
         .load(std::sync::atomic::Ordering::Relaxed);

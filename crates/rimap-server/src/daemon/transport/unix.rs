@@ -30,7 +30,7 @@ pub struct UnixSocketListener {
 impl UnixSocketListener {
     /// Bind a new listener at `path`. The parent directory is expected
     /// to already exist with mode 0700 (caller's responsibility — see
-    /// `daemon::socket_setup::prepare_socket_dir`, arriving in Task 10).
+    /// `daemon::socket_setup::prepare_socket_dir`).
     ///
     /// If `path` already exists and `connect()` succeeds against it,
     /// this call fails with `io::ErrorKind::AddrInUse` and does NOT
@@ -87,7 +87,7 @@ impl PlatformListener for UnixSocketListener {
         let cred = stream.peer_cred()?;
         let identity = PeerIdentity::Unix {
             uid: cred.uid(),
-            pid: cred.pid().unwrap_or(-1),
+            pid: cred.pid(),
         };
         Ok(AcceptedConnection { stream, identity })
     }
@@ -160,8 +160,8 @@ mod tests {
         let expected_uid = rustix::process::geteuid().as_raw();
         match accepted.identity {
             PeerIdentity::Unix { uid, pid: _ } => assert_eq!(uid, expected_uid),
-            PeerIdentity::Windows { sid, pid } => {
-                panic!("expected Unix identity, got Windows {{ sid: {sid}, pid: {pid} }}");
+            other @ PeerIdentity::Windows { .. } => {
+                panic!("expected Unix identity, got {other:?}");
             }
         }
     }

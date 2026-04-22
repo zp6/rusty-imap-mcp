@@ -308,7 +308,10 @@ mod session_writer_tests {
         let seq = writer
             .log_session_start(crate::record::SessionStart {
                 session_id: sid,
-                peer_identity: PeerIdentity::Unix { uid: 1000, pid: 1 },
+                peer_identity: PeerIdentity::Unix {
+                    uid: 1000,
+                    pid: Some(1),
+                },
                 socket_path: "/tmp/x.sock".to_string(),
             })
             .expect("write");

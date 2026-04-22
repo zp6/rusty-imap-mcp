@@ -1,23 +1,11 @@
 //! Windows named-pipe transport for the daemon.
 //!
-//! # Status (v1)
-//!
-//! Bind + accept are implemented via tokio's named-pipe API. Peer
-//! identity on Windows currently returns a placeholder SID until the
-//! follow-up issue for proper `GetNamedPipeClientProcessId` + token
-//! lookup lands. The DACL on the pipe defaults to the creator's user
-//! only (tokio's `ServerOptions`), which enforces scope A (same-user
-//! access) at the OS level — so the placeholder identity is safe for
-//! scope A even without full SID inspection.
-//!
-//! # Follow-up
-//!
-//! Proper peer-identity capture (`GetNamedPipeClientProcessId` +
-//! `OpenProcess` + `OpenProcessToken` + `GetTokenInformation(TokenUser)`
-//! + `ConvertSidToStringSidW`) is tracked in a follow-up issue (Task 36
-//! notes). The unsafe boundary for that work will be addressed via either
-//! a crate-level `deny(unsafe_code)` + `#[expect]` block, or a small
-//! separate unsafe-allowed support crate.
+//! Bind + accept are implemented via tokio's named-pipe API. The pipe's
+//! DACL (from tokio's `ServerOptions` default) restricts connections to
+//! the creating user, so scope A (same-user access) is enforced at the
+//! OS level. Peer identity capture is reported as unknown until proper
+//! `GetNamedPipeClientProcessId` + token-lookup support lands, which
+//! requires `unsafe` FFI that the workspace currently forbids.
 
 #![cfg(windows)]
 
@@ -80,12 +68,12 @@ impl PlatformListener for NamedPipeListener {
             )
         })?;
         server.connect().await?;
-        // v1 placeholder identity. The DACL already restricts connections to
-        // the creating user, so scope A is enforced at the OS level even
-        // without reading the SID here.
+        // SID + PID capture is a follow-up; the pipe DACL already restricts
+        // connections to the creating user, so scope A is enforced at the OS
+        // level even without reading the identity here.
         let identity = PeerIdentity::Windows {
-            sid: "S-unknown".to_string(),
-            pid: 0,
+            sid: None,
+            pid: None,
         };
         // Eagerly create the next instance so the next accept() does not
         // race an incoming client through ERROR_PIPE_BUSY.
@@ -174,10 +162,10 @@ mod tests {
         });
         let accepted = listener.accept().await.expect("accept");
         match accepted.identity {
-            PeerIdentity::Windows { sid, pid: _ } => {
-                assert_eq!(
-                    sid, "S-unknown",
-                    "v1 placeholder expected until real SID lookup lands"
+            PeerIdentity::Windows { sid, pid } => {
+                assert!(
+                    sid.is_none() && pid.is_none(),
+                    "expected unset identity until real SID lookup lands, got sid={sid:?} pid={pid:?}",
                 );
             }
             other => panic!("expected Windows identity, got {other:?}"),

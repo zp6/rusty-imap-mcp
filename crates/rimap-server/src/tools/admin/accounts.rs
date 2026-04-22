@@ -90,7 +90,9 @@ pub async fn handle_use_account(
     let previous = {
         let mut guard = session.active_account.write().await;
         let prev = guard.as_ref().map(ToString::to_string);
-        *guard = Some(new_id);
+        if guard.as_ref() != Some(&new_id) {
+            *guard = Some(new_id);
+        }
         prev
     };
 

@@ -38,12 +38,23 @@ impl ImapMcpServer {
         F: FnOnce(DispatchTicket) -> Fut,
         Fut: std::future::Future<Output = Result<serde_json::Value, rimap_core::RimapError>>,
     {
+        self.session
+            .tool_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let args_value = serde_json::Value::Object(args.clone());
         let redacted = self.redact_tool_args(tool, &args_value);
         let hash = hash_arguments(&args_value);
 
         let start_seq = self
-            .emit_tool_start(tool, audit_account.clone(), posture, redacted, hash)
+            .emit_tool_start(ToolStartInputs {
+                tool,
+                account: audit_account.clone(),
+                posture_effective: posture.posture(),
+                arguments_redacted: redacted,
+                arguments_hash_sha256: hash,
+                session_id: None,
+            })
             .await?;
         let start_time = std::time::Instant::now();
 
@@ -52,7 +63,7 @@ impl ImapMcpServer {
             tool,
             audit_account.clone(),
             start_time,
-            self.cancellation_sender.clone(),
+            self.state.cancellation_tx.clone(),
             self.audit.session_id(),
         );
 
@@ -67,23 +78,25 @@ impl ImapMcpServer {
         // double emission.
         guard.disarm();
 
-        let duration_ms = start_time
-            .elapsed()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX);
+        let duration_ms = crate::duration_ms_since(start_time);
         let (status, error_code) = match &result {
             Ok(_) => (ToolStatus::Ok, None),
             Err(e) => (ToolStatus::Error, Some(e.code())),
         };
-        self.emit_tool_end(
+        self.emit_tool_end(ToolEndInputs {
             start_seq,
             tool,
-            audit_account,
+            account: audit_account,
             status,
             error_code,
             duration_ms,
-        )
+            result_summary: ResultSummary::default(),
+            provenance: Provenance {
+                window_seconds: 60,
+                message_ids_recently_read: Vec::new(),
+            },
+            session_id: None,
+        })
         .await;
 
         match result {
@@ -101,8 +114,7 @@ impl ImapMcpServer {
     }
 
     /// Emit a `tool_start` audit record via `spawn_blocking`. Returns the
-    /// allocated `seq` on success; on audit failure emits a `warn!` and
-    /// returns a synthetic `Seq::FIRST` so the call can proceed.
+    /// allocated `seq` on success.
     ///
     /// Errors bubble up only when `fail_open = false` AND the write fails:
     /// in that case the tool call MUST fail because the audit trail is
@@ -110,25 +122,10 @@ impl ImapMcpServer {
     /// the writer and return `Ok`.
     async fn emit_tool_start(
         &self,
-        tool: ToolName,
-        account: Option<String>,
-        posture: PostureContext,
-        redacted: serde_json::Value,
-        hash: String,
+        inputs: ToolStartInputs,
     ) -> Result<rimap_audit::Seq, ErrorData> {
         let sink = self.audit.clone();
-        let posture_effective = posture.posture();
-        let join = tokio::task::spawn_blocking(move || {
-            sink.log_tool_start(ToolStartInputs {
-                tool,
-                account,
-                posture_effective,
-                arguments_redacted: redacted,
-                arguments_hash_sha256: hash,
-                session_id: None,
-            })
-        })
-        .await;
+        let join = tokio::task::spawn_blocking(move || sink.log_tool_start(inputs)).await;
         match join {
             Ok(Ok(seq)) => Ok(seq),
             Ok(Err(audit_err)) => {
@@ -149,35 +146,8 @@ impl ImapMcpServer {
     /// Emit a `tool_end` audit record via `spawn_blocking`. Failures are
     /// logged but not propagated — at end-of-call the tool has already
     /// finished and the caller sees its original result.
-    async fn emit_tool_end(
-        &self,
-        start_seq: rimap_audit::Seq,
-        tool: ToolName,
-        account: Option<String>,
-        status: ToolStatus,
-        error_code: Option<rimap_core::ErrorCode>,
-        duration_ms: u64,
-    ) {
+    async fn emit_tool_end(&self, inputs: ToolEndInputs) {
         let sink = self.audit.clone();
-        // The provenance ring buffer is not yet wired for multi-account.
-        // Record an empty snapshot with the window placeholder until a
-        // per-account buffer lands.
-        let provenance = Provenance {
-            window_seconds: 60,
-            message_ids_recently_read: Vec::new(),
-        };
-        let summary = ResultSummary::default();
-        let inputs = rimap_audit::ToolEndInputs {
-            start_seq,
-            tool,
-            account,
-            status,
-            error_code,
-            duration_ms,
-            result_summary: summary,
-            provenance,
-            session_id: None,
-        };
         let join = tokio::task::spawn_blocking(move || sink.log_tool_end(inputs)).await;
         match join {
             Ok(Ok(_)) => {}
@@ -241,12 +211,7 @@ impl Drop for AuditEnvelopeGuard {
         let Some(inner) = self.inner.take() else {
             return;
         };
-        let duration_ms = inner
-            .start_time
-            .elapsed()
-            .as_millis()
-            .try_into()
-            .unwrap_or(u64::MAX);
+        let duration_ms = crate::duration_ms_since(inner.start_time);
         // ToolName is Copy; capture it for the warning log before try_send
         // consumes the payload.
         let tool = inner.tool;

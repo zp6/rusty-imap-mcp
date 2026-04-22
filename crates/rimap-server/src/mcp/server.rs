@@ -9,7 +9,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use rimap_audit::CancelledToolEndSender;
 use rimap_audit::redact::RedactionSalt;
 use rimap_core::account::AccountId;
 use rimap_core::tool::ToolName;
@@ -39,10 +38,6 @@ pub struct ImapMcpServer {
     pub(crate) session: Arc<SessionState>,
     /// Session-scoped audit sink — guarantees `session_id` injection.
     pub(crate) audit: SessionAuditSink,
-    /// Channel used by `AuditEnvelopeGuard::drop` to emit synthetic
-    /// cancellation `tool_end` records when the MCP dispatch future is
-    /// dropped mid-call (#71, #99).
-    pub(crate) cancellation_sender: CancelledToolEndSender,
     /// Per-process salt used when applying `Redactor` to tool arguments.
     /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
     pub(crate) redaction_salt: Arc<RedactionSalt>,
@@ -55,12 +50,10 @@ impl ImapMcpServer {
     #[must_use]
     pub fn new(state: Arc<DaemonState>, session: Arc<SessionState>) -> Self {
         let audit = SessionAuditSink::new(state.audit.clone(), session.id);
-        let cancellation_sender = state.cancellation_tx.clone();
         Self {
             state,
             session,
             audit,
-            cancellation_sender,
             redaction_salt: Arc::new(RedactionSalt::new_random()),
         }
     }
@@ -371,33 +364,14 @@ impl ServerHandler for ImapMcpServer {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let (namespaced_account, bare_name) = split_tool_name(&request.name);
-
-        let tool_name = ToolName::from_str(bare_name)
-            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        // Refine the tool name based on argument shape BEFORE DispatchGuard::pre_dispatch
-        // so the posture check covers sub-capabilities (FetchMessageHtml vs
-        // FetchMessage, SearchAdvanced vs Search) at a single seam rather
-        // than being re-checked inside every handler.
-        let tool_name = refine_tool_name(tool_name, request.arguments.as_ref());
-
-        // Reject tools that have no definition (not yet implemented).
-        // This prevents unimplemented v2 tools from consuming rate
-        // limiter tokens and producing misleading INTERNAL_ERROR.
-        if TOOL_DEFS.get(&tool_name).is_none() {
-            return Err(ErrorData::new(
-                McpCode::RESOURCE_NOT_FOUND,
-                format!("tool `{}` is not available", request.name),
-                None,
-            ));
-        }
+        let (namespaced_account, tool_name) = parse_and_validate_tool_name(&request)?;
 
         // Multi-account contract: bare simple tool names are only valid
         // in legacy single-account mode. In multi-account mode, clients
         // must use the advertised <account>.<tool> form. Sub-capability
         // dotted tools (e.g. search.advanced_query) and infrastructure
         // tools (use_account, list_accounts) remain valid bare forms
-        // regardless. (#73)
+        // regardless.
         let accounts = self.registry().accounts();
         if !is_legacy_single_account(accounts) && is_bare_simple_tool_name(&request.name) {
             return Err(ErrorData::invalid_params(
@@ -412,50 +386,98 @@ impl ServerHandler for ImapMcpServer {
 
         let mut args = request.arguments.unwrap_or_default();
 
-        // Infrastructure tools bypass account resolution and guards and
-        // must never be namespaced.
         if tool_name.is_infrastructure() {
-            if namespaced_account.is_some() {
-                return Err(ErrorData::invalid_params(
-                    "infrastructure tools cannot be namespaced".to_string(),
-                    None,
-                ));
-            }
-            let result = Box::pin(self.dispatch_infrastructure(tool_name, &args)).await;
-            // After a successful use_account, notify subscribed clients that
-            // the effective tool list has changed (the session default account
-            // flipped). Best-effort: transport failures do not fail the call
-            // because use_account itself succeeded. (#80)
-            if result.is_ok()
-                && tool_name == ToolName::UseAccount
-                && let Err(e) = context.peer.notify_tool_list_changed().await
-            {
-                tracing::warn!(
-                    error = %e,
-                    "failed to emit notifications/tools/list_changed after use_account",
-                );
-            }
-            return result;
+            return self
+                .route_infrastructure(tool_name, namespaced_account.as_deref(), &args, &context)
+                .await;
         }
 
-        // Account resolution order: URI namespace > args["account"] >
-        // session default > auto-select.
+        let account = self
+            .resolve_account_for_call(namespaced_account.as_deref(), &mut args)
+            .await?;
+
+        self.dispatch_account_scoped(account, tool_name, &args)
+            .await
+    }
+}
+
+/// Parse the incoming tool name, refine it by argument shape, and verify
+/// it has a definition. Returns the namespaced-account prefix (owned so
+/// the caller can continue to move `request.arguments`) and the refined
+/// `ToolName`.
+fn parse_and_validate_tool_name(
+    request: &CallToolRequestParams,
+) -> Result<(Option<String>, ToolName), ErrorData> {
+    let (namespaced_account, bare_name) = split_tool_name(&request.name);
+    let namespaced_account = namespaced_account.map(String::from);
+    let tool_name = ToolName::from_str(bare_name)
+        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+    // Refine the tool name based on argument shape BEFORE DispatchGuard::pre_dispatch
+    // so the posture check covers sub-capabilities (FetchMessageHtml vs
+    // FetchMessage, SearchAdvanced vs Search) at a single seam rather
+    // than being re-checked inside every handler.
+    let tool_name = refine_tool_name(tool_name, request.arguments.as_ref());
+    // Reject tools that have no definition (not yet implemented). This
+    // prevents unimplemented v2 tools from consuming rate limiter tokens
+    // and producing misleading INTERNAL_ERROR.
+    if TOOL_DEFS.get(&tool_name).is_none() {
+        return Err(ErrorData::new(
+            McpCode::RESOURCE_NOT_FOUND,
+            format!("tool `{}` is not available", request.name),
+            None,
+        ));
+    }
+    Ok((namespaced_account, tool_name))
+}
+
+impl ImapMcpServer {
+    /// Dispatch an infrastructure tool (`use_account`, `list_accounts`).
+    /// Rejects namespaced calls (infrastructure tools have no account
+    /// scope). After a successful `use_account`, emits a best-effort
+    /// `notifications/tools/list_changed`.
+    async fn route_infrastructure(
+        &self,
+        tool_name: ToolName,
+        namespaced_account: Option<&str>,
+        args: &serde_json::Map<String, serde_json::Value>,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if namespaced_account.is_some() {
+            return Err(ErrorData::invalid_params(
+                "infrastructure tools cannot be namespaced".to_string(),
+                None,
+            ));
+        }
+        let result = Box::pin(self.dispatch_infrastructure(tool_name, args)).await;
+        if result.is_ok()
+            && tool_name == ToolName::UseAccount
+            && let Err(e) = context.peer.notify_tool_list_changed().await
+        {
+            tracing::warn!(
+                error = %e,
+                "failed to emit notifications/tools/list_changed after use_account",
+            );
+        }
+        result
+    }
+
+    /// Resolve the target account for an account-scoped tool call.
+    ///
+    /// Precedence: URI namespace, then `args["account"]`, then the session
+    /// default, then auto-select. Consumes the `account` entry from `args`
+    /// so the downstream handler does not observe it as a tool argument.
+    async fn resolve_account_for_call(
+        &self,
+        namespaced_account: Option<&str>,
+        args: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Result<&AccountState, ErrorData> {
         let explicit_account = namespaced_account.map(String::from).or_else(|| {
             args.remove("account")
                 .and_then(|v| v.as_str().map(String::from))
         });
-
-        // Read the session-scoped active account from SessionState. When an
-        // explicit account is provided it takes precedence; this only supplies
-        // the fallback default.
         let session_default = self.session.active_account.read().await.clone();
-
-        let account = self
-            .registry()
+        self.registry()
             .resolve_with_active(explicit_account.as_deref(), session_default.as_ref())
-            .map_err(|e| crate::mcp::error::to_mcp_error(&e))?;
-
-        self.dispatch_account_scoped(account, tool_name, &args)
-            .await
+            .map_err(|e| crate::mcp::error::to_mcp_error(&e))
     }
 }

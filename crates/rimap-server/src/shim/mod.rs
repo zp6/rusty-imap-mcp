@@ -4,7 +4,32 @@
 
 use std::process::ExitCode;
 
+use tokio::io::{AsyncRead, AsyncWrite};
+
 use crate::daemon::socket_path;
+
+/// Bridge stdin/stdout to `sock` until either direction closes.
+///
+/// Both pumps run concurrently via `tokio::join!`. The stdin→socket pump
+/// calls `shutdown()` on the write half when stdin hits EOF so the daemon
+/// observes a clean half-close rather than a hung peer.
+async fn pipe_stdio<S>(sock: S)
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    use tokio::io::AsyncWriteExt as _;
+    let (mut read_half, mut write_half) = tokio::io::split(sock);
+    let mut stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let stdin_to_sock = async move {
+        let _ = tokio::io::copy(&mut stdin, &mut write_half).await;
+        let _ = write_half.shutdown().await;
+    };
+    let sock_to_stdout = async move {
+        let _ = tokio::io::copy(&mut read_half, &mut stdout).await;
+    };
+    tokio::join!(stdin_to_sock, sock_to_stdout);
+}
 
 #[cfg(unix)]
 /// Connect to the daemon socket and pipe stdin/stdout until either side closes.
@@ -14,7 +39,6 @@ use crate::daemon::socket_path;
               stderr is the only reliable channel for user-facing error messages"
 )]
 pub async fn run() -> ExitCode {
-    use tokio::io::AsyncWriteExt as _;
     use tokio::net::UnixStream;
 
     let ep = socket_path::resolve();
@@ -37,18 +61,7 @@ pub async fn run() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    let (mut read_half, mut write_half) = sock.into_split();
-    let mut stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-
-    let stdin_to_sock = async move {
-        let _ = tokio::io::copy(&mut stdin, &mut write_half).await;
-        let _ = write_half.shutdown().await;
-    };
-    let sock_to_stdout = async move {
-        let _ = tokio::io::copy(&mut read_half, &mut stdout).await;
-    };
-    tokio::join!(stdin_to_sock, sock_to_stdout);
+    pipe_stdio(sock).await;
     ExitCode::SUCCESS
 }
 
@@ -60,7 +73,6 @@ pub async fn run() -> ExitCode {
               stderr is the only reliable channel for user-facing error messages"
 )]
 pub async fn run() -> ExitCode {
-    use tokio::io::AsyncWriteExt as _;
     use tokio::net::windows::named_pipe::ClientOptions;
 
     let ep = match socket_path::resolve() {
@@ -91,16 +103,6 @@ pub async fn run() -> ExitCode {
             }
         }
     };
-    let (mut read_half, mut write_half) = tokio::io::split(sock);
-    let mut stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let stdin_to_sock = async move {
-        let _ = tokio::io::copy(&mut stdin, &mut write_half).await;
-        let _ = write_half.shutdown().await;
-    };
-    let sock_to_stdout = async move {
-        let _ = tokio::io::copy(&mut read_half, &mut stdout).await;
-    };
-    tokio::join!(stdin_to_sock, sock_to_stdout);
+    pipe_stdio(sock).await;
     ExitCode::SUCCESS
 }

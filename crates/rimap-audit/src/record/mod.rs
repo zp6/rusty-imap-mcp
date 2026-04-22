@@ -384,7 +384,10 @@ mod session_record_tests {
         let id = SessionId::new();
         let s = SessionStart {
             session_id: id,
-            peer_identity: PeerIdentity::Unix { uid: 1000, pid: 42 },
+            peer_identity: PeerIdentity::Unix {
+                uid: 1000,
+                pid: Some(42),
+            },
             socket_path: "/run/user/1000/rusty-imap-mcp/daemon.sock".to_string(),
         };
         let j: serde_json::Value = serde_json::to_value(&s).expect("ser");
@@ -436,7 +439,10 @@ mod session_record_tests {
             process_id: ProcessId::new_now(),
             payload: Payload::SessionStart(SessionStart {
                 session_id: id,
-                peer_identity: PeerIdentity::Unix { uid: 501, pid: 99 },
+                peer_identity: PeerIdentity::Unix {
+                    uid: 501,
+                    pid: Some(99),
+                },
                 socket_path: "/run/user/501/rusty-imap-mcp/daemon.sock".to_string(),
             }),
         };

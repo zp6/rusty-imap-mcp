@@ -12,10 +12,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rimap_audit::{AuditOptions, AuditWriter, Seq};
-use rimap_config::credential::{CredentialStore, KeyringStore};
-use rimap_config::loader::load_and_validate;
-use rimap_server::boot::registry;
+use rimap_audit::{AuditOptions, AuditWriter};
 use rimap_server::daemon::run::run;
 use rimap_server::daemon::state::DaemonState;
 use rimap_server::daemon::transport::unix::UnixSocketListener;
@@ -39,87 +36,13 @@ pub struct TestDaemon {
 }
 
 impl TestDaemon {
-    /// Spawn a daemon with the supplied config TOML.
-    ///
-    /// The string `{tempdir}` inside `config_toml` is replaced with the
-    /// actual tempdir path before writing, so callers can use it as a
-    /// placeholder for `audit.path` and `audit.allowed_base_dir` without
-    /// knowing the path ahead of time.  See [`default_config_toml`] for a
-    /// ready-made template.
-    ///
-    /// The daemon is fully booted (config loaded, registry built, socket
-    /// bound) before this function returns.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any boot step fails — intentional in a test harness; the
-    /// panic message includes the underlying error.
-    #[expect(clippy::expect_used, reason = "test harness — panics on setup failure")]
-    pub async fn spawn(config_toml: &str) -> Self {
-        let tempdir = TempDir::new().expect("tempdir");
-        let tempdir_str = tempdir.path().to_string_lossy();
-        let resolved_toml = config_toml.replace("{tempdir}", &tempdir_str);
-
-        let config_path = tempdir.path().join("config.toml");
-        std::fs::write(&config_path, &resolved_toml).expect("write config");
-
-        let audit_path = tempdir.path().join("audit.jsonl");
-        let socket_path = tempdir.path().join("daemon.sock");
-
-        let multi = load_and_validate(&config_path).expect("load config");
-
-        let audit = AuditWriter::open(&AuditOptions {
-            path: audit_path.clone(),
-            rotate_bytes: 0,
-            rotate_keep: 0,
-            retention_seconds: None,
-            fail_open: false,
-            initial_seq: Seq::FIRST,
-        })
-        .expect("open audit");
-
-        let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
-        let download_dir: Arc<std::path::Path> =
-            Arc::from(tempdir.path().to_owned().into_boxed_path());
-
-        let reg = registry::build(&multi, &audit, &credentials, &download_dir)
-            .await
-            .expect("build registry");
-
-        let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-
-        let state = Arc::new(DaemonState {
-            registry: Arc::new(reg),
-            audit,
-            download_dir,
-            cancellation_tx,
-            started_at: std::time::Instant::now(),
-        });
-
-        let listener = UnixSocketListener::bind(&socket_path)
-            .await
-            .expect("bind test socket");
-
-        let shutdown = Arc::new(Notify::new());
-        let shutdown_clone = Arc::clone(&shutdown);
-        let handle = tokio::spawn(async move { run(state, listener, shutdown_clone).await });
-
-        Self {
-            socket_path,
-            audit_path,
-            tempdir,
-            shutdown,
-            handle,
-        }
-    }
-
     /// Signal graceful shutdown, wait for the daemon task to complete, and
     /// return the audit log contents. The `TempDir` is dropped after reading,
     /// so callers that need to inspect the audit log must use the returned
     /// `String` rather than reading from `self.audit_path` after this call.
     pub async fn shutdown(self) -> String {
         // notify_one stores a permit even if the daemon task hasn't yet reached
-        // the select! — safe for both spawn (slow boot) and spawn_bare (fast boot).
+        // the select! — safe whether the daemon boot is still in progress.
         self.shutdown.notify_one();
         let _ = self.handle.await;
         // Read the audit log while tempdir still owns the file; `self` drops
@@ -195,25 +118,4 @@ impl TestDaemon {
             handle,
         }
     }
-}
-
-/// Default config TOML for tests that don't need a real IMAP account.
-///
-/// Contains `{tempdir}` placeholders that [`TestDaemon::spawn`] replaces
-/// with the actual tempdir path.  The IMAP host/port point to localhost
-/// at port 1143 — tests that need a real server should substitute their
-/// own config instead.
-pub fn default_config_toml() -> String {
-    r#"
-[imap]
-host = "127.0.0.1"
-port = 1143
-encryption = "tls"
-username = "test@example.com"
-
-[audit]
-path = "{tempdir}/audit.jsonl"
-allowed_base_dir = "{tempdir}"
-"#
-    .to_string()
 }
