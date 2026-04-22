@@ -167,6 +167,53 @@ impl AccountRegistry {
         })
     }
 
+    /// Resolve which account a request targets, using a caller-supplied
+    /// session default (from [`crate::daemon::state::SessionState::active_account`])
+    /// instead of the registry's own `active` slot.
+    ///
+    /// Resolution order:
+    /// 1. Explicit name — same as [`resolve`][Self::resolve].
+    /// 2. Caller-supplied session default (from `SessionState`).
+    /// 3. Auto-select when exactly one account is configured.
+    /// 4. Error listing available accounts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RimapError::UnknownAccount`] if the explicit name
+    /// does not match any configured account, or
+    /// [`RimapError::NoAccount`] if no account can be determined.
+    pub fn resolve_with_active(
+        &self,
+        explicit: Option<&str>,
+        session_default: Option<&AccountId>,
+    ) -> Result<&AccountState, RimapError> {
+        if let Some(name) = explicit {
+            return self
+                .find_by_name(name)
+                .ok_or_else(|| RimapError::UnknownAccount {
+                    name: name.to_string(),
+                    available: self.account_name_strings(),
+                });
+        }
+
+        // Check session-scoped active account from SessionState.
+        if let Some(state) = session_default.and_then(|id| self.accounts.get(id)) {
+            return Ok(state);
+        }
+
+        // Auto-select when there is exactly one account.
+        if let Some((_, state)) = (self.accounts.len() == 1)
+            .then(|| self.accounts.iter().next())
+            .flatten()
+        {
+            return Ok(state);
+        }
+
+        Err(RimapError::NoAccount {
+            available: self.account_name_strings(),
+        })
+    }
+
     /// Set the session-scoped active account, returning the previous
     /// account name (if any).
     ///

@@ -5,6 +5,7 @@
 mod cli;
 
 use rimap_server::boot::{audit_init, logging, registry};
+use rimap_server::daemon::state::{DaemonState, SessionState};
 use rimap_server::mcp::server;
 
 use std::io::Write;
@@ -112,34 +113,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let audit_for_shutdown = audit.clone();
     let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
 
-    let mcp_result: anyhow::Result<()> = rt.block_on(async {
-        let registry = build_registry(&multi, &audit, &credentials, &download_dir)
-            .await
-            .context("building account registry")?;
-
-        let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
-        let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
-
-        let mcp_server = server::ImapMcpServer::new(registry, audit, cancellation_tx);
-        let transport = rmcp::transport::io::stdio();
-        let service = Box::pin(rmcp::serve_server(mcp_server, transport))
-            .await
-            .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
-        // waiting() takes ownership of service, consuming it and dropping the
-        // ImapMcpServer (including all cancellation sender clones) when it
-        // returns. The drainer task exits once all senders have dropped.
-        service
-            .waiting()
-            .await
-            .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
-
-        // All senders dropped above. Wait for the drainer to flush any
-        // remaining queued cancellation records before the runtime exits.
-        if let Err(e) = drainer_handle.await {
-            tracing::error!(error = %e, "cancellation drainer join error");
-        }
-        Ok(())
-    });
+    let mcp_result: anyhow::Result<()> = rt.block_on(run_stdio_mcp(
+        &multi,
+        audit.clone(),
+        credentials,
+        download_dir,
+    ));
 
     // Best-effort process_end emission.
     let reason = match &mcp_result {
@@ -158,6 +137,56 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     mcp_result
+}
+
+/// Run the stdio MCP server. Accepts a pre-built `audit`, `credentials`,
+/// and `download_dir`; builds the registry, constructs the per-session
+/// server, and drives the MCP transport until EOF or error.
+///
+/// TEMPORARY for Phase 2 — replaced by Task 20 (main.rs rewrite). The
+/// `DaemonState`/`SessionState` construction here is a shim that keeps
+/// the single-session stdio path compiling after `ImapMcpServer::new`
+/// adopted the multi-session signature.
+async fn run_stdio_mcp(
+    multi: &rimap_config::validate::ValidatedMultiConfig,
+    audit: rimap_audit::AuditWriter,
+    credentials: Arc<dyn CredentialStore>,
+    download_dir: Arc<std::path::Path>,
+) -> anyhow::Result<()> {
+    let registry = build_registry(multi, &audit, &credentials, &download_dir)
+        .await
+        .context("building account registry")?;
+
+    let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
+    let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
+
+    let daemon_state = Arc::new(DaemonState {
+        registry: Arc::new(registry),
+        audit,
+        download_dir,
+        cancellation_tx,
+        started_at: std::time::Instant::now(),
+    });
+    let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
+    let mcp_server = server::ImapMcpServer::new(daemon_state, session_state);
+    let transport = rmcp::transport::io::stdio();
+    let service = Box::pin(rmcp::serve_server(mcp_server, transport))
+        .await
+        .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
+    // waiting() takes ownership of service, consuming it and dropping the
+    // ImapMcpServer (including all cancellation sender clones) when it
+    // returns. The drainer task exits once all senders have dropped.
+    service
+        .waiting()
+        .await
+        .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
+
+    // All senders dropped above. Wait for the drainer to flush any
+    // remaining queued cancellation records before the runtime exits.
+    if let Err(e) = drainer_handle.await {
+        tracing::error!(error = %e, "cancellation drainer join error");
+    }
+    Ok(())
 }
 
 /// Resolve the config file path from `--config` or the

@@ -1,15 +1,14 @@
 //! MCP server struct and `ServerHandler` implementation.
 //!
-//! `ImapMcpServer` owns an `AccountRegistry` (per-account IMAP/SMTP
-//! connections, guards, and the attachment download sandbox) and an
-//! audit writer. The `ServerHandler` trait wires `list_tools`
-//! (posture-filtered union across accounts) and `call_tool` (account
-//! resolution + dispatch pipeline).
+//! `ImapMcpServer` owns an `Arc<DaemonState>` (shared across all sessions),
+//! an `Arc<SessionState>` (per-connection), and a `SessionAuditSink` that
+//! automatically injects the session id into every audit record. The
+//! `ServerHandler` trait wires `list_tools` (posture-filtered union across
+//! accounts) and `call_tool` (account resolution + dispatch pipeline).
 
 use std::str::FromStr;
 use std::sync::Arc;
 
-use rimap_audit::AuditWriter;
 use rimap_audit::CancelledToolEndSender;
 use rimap_audit::redact::RedactionSalt;
 use rimap_core::account::AccountId;
@@ -24,19 +23,22 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 
 use crate::boot::registry::{AccountRegistry, AccountState};
+use crate::daemon::audit_sink::SessionAuditSink;
+use crate::daemon::state::{DaemonState, SessionState};
 use crate::mcp::dispatch::{PostureContext, rimap_error_to_breaker_reason};
 use crate::mcp::tool_catalog::TOOL_DEFS;
 use crate::mcp::tool_name::{
     is_bare_simple_tool_name, is_legacy_single_account, refine_tool_name, split_tool_name,
 };
 
-/// Core MCP server. Owns every resource the handler methods need.
+/// Core MCP server. One instance per client connection.
 pub struct ImapMcpServer {
-    /// Account registry holding per-account state.
-    #[doc(hidden)]
-    pub registry: AccountRegistry,
-    /// Append-only audit writer.
-    pub(crate) audit: AuditWriter,
+    /// Shared daemon state. Cloned cheaply into every session.
+    pub(crate) state: Arc<DaemonState>,
+    /// This connection's session state.
+    pub(crate) session: Arc<SessionState>,
+    /// Session-scoped audit sink — guarantees `session_id` injection.
+    pub(crate) audit: SessionAuditSink,
     /// Channel used by `AuditEnvelopeGuard::drop` to emit synthetic
     /// cancellation `tool_end` records when the MCP dispatch future is
     /// dropped mid-call (#71, #99).
@@ -47,21 +49,26 @@ pub struct ImapMcpServer {
 }
 
 impl ImapMcpServer {
-    /// Construct a new server. Builds the per-process redaction salt;
+    /// Construct a per-session server. Builds the per-process redaction salt;
     /// per-tool schemas are dispatched on demand via
     /// [`rimap_audit::redact::ToolRedactionSchema::redaction_schema`].
     #[must_use]
-    pub fn new(
-        registry: AccountRegistry,
-        audit: AuditWriter,
-        cancellation_sender: CancelledToolEndSender,
-    ) -> Self {
+    pub fn new(state: Arc<DaemonState>, session: Arc<SessionState>) -> Self {
+        let audit = SessionAuditSink::new(state.audit.clone(), session.id);
+        let cancellation_sender = state.cancellation_tx.clone();
         Self {
-            registry,
+            state,
+            session,
             audit,
             cancellation_sender,
             redaction_salt: Arc::new(RedactionSalt::new_random()),
         }
+    }
+
+    /// Convenience accessor for the account registry stored in shared state.
+    #[must_use]
+    pub fn registry(&self) -> &AccountRegistry {
+        &self.state.registry
     }
 
     /// Run an account-scoped tool through the full dispatch pipeline:
@@ -151,7 +158,7 @@ impl ImapMcpServer {
                 .await
                 .map_err(|e| error_data_to_rimap_error(&e))?
         } else {
-            let account = self.registry.resolve(account_name)?;
+            let account = self.registry().resolve(account_name)?;
             Box::pin(self.dispatch_account_scoped(account, tool, &args_map))
                 .await
                 .map_err(|e| error_data_to_rimap_error(&e))?
@@ -243,7 +250,7 @@ impl ServerHandler for ImapMcpServer {
             }
         }
 
-        let accounts = self.registry.accounts();
+        let accounts = self.registry().accounts();
         let use_bare_names = is_legacy_single_account(accounts);
 
         for (id, state) in accounts {
@@ -285,7 +292,7 @@ impl ServerHandler for ImapMcpServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
         let resources: Vec<Resource> = self
-            .registry
+            .registry()
             .accounts()
             .values()
             .map(|state| {
@@ -331,7 +338,7 @@ impl ServerHandler for ImapMcpServer {
         })?;
 
         let state = self
-            .registry
+            .registry()
             .resolve(Some(account_name))
             .map_err(|e| crate::mcp::error::to_mcp_error(&e))?;
 
@@ -391,7 +398,7 @@ impl ServerHandler for ImapMcpServer {
         // dotted tools (e.g. search.advanced_query) and infrastructure
         // tools (use_account, list_accounts) remain valid bare forms
         // regardless. (#73)
-        let accounts = self.registry.accounts();
+        let accounts = self.registry().accounts();
         if !is_legacy_single_account(accounts) && is_bare_simple_tool_name(&request.name) {
             return Err(ErrorData::invalid_params(
                 format!(
@@ -438,9 +445,14 @@ impl ServerHandler for ImapMcpServer {
                 .and_then(|v| v.as_str().map(String::from))
         });
 
+        // Read the session-scoped active account from SessionState. When an
+        // explicit account is provided it takes precedence; this only supplies
+        // the fallback default.
+        let session_default = self.session.active_account.read().await.clone();
+
         let account = self
-            .registry
-            .resolve(explicit_account.as_deref())
+            .registry()
+            .resolve_with_active(explicit_account.as_deref(), session_default.as_ref())
             .map_err(|e| crate::mcp::error::to_mcp_error(&e))?;
 
         self.dispatch_account_scoped(account, tool_name, &args)

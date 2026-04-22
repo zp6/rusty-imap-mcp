@@ -115,10 +115,10 @@ impl ImapMcpServer {
         redacted: serde_json::Value,
         hash: String,
     ) -> Result<rimap_audit::Seq, ErrorData> {
-        let audit = self.audit.clone();
+        let sink = self.audit.clone();
         let posture_effective = posture.posture();
         let join = tokio::task::spawn_blocking(move || {
-            audit.log_tool_start(ToolStartInputs {
+            sink.log_tool_start(ToolStartInputs {
                 tool,
                 account,
                 posture_effective,
@@ -157,7 +157,7 @@ impl ImapMcpServer {
         error_code: Option<rimap_core::ErrorCode>,
         duration_ms: u64,
     ) {
-        let audit = self.audit.clone();
+        let sink = self.audit.clone();
         // The provenance ring buffer is not yet wired for multi-account.
         // Record an empty snapshot with the window placeholder until a
         // per-account buffer lands.
@@ -177,7 +177,7 @@ impl ImapMcpServer {
             provenance,
             session_id: None,
         };
-        let join = tokio::task::spawn_blocking(move || audit.log_tool_end(inputs)).await;
+        let join = tokio::task::spawn_blocking(move || sink.log_tool_end(inputs)).await;
         match join {
             Ok(Ok(_)) => {}
             Ok(Err(audit_err)) => {
