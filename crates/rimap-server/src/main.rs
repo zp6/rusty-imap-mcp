@@ -10,20 +10,12 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use rimap_authz::DispatchGuard;
-use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
-use rimap_authz::matrix::EffectiveMatrix;
-use rimap_authz::rate_limit::Governor;
 use rimap_config::credential::{CredentialStore, KeyringStore};
 use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
-use rimap_config::validate::ValidatedAccountConfig;
-use rimap_imap::{Connection, ConnectionConfig};
-use secrecy::ExposeSecret;
 
 use clap::CommandFactory as _;
 
@@ -142,7 +134,7 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     let download_dir: Arc<std::path::Path> =
         Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
 
-    let registry = build_registry(&multi, &audit, &credentials, &download_dir)
+    let registry = registry::build(&multi, &audit, &credentials, &download_dir)
         .await
         .context("building account registry")?;
 
@@ -209,135 +201,6 @@ fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| {
             anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
         })
-}
-
-/// Build the account registry from a validated multi-account config.
-async fn build_registry(
-    multi: &rimap_config::validate::ValidatedMultiConfig,
-    audit: &rimap_audit::AuditWriter,
-    credentials: &Arc<dyn CredentialStore>,
-    download_dir: &Arc<std::path::Path>,
-) -> anyhow::Result<registry::AccountRegistry> {
-    let mut account_states = std::collections::BTreeMap::new();
-    let auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
-    for (id, acfg) in &multi.accounts {
-        let guard = build_account_guard(acfg).context("building dispatch guard")?;
-        let conn_cfg = build_account_connection(id, acfg);
-        let resolver: Arc<dyn rimap_core::CredentialResolver> =
-            Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
-                credentials.clone(),
-                acfg.fallback_mode,
-            ));
-        let imap = Connection::new(conn_cfg, auth_sink.clone(), resolver);
-
-        let special_use = rimap_server::boot::discovery::resolve_special_use(&imap)
-            .await
-            .with_context(|| {
-                format!("resolving special-use folders for account {}", id.as_str())
-            })?;
-
-        // Expand the config-supplied protected-folders list with any
-        // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
-        // The merge is case-insensitive so user-configured literals
-        // (`"Sent"`) are not duplicated when the server also reports
-        // `"Sent"` on the same mailbox.
-        let mut protected = acfg.security.protected_folders.clone();
-        for discovered in special_use.all_discovered() {
-            if !protected
-                .iter()
-                .any(|p| p.eq_ignore_ascii_case(&discovered))
-            {
-                protected.push(discovered);
-            }
-        }
-
-        let smtp = build_smtp_client(acfg, credentials)?;
-
-        let folder_guard =
-            rimap_authz::FolderGuard::new(&protected, &acfg.security.expunge_folders);
-
-        let state = registry::AccountState {
-            id: id.clone(),
-            imap,
-            smtp,
-            guard,
-            folder_guard,
-            download_dir: Arc::clone(download_dir),
-            special_use,
-        };
-        account_states.insert(id.clone(), state);
-    }
-    Ok(registry::AccountRegistry::new(account_states))
-}
-
-/// Build an SMTP client from account config, if SMTP is configured.
-fn build_smtp_client(
-    acfg: &ValidatedAccountConfig,
-    credentials: &Arc<dyn CredentialStore>,
-) -> anyhow::Result<Option<rimap_smtp::SmtpClient>> {
-    let Some(ref smtp_cfg) = acfg.smtp else {
-        return Ok(None);
-    };
-    let (smtp_password, _src) = rimap_config::resolve_credential(
-        &**credentials,
-        &acfg.id,
-        &smtp_cfg.username,
-        &smtp_cfg.host,
-        acfg.fallback_mode,
-    )
-    .with_context(|| format!("resolving SMTP credential for account {}", acfg.id.as_str()))?;
-    let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
-        .with_context(|| format!("building SMTP client for account {}", acfg.id.as_str()))?;
-    drop(smtp_password);
-    Ok(Some(client))
-}
-
-/// Build the composed authz guard from a per-account config.
-fn build_account_guard(
-    acfg: &ValidatedAccountConfig,
-) -> anyhow::Result<DispatchGuard<SystemClock>> {
-    let matrix = EffectiveMatrix::build(acfg.security.posture, &acfg.tool_overrides);
-    let breaker_cfg = BreakerConfig {
-        error_threshold: acfg.limits.circuit_breaker_error_threshold,
-        window: Duration::from_secs(u64::from(acfg.limits.circuit_breaker_window_seconds)),
-        ..BreakerConfig::default_spec()
-    };
-    let breaker = CircuitBreaker::new(SystemClock::new(), breaker_cfg);
-    let governor = Governor::new(
-        acfg.limits.commands_per_second,
-        acfg.limits.drafts_per_minute,
-        acfg.limits.sends_per_minute,
-    )
-    .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
-    Ok(DispatchGuard::new(matrix, breaker, governor))
-}
-
-/// Map a per-account config to a `ConnectionConfig`.
-fn build_account_connection(
-    id: &rimap_core::account::AccountId,
-    acfg: &ValidatedAccountConfig,
-) -> ConnectionConfig {
-    let account = if id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
-        None
-    } else {
-        Some(id.as_str().to_string())
-    };
-    ConnectionConfig {
-        account,
-        account_id: id.clone(),
-        host: acfg.imap.host.clone(),
-        port: acfg.imap.port,
-        encryption: match acfg.imap.encryption {
-            rimap_config::model::ImapEncryption::Tls => rimap_imap::ImapEncryption::Tls,
-            rimap_config::model::ImapEncryption::Starttls => rimap_imap::ImapEncryption::Starttls,
-        },
-        username: acfg.imap.username.clone(),
-        pinned_fingerprint: acfg.tls_fingerprint,
-        connect_timeout: Duration::from_secs(u64::from(acfg.imap.connect_timeout_seconds)),
-        command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
-        max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
-        max_append_bytes: acfg.limits.max_append_bytes,
-    }
 }
 
 /// Resolve the attachment download directory from a multi-account config.
