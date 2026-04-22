@@ -64,13 +64,14 @@ mod tests {
         ToolStatus,
     };
     use rimap_core::{SessionId, tool::ToolName};
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    fn fresh_writer() -> (TempDir, AuditWriter) {
+    fn fresh_writer() -> (TempDir, AuditWriter, PathBuf) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("a.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
-            path,
+            path: path.clone(),
             rotate_bytes: 10 * 1024 * 1024,
             rotate_keep: 5,
             retention_seconds: None,
@@ -78,31 +79,34 @@ mod tests {
             initial_seq: Seq::FIRST,
         })
         .unwrap();
-        (dir, writer)
+        (dir, writer, path)
     }
 
     #[test]
     fn log_tool_start_injects_session_id_even_if_caller_sets_none() {
-        let (_dir, writer) = fresh_writer();
+        let (_dir, writer, path) = fresh_writer();
         let sid = SessionId::new();
         let sink = SessionAuditSink::new(writer, sid);
-        let seq = sink
-            .log_tool_start(ToolStartInputs {
-                tool: ToolName::ListAccounts,
-                posture_effective: None,
-                account: None,
-                arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
-                arguments_hash_sha256: "0".repeat(64),
-                session_id: None,
-            })
-            .unwrap();
-        let _ = seq;
-        assert_eq!(sink.session_id(), sid);
+        sink.log_tool_start(ToolStartInputs {
+            tool: ToolName::ListAccounts,
+            posture_effective: None,
+            account: None,
+            arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
+            arguments_hash_sha256: "0".repeat(64),
+            session_id: None,
+        })
+        .unwrap();
+        drop(sink);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let last = contents.lines().last().unwrap();
+        let v: serde_json::Value = serde_json::from_str(last).unwrap();
+        assert_eq!(v["kind"], "tool_start");
+        assert_eq!(v["session_id"], sid.to_string());
     }
 
     #[test]
     fn log_tool_end_injects_session_id_even_if_caller_sets_none() {
-        let (_dir, writer) = fresh_writer();
+        let (_dir, writer, path) = fresh_writer();
         let sid = SessionId::new();
         let sink = SessionAuditSink::new(writer, sid);
         let start_seq = sink
@@ -130,6 +134,38 @@ mod tests {
             session_id: None,
         })
         .unwrap();
-        assert_eq!(sink.session_id(), sid);
+        drop(sink);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let last_tool_end = contents
+            .lines()
+            .rfind(|line| line.contains("\"tool_end\""))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(last_tool_end).unwrap();
+        assert_eq!(v["kind"], "tool_end");
+        assert_eq!(v["session_id"], sid.to_string());
+    }
+
+    #[test]
+    fn log_tool_start_overrides_caller_provided_session_id() {
+        let (_dir, writer, path) = fresh_writer();
+        let sid_a = SessionId::new();
+        let sid_b = SessionId::new();
+        let sink = SessionAuditSink::new(writer, sid_a);
+        sink.log_tool_start(ToolStartInputs {
+            tool: ToolName::ListAccounts,
+            posture_effective: None,
+            account: None,
+            arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
+            arguments_hash_sha256: "0".repeat(64),
+            session_id: Some(sid_b),
+        })
+        .unwrap();
+        drop(sink);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let last = contents.lines().last().unwrap();
+        let v: serde_json::Value = serde_json::from_str(last).unwrap();
+        assert_eq!(v["kind"], "tool_start");
+        assert_eq!(v["session_id"], sid_a.to_string());
+        assert_ne!(v["session_id"], sid_b.to_string());
     }
 }
