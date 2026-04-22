@@ -1,8 +1,9 @@
 //! Platform abstraction for the daemon's accept loop.
 //!
 //! Unix: `UnixListener` + `UnixStream` + `peer_cred()`.
-//! Windows: `NamedPipeServer` (one-instance-per-client idiom) +
-//! `GetNamedPipeClientProcessId` + token-based SID lookup.
+//! Windows: `NamedPipeServer` (one-instance-per-client idiom). Peer
+//! identity is a v1 placeholder; full SID + `GetNamedPipeClientProcessId`
+//! capture is tracked as a follow-up.
 //!
 //! Both platforms converge on a shared `PeerIdentity` audit-record
 //! shape (`rimap_audit::record::PeerIdentity`).

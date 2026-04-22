@@ -74,10 +74,11 @@ impl PlatformListener for NamedPipeListener {
     type Stream = NamedPipeServer;
 
     async fn accept(&mut self) -> io::Result<AcceptedConnection<Self::Stream>> {
-        let server = self
-            .pending
-            .take()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "listener in broken state"))?;
+        let server = self.pending.take().ok_or_else(|| {
+            io::Error::other(
+                "accept() called after prior accept failure left the listener unreplenished",
+            )
+        })?;
         server.connect().await?;
         // v1 placeholder identity. The DACL already restricts connections to
         // the creating user, so scope A is enforced at the OS level even
