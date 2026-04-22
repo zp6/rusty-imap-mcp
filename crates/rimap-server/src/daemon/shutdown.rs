@@ -41,6 +41,12 @@ async fn wait_for_signal() {
 
 #[cfg(windows)]
 async fn wait_for_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[expect(
+        clippy::expect_used,
+        reason = "signal handler install failure is unrecoverable"
+    )]
+    tokio::signal::ctrl_c()
+        .await
+        .expect("install Ctrl+C handler");
     tracing::info!("Ctrl+C received");
 }
