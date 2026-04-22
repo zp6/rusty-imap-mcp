@@ -5,6 +5,7 @@ use std::sync::Arc;
 use rimap_audit::record::PeerIdentity;
 use rimap_core::SessionId;
 use tokio::sync::Notify;
+use tokio::task::JoinSet;
 
 use crate::daemon::state::{DaemonState, SessionState};
 use crate::daemon::transport::{AcceptedConnection, PlatformListener};
@@ -14,7 +15,7 @@ use crate::mcp::server::ImapMcpServer;
 ///
 /// Accepts connections from `listener`, gates on peer identity, and spawns one
 /// `rmcp::serve_server` task per accepted client. Returns when `shutdown` is
-/// notified.
+/// notified and all in-flight sessions have drained (up to 5 s).
 ///
 /// # Errors
 ///
@@ -28,8 +29,10 @@ pub async fn run<L>(
 where
     L: PlatformListener,
 {
-    let socket_path = resolve_socket_path(&listener);
+    let socket_path = resolve_socket_path();
     let peer_gate = make_peer_gate();
+    let mut sessions: JoinSet<()> = JoinSet::new();
+
     loop {
         tokio::select! {
             () = shutdown.notified() => {
@@ -49,16 +52,48 @@ where
                     drop(stream);
                     continue;
                 }
-                spawn_session(&state, stream, identity, socket_path.clone());
+                if let Some(future) = build_session_future(&state, stream, identity, socket_path.clone()) {
+                    sessions.spawn(future);
+                }
+            }
+            Some(_) = sessions.join_next() => {
+                // Reap completed sessions to keep the JoinSet bounded.
             }
         }
     }
+
     listener.shutdown();
+    drain_sessions(sessions).await;
     Ok(())
 }
 
+/// Wait up to 5 seconds for in-flight sessions to finish, then abort the rest.
+async fn drain_sessions(mut sessions: JoinSet<()>) {
+    if sessions.is_empty() {
+        return;
+    }
+    tracing::info!(
+        count = sessions.len(),
+        "draining in-flight sessions (up to 5 s)"
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !sessions.is_empty() {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let rem = deadline - now;
+        match tokio::time::timeout(rem, sessions.join_next()).await {
+            Ok(Some(_)) => {}           // task completed
+            Ok(None) | Err(_) => break, // drained or deadline elapsed
+        }
+    }
+    sessions.shutdown().await;
+    tracing::info!("session drain complete");
+}
+
 /// Returns the socket path string via [`crate::daemon::socket_path::resolve`].
-fn resolve_socket_path<L: PlatformListener>(_listener: &L) -> String {
+fn resolve_socket_path() -> String {
     #[cfg(unix)]
     {
         crate::daemon::socket_path::resolve().as_str().to_owned()
@@ -126,15 +161,18 @@ fn handle_rejected_peer(state: &Arc<DaemonState>, identity: &PeerIdentity, socke
     tracing::warn!(?identity, "rejected peer with mismatching identity");
 }
 
-/// Create a `SessionState`, emit `session_start`, and spawn an
-/// `rmcp::serve_server` task. The spawned task emits `session_end` on
-/// completion.
-fn spawn_session<S>(
+/// Build the async session future for a single accepted connection.
+///
+/// Emits `session_start`, then returns the future that runs `rmcp::serve_server`
+/// and emits `session_end`. Returns `None` and logs an error if `session_start`
+/// fails (preventing the connection from being tracked).
+fn build_session_future<S>(
     state: &Arc<DaemonState>,
     stream: S,
     identity: PeerIdentity,
     socket_path: String,
-) where
+) -> Option<impl std::future::Future<Output = ()> + Send + 'static>
+where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let sid = SessionId::new();
@@ -146,11 +184,11 @@ fn spawn_session<S>(
     };
     if let Err(e) = state.audit.log_session_start(start) {
         tracing::error!(error = %e, "failed to log session_start; dropping connection");
-        return;
+        return None;
     }
     let state_for_task = Arc::clone(state);
     let session_for_end = Arc::clone(&session);
-    tokio::spawn(async move {
+    Some(async move {
         let mcp = ImapMcpServer::new(Arc::clone(&state_for_task), Arc::clone(&session));
         let serve_result = Box::pin(rmcp::serve_server(mcp, stream)).await;
         let running = match serve_result {
@@ -169,7 +207,7 @@ fn spawn_session<S>(
         let quit = running.waiting().await;
         let (reason, last_err) = session_end_from_quit(quit);
         emit_session_end(&state_for_task, &session_for_end, reason, last_err);
-    });
+    })
 }
 
 /// Map `waiting()`'s `QuitReason` outcome to an audit `(SessionEndReason,
@@ -177,12 +215,22 @@ fn spawn_session<S>(
 fn session_end_from_quit(
     quit: Result<rmcp::service::QuitReason, tokio::task::JoinError>,
 ) -> (rimap_audit::record::SessionEndReason, Option<String>) {
+    use rimap_audit::record::SessionEndReason;
+    use rmcp::service::QuitReason;
     match quit {
-        Ok(rmcp::service::QuitReason::JoinError(e)) | Err(e) => (
-            rimap_audit::record::SessionEndReason::Error,
+        Ok(QuitReason::Closed) => (SessionEndReason::Eof, None),
+        Ok(QuitReason::Cancelled) => (SessionEndReason::DaemonShutdown, None),
+        Ok(QuitReason::JoinError(e)) | Err(e) => (
+            SessionEndReason::Error,
             Some(format!("task join error: {e}")),
         ),
-        Ok(_) => (rimap_audit::record::SessionEndReason::Eof, None),
+        // QuitReason is #[non_exhaustive]; catch any future variants and treat
+        // them as unexpected errors so we surface them rather than silently
+        // swallowing them.
+        Ok(other) => (
+            SessionEndReason::Error,
+            Some(format!("unexpected QuitReason: {other:?}")),
+        ),
     }
 }
 

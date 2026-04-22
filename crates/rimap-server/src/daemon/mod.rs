@@ -3,6 +3,7 @@
 
 pub mod audit_sink;
 pub mod run;
+pub mod shutdown;
 pub mod socket_path;
 #[cfg(unix)]
 pub mod socket_setup;

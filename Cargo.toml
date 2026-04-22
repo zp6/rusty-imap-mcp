@@ -46,7 +46,7 @@ nonzero_ext = "0.3"
 parking_lot = "0.12"
 
 # Async runtime
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync", "net", "signal"] }
 
 # IMAP / TLS (Sprint 3)
 async-imap = { version = "0.11", default-features = false, features = ["runtime-tokio"] }
