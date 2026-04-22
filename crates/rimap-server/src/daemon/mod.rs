@@ -4,4 +4,5 @@
 pub mod socket_path;
 #[cfg(unix)]
 pub mod socket_setup;
+pub mod state;
 pub mod transport;
