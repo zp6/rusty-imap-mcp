@@ -10,6 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub(crate) mod error;
 pub mod ids;
+pub mod peer_identity;
+
+pub use peer_identity::PeerIdentity;
 
 use crate::record::ids::{ProcessId, Seq, Timestamp};
 
