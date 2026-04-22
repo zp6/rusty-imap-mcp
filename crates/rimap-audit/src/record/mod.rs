@@ -88,6 +88,46 @@ pub enum ProcessEndReason {
     Error,
 }
 
+/// Why a session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEndReason {
+    /// Client cleanly closed its end of the socket.
+    Eof,
+    /// Session ended due to an error (see `last_error` on `SessionEnd`).
+    Error,
+    /// Daemon received a shutdown signal and is terminating all sessions.
+    DaemonShutdown,
+    /// Peer UID did not match the daemon's UID (scope A enforcement).
+    PeerUidRejected,
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_end_reason_tests {
+    use super::SessionEndReason;
+
+    #[test]
+    fn serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::DaemonShutdown).expect("ser"),
+            r#""daemon_shutdown""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::PeerUidRejected).expect("ser"),
+            r#""peer_uid_rejected""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::Eof).expect("ser"),
+            r#""eof""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::Error).expect("ser"),
+            r#""error""#
+        );
+    }
+}
+
 /// Per-account summary for multi-account `process_start` records.
 ///
 /// `posture` serializes via [`rimap_core::Posture`]'s kebab-case serde,
