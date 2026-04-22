@@ -1,9 +1,10 @@
 # Multi-client daemon — follow-up issues
 
-Captured during implementation of the multi-client daemon plan
-(`docs/superpowers/plans/2026-04-22-multi-client-daemon.md`). All items
-below were filed as GitHub issues (#124–#139) after the implementation
-branch landed locally.
+Captured during and after implementation of the multi-client daemon plan
+(`docs/superpowers/plans/2026-04-22-multi-client-daemon.md`). Items 1–16
+came from the implementation pass and were filed as #124–#139. Items
+17–25 came from a post-landing `/simplify` code-review pass and were
+filed as #141–#149.
 
 | # | Title | Issue |
 |---|-------|-------|
@@ -23,6 +24,24 @@ branch landed locally.
 | 14 | `session_end(DaemonShutdown)` for aborted sessions | [#137](https://github.com/randomparity/rusty-imap-mcp/issues/137) |
 | 15 | Config path resolution duplication | [#138](https://github.com/randomparity/rusty-imap-mcp/issues/138) |
 | 16 | Doc sweep: stale `AccountRegistry.active` refs | [#139](https://github.com/randomparity/rusty-imap-mcp/issues/139) |
+
+## From the post-landing code-review pass
+
+Filed after the `refactor(rimap-server,rimap-audit): code-review cleanup` commit
+(0ec1717). The safe + medium findings from that pass landed in-tree; the
+architectural findings below are tracked as separate issues.
+
+| # | Title | Issue |
+|---|-------|-------|
+| 17 | Hoist `RedactionSalt` to `DaemonState` | [#141](https://github.com/randomparity/rusty-imap-mcp/issues/141) |
+| 18 | `spawn_blocking` around session_start / session_end writes | [#142](https://github.com/randomparity/rusty-imap-mcp/issues/142) |
+| 19 | `ArcSwapOption` for `SessionState.active_account` | [#143](https://github.com/randomparity/rusty-imap-mcp/issues/143) |
+| 20 | Parallelize `registry::build` per-account setup | [#144](https://github.com/randomparity/rusty-imap-mcp/issues/144) |
+| 21 | Tighten `DaemonState` visibility + narrow `raw_writer` | [#145](https://github.com/randomparity/rusty-imap-mcp/issues/145) |
+| 22 | Shared `UlidNewtype<Tag>` for `SessionId` / `ProcessId` | [#146](https://github.com/randomparity/rusty-imap-mcp/issues/146) |
+| 23 | Shared `ensure_tight_dir` helper | [#147](https://github.com/randomparity/rusty-imap-mcp/issues/147) |
+| 24 | Cache `list_tools` result on `AccountRegistry` | [#148](https://github.com/randomparity/rusty-imap-mcp/issues/148) |
+| 25 | `&Map`-taking APIs in `rimap-audit` to avoid arg clone | [#149](https://github.com/randomparity/rusty-imap-mcp/issues/149) |
 
 ## From the design spec (§12 — anticipated follow-ups)
 
