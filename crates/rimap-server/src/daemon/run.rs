@@ -95,8 +95,16 @@ async fn drain_sessions(mut sessions: JoinSet<()>) {
             Ok(None) | Err(_) => break, // drained or deadline elapsed
         }
     }
-    sessions.shutdown().await;
-    tracing::info!("session drain complete");
+    let aborted = sessions.len();
+    let shutdown = tokio::time::timeout(std::time::Duration::from_secs(2), sessions.shutdown());
+    if shutdown.await.is_ok() {
+        tracing::info!(aborted_count = aborted, "session drain complete");
+    } else {
+        tracing::warn!(
+            aborted_count = aborted,
+            "session shutdown deadline exceeded; exiting with stuck tasks",
+        );
+    }
 }
 
 /// Returns the socket path string via [`crate::daemon::socket_path::resolve`].
