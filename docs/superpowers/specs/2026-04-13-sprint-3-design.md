@@ -203,7 +203,7 @@ fields.
 On every tool call (except `use_account` and `list_accounts`):
 
 1. If the tool arguments contain `"account": "<name>"` — use that account.
-2. Else if `registry.active` is set — use the session default.
+2. Else if `SessionState.active_account` is set — use the session default.
 3. Else if exactly one account exists — auto-select it.
 4. Else — return `ERR_NO_ACCOUNT`.
 
@@ -211,7 +211,7 @@ On every tool call (except `use_account` and `list_accounts`):
 
 **`use_account`:**
 - Input: `{ "account": "work" }`
-- Sets `registry.active` to the named account.
+- Sets `SessionState.active_account` on the calling session to the named account.
 - Returns confirmation with the account name.
 - Bypasses posture checks, rate limiting, and circuit breaker — it is an
   infrastructure tool, not an IMAP operation.
