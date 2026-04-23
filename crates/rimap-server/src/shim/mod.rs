@@ -57,27 +57,63 @@ pub fn verify_socket_path(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Bridge stdin/stdout to `sock` until either direction closes.
+/// Bridge `stdin` → `sock` write half and `sock` read half → `stdout`.
 ///
-/// Both pumps run concurrently via `tokio::join!`. The stdin→socket pump
-/// calls `shutdown()` on the write half when stdin hits EOF so the daemon
-/// observes a clean half-close rather than a hung peer.
-async fn pipe_stdio<S>(sock: S)
+/// Returns when either direction completes so the shim exits promptly on
+/// first-half EOF (RUST-ASYNC-02). When the socket closes first, the
+/// stdin→sock future is dropped and cancelled; when stdin closes first,
+/// the write half is shut down and the sock→stdout side is given a brief
+/// window to drain any final bytes the server already sent.
+async fn pipe<R, W, S>(mut stdin: R, mut stdout: W, sock: S)
 where
+    R: AsyncRead + Send + Unpin,
+    W: AsyncWrite + Send + Unpin,
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     use tokio::io::AsyncWriteExt as _;
     let (mut read_half, mut write_half) = tokio::io::split(sock);
-    let mut stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let stdin_to_sock = async move {
-        let _ = tokio::io::copy(&mut stdin, &mut write_half).await;
+
+    let stdin_to_sock = async {
+        let r = tokio::io::copy(&mut stdin, &mut write_half).await;
         let _ = write_half.shutdown().await;
+        r
     };
-    let sock_to_stdout = async move {
-        let _ = tokio::io::copy(&mut read_half, &mut stdout).await;
-    };
-    tokio::join!(stdin_to_sock, sock_to_stdout);
+    let sock_to_stdout = async { tokio::io::copy(&mut read_half, &mut stdout).await };
+
+    tokio::pin!(stdin_to_sock);
+    tokio::pin!(sock_to_stdout);
+
+    tokio::select! {
+        _ = &mut stdin_to_sock => {
+            // Stdin closed; drain remaining socket → stdout briefly so the
+            // client sees any final bytes the server sent.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                &mut sock_to_stdout,
+            ).await;
+        }
+        _ = &mut sock_to_stdout => {
+            // Server closed; we're done. Dropping `stdin_to_sock` cancels it.
+        }
+    }
+}
+
+async fn pipe_stdio<S>(sock: S)
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    pipe(tokio::io::stdin(), tokio::io::stdout(), sock).await;
+}
+
+/// Test-only entrypoint exposing the pump with empty stdin and sink stdout
+/// so tests can exercise the cancellation behavior without touching
+/// process stdio.
+#[doc(hidden)]
+pub async fn pipe_stdio_for_test<S>(sock: S)
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    pipe(tokio::io::empty(), tokio::io::sink(), sock).await;
 }
 
 #[cfg(unix)]
