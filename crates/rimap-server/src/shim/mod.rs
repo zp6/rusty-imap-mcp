@@ -8,6 +8,55 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::daemon::socket_path;
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+#[cfg(unix)]
+use std::path::Path;
+
+/// Validate that `path` is a non-symlinked, same-UID, mode-0600 socket.
+/// Called by the shim before `UnixStream::connect` to defend against a
+/// local attacker planting a replacement socket (see review finding I7 /
+/// C1 / C3 of the multi-client-daemon review).
+///
+/// # Errors
+/// Returns `io::ErrorKind::PermissionDenied` if `path` is a symlink,
+/// is not owned by the current effective UID, or has any mode other
+/// than `0o600`. Propagates `io::ErrorKind::NotFound` if the path
+/// does not exist.
+#[cfg(unix)]
+pub fn verify_socket_path(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "refusing to connect: {} is a symlink; remove the symlink or bind at a different path",
+                path.display()
+            ),
+        ));
+    }
+    let our_uid = rustix::process::geteuid().as_raw();
+    if meta.uid() != our_uid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "socket {} is owned by uid {}, not {}",
+                path.display(),
+                meta.uid(),
+                our_uid,
+            ),
+        ));
+    }
+    let mode = meta.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("socket {} has mode {mode:o}, require 0600", path.display(),),
+        ));
+    }
+    Ok(())
+}
+
 /// Bridge stdin/stdout to `sock` until either direction closes.
 ///
 /// Both pumps run concurrently via `tokio::join!`. The stdin→socket pump
@@ -46,6 +95,19 @@ pub async fn run() -> ExitCode {
         eprintln!("rusty-imap-mcp shim: resolved non-filesystem endpoint on unix");
         return ExitCode::from(1);
     };
+
+    // Let `NotFound` fall through so the `UnixStream::connect` arm below
+    // emits the richer "daemon not running" message with start-up hints.
+    if let Err(e) = verify_socket_path(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!(
+            "rusty-imap-mcp shim: refusing to connect to {}: {e}",
+            path.display()
+        );
+        return ExitCode::from(1);
+    }
+
     let sock = match UnixStream::connect(&path).await {
         Ok(s) => s,
         Err(e) => {
