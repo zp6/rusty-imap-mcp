@@ -27,6 +27,39 @@ pub struct UnixSocketListener {
     path: Option<PathBuf>,
 }
 
+/// RAII guard: sets the process umask to `mask` and restores the prior
+/// value on drop.
+///
+/// Umask is *process-global*, so this briefly affects any concurrent
+/// thread that creates a filesystem object during its lifetime. The
+/// daemon's `bind` is a one-shot startup event on the main task, so the
+/// exposure window is negligible; callers should still keep the guard
+/// scoped as tightly as possible.
+struct UmaskGuard {
+    prior: rustix::fs::Mode,
+}
+
+impl UmaskGuard {
+    fn new(mask: u32) -> Self {
+        let prior = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask));
+        Self { prior }
+    }
+}
+
+impl Drop for UmaskGuard {
+    fn drop(&mut self) {
+        rustix::process::umask(self.prior);
+    }
+}
+
+fn symlink_metadata_if_exists(path: &Path) -> io::Result<Option<std::fs::Metadata>> {
+    match std::fs::symlink_metadata(path) {
+        Ok(m) => Ok(Some(m)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 impl UnixSocketListener {
     /// Bind a new listener at `path`. The parent directory is expected
     /// to already exist with mode 0700 (caller's responsibility — see
@@ -34,15 +67,31 @@ impl UnixSocketListener {
     ///
     /// If `path` already exists and `connect()` succeeds against it,
     /// this call fails with `io::ErrorKind::AddrInUse` and does NOT
-    /// unlink. If `path` exists but `connect()` fails, the stale file
-    /// is unlinked and `bind()` retries.
+    /// unlink. If `path` exists but is a symlink, this call fails with
+    /// `io::ErrorKind::PermissionDenied` — we never follow symlinks at
+    /// the socket path to avoid a TOCTOU between socket-dir preparation
+    /// and bind. If `path` exists but `connect()` fails and it is a
+    /// regular file, the stale file is unlinked and `bind()` proceeds.
+    ///
+    /// Narrows the process umask to `0o077` across the bind syscall so
+    /// the kernel creates the socket inode with mode `0o700` directly,
+    /// closing the window in which a same-UID attacker could `connect()`
+    /// between `bind` and the post-bind `chmod`. The post-bind
+    /// `set_permissions(0o600)` remains as defense-in-depth.
     ///
     /// # Errors
     /// Returns an `io::Error` for bind failures, unexpected live
-    /// listeners at the same path, or if `remove_file` / `set_permissions`
-    /// fails during stale-socket recovery.
+    /// listeners at the same path, symlinks at the socket path, or if
+    /// `remove_file` / `set_permissions` fails during stale-socket
+    /// recovery.
     pub async fn bind(path: &Path) -> io::Result<Self> {
-        if path.exists() {
+        if let Some(metadata) = symlink_metadata_if_exists(path)? {
+            if metadata.file_type().is_symlink() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("refusing to bind: {} is a symlink", path.display()),
+                ));
+            }
             if UnixStream::connect(path).await.is_ok() {
                 return Err(io::Error::new(
                     io::ErrorKind::AddrInUse,
@@ -55,9 +104,28 @@ impl UnixSocketListener {
             std::fs::remove_file(path)?;
             tracing::info!(path = %path.display(), "unlinked stale daemon socket");
         }
+
+        // Narrow umask to 0077 so the kernel creates the socket inode
+        // with mode 0700 (UnixListener::bind respects umask). Restored
+        // on drop.
+        let _umask = UmaskGuard::new(0o077);
+
         let inner = UnixListener::bind(path)?;
+
+        // Defense in depth: if UmaskGuard ever regresses, narrow anyway.
         let perms = std::fs::Permissions::from_mode(0o600);
         std::fs::set_permissions(path, perms)?;
+
+        // Verify post-bind mode matches our contract — fail closed on
+        // surprise.
+        let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("bound socket has mode {mode:o}, require 0600"),
+            ));
+        }
+
         Ok(Self {
             inner,
             path: Some(path.to_owned()),
@@ -195,5 +263,20 @@ mod tests {
         let _listener = UnixSocketListener::bind(&path).await.unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
+    }
+
+    #[tokio::test]
+    async fn socket_file_is_mode_0600_even_under_permissive_umask() {
+        // Force a wide-open umask before bind. Correct code must override
+        // it via UmaskGuard so the kernel creates the inode with mode
+        // 0700 directly — closing the window between bind and chmod.
+        // Use rustix to avoid `unsafe` (workspace forbids `unsafe_code`).
+        let prior = rustix::process::umask(rustix::fs::Mode::empty());
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("d.sock");
+        let _listener = UnixSocketListener::bind(&path).await.unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        rustix::process::umask(prior);
+        assert_eq!(mode, 0o600, "expected 0600 under 0000 umask, got {mode:o}");
     }
 }
