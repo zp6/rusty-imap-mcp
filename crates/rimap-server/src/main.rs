@@ -128,11 +128,7 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     hardening::lock_down_process()
         .context("daemon startup hardening (rlimit_core / prctl_dumpable)")?;
 
-    let config_path = config_override
-        .or_else(|| resolve_config_path(None))
-        .ok_or_else(|| {
-            anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
-        })?;
+    let config_path = resolve_or_default(config_override)?;
     let multi = load_and_validate(&config_path)
         .with_context(|| format!("loading config {}", config_path.display()))?;
     let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
@@ -212,15 +208,22 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     mcp_result
 }
 
-/// Resolve the config file path from `--config` or the
-/// `RUSTY_IMAP_MCP_CONFIG` environment variable, erroring if neither is set.
-fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
-    cli.config
-        .clone()
+/// Resolve a config-file path from an explicit `--config` override, falling
+/// back to the `RUSTY_IMAP_MCP_CONFIG` environment variable via
+/// [`resolve_config_path`]. Errors with the same "no config path" message
+/// used by the previous inline implementations.
+fn resolve_or_default(override_: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    override_
         .or_else(|| resolve_config_path(None))
         .ok_or_else(|| {
             anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
         })
+}
+
+/// Resolve the config file path from `--config` or the
+/// `RUSTY_IMAP_MCP_CONFIG` environment variable, erroring if neither is set.
+fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
+    resolve_or_default(cli.config.clone())
 }
 
 /// Resolve the attachment download directory from a multi-account config.
@@ -331,5 +334,38 @@ mod resolve_download_dir_tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod resolve_or_default_tests {
+    use super::resolve_or_default;
+    use std::path::PathBuf;
+
+    #[test]
+    fn override_path_wins_over_env() {
+        let explicit = PathBuf::from("/tmp/custom.toml");
+        let got = resolve_or_default(Some(explicit.clone())).unwrap();
+        assert_eq!(got, explicit);
+    }
+
+    #[test]
+    fn no_override_no_env_error_message_is_actionable() {
+        // We cannot force resolve_config_path to return None on a host where
+        // ProjectDirs::from succeeds — on Linux it falls back to /etc/passwd
+        // via getpwuid when HOME is unset, so there's no env-var combo that
+        // disables it. When it *does* return None (headless / unusual passwd
+        // configs), the error surface must name the fix the user should take.
+        temp_env::with_var("RUSTY_IMAP_MCP_CONFIG", None::<&str>, || {
+            if let Err(e) = resolve_or_default(None) {
+                let msg = e.to_string();
+                assert!(msg.contains("--config"), "error lacks --config hint: {msg}");
+                assert!(
+                    msg.contains("RUSTY_IMAP_MCP_CONFIG"),
+                    "error lacks env-var hint: {msg}",
+                );
+            }
+        });
     }
 }
