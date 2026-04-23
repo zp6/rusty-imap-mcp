@@ -166,12 +166,17 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
             .with_context(|| format!("creating named pipe {}", ep.as_str()))?
     };
 
+    let max_sessions =
+        usize::try_from(multi.daemon.max_concurrent_sessions.get()).unwrap_or(usize::MAX);
+    let session_permits = Arc::new(tokio::sync::Semaphore::new(max_sessions));
+
     let state = Arc::new(DaemonState {
         registry: Arc::new(registry),
         audit: audit.clone(),
         download_dir,
         cancellation_tx,
         started_at: std::time::Instant::now(),
+        session_permits,
     });
 
     let shutdown = install_shutdown_handler();
@@ -266,7 +271,7 @@ fn run_migrate_keyring(account: &str, username: &str, host: &str) -> anyhow::Res
 #[expect(clippy::expect_used, reason = "tests")]
 mod resolve_download_dir_tests {
     use super::resolve_download_dir_multi;
-    use rimap_config::model::{AttachmentsConfig, AuditConfig};
+    use rimap_config::model::{AttachmentsConfig, AuditConfig, DaemonConfig};
     use rimap_config::validate::ValidatedMultiConfig;
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
@@ -285,6 +290,7 @@ mod resolve_download_dir_tests {
                 allowed_base_dir: None,
             },
             attachments: AttachmentsConfig { download_dir },
+            daemon: DaemonConfig::default(),
         }
     }
 

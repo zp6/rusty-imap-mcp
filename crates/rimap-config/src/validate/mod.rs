@@ -23,7 +23,7 @@ use rimap_core::tool::ToolName;
 
 use crate::error::ConfigError;
 use crate::model::{
-    AttachmentsConfig, AuditConfig, Config, FallbackMode, ImapConfig, LimitsConfig,
+    AttachmentsConfig, AuditConfig, Config, DaemonConfig, FallbackMode, ImapConfig, LimitsConfig,
     MultiAccountConfig, SecurityConfig, SmtpConfig, Verdict,
 };
 
@@ -62,6 +62,8 @@ pub struct ValidatedMultiConfig {
     pub audit: AuditConfig,
     /// Global attachment download settings.
     pub attachments: AttachmentsConfig,
+    /// Global daemon runtime settings.
+    pub daemon: DaemonConfig,
 }
 
 /// Validate a multi-account config.
@@ -106,6 +108,7 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
         accounts,
         audit: config.audit,
         attachments: config.attachments,
+        daemon: config.daemon,
     })
 }
 
@@ -136,6 +139,7 @@ pub fn validate_legacy_as_multi(config: Config) -> Result<ValidatedMultiConfig, 
         accounts,
         audit: config.audit,
         attachments: config.attachments,
+        daemon: DaemonConfig::default(),
     })
 }
 
@@ -624,7 +628,7 @@ path = "/tmp/audit.jsonl"
     // Multi-account validation tests
     // -----------------------------------------------------------------------
 
-    use crate::model::{DefaultsConfig, MultiAccountConfig, RawAccountConfig};
+    use crate::model::{DaemonConfig, DefaultsConfig, MultiAccountConfig, RawAccountConfig};
     use crate::validate::validate_multi;
 
     fn base_multi_config(
@@ -644,6 +648,7 @@ path = "/tmp/audit.jsonl"
                 allowed_base_dir: Some(audit_dir.to_path_buf()),
             },
             attachments: AttachmentsConfig::default(),
+            daemon: DaemonConfig::default(),
         }
     }
 

@@ -289,6 +289,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         download_dir: std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
         cancellation_tx,
         started_at: std::time::Instant::now(),
+        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
     });
     let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
     let server = ImapMcpServer::new(daemon_state, session_state);

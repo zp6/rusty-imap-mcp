@@ -53,15 +53,31 @@ impl TestDaemon {
 
 /// Build a minimal `DaemonState` suitable for integration tests that do not
 /// need a real `AccountRegistry`. Registry is empty; audit writer is real
-/// (backed by `audit_path`); download dir is `tempdir`.
+/// (backed by `audit_path`); download dir is `tempdir`. Session-permit
+/// capacity defaults to 64 (matches the production default); tests that
+/// need a different bound should call [`test_daemon_state_with_limit`].
+///
+/// # Panics
+///
+/// Panics if the audit file cannot be opened — intentional in a test helper.
+pub fn test_daemon_state(
+    tempdir: &std::path::Path,
+    audit_path: &std::path::Path,
+) -> Arc<DaemonState> {
+    test_daemon_state_with_limit(tempdir, audit_path, 64)
+}
+
+/// Same as [`test_daemon_state`] but with a configurable
+/// `max_concurrent_sessions` bound.
 ///
 /// # Panics
 ///
 /// Panics if the audit file cannot be opened — intentional in a test helper.
 #[expect(clippy::expect_used, reason = "test helper — panics on setup failure")]
-pub fn test_daemon_state(
+pub fn test_daemon_state_with_limit(
     tempdir: &std::path::Path,
     audit_path: &std::path::Path,
+    max_concurrent_sessions: usize,
 ) -> Arc<DaemonState> {
     use rimap_server::boot::registry::AccountRegistry;
 
@@ -78,6 +94,7 @@ pub fn test_daemon_state(
     let registry = Arc::new(AccountRegistry::new(std::collections::BTreeMap::new()));
     let download_dir: Arc<std::path::Path> = Arc::from(tempdir.to_owned().into_boxed_path());
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
+    let session_permits = Arc::new(tokio::sync::Semaphore::new(max_concurrent_sessions));
 
     Arc::new(DaemonState {
         registry,
@@ -85,6 +102,7 @@ pub fn test_daemon_state(
         download_dir,
         cancellation_tx,
         started_at: std::time::Instant::now(),
+        session_permits,
     })
 }
 

@@ -50,6 +50,7 @@ fn build_test_server() -> TestFixture {
         download_dir,
         cancellation_tx,
         started_at: std::time::Instant::now(),
+        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
     });
     let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
     let server = ImapMcpServer::new(daemon_state, session_state);
@@ -218,6 +219,7 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
         download_dir: download_dir_2,
         cancellation_tx,
         started_at: std::time::Instant::now(),
+        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
     });
     let session_id = rimap_core::SessionId::new();
     let session_state_2 = Arc::new(rimap_server::daemon::state::SessionState::new(session_id));

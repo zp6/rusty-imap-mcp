@@ -100,6 +100,9 @@ pub enum SessionEndReason {
     DaemonShutdown,
     /// Peer UID did not match the daemon's UID (scope A enforcement).
     PeerUidRejected,
+    /// Daemon refused the connection because `max_concurrent_sessions`
+    /// was reached.
+    Rejected,
 }
 
 #[cfg(test)]
@@ -125,6 +128,17 @@ mod session_end_reason_tests {
             serde_json::to_string(&SessionEndReason::Error).expect("ser"),
             r#""error""#
         );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::Rejected).expect("ser"),
+            r#""rejected""#
+        );
+    }
+
+    #[test]
+    fn rejected_round_trips_through_serde() {
+        let j = serde_json::to_string(&SessionEndReason::Rejected).expect("ser");
+        let back: SessionEndReason = serde_json::from_str(&j).expect("deser");
+        assert_eq!(back, SessionEndReason::Rejected);
     }
 }
 

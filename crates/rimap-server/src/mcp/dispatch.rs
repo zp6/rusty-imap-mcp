@@ -362,6 +362,7 @@ mod tests {
             download_dir,
             cancellation_tx,
             started_at: std::time::Instant::now(),
+            session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
         });
         let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
         let server = ImapMcpServer::new(daemon_state, session_state);

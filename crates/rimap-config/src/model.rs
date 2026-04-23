@@ -5,6 +5,7 @@
 //! *shape*. An instance that deserializes successfully may still be invalid.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use rimap_core::posture::Posture;
@@ -372,6 +373,34 @@ pub struct AttachmentsConfig {
     pub download_dir: String,
 }
 
+/// `[daemon]` block — runtime bounds on the daemon process.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DaemonConfig {
+    /// Maximum number of concurrent shim sessions. Connection attempts past
+    /// this bound are rejected at accept time with a paired
+    /// `session_start` + `session_end(Rejected)` audit pair, and the
+    /// stream is closed immediately. Defaults to 64.
+    #[serde(default = "default_max_concurrent_sessions")]
+    pub max_concurrent_sessions: NonZeroU32,
+}
+
+impl Default for DaemonConfig {
+    fn default() -> Self {
+        Self {
+            max_concurrent_sessions: default_max_concurrent_sessions(),
+        }
+    }
+}
+
+#[expect(
+    clippy::expect_used,
+    reason = "load-bearing constant — 64 is nonzero at compile time"
+)]
+fn default_max_concurrent_sessions() -> NonZeroU32 {
+    NonZeroU32::new(64).expect("64 is nonzero")
+}
+
 // ---------------------------------------------------------------------------
 // Multi-account config format
 // ---------------------------------------------------------------------------
@@ -390,6 +419,9 @@ pub struct MultiAccountConfig {
     /// Global attachment download settings.
     #[serde(default)]
     pub attachments: AttachmentsConfig,
+    /// Global daemon runtime settings.
+    #[serde(default)]
+    pub daemon: DaemonConfig,
 }
 
 /// `[defaults]` block — shared settings inherited by accounts.
@@ -634,5 +666,78 @@ fallback = "keyring-only"
 "#;
         let cfg: CredentialsConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.fallback, FallbackMode::KeyringOnly);
+    }
+
+    #[test]
+    fn daemon_config_default_is_64() {
+        let cfg = DaemonConfig::default();
+        assert_eq!(cfg.max_concurrent_sessions.get(), 64);
+    }
+
+    #[test]
+    fn daemon_config_deserializes_override() {
+        let toml_str = r"
+max_concurrent_sessions = 10
+";
+        let cfg: DaemonConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.max_concurrent_sessions.get(), 10);
+    }
+
+    #[test]
+    fn daemon_config_omitted_fills_default() {
+        let cfg: DaemonConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.max_concurrent_sessions.get(), 64);
+    }
+
+    #[test]
+    fn daemon_config_rejects_zero() {
+        let toml_str = r"
+max_concurrent_sessions = 0
+";
+        let err = toml::from_str::<DaemonConfig>(toml_str).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nonzero") || msg.contains("non zero") || msg.contains('0'),
+            "expected nonzero error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn multi_account_config_daemon_defaults_when_omitted() {
+        let toml_str = r#"
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "imap.work.com"
+port = 993
+username = "alice"
+
+[audit]
+path = "/tmp/audit.jsonl"
+"#;
+        let cfg: MultiAccountConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.daemon.max_concurrent_sessions.get(), 64);
+    }
+
+    #[test]
+    fn multi_account_config_daemon_override_parses() {
+        let toml_str = r#"
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "imap.work.com"
+port = 993
+username = "alice"
+
+[audit]
+path = "/tmp/audit.jsonl"
+
+[daemon]
+max_concurrent_sessions = 7
+"#;
+        let cfg: MultiAccountConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(cfg.daemon.max_concurrent_sessions.get(), 7);
     }
 }

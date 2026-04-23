@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use rimap_audit::record::PeerIdentity;
 use rimap_core::SessionId;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit};
 use tokio::task::JoinSet;
 
 use crate::daemon::state::{DaemonState, SessionState};
@@ -52,16 +52,27 @@ where
                     drop(stream);
                     continue;
                 }
+                let Ok(permit) = Arc::clone(&state.session_permits).try_acquire_owned() else {
+                    handle_rejected_over_capacity(&state, &identity, &socket_path).await;
+                    drop(stream);
+                    continue;
+                };
                 let sid = SessionId::new();
                 let session = Arc::new(SessionState::new(sid));
                 if log_session_start_blocking(&state, sid, identity, &socket_path)
                     .await
                     .is_none()
                 {
+                    drop(permit);
                     drop(stream);
                     continue;
                 }
-                sessions.spawn(build_session_future(Arc::clone(&state), stream, session));
+                sessions.spawn(build_session_future(
+                    Arc::clone(&state),
+                    stream,
+                    session,
+                    permit,
+                ));
             }
             Some(_) = sessions.join_next() => {
                 // Reap completed sessions to keep the JoinSet bounded.
@@ -218,15 +229,50 @@ async fn handle_rejected_peer(
     tracing::warn!(?identity, "rejected peer with mismatching identity");
 }
 
+/// Emit paired `session_start` + `session_end(Rejected)` for a connection
+/// refused because the `max_concurrent_sessions` bound was reached, then
+/// close it. The shim observes this as an EOF at or shortly after connect.
+async fn handle_rejected_over_capacity(
+    state: &Arc<DaemonState>,
+    identity: &PeerIdentity,
+    socket_path: &str,
+) {
+    let sid = SessionId::new();
+    let _ = log_session_start_blocking(state, sid, identity.clone(), socket_path).await;
+    let end = rimap_audit::record::SessionEnd {
+        session_id: sid,
+        reason: rimap_audit::record::SessionEndReason::Rejected,
+        duration_ms: 0,
+        total_tool_calls: 0,
+        last_error: Some("max_concurrent_sessions reached".to_owned()),
+    };
+    log_session_end_blocking(state, end).await;
+    tracing::warn!(
+        ?identity,
+        "rejected session: max_concurrent_sessions reached",
+    );
+}
+
 /// Build the async session future for a single accepted connection.
 ///
 /// Assumes `session_start` has already been emitted by the caller. Runs
 /// `rmcp::serve_server` and emits `session_end` on completion.
+///
+/// The `permit` is held for the lifetime of this future and dropped when
+/// the session terminates, releasing a slot in
+/// `state.session_permits`.
 #[must_use = "dropping the session future loses session_end emission"]
-async fn build_session_future<S>(state: Arc<DaemonState>, stream: S, session: Arc<SessionState>)
-where
+async fn build_session_future<S>(
+    state: Arc<DaemonState>,
+    stream: S,
+    session: Arc<SessionState>,
+    permit: OwnedSemaphorePermit,
+) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
+    // Hold the permit for the session's lifetime; drops when this future
+    // returns, releasing a slot back to the semaphore.
+    let _permit = permit;
     let mcp = ImapMcpServer::new(Arc::clone(&state), Arc::clone(&session));
     let serve_result = Box::pin(rmcp::serve_server(mcp, stream)).await;
     let running = match serve_result {

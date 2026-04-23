@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use rimap_audit::{AuditWriter, CancelledToolEndSender};
 use rimap_core::{SessionId, account::AccountId};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use crate::boot::registry::AccountRegistry;
 
@@ -25,6 +25,13 @@ pub struct DaemonState {
     pub cancellation_tx: CancelledToolEndSender,
     /// Daemon start time (used to compute session durations).
     pub started_at: Instant,
+    /// Bound on concurrent shim sessions. An `OwnedSemaphorePermit` is
+    /// acquired on each accept and held for the session's lifetime;
+    /// dropping the permit (when the session future returns) releases
+    /// the slot. Connections that arrive while the semaphore is
+    /// exhausted are rejected with a paired
+    /// `session_start` + `session_end(Rejected)` audit pair.
+    pub session_permits: Arc<Semaphore>,
 }
 
 /// Per-client-connection state.
