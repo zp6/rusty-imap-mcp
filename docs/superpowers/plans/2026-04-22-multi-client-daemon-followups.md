@@ -179,6 +179,38 @@ Task 15 removed that field; these spec pages reference implementation
 details that no longer exist. A single docs-sweep commit would update or
 explicitly mark these sections as historical.
 
+## From the review-remediation pass
+
+Filed during the multi-client-daemon review-remediation plan
+(`docs/superpowers/plans/2026-04-23-daemon-review-remediation.md`). These
+squatter-class hazards surfaced while documenting the trust-boundary
+subsection and were too scoped for the in-flight remediation plan.
+
+### 26. Unix atomic-rename bind defends pre-binding squatter  `LOCAL-FS-05`
+
+A same-UID attacker can `bind()` the daemon socket path between the
+`unlink` of a stale socket and our own `bind()`. Because the peer gate
+applies to *clients* (connections inbound to the daemon), a squatter that
+becomes the listener is undetected. Fix: `bind()` a temp name in the same
+directory, then `rename(2)` atomically onto the target path. Or take a
+`flock` on a lockfile adjacent to the socket before `bind`.
+
+Related review finding: threat-model §7, local-security Minor M5.
+Priority: Important (same-UID is trusted today, but multi-user scope B
+depends on this being airtight).
+
+### 27. Windows named-pipe `FILE_FLAG_FIRST_PIPE_INSTANCE`  `LOCAL-OS-*`
+
+The current Windows transport uses `tokio::net::windows::named_pipe::ServerOptions`
+defaults; verify (or enforce) that `first_pipe_instance(true)` is set so
+a squatter cannot create the pipe name ahead of the daemon and siphon
+shim connections. Without `FILE_FLAG_FIRST_PIPE_INSTANCE`, the first
+process to create the pipe name wins. See
+https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnamedpipew
+
+Related review finding: threat-model §8.
+Priority: Important.
+
 ---
 
 *See the individual task reports in the PR's commit log for full context.*
