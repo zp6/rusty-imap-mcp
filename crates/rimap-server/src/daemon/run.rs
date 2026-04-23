@@ -48,13 +48,20 @@ where
                     }
                 };
                 if !peer_gate(&identity) {
-                    handle_rejected_peer(&state, &identity, &socket_path);
+                    handle_rejected_peer(&state, &identity, &socket_path).await;
                     drop(stream);
                     continue;
                 }
-                if let Some(future) = build_session_future(&state, stream, identity, &socket_path) {
-                    sessions.spawn(future);
+                let sid = SessionId::new();
+                let session = Arc::new(SessionState::new(sid));
+                if log_session_start_blocking(&state, sid, identity, &socket_path)
+                    .await
+                    .is_none()
+                {
+                    drop(stream);
+                    continue;
                 }
+                sessions.spawn(build_session_future(Arc::clone(&state), stream, session));
             }
             Some(_) = sessions.join_next() => {
                 // Reap completed sessions to keep the JoinSet bounded.
@@ -136,31 +143,62 @@ fn make_peer_gate() -> impl Fn(&PeerIdentity) -> bool {
     |_identity: &PeerIdentity| true
 }
 
-/// Emit a `session_start` record for `sid`. Failure is logged at the supplied
-/// level and otherwise ignored, so callers can choose whether to continue
-/// (reject path) or bail (accept path).
-fn log_session_start(
-    state: &DaemonState,
+/// Emit a `session_start` record via `spawn_blocking` so the accept loop does
+/// not stall on audit rotation. Logs and swallows both write errors and
+/// join errors; returns the allocated `Seq` on success, `None` on failure.
+/// Call sites decide whether to continue (reject path) or drop the
+/// connection (accept path) based on the `Option`.
+async fn log_session_start_blocking(
+    state: &Arc<DaemonState>,
     sid: SessionId,
     identity: PeerIdentity,
     socket_path: &str,
-) -> Result<rimap_audit::Seq, rimap_audit::AuditError> {
-    state
-        .audit
-        .log_session_start(rimap_audit::record::SessionStart {
-            session_id: sid,
-            peer_identity: identity,
-            socket_path: socket_path.to_owned(),
-        })
+) -> Option<rimap_audit::Seq> {
+    let audit = state.audit.clone();
+    let record = rimap_audit::record::SessionStart {
+        session_id: sid,
+        peer_identity: identity,
+        socket_path: socket_path.to_owned(),
+    };
+    let join = tokio::task::spawn_blocking(move || audit.log_session_start(record)).await;
+    match join {
+        Ok(Ok(seq)) => Some(seq),
+        Ok(Err(e)) => {
+            tracing::error!(error = %e, "failed to log session_start");
+            None
+        }
+        Err(join_err) => {
+            let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
+            tracing::error!(error = %rimap_err, "session_start spawn_blocking join error");
+            None
+        }
+    }
+}
+
+/// Emit a `session_end` record via `spawn_blocking`. Failures are logged but
+/// not propagated; at this point the session is already over.
+async fn log_session_end_blocking(state: &Arc<DaemonState>, end: rimap_audit::record::SessionEnd) {
+    let audit = state.audit.clone();
+    let join = tokio::task::spawn_blocking(move || audit.log_session_end(end)).await;
+    match join {
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => tracing::warn!(error = %e, "failed to log session_end"),
+        Err(join_err) => {
+            let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
+            tracing::error!(error = %rimap_err, "session_end spawn_blocking join error");
+        }
+    }
 }
 
 /// Emit paired `session_start` + `session_end(PeerUidRejected)` for a
 /// connection whose peer identity does not match ours, then close it.
-fn handle_rejected_peer(state: &Arc<DaemonState>, identity: &PeerIdentity, socket_path: &str) {
+async fn handle_rejected_peer(
+    state: &Arc<DaemonState>,
+    identity: &PeerIdentity,
+    socket_path: &str,
+) {
     let sid = SessionId::new();
-    if let Err(e) = log_session_start(state, sid, identity.clone(), socket_path) {
-        tracing::warn!(error = %e, "failed to log session_start for rejected peer");
-    }
+    let _ = log_session_start_blocking(state, sid, identity.clone(), socket_path).await;
     let end = rimap_audit::record::SessionEnd {
         session_id: sid,
         reason: rimap_audit::record::SessionEndReason::PeerUidRejected,
@@ -168,54 +206,38 @@ fn handle_rejected_peer(state: &Arc<DaemonState>, identity: &PeerIdentity, socke
         total_tool_calls: 0,
         last_error: None,
     };
-    if let Err(e) = state.audit.log_session_end(end) {
-        tracing::warn!(error = %e, "failed to log session_end for rejected peer");
-    }
+    log_session_end_blocking(state, end).await;
     tracing::warn!(?identity, "rejected peer with mismatching identity");
 }
 
 /// Build the async session future for a single accepted connection.
 ///
-/// Emits `session_start`, then returns the future that runs `rmcp::serve_server`
-/// and emits `session_end`. Returns `None` and logs an error if `session_start`
-/// fails (preventing the connection from being tracked).
-fn build_session_future<S>(
-    state: &Arc<DaemonState>,
-    stream: S,
-    identity: PeerIdentity,
-    socket_path: &str,
-) -> Option<impl std::future::Future<Output = ()> + Send + 'static>
+/// Assumes `session_start` has already been emitted by the caller. Runs
+/// `rmcp::serve_server` and emits `session_end` on completion.
+#[must_use = "dropping the session future loses session_end emission"]
+async fn build_session_future<S>(state: Arc<DaemonState>, stream: S, session: Arc<SessionState>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
-    let sid = SessionId::new();
-    let session = Arc::new(SessionState::new(sid));
-    if let Err(e) = log_session_start(state, sid, identity, socket_path) {
-        tracing::error!(error = %e, "failed to log session_start; dropping connection");
-        return None;
-    }
-    let state_for_task = Arc::clone(state);
-    let session_for_end = Arc::clone(&session);
-    Some(async move {
-        let mcp = ImapMcpServer::new(Arc::clone(&state_for_task), Arc::clone(&session));
-        let serve_result = Box::pin(rmcp::serve_server(mcp, stream)).await;
-        let running = match serve_result {
-            Ok(svc) => svc,
-            Err(e) => {
-                tracing::error!(error = %e, "rmcp::serve_server initialisation failed");
-                emit_session_end(
-                    &state_for_task,
-                    &session_for_end,
-                    rimap_audit::record::SessionEndReason::Error,
-                    Some(format!("serve_server init: {e}")),
-                );
-                return;
-            }
-        };
-        let quit = running.waiting().await;
-        let (reason, last_err) = session_end_from_quit(quit);
-        emit_session_end(&state_for_task, &session_for_end, reason, last_err);
-    })
+    let mcp = ImapMcpServer::new(Arc::clone(&state), Arc::clone(&session));
+    let serve_result = Box::pin(rmcp::serve_server(mcp, stream)).await;
+    let running = match serve_result {
+        Ok(svc) => svc,
+        Err(e) => {
+            tracing::error!(error = %e, "rmcp::serve_server initialisation failed");
+            emit_session_end(
+                &state,
+                &session,
+                rimap_audit::record::SessionEndReason::Error,
+                Some(format!("serve_server init: {e}")),
+            )
+            .await;
+            return;
+        }
+    };
+    let quit = running.waiting().await;
+    let (reason, last_err) = session_end_from_quit(quit);
+    emit_session_end(&state, &session, reason, last_err).await;
 }
 
 /// Map `waiting()`'s `QuitReason` outcome to an audit `(SessionEndReason,
@@ -243,7 +265,7 @@ fn session_end_from_quit(
 }
 
 /// Write a `session_end` record with elapsed duration and tool-call count.
-fn emit_session_end(
+async fn emit_session_end(
     state: &Arc<DaemonState>,
     session: &Arc<SessionState>,
     reason: rimap_audit::record::SessionEndReason,
@@ -260,7 +282,5 @@ fn emit_session_end(
         total_tool_calls: total,
         last_error,
     };
-    if let Err(e) = state.audit.log_session_end(end) {
-        tracing::warn!(error = %e, "failed to log session_end");
-    }
+    log_session_end_blocking(state, end).await;
 }
