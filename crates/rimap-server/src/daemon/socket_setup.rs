@@ -34,7 +34,9 @@ const DIR_OFLAGS: OFlags = OFlags::PATH
 ///
 /// # Errors
 /// Returns `PermissionDenied` if the directory (or its leaf component) is a
-/// symlink, is owned by a different UID, or has mode other than 0700.
+/// symlink, is owned by a different UID, or has mode other than 0700. A
+/// directory with any of setuid, setgid, or sticky bits set is rejected for
+/// the same reason — remove those bits (e.g. `chmod 0700`) to proceed.
 /// Returns `NotADirectory` if the path exists but is not a directory. Returns
 /// the underlying I/O error from `create_dir_all` / `mkdirat` on bootstrap.
 pub fn prepare_socket_dir(dir: &Path, our_uid: u32) -> io::Result<OwnedFd> {
@@ -58,8 +60,15 @@ pub fn prepare_socket_dir(dir: &Path, our_uid: u32) -> io::Result<OwnedFd> {
             format!("socket parent {} is not a directory", dir.display()),
         )),
         Err(Errno::NOENT) => {
-            mkdirat(&parent_fd, name, Mode::from_raw_mode(0o700))
-                .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
+            // `EEXIST` means a concurrent starter won the mkdir; the directory
+            // now exists, so fall through to the re-openat below. The
+            // subsequent fstat + uid/mode check will verify the winning
+            // creator set the mode correctly — if they didn't, we fail closed.
+            if let Err(e) = mkdirat(&parent_fd, name, Mode::from_raw_mode(0o700))
+                && e != Errno::EXIST
+            {
+                return Err(io::Error::from_raw_os_error(e.raw_os_error()));
+            }
             let fd = openat(&parent_fd, name, DIR_OFLAGS, Mode::empty())
                 .map_err(|e| io::Error::from_raw_os_error(e.raw_os_error()))?;
             verify_dir(&fd, dir, our_uid).map(|()| fd)
