@@ -53,6 +53,33 @@ One binary, subcommands replace the bare invocation:
 
 The audit fs-lock still guards the daemon itself — the lock semantics do not change. What changes is that the *lockholder* (the daemon) now multiplexes many MCP clients instead of servicing exactly one stdio pair.
 
+### 4.1 Trust Boundaries
+
+The daemon introduces one new trust boundary relative to the pre-daemon
+stdio-per-client model: the shim↔daemon local socket.
+
+| Boundary | Trusted side | Untrusted side | Auth | Failure mode |
+|----------|--------------|----------------|------|--------------|
+| shim ↔ daemon (Unix) | daemon (holds IMAP creds) | any local process reaching the socket | `SO_PEERCRED` UID match against `geteuid()` | `session_end(reason=peer_uid_rejected)`; stream dropped |
+| shim ↔ daemon (Windows v1) | daemon | any local process reaching the pipe | Pipe DACL (default-owner-only); **peer identity is a placeholder, see §9.2 and follow-up #132** | pipe ACL refusal at `CreateFile` |
+
+Attacker classes this boundary defends against:
+- **local-malware-same-uid**: Already trusted by the project-wide threat model
+  (§1 of the v2 spec). Same-UID processes can run arbitrary code as the user,
+  including stopping/restarting the daemon and reading the keyring; the daemon
+  does not attempt to defend against this.
+- **co-tenant-different-uid**: Defended by UID gate (Unix) and pipe DACL
+  (Windows). A different-UID process that reaches the socket path is refused
+  at `peer_cred()` and logged.
+- **pre-binding-squatter**: A same-UID attacker that `bind()`s the socket
+  path before the daemon is **partially defended** today (symlink refusal
+  at the socket path; see commit history for C3 fix) and **not fully defended**
+  for the atomic-rename case (see follow-up #26).
+
+Bytes arriving on the socket are treated as attacker-controlled until the
+peer-UID gate fires. After the gate, the session is trusted to the extent
+the project-wide threat model already trusts the local user.
+
 ## 5. Components
 
 ### 5.1 `rimap-core` — `SessionId`
