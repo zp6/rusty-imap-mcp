@@ -79,6 +79,7 @@ features. No scope expansion.
 | [#131](https://github.com/randomparity/rusty-imap-mcp/issues/131) | Provenance ring buffer scoping knob | Revisit if forensics want tighter granularity |
 | [#132](https://github.com/randomparity/rusty-imap-mcp/issues/132) | Real Windows peer-identity capture | Needs unsafe-FFI quarantine crate — own plan |
 | [#133](https://github.com/randomparity/rusty-imap-mcp/issues/133) | Custom DACL on Windows named pipe for scope B | Blocks on #124 + unsafe-FFI quarantine |
+| [#151](https://github.com/randomparity/rusty-imap-mcp/issues/151) | Display server TLS cert fingerprint during `--dry-run` | Blocks on #117; implemented as a follow-up on the same preflight path |
 
 ## PR structure (12 PRs)
 
