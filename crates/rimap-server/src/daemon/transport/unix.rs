@@ -279,6 +279,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bind_refuses_to_unlink_symlink_squatter() {
+        let dir = TempDir::new().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        let socket_path = dir.path().join("d.sock");
+        std::os::unix::fs::symlink(&victim, &socket_path).unwrap();
+
+        let result = UnixSocketListener::bind(&socket_path).await;
+        assert!(
+            matches!(&result, Err(e) if e.kind() == io::ErrorKind::PermissionDenied),
+            "expected PermissionDenied for symlink squatter, got {result:?}",
+        );
+        assert!(victim.exists(), "victim must not have been unlinked");
+        let contents = std::fs::read(&victim).unwrap();
+        assert_eq!(contents, b"precious", "victim contents must be intact");
+    }
+
+    #[tokio::test]
     async fn socket_file_is_mode_0600_even_under_permissive_umask() {
         // Force a wide-open umask before bind, then assert the mode==0600
         // invariant. This does NOT prove UmaskGuard is load-bearing, since
