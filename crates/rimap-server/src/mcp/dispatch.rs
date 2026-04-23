@@ -212,6 +212,8 @@ impl ImapMcpServer {
         &self,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
+        arguments_redacted: serde_json::Value,
+        arguments_hash_sha256: String,
     ) -> Result<CallToolResult, ErrorData> {
         // Infrastructure tools have no per-account posture; record an
         // explicit sentinel so log readers can distinguish these from
@@ -220,7 +222,8 @@ impl ImapMcpServer {
             tool,
             None,
             PostureContext::Infrastructure,
-            args,
+            arguments_redacted,
+            arguments_hash_sha256,
             |_ticket| async move {
                 // Infrastructure tools bypass posture + breaker, but still
                 // enforce a process-wide rate limit.
@@ -365,8 +368,15 @@ mod tests {
 
         // list_accounts needs no args and no IMAP connection.
         let args = serde_json::Map::new();
+        let (arguments_redacted, arguments_hash_sha256) =
+            server.compute_tool_args_artifacts(ToolName::ListAccounts, &args);
         let _ = server
-            .dispatch_infrastructure(ToolName::ListAccounts, &args)
+            .dispatch_infrastructure(
+                ToolName::ListAccounts,
+                &args,
+                arguments_redacted,
+                arguments_hash_sha256,
+            )
             .await
             .expect("list_accounts dispatch");
 

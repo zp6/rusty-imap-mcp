@@ -1,12 +1,19 @@
 //! Audit envelope wrapping every tool dispatch.
 //!
-//! [`ImapMcpServer::run_with_audit_envelope`] redacts+hashes arguments,
-//! emits a `tool_start` record, runs the provided body future, then
-//! emits a `tool_end` record with the resulting status and error code.
-//! The helpers [`ImapMcpServer::emit_tool_start`] and
+//! [`ImapMcpServer::run_with_audit_envelope`] takes precomputed redacted
+//! and hashed arguments (see [`ImapMcpServer::compute_tool_args_artifacts`]),
+//! emits a `tool_start` record, runs the provided body future, then emits
+//! a `tool_end` record with the resulting status and error code. The
+//! helpers [`ImapMcpServer::emit_tool_start`] and
 //! [`ImapMcpServer::emit_tool_end`] offload the blocking writer calls
 //! onto `spawn_blocking` and surface panics/join errors as
 //! `RimapError::Internal`.
+//!
+//! **Hash-timing invariant (MCP-INJ-02):** callers must compute the
+//! redaction/hash BEFORE any step that mutates the argument map — most
+//! notably the `"account"` key that `resolve_account_for_call` consumes
+//! on the account-scoped dispatch path. Hashing post-removal diverges
+//! from the on-wire JSON-RPC request and breaks replay auditing.
 //!
 //! [`AuditEnvelopeGuard`] is a drop-guard that synthesizes a cancellation
 //! `tool_end` if the enclosing future is dropped between `tool_start`
@@ -28,16 +35,25 @@ use crate::mcp::dispatch::{DispatchTicket, PostureContext};
 use crate::mcp::server::ImapMcpServer;
 
 impl ImapMcpServer {
-    /// Wrap an inner dispatch `body` in the full audit envelope:
-    /// redact+hash args, emit `tool_start`, time the body, emit
-    /// `tool_end` with the status/error code derived from the body's
-    /// result. Returns the MCP-shaped `CallToolResult` or `ErrorData`.
+    /// Wrap an inner dispatch `body` in the full audit envelope: emit
+    /// `tool_start`, time the body, emit `tool_end` with the status/error
+    /// code derived from the body's result. Returns the MCP-shaped
+    /// `CallToolResult` or `ErrorData`.
+    ///
+    /// `arguments_redacted` and `arguments_hash_sha256` must be precomputed
+    /// from the on-wire request arguments via
+    /// [`ImapMcpServer::compute_tool_args_artifacts`] BEFORE any step that
+    /// mutates the args map (e.g. `resolve_account_for_call` consuming the
+    /// `"account"` key) — otherwise the audit record's hash diverges from
+    /// the JSON-RPC request as seen by the client. See review finding
+    /// MCP-INJ-02.
     pub(super) async fn run_with_audit_envelope<F, Fut>(
         &self,
         tool: ToolName,
         audit_account: Option<String>,
         posture: PostureContext,
-        args: &serde_json::Map<String, serde_json::Value>,
+        arguments_redacted: serde_json::Value,
+        arguments_hash_sha256: String,
         body: F,
     ) -> Result<CallToolResult, ErrorData>
     where
@@ -48,17 +64,13 @@ impl ImapMcpServer {
             .tool_call_count
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
-        let args_value = serde_json::Value::Object(args.clone());
-        let redacted = self.redact_tool_args(tool, &args_value);
-        let hash = hash_arguments(&args_value);
-
         let start_seq = self
             .emit_tool_start(ToolStartInputs {
                 tool,
                 account: audit_account.clone(),
                 posture_effective: posture.posture(),
-                arguments_redacted: redacted,
-                arguments_hash_sha256: hash,
+                arguments_redacted,
+                arguments_hash_sha256,
                 session_id: None,
             })
             .await?;
@@ -115,12 +127,27 @@ impl ImapMcpServer {
         }
     }
 
-    /// Apply the [`RedactionSchema`][rimap_audit::RedactionSchema] dispatched
-    /// from [`ToolRedactionSchema::redaction_schema`] to `tool`'s arguments.
-    /// The dispatch is exhaustive, so a missing schema is a compile error
-    /// rather than a runtime warn-and-drop.
-    fn redact_tool_args(&self, tool: ToolName, args: &serde_json::Value) -> serde_json::Value {
-        Redactor::new(&tool.redaction_schema(), self.redaction_salt.as_ref()).apply(args)
+    /// Compute the `(redacted, hash)` pair for `args` against `tool`'s
+    /// redaction schema and canonical hash.
+    ///
+    /// Callers MUST invoke this BEFORE any step that mutates `args` (e.g.
+    /// `resolve_account_for_call` removing `"account"`), so the resulting
+    /// audit record reflects the on-wire request. See review finding
+    /// MCP-INJ-02.
+    ///
+    /// The redaction dispatch via [`ToolRedactionSchema::redaction_schema`]
+    /// is exhaustive, so a missing schema is a compile error rather than
+    /// a runtime warn-and-drop.
+    pub(super) fn compute_tool_args_artifacts(
+        &self,
+        tool: ToolName,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> (serde_json::Value, String) {
+        let args_value = serde_json::Value::Object(args.clone());
+        let redacted = Redactor::new(&tool.redaction_schema(), self.redaction_salt.as_ref())
+            .apply(&args_value);
+        let hash = hash_arguments(&args_value);
+        (redacted, hash)
     }
 
     /// Emit a `tool_start` audit record via `spawn_blocking`. Returns the
@@ -373,6 +400,83 @@ mod tests {
         assert!(
             !contents.contains(r#""status":"cancelled""#),
             "disarmed guard must not write a cancellation record: {contents}",
+        );
+    }
+
+    /// `compute_tool_args_artifacts` must hash the FULL args map as
+    /// provided, including any keys (like `"account"`) that the dispatch
+    /// pipeline may later consume. A replaying auditor must be able to
+    /// reproduce the on-wire hash from the client's original JSON-RPC
+    /// request. See review finding MCP-INJ-02.
+    #[tokio::test]
+    async fn compute_artifacts_hashes_full_map_including_account_key() {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        use rimap_audit::{AuditOptions, AuditWriter, Seq, redact::hash_arguments};
+
+        use crate::boot::registry::AccountRegistry;
+        use crate::daemon::state::{DaemonState, SessionState};
+        use crate::mcp::server::ImapMcpServer;
+
+        let dir = tempdir().unwrap();
+        let audit_path = dir.path().join("audit.jsonl");
+        let audit = AuditWriter::open(&AuditOptions {
+            path: audit_path,
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap();
+        let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
+        let download_dir: Arc<std::path::Path> =
+            Arc::from(std::path::Path::new("/tmp/test-downloads"));
+        let daemon_state = Arc::new(DaemonState {
+            registry: Arc::new(AccountRegistry::new(BTreeMap::new())),
+            audit,
+            download_dir,
+            cancellation_tx,
+            started_at: std::time::Instant::now(),
+        });
+        let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
+        let server = ImapMcpServer::new(daemon_state, session_state);
+
+        // Build an args map as it would arrive on the wire for an
+        // account-scoped call: BEFORE `resolve_account_for_call` consumes
+        // the `"account"` key.
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "account".to_string(),
+            serde_json::Value::String("test".to_string()),
+        );
+        args.insert(
+            "foo".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(42)),
+        );
+
+        let (_redacted, computed_hash) =
+            server.compute_tool_args_artifacts(ToolName::Search, &args);
+
+        // Expected: hash of the full pre-removal map.
+        let expected_hash = hash_arguments(&serde_json::Value::Object(args.clone()));
+        assert_eq!(
+            computed_hash, expected_hash,
+            "hash must cover the full on-wire map including `account`",
+        );
+
+        // The post-removal hash must differ — this is the regression
+        // guard. If someone reintroduces "hash after removal", the two
+        // values would coincide only by accident and this assertion
+        // would catch the drift.
+        let mut post_removal = args.clone();
+        post_removal.remove("account");
+        let post_removal_hash = hash_arguments(&serde_json::Value::Object(post_removal));
+        assert_ne!(
+            computed_hash, post_removal_hash,
+            "pre-removal and post-removal hashes must differ (if they \
+             matched, the regression guard is useless)",
         );
     }
 }

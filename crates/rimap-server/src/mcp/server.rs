@@ -77,6 +77,8 @@ impl ImapMcpServer {
         account: &AccountState,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
+        arguments_redacted: serde_json::Value,
+        arguments_hash_sha256: String,
     ) -> Result<CallToolResult, ErrorData> {
         // Legacy single-account `"default"` records `None`; multi-account
         // records the account name.
@@ -88,19 +90,26 @@ impl ImapMcpServer {
             };
         let posture = PostureContext::Account(account.guard.matrix().posture());
 
-        self.run_with_audit_envelope(tool, audit_account, posture, args, |ticket| async move {
-            account.guard.pre_dispatch(tool)?;
-            let result = Box::pin(self.dispatch_tool(ticket, account, tool, args)).await;
-            match &result {
-                Ok(_) => account.guard.on_success(),
-                Err(e) => {
-                    if let Some(reason) = rimap_error_to_breaker_reason(e) {
-                        account.guard.on_failure(reason);
+        self.run_with_audit_envelope(
+            tool,
+            audit_account,
+            posture,
+            arguments_redacted,
+            arguments_hash_sha256,
+            |ticket| async move {
+                account.guard.pre_dispatch(tool)?;
+                let result = Box::pin(self.dispatch_tool(ticket, account, tool, args)).await;
+                match &result {
+                    Ok(_) => account.guard.on_success(),
+                    Err(e) => {
+                        if let Some(reason) = rimap_error_to_breaker_reason(e) {
+                            account.guard.on_failure(reason);
+                        }
                     }
                 }
-            }
-            result
-        })
+                result
+            },
+        )
         .await
     }
 }
@@ -146,15 +155,33 @@ impl ImapMcpServer {
             }
         };
 
+        // Compute the args hash BEFORE any consumer mutates `args_map`
+        // (e.g. the production `resolve_account_for_call` removing
+        // `"account"`) so the recorded hash matches the on-wire request.
+        // See review finding MCP-INJ-02.
+        let (arguments_redacted, arguments_hash_sha256) =
+            self.compute_tool_args_artifacts(tool, &args_map);
+
         let call_tool_result = if tool.is_infrastructure() {
-            Box::pin(self.dispatch_infrastructure(tool, &args_map))
-                .await
-                .map_err(|e| error_data_to_rimap_error(&e))?
+            Box::pin(self.dispatch_infrastructure(
+                tool,
+                &args_map,
+                arguments_redacted,
+                arguments_hash_sha256,
+            ))
+            .await
+            .map_err(|e| error_data_to_rimap_error(&e))?
         } else {
             let account = self.registry().resolve(account_name)?;
-            Box::pin(self.dispatch_account_scoped(account, tool, &args_map))
-                .await
-                .map_err(|e| error_data_to_rimap_error(&e))?
+            Box::pin(self.dispatch_account_scoped(
+                account,
+                tool,
+                &args_map,
+                arguments_redacted,
+                arguments_hash_sha256,
+            ))
+            .await
+            .map_err(|e| error_data_to_rimap_error(&e))?
         };
 
         Ok(extract_json_from_call_tool_result(call_tool_result))
@@ -183,11 +210,14 @@ impl ImapMcpServer {
              use execute_tool_for_test for account-scoped tools"
         );
         let args = serde_json::Map::new();
+        let (arguments_redacted, arguments_hash_sha256) =
+            self.compute_tool_args_artifacts(tool, &args);
         self.run_with_audit_envelope(
             tool,
             None,
             crate::mcp::dispatch::PostureContext::Infrastructure,
-            &args,
+            arguments_redacted,
+            arguments_hash_sha256,
             |_ticket| body_fut,
         )
         .await
@@ -386,9 +416,22 @@ impl ServerHandler for ImapMcpServer {
 
         let mut args = request.arguments.unwrap_or_default();
 
+        // Compute the args hash BEFORE `resolve_account_for_call` removes
+        // `"account"` so the audit record's hash matches the on-wire
+        // JSON-RPC request. See review finding MCP-INJ-02.
+        let (arguments_redacted, arguments_hash_sha256) =
+            self.compute_tool_args_artifacts(tool_name, &args);
+
         if tool_name.is_infrastructure() {
             return self
-                .route_infrastructure(tool_name, namespaced_account.as_deref(), &args, &context)
+                .route_infrastructure(
+                    tool_name,
+                    namespaced_account.as_deref(),
+                    &args,
+                    arguments_redacted,
+                    arguments_hash_sha256,
+                    &context,
+                )
                 .await;
         }
 
@@ -396,8 +439,14 @@ impl ServerHandler for ImapMcpServer {
             .resolve_account_for_call(namespaced_account.as_deref(), &mut args)
             .await?;
 
-        self.dispatch_account_scoped(account, tool_name, &args)
-            .await
+        self.dispatch_account_scoped(
+            account,
+            tool_name,
+            &args,
+            arguments_redacted,
+            arguments_hash_sha256,
+        )
+        .await
     }
 }
 
@@ -440,6 +489,8 @@ impl ImapMcpServer {
         tool_name: ToolName,
         namespaced_account: Option<&str>,
         args: &serde_json::Map<String, serde_json::Value>,
+        arguments_redacted: serde_json::Value,
+        arguments_hash_sha256: String,
         context: &RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         if namespaced_account.is_some() {
@@ -448,7 +499,13 @@ impl ImapMcpServer {
                 None,
             ));
         }
-        let result = Box::pin(self.dispatch_infrastructure(tool_name, args)).await;
+        let result = Box::pin(self.dispatch_infrastructure(
+            tool_name,
+            args,
+            arguments_redacted,
+            arguments_hash_sha256,
+        ))
+        .await;
         if result.is_ok()
             && tool_name == ToolName::UseAccount
             && let Err(e) = context.peer.notify_tool_list_changed().await
