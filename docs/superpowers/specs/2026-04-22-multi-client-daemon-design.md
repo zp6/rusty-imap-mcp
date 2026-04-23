@@ -84,7 +84,10 @@ the project-wide threat model already trusts the local user.
 
 ### 5.1 `rimap-core` — `SessionId`
 
-New newtype `SessionId`, a ULID (`uuid` crate `v7` feature). Timestamp-prefixed so sorting the audit log sorts sessions in creation order. `Copy`, `Eq`, `Hash`, `Serialize`, `Deserialize`. Cannot be forged from `None`; the per-session handler receives a `SessionId` value and has no API for `Option<SessionId>`.
+`SessionId` is a ULID (`ulid::Ulid` crate, `features = ["serde"]`).
+Lexicographically sortable and monotonic within a process via the crate's
+default generator. Serialized as the 26-character Crockford-base32 form.
+`Copy`, `Eq`, `Hash`, `Serialize`, `Deserialize`. Cannot be forged from `None`; the per-session handler receives a `SessionId` value and has no API for `Option<SessionId>`.
 
 ### 5.2 `rimap-audit` — record types
 
@@ -101,9 +104,14 @@ New record kinds `session_start` and `session_end`.
 #[serde(tag = "platform", rename_all = "lowercase")]
 pub enum PeerIdentity {
     Unix { uid: u32, pid: i32 },
-    Windows { sid: String, pid: u32 },
+    Windows { sid: Option<String>, pid: Option<u32> },
 }
 ```
+
+The `Windows` variant uses `Option` for both fields to reflect the v1
+placeholder behavior (see §9.2 note and follow-up #132): identity capture
+is not yet wired, so shipped records carry `sid: None, pid: None` and the
+pipe DACL is the sole UID gate. Scope B will populate both fields.
 
 `tool_start`, `tool_end`, and `auth` gain `session_id: Option<SessionId>`. The field is `Option` at the record / JSON level because `auth` legitimately fires during daemon-boot IMAP bootstrap (e.g. `resolve_special_use` login) before any session exists. However, the *in-session* call sites are structurally prevented from forgetting the field: the per-session handler exposes a typed wrapper (`SessionAuditSink`) that injects `session_id` automatically, and session-scoped tool code has no API to emit an audit record without going through it. Daemon-level emitters (`process_start`, `process_end`, boot-time `auth`, `cancellation` drain without session context) use the raw `AuditWriter` and leave the field `None` — this is a small, well-defined set of call sites.
 
@@ -187,6 +195,13 @@ shim/
 4. Emit `process_end`. Drop `AuditWriter` → fs-lock released.
 5. `unlink` the socket (Unix) / close pipe (Windows). Exit.
 
+> **v1 best-effort caveat:** sessions that do not drain within 5 s are
+> aborted via `JoinSet::shutdown()` (with an additional 2 s timeout per
+> review finding RUST-ASYNC-10) and will not emit `session_end` records
+> when aborted. Tracked at follow-up #137. Readers MUST NOT assume a
+> one-to-one `session_start` / `session_end` pairing for daemon-crash /
+> forced-shutdown cases.
+
 ### 6.6 State-scoping table
 
 | State                                 | Scope in daemon       | Effect vs v0                                         |
@@ -198,6 +213,7 @@ shim/
 | `FolderGuard`, special-use cache      | per-account          | Built once; shared.                                   |
 | Active account (`use_account`)        | per-session          | Independent selection across sessions.                |
 | Cancellation tokens                   | per-session          | Client disconnect cancels only its own work.          |
+| `RedactionSalt`                       | per-daemon (was per-process) | Scope widens from process to daemon; strictly stronger, since the daemon's salt now covers every session it serves. No new cross-session leak. Follow-up #141 tracks hoisting this from `mcp::server` to `DaemonState`. |
 
 ## 7. Audit log changes
 
@@ -215,6 +231,13 @@ Record-shape changes relative to v0, summarized:
 | `cancellation` drain | `session_id` when known; emitted sessionless only during shutdown drain.        |
 
 `session_start` / `session_end` are append-only like all other kinds; they flush but do not fsync (same as `tool_start` / `tool_end`). `process_start` / `process_end` / `auth` continue to fsync.
+
+`session_start.peer_identity` records the connecting peer's UID and PID
+(Unix) or SID and PID (Windows). These values are NOT considered secrets
+under the project threat model; they are intentionally persisted for
+forensics. Retention is bounded by `rotate_keep` and any configured
+`retention_seconds`. No username resolution (`getpwuid_r` /
+`LookupAccountSid`) is performed; records remain numeric-ID only.
 
 Insta snapshot tests cover the serialized JSON shape of each new/modified kind.
 
@@ -277,6 +300,13 @@ See docs/quickstart-proton-bridge.md for setup details.
 - Peer identity: `tokio::net::UnixStream::peer_cred()` → `(uid, pid)`.
 
 ### 9.2 Windows (`#[cfg(windows)]`)
+
+> **v1 implementation note:** what ships in v1 is a placeholder
+> `PeerIdentity::Windows { sid: None, pid: None }`. Full identity capture
+> (`GetNamedPipeClientProcessId` → `OpenProcess` → `OpenProcessToken` →
+> `GetTokenInformation`) requires `unsafe` FFI forbidden by the workspace's
+> `unsafe_code = "forbid"` policy; tracked at follow-up #132. Until then,
+> the Windows peer gate relies entirely on the named-pipe DACL for UID gating.
 
 - Pipe name: `\\.\pipe\rusty-imap-mcp-<user>` where `<user> = GetUserNameW()`.
 - ACL: `CreateNamedPipeW` with a `SECURITY_ATTRIBUTES` whose DACL grants only the current user's SID. Raw handle consumed by `NamedPipeServer::from_raw_handle_options`.
