@@ -29,18 +29,44 @@ impl SessionAuditSink {
 
     /// Emit a `tool_start`, injecting `session_id`.
     ///
+    /// If the caller supplies a non-`None` `session_id` that differs from
+    /// this sink's `session_id`, a warning is logged and the supplied value
+    /// is overridden. The sink's `session_id` is authoritative.
+    ///
     /// # Errors
     /// Propagates any error from the underlying audit writer.
     pub fn log_tool_start(&self, mut inputs: ToolStartInputs) -> Result<Seq, AuditError> {
+        if let Some(supplied) = inputs.session_id
+            && supplied != self.session_id
+        {
+            tracing::warn!(
+                supplied = %supplied,
+                actual = %self.session_id,
+                "SessionAuditSink overriding caller-supplied session_id",
+            );
+        }
         inputs.session_id = Some(self.session_id);
         self.writer.log_tool_start(inputs)
     }
 
     /// Emit a `tool_end`, injecting `session_id`.
     ///
+    /// If the caller supplies a non-`None` `session_id` that differs from
+    /// this sink's `session_id`, a warning is logged and the supplied value
+    /// is overridden. The sink's `session_id` is authoritative.
+    ///
     /// # Errors
     /// Propagates any error from the underlying audit writer.
     pub fn log_tool_end(&self, mut inputs: ToolEndInputs) -> Result<Seq, AuditError> {
+        if let Some(supplied) = inputs.session_id
+            && supplied != self.session_id
+        {
+            tracing::warn!(
+                supplied = %supplied,
+                actual = %self.session_id,
+                "SessionAuditSink overriding caller-supplied session_id",
+            );
+        }
         inputs.session_id = Some(self.session_id);
         self.writer.log_tool_end(inputs)
     }
@@ -48,8 +74,17 @@ impl SessionAuditSink {
     /// The underlying writer, for emitting records that are explicitly
     /// NOT session-scoped (e.g. `process_start` / `process_end`).
     /// Call sites must justify their non-session status.
+    ///
+    /// Scoped to `pub(crate)` so session-scoped code outside this crate
+    /// cannot bypass the `session_id` injection — out-of-crate call sites
+    /// must go through `log_tool_start` / `log_tool_end`.
     #[must_use]
-    pub fn raw_writer(&self) -> &AuditWriter {
+    #[expect(
+        dead_code,
+        reason = "in-crate escape hatch for non-session-scoped records (process_start/process_end); \
+                  kept available even when no current caller uses it, per MCP-AUD-03 design"
+    )]
+    pub(crate) fn raw_writer(&self) -> &AuditWriter {
         &self.writer
     }
 }
