@@ -151,7 +151,9 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
         let our_uid = rustix::process::geteuid().as_raw();
-        socket_setup::prepare_socket_dir(parent, our_uid)
+        // The fd pins the verified socket parent so Task 2 can bind-by-fd.
+        // Until then we just keep it alive across the bind call.
+        let _parent_fd = socket_setup::prepare_socket_dir(parent, our_uid)
             .with_context(|| format!("preparing {}", parent.display()))?;
         UnixSocketListener::bind(&path)
             .await

@@ -54,7 +54,7 @@ governor = { workspace = true }
 tempfile = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1", default-features = false, features = ["process"] }
+rustix = { version = "1.1", default-features = false, features = ["process", "fs"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
