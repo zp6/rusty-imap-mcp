@@ -211,6 +211,35 @@ https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createnam
 Related review finding: threat-model §8.
 Priority: Important.
 
+### 28. Bindat-by-fd to close residual C1 window  `LOCAL-FS-05`
+
+`socket_setup::prepare_socket_dir` returns an `OwnedFd` pinned to the
+verified parent directory, but the daemon caller currently binds by
+path rather than by fd. `UnixListener::bind(path)` therefore re-walks
+the path, re-opening the attacker-controllable risk of an ancestor-
+symlink swap between `prepare_socket_dir` returning and `bind` issuing
+its path walk. The fix is to use `rustix::net::bindat` (or a `tokio`-
+compatible wrapper) to bind the socket at a leaf name relative to the
+pinned parent fd, so the socket cannot be created at an attacker-
+chosen location even if the ancestor path is swapped post-verify.
+
+Tracked after final holistic review of the remediation pass; the
+held-fd defence-in-depth plus leaf-symlink refusal, umask guard, and
+post-bind mode assertion keep the attack surface bounded in the
+meantime. See `crates/rimap-server/src/main.rs:162-169` for the
+current defensive layering.
+
+Priority: Important.
+
+### 29. Wire `dropped_cancellation_count` + `SessionAuditSink::raw_writer` observability  `MCP-AUD-01`
+
+Both surfaces currently carry `#[expect(dead_code)]`. They are
+intentionally reserved for future metrics integration (Prometheus
+exporter, structured ops log, etc.); wire them up when that surface
+lands so the `#[expect]` annotations do not rot.
+
+Priority: Minor.
+
 ---
 
 *See the individual task reports in the PR's commit log for full context.*

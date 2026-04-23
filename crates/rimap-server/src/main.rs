@@ -159,8 +159,13 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
         let our_uid = rustix::process::geteuid().as_raw();
-        // The fd pins the verified socket parent so Task 2 can bind-by-fd.
-        // Until then we just keep it alive across the bind call.
+        // Defense in depth: hold the verified parent-directory fd across the
+        // `bind` call. `UnixListener::bind(path)` still re-walks the path, so
+        // an ancestor-symlink swap after `prepare_socket_dir` returns could
+        // redirect `bind`. Narrowing the residual window to full bindat-by-fd
+        // is tracked as a follow-up; in the meantime the held fd plus the
+        // leaf-symlink refusal + post-bind mode assertion + umask guard keep
+        // the attack surface bounded.
         let _parent_fd = socket_setup::prepare_socket_dir(parent, our_uid)
             .with_context(|| format!("preparing {}", parent.display()))?;
         UnixSocketListener::bind(&path)
