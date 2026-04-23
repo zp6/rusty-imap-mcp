@@ -3,6 +3,8 @@
 #![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]
 
+use std::os::unix::fs::PermissionsExt as _;
+
 use assert_cmd::Command;
 use tempfile::TempDir;
 
@@ -14,6 +16,13 @@ use tempfile::TempDir;
 #[test]
 fn shim_exits_with_actionable_message_when_daemon_absent() {
     let tmp = TempDir::new().expect("tempdir");
+    // XDG_RUNTIME_DIR is required to be 0700 and owned by the current user
+    // (freedesktop spec; enforced by `daemon::socket_path::verify_runtime_dir`).
+    // `TempDir::new()` creates with 0700 on Linux, but on hosts with a looser
+    // umask or BSD defaults it may be 0755; narrow it explicitly so the
+    // resolver accepts our test path rather than falling back.
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod 0700");
 
     let mut cmd = Command::cargo_bin("rusty-imap-mcp").expect("binary");
     cmd.env("XDG_RUNTIME_DIR", tmp.path())
