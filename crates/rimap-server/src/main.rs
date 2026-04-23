@@ -118,7 +118,15 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     #[cfg(windows)]
     use rimap_server::daemon::transport::windows::NamedPipeListener;
     #[cfg(unix)]
-    use rimap_server::daemon::{socket_setup, transport::unix::UnixSocketListener};
+    use rimap_server::daemon::{hardening, socket_setup, transport::unix::UnixSocketListener};
+
+    // Harden the daemon process before anything reads credentials or
+    // performs network I/O: setrlimit(RLIMIT_CORE,0) + PR_SET_DUMPABLE=0
+    // (Linux) prevent credential bytes from leaking via a crash dump or
+    // a same-UID `/proc/self/mem` / ptrace attach. Review finding I4.
+    #[cfg(unix)]
+    hardening::lock_down_process()
+        .context("daemon startup hardening (rlimit_core / prctl_dumpable)")?;
 
     let config_path = config_override
         .or_else(|| resolve_config_path(None))
