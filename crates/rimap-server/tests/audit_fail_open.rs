@@ -35,6 +35,7 @@ fn fail_open_suppresses_write_failure_and_increments_counter() {
         posture_effective: Some(rimap_core::Posture::Readonly),
         arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
         arguments_hash_sha256: "0".repeat(64),
+        session_id: None,
     });
 
     assert!(
@@ -73,6 +74,7 @@ fn fail_open_false_propagates_write_failure() {
         posture_effective: Some(rimap_core::Posture::Readonly),
         arguments_redacted: serde_json::Value::Object(serde_json::Map::new()),
         arguments_hash_sha256: "0".repeat(64),
+        session_id: None,
     });
 
     assert!(

@@ -212,6 +212,8 @@ impl ImapMcpServer {
         &self,
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
+        arguments_redacted: serde_json::Value,
+        arguments_hash_sha256: String,
     ) -> Result<CallToolResult, ErrorData> {
         // Infrastructure tools have no per-account posture; record an
         // explicit sentinel so log readers can distinguish these from
@@ -220,23 +222,26 @@ impl ImapMcpServer {
             tool,
             None,
             PostureContext::Infrastructure,
-            args,
+            arguments_redacted,
+            arguments_hash_sha256,
             |_ticket| async move {
                 // Infrastructure tools bypass posture + breaker, but still
                 // enforce a process-wide rate limit.
-                self.registry.check_infrastructure_rate()?;
+                self.registry().check_infrastructure_rate()?;
                 match tool {
                     ToolName::UseAccount => {
                         let input =
                             parse_args::<crate::tools::admin::accounts::UseAccountInput>(args)?;
                         ser(crate::tools::admin::accounts::handle_use_account(
-                            &self.registry,
+                            &self.session,
+                            self.registry(),
                             input,
                         )
                         .await?)
                     }
                     ToolName::ListAccounts => ser(
-                        crate::tools::admin::accounts::handle_list_accounts(&self.registry).await?,
+                        crate::tools::admin::accounts::handle_list_accounts(self.registry())
+                            .await?,
                     ),
                     ToolName::ListFolders
                     | ToolName::Search
@@ -326,11 +331,13 @@ mod tests {
     #[tokio::test]
     async fn infrastructure_tool_emits_tool_start_and_tool_end() {
         use std::collections::BTreeMap;
+        use std::sync::Arc;
 
         use rimap_audit::{AuditOptions, AuditWriter, Seq};
         use tempfile::TempDir;
 
         use crate::boot::registry::AccountRegistry;
+        use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -346,13 +353,31 @@ mod tests {
         .expect("audit open");
 
         let registry = AccountRegistry::new(BTreeMap::new());
-        let (cancellation_sender, _cancellation_rx) = rimap_audit::cancellation_channel();
-        let server = ImapMcpServer::new(registry, audit, cancellation_sender);
+        let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
+        let download_dir: Arc<std::path::Path> =
+            Arc::from(std::path::Path::new("/tmp/test-downloads"));
+        let daemon_state = Arc::new(DaemonState {
+            registry: Arc::new(registry),
+            audit: audit.clone(),
+            download_dir,
+            cancellation_tx,
+            started_at: std::time::Instant::now(),
+            session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
+        });
+        let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
+        let server = ImapMcpServer::new(daemon_state, session_state);
 
         // list_accounts needs no args and no IMAP connection.
         let args = serde_json::Map::new();
+        let (arguments_redacted, arguments_hash_sha256) =
+            server.compute_tool_args_artifacts(ToolName::ListAccounts, &args);
         let _ = server
-            .dispatch_infrastructure(ToolName::ListAccounts, &args)
+            .dispatch_infrastructure(
+                ToolName::ListAccounts,
+                &args,
+                arguments_redacted,
+                arguments_hash_sha256,
+            )
             .await
             .expect("list_accounts dispatch");
 

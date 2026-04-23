@@ -27,6 +27,7 @@ name = "rusty-imap-mcp"
 path = "src/main.rs"
 
 [dependencies]
+thiserror = { workspace = true }
 rimap-core = { path = "../rimap-core", version = "1.0.0" }
 rimap-config = { path = "../rimap-config", version = "1.0.0" }
 rimap-authz = { path = "../rimap-authz", version = "1.0.0" }
@@ -50,11 +51,14 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 governor = { workspace = true }
-arc-swap = { workspace = true }
 tempfile = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", default-features = false, features = ["process", "fs"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+temp-env = { workspace = true }
 predicates = { workspace = true }
 mail-parser = { workspace = true }
 rimap-audit = { path = "../rimap-audit", version = "1.0.0", features = ["test-injection"] }

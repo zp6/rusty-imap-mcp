@@ -77,6 +77,10 @@ pub enum Command {
         #[command(subcommand)]
         action: AuditAction,
     },
+    /// Run the daemon in the foreground (long-lived server).
+    Daemon,
+    /// Run the stdio↔socket shim (connects to a running daemon).
+    Shim,
 }
 
 /// Actions under `rusty-imap-mcp audit <action>`.

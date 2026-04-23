@@ -23,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConfigError::NoCredential` and `ConfigError::Keychain` Display strings no
   longer include the username; they now show the host and a short
   `account_tag` hash for log correlation (#76).
+- **Breaking — MCP client config.** Update your MCP server config from
+  `command = ".../rusty-imap-mcp"` to
+  `command = ".../rusty-imap-mcp", args = ["shim"]`. Bare invocation
+  (previously ran the stdio server) now prints help and exits non-zero.
+- **Rate limits are now per-account, shared across all sessions on that
+  account.** Previously two simultaneous stdio processes each got the full
+  `commands_per_second` budget; now they share it — matching the limit's
+  intent of protecting the IMAP server.
+- Circuit breaker state is likewise shared per-account across sessions.
 
 ### Added
 
@@ -35,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`keyring` / `legacy_keyring` / `env_var`) for post-incident analysis.
 - `rusty-imap-mcp migrate-keyring` CLI subcommand to migrate credentials
   from the legacy keyring key format to the new namespaced format.
+- **Multi-client daemon.** `rusty-imap-mcp daemon` runs a long-lived server;
+  `rusty-imap-mcp shim` is the new stdio↔socket adapter that MCP clients
+  (Claude Code, Codex, etc.) invoke via `args = ["shim"]`. Multiple MCP
+  clients on the same user can now coexist without fighting for the audit lock.
+- New audit record kinds `session_start` and `session_end`; `tool_start` /
+  `tool_end` / `auth` gain `session_id` where session-scoped.
+- Packaging: systemd user unit, macOS launchd plist, Windows Task Scheduler
+  script under `scripts/packaging/`.
+
+### Migration
+
+Start the daemon once (systemd/launchd/Task Scheduler per your platform —
+see `README.md`'s "Running the daemon" section), then update every MCP
+client's config to invoke the shim. No config-file changes required.
 
 ## [1.0.0] - 2026-04-13
 
@@ -240,5 +263,3 @@ Pre-built binaries for five targets:
   to close a symlink/TOCTOU race on shared `/tmp`.
 - Replace `Mutex<Option<AccountId>>` in the account registry with
   `ArcSwapOption` to eliminate async-refactor footguns and mutex poisoning.
-
-## [Unreleased]

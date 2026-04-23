@@ -11,6 +11,20 @@
 #[doc(hidden)]
 pub mod boot;
 #[doc(hidden)]
+pub mod daemon;
+#[doc(hidden)]
 pub mod mcp;
 #[doc(hidden)]
+pub mod shim;
+#[doc(hidden)]
 pub mod tools;
+
+/// Elapsed milliseconds since `start`, saturating at `u64::MAX`. Audit
+/// records carry `duration_ms` as `u64`; the saturation handles the
+/// theoretically-possible overflow when an `Instant` delta exceeds ~584
+/// million years without requiring each call site to re-justify its
+/// `.unwrap_or(u64::MAX)`.
+#[must_use]
+pub(crate) fn duration_ms_since(start: std::time::Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}

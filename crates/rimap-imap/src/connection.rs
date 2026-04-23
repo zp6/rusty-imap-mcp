@@ -1314,6 +1314,7 @@ mod tests {
             fingerprint_match: None,
             error_code: None,
             credential_source: None,
+            session_id: None,
         };
 
         let handle = tokio::spawn(async move {

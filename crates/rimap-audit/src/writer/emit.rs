@@ -197,6 +197,9 @@ fn needs_fsync(payload: &crate::record::Payload) -> bool {
         | Payload::ProcessEnd(_)
         | Payload::Auth(_)
         | Payload::Config(_) => true,
-        Payload::ToolStart(_) | Payload::ToolEnd(_) => false,
+        Payload::ToolStart(_)
+        | Payload::ToolEnd(_)
+        | Payload::SessionStart(_)
+        | Payload::SessionEnd(_) => false,
     }
 }

@@ -12,10 +12,12 @@
 #![expect(clippy::expect_used, reason = "tests")]
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
 use rimap_core::tool::ToolName;
 use rimap_server::boot::registry::AccountRegistry;
+use rimap_server::daemon::state::{DaemonState, SessionState};
 use rimap_server::mcp::server::ImapMcpServer;
 use serde_json::json;
 use tempfile::TempDir;
@@ -40,8 +42,18 @@ fn build_test_server() -> TestFixture {
     .expect("audit open");
 
     let registry = AccountRegistry::new(BTreeMap::new());
-    let (cancellation_sender, _cancellation_rx) = rimap_audit::cancellation_channel();
-    let server = ImapMcpServer::new(registry, audit, cancellation_sender);
+    let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
+    let download_dir: Arc<std::path::Path> = Arc::from(std::path::Path::new("/tmp/test-downloads"));
+    let daemon_state = Arc::new(DaemonState {
+        registry: Arc::new(registry),
+        audit: audit.clone(),
+        download_dir,
+        cancellation_tx,
+        started_at: std::time::Instant::now(),
+        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
+    });
+    let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
+    let server = ImapMcpServer::new(daemon_state, session_state);
 
     TestFixture {
         server,
@@ -197,12 +209,23 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
 
     let registry =
         rimap_server::boot::registry::AccountRegistry::new(std::collections::BTreeMap::new());
-    let (cancellation_sender, cancellation_rx) = rimap_audit::cancellation_channel();
+    let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
     let drainer = spawn_drainer(cancellation_rx, audit.clone());
+    let download_dir_2: Arc<std::path::Path> =
+        Arc::from(std::path::Path::new("/tmp/test-downloads"));
+    let daemon_state_2 = Arc::new(rimap_server::daemon::state::DaemonState {
+        registry: Arc::new(registry),
+        audit: audit.clone(),
+        download_dir: download_dir_2,
+        cancellation_tx,
+        started_at: std::time::Instant::now(),
+        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
+    });
+    let session_id = rimap_core::SessionId::new();
+    let session_state_2 = Arc::new(rimap_server::daemon::state::SessionState::new(session_id));
     let server = Arc::new(rimap_server::mcp::server::ImapMcpServer::new(
-        registry,
-        audit,
-        cancellation_sender,
+        daemon_state_2,
+        session_state_2,
     ));
 
     // Use a never-resolving body so the abort reliably lands mid-body.
@@ -257,5 +280,18 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
     assert!(
         starts >= 1,
         "at least one dispatch envelope must have fired; records={records:#?}",
+    );
+
+    // The cancellation tool_end must carry the session_id from the guard's
+    // owning session. Spec §7: "session_id when known; emitted sessionless
+    // only during shutdown drain."
+    let cancellation_end = records
+        .iter()
+        .find(|r| r["kind"] == "tool_end" && r["status"] == "cancelled")
+        .expect("cancellation tool_end record missing");
+    assert_eq!(
+        cancellation_end["session_id"],
+        serde_json::Value::String(session_id.to_string()),
+        "cancellation tool_end must carry the session's session_id; records={records:#?}",
     );
 }

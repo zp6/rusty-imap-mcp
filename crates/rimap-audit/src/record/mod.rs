@@ -10,6 +10,9 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub(crate) mod error;
 pub mod ids;
+pub mod peer_identity;
+
+pub use peer_identity::PeerIdentity;
 
 use crate::record::ids::{ProcessId, Seq, Timestamp};
 
@@ -85,6 +88,60 @@ pub enum ProcessEndReason {
     Error,
 }
 
+/// Why a session ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEndReason {
+    /// Client cleanly closed its end of the socket.
+    Eof,
+    /// Session ended due to an error (see `last_error` on `SessionEnd`).
+    Error,
+    /// Daemon received a shutdown signal and is terminating all sessions.
+    DaemonShutdown,
+    /// Peer UID did not match the daemon's UID (scope A enforcement).
+    PeerUidRejected,
+    /// Daemon refused the connection because `max_concurrent_sessions`
+    /// was reached.
+    Rejected,
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_end_reason_tests {
+    use super::SessionEndReason;
+
+    #[test]
+    fn serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::DaemonShutdown).expect("ser"),
+            r#""daemon_shutdown""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::PeerUidRejected).expect("ser"),
+            r#""peer_uid_rejected""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::Eof).expect("ser"),
+            r#""eof""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::Error).expect("ser"),
+            r#""error""#
+        );
+        assert_eq!(
+            serde_json::to_string(&SessionEndReason::Rejected).expect("ser"),
+            r#""rejected""#
+        );
+    }
+
+    #[test]
+    fn rejected_round_trips_through_serde() {
+        let j = serde_json::to_string(&SessionEndReason::Rejected).expect("ser");
+        let back: SessionEndReason = serde_json::from_str(&j).expect("deser");
+        assert_eq!(back, SessionEndReason::Rejected);
+    }
+}
+
 /// Per-account summary for multi-account `process_start` records.
 ///
 /// `posture` serializes via [`rimap_core::Posture`]'s kebab-case serde,
@@ -143,6 +200,33 @@ pub struct ProcessStart {
     pub audit_file_inode_changed: bool,
 }
 
+/// `session_start`: emitted on daemon-accepting-a-client. One per connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionStart {
+    /// Per-connection identifier.
+    pub session_id: rimap_core::SessionId,
+    /// Peer identity observed at accept time.
+    pub peer_identity: crate::record::PeerIdentity,
+    /// Resolved absolute socket / named-pipe path.
+    pub socket_path: String,
+}
+
+/// `session_end`: emitted when a client disconnects or daemon shuts down.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionEnd {
+    /// The session being closed.
+    pub session_id: rimap_core::SessionId,
+    /// Why the session ended.
+    pub reason: SessionEndReason,
+    /// Wall-clock milliseconds from `session_start` to this record.
+    pub duration_ms: u64,
+    /// Tool calls completed in this session.
+    pub total_tool_calls: u64,
+    /// Last error seen, if any. `None` unless `reason = Error`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_error: Option<String>,
+}
+
 /// Payload of the `process_end` kind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcessEnd {
@@ -191,6 +275,11 @@ pub struct ToolStart {
     /// SHA-256 of the canonical JSON serialization of the *unredacted* payload,
     /// hex-encoded. Enables integrity checks without leaking content.
     pub arguments_hash_sha256: String,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission (e.g. emitted before any session
+    /// exists, or from a pre-session context).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 /// Outcome status for a tool call. `Ok` means a structured result was
@@ -258,6 +347,11 @@ pub struct ToolEnd {
     pub result_summary: ResultSummary,
     /// Provenance snapshot at end-of-call time.
     pub provenance: Provenance,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission (e.g. emitted before any session
+    /// exists, or from a pre-session context).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 /// Payload of the `config` kind. Declared now so Sprint 5 can emit it; no
@@ -286,6 +380,123 @@ pub enum Payload {
     ToolEnd(ToolEnd),
     /// Config-related event (declared for Sprint 5; not emitted in Sprint 2).
     Config(ConfigEvent),
+    /// `session_start` payload.
+    SessionStart(SessionStart),
+    /// `session_end` payload.
+    SessionEnd(SessionEnd),
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_record_tests {
+    use super::{AuditRecord, Payload, PeerIdentity, SessionEnd, SessionEndReason, SessionStart};
+    use crate::record::ids::{ProcessId, Seq, Timestamp};
+    use rimap_core::SessionId;
+
+    #[test]
+    fn session_start_serializes_with_all_fields() {
+        let id = SessionId::new();
+        let s = SessionStart {
+            session_id: id,
+            peer_identity: PeerIdentity::Unix {
+                uid: 1000,
+                pid: Some(42),
+            },
+            socket_path: "/run/user/1000/rusty-imap-mcp/daemon.sock".to_string(),
+        };
+        let j: serde_json::Value = serde_json::to_value(&s).expect("ser");
+        assert_eq!(j["session_id"], serde_json::Value::String(id.to_string()));
+        assert_eq!(j["peer_identity"]["platform"], "unix");
+        assert_eq!(j["peer_identity"]["uid"], 1000);
+        assert_eq!(
+            j["socket_path"],
+            "/run/user/1000/rusty-imap-mcp/daemon.sock"
+        );
+    }
+
+    #[test]
+    fn session_end_omits_last_error_when_none() {
+        let s = SessionEnd {
+            session_id: SessionId::new(),
+            reason: SessionEndReason::Eof,
+            duration_ms: 12_345,
+            total_tool_calls: 7,
+            last_error: None,
+        };
+        let j = serde_json::to_string(&s).expect("ser");
+        assert!(
+            !j.contains("last_error"),
+            "last_error should be omitted when None; got {j}"
+        );
+    }
+
+    #[test]
+    fn session_end_includes_last_error_when_some() {
+        let s = SessionEnd {
+            session_id: SessionId::new(),
+            reason: SessionEndReason::Error,
+            duration_ms: 99,
+            total_tool_calls: 0,
+            last_error: Some("ioerr: EPIPE".to_string()),
+        };
+        let j: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&s).expect("ser")).expect("parse");
+        assert_eq!(j["last_error"], "ioerr: EPIPE");
+    }
+
+    #[test]
+    fn session_start_serializes_as_session_start_kind() {
+        let id = SessionId::new();
+        let rec = AuditRecord {
+            seq: Seq::FIRST,
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::SessionStart(SessionStart {
+                session_id: id,
+                peer_identity: PeerIdentity::Unix {
+                    uid: 501,
+                    pid: Some(99),
+                },
+                socket_path: "/run/user/501/rusty-imap-mcp/daemon.sock".to_string(),
+            }),
+        };
+        let json = serde_json::to_string(&rec).expect("ser");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["kind"], "session_start");
+        assert_eq!(v["session_id"], serde_json::Value::String(id.to_string()));
+        assert_eq!(v["peer_identity"]["platform"], "unix");
+        assert_eq!(v["peer_identity"]["uid"], 501);
+        assert_eq!(v["socket_path"], "/run/user/501/rusty-imap-mcp/daemon.sock");
+        let back: AuditRecord = serde_json::from_str(&json).expect("deser");
+        assert_eq!(back, rec);
+    }
+
+    #[test]
+    fn session_end_serializes_as_session_end_kind() {
+        let id = SessionId::new();
+        let rec = AuditRecord {
+            seq: Seq(2),
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::SessionEnd(SessionEnd {
+                session_id: id,
+                reason: SessionEndReason::Error,
+                duration_ms: 8_500,
+                total_tool_calls: 3,
+                last_error: Some("ioerr: EPIPE".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&rec).expect("ser");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(v["kind"], "session_end");
+        assert_eq!(v["session_id"], serde_json::Value::String(id.to_string()));
+        assert_eq!(v["reason"], "error");
+        assert_eq!(v["duration_ms"], 8_500);
+        assert_eq!(v["total_tool_calls"], 3);
+        assert_eq!(v["last_error"], "ioerr: EPIPE");
+        let back: AuditRecord = serde_json::from_str(&json).expect("deser");
+        assert_eq!(back, rec);
+    }
 }
 
 #[cfg(test)]
@@ -386,6 +597,7 @@ mod tests {
                 fingerprint_match: Some(true),
                 error_code: None,
                 credential_source: None,
+                session_id: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();
@@ -424,6 +636,7 @@ mod tests {
                     "include_html": false,
                 }),
                 arguments_hash_sha256: "de".repeat(32),
+                session_id: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();
@@ -458,6 +671,7 @@ mod tests {
                     window_seconds: 60,
                     message_ids_recently_read: vec!["<abc@example>".to_string()],
                 },
+                session_id: None,
             }),
         };
         let json = serde_json::to_string(&rec).unwrap();
@@ -503,5 +717,45 @@ mod tests {
         assert_eq!(j, "\"cancelled\"");
         let back: ToolStatus = serde_json::from_str(&j).unwrap();
         assert_eq!(back, ToolStatus::Cancelled);
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_id_threading_tests {
+    use crate::record::{PostureEffective, ToolStart};
+    use rimap_core::{SessionId, tool::ToolName};
+
+    #[test]
+    fn tool_start_with_session_id_serializes_it() {
+        let sid = SessionId::new();
+        let t = build_tool_start(Some(sid));
+        let j = serde_json::to_value(&t).expect("ser");
+        assert_eq!(j["session_id"], sid.to_string());
+    }
+
+    #[test]
+    fn tool_start_without_session_id_omits_it() {
+        let t = build_tool_start(None);
+        let j = serde_json::to_value(&t).expect("ser");
+        assert!(
+            j.get("session_id").is_none(),
+            "None should be omitted, got {j}"
+        );
+    }
+
+    fn build_tool_start(session_id: Option<SessionId>) -> ToolStart {
+        ToolStart {
+            account: None,
+            tool: ToolName::FetchMessage,
+            posture_effective: PostureEffective::Account(rimap_core::Posture::DraftSafe),
+            arguments_redacted: serde_json::json!({
+                "folder": "INBOX",
+                "uid": 12345,
+                "include_html": false,
+            }),
+            arguments_hash_sha256: "de".repeat(32),
+            session_id,
+        }
     }
 }

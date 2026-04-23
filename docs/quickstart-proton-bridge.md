@@ -128,7 +128,10 @@ A successful run prints the account summary and server capabilities
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Connection refused | Bridge not running or wrong port | Start Proton Bridge and verify the IMAP port in Bridge settings |
 
-## Step 6: Add to your MCP client
+## Step 6: Start the daemon and add to your MCP client
+
+Start the daemon once using your platform's service manager (see
+README.md's "Running the daemon" section).
 
 ### Claude Desktop
 
@@ -140,7 +143,8 @@ macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 {
   "mcpServers": {
     "email": {
-      "command": "rusty-imap-mcp"
+      "command": "rusty-imap-mcp",
+      "args": ["shim"]
     }
   }
 }
@@ -149,7 +153,7 @@ macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
 ### Claude Code
 
 ```bash
-claude mcp add email rusty-imap-mcp
+claude mcp add email rusty-imap-mcp --args shim
 ```
 
 Restart your MCP client after adding the server.

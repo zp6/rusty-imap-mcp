@@ -638,6 +638,7 @@ mod tests {
                 fingerprint_match: Some(true),
                 error_code: None,
                 credential_source: None,
+                session_id: None,
             })
             .unwrap();
 
@@ -681,6 +682,7 @@ mod tests {
             fingerprint_match: None,
             error_code: Some(rimap_core::ErrorCode::Tls),
             credential_source: None,
+            session_id: None,
         };
         writer.log_auth(make()).unwrap();
         writer.log_auth(make()).unwrap();

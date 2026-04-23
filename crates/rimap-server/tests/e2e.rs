@@ -44,6 +44,7 @@ use rimap_core::posture::Posture;
 use rimap_imap::{Connection, ConnectionConfig};
 use tempfile::TempDir;
 
+use rimap_server::daemon::state::{DaemonState, SessionState};
 use rimap_server::mcp::server::ImapMcpServer;
 
 // ── Container harness (adapted from rimap-imap) ─────────────────────
@@ -281,8 +282,17 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     accounts.insert(id, state);
     let registry = rimap_server::boot::registry::AccountRegistry::new(accounts);
 
-    let (cancellation_sender, _cancellation_rx) = rimap_audit::cancellation_channel();
-    let server = ImapMcpServer::new(registry, audit, cancellation_sender);
+    let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
+    let daemon_state = Arc::new(DaemonState {
+        registry: Arc::new(registry),
+        audit: audit.clone(),
+        download_dir: std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
+        cancellation_tx,
+        started_at: std::time::Instant::now(),
+        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
+    });
+    let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
+    let server = ImapMcpServer::new(daemon_state, session_state);
 
     TestEnv {
         _harness: harness,
@@ -423,7 +433,7 @@ async fn assert_list_folders(server: &ImapMcpServer) {
 }
 
 async fn seed_message(server: &ImapMcpServer) {
-    let account = server.registry.resolve(None).expect("resolve account");
+    let account = server.registry().resolve(None).expect("resolve account");
     account
         .imap
         .append_message("INBOX", &test_message(), &[], &[])
@@ -517,7 +527,7 @@ async fn assert_create_draft(server: &ImapMcpServer, reply_uid: u32) {
 }
 
 async fn assert_create_draft_uses_special_use_when_available(server: &ImapMcpServer) {
-    let account = server.registry.resolve(None).expect("resolve account");
+    let account = server.registry().resolve(None).expect("resolve account");
     let expected = account
         .special_use
         .drafts()

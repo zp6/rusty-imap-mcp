@@ -51,6 +51,7 @@ pub(crate) fn auth_success(ctx: &AuthContext<'_>) -> AuthEvent {
         fingerprint_match: ctx.fingerprint_match(),
         error_code: None,
         credential_source: ctx.credential_source,
+        session_id: None,
     }
 }
 
@@ -66,6 +67,7 @@ pub(crate) fn auth_failure(ctx: &AuthContext<'_>, error_code: rimap_core::ErrorC
         fingerprint_match: ctx.fingerprint_match(),
         error_code: Some(error_code),
         credential_source: ctx.credential_source,
+        session_id: None,
     }
 }
 

@@ -4,6 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::boot::registry::AccountRegistry;
+use crate::daemon::state::SessionState;
 use crate::mcp::response::ToolResponse;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -41,6 +42,10 @@ pub struct ListAccountsMeta {
 
 /// Select `input.account` as the session's active account.
 ///
+/// Validates the account name, confirms it exists in the registry, and
+/// writes it to `session.active_account`. The old value (if any) is
+/// returned in the response's `previous` field.
+///
 /// # Errors
 ///
 /// Returns `RimapError::Authz { code: InvalidInput, ... }` if
@@ -48,11 +53,8 @@ pub struct ListAccountsMeta {
 /// codepoints, or if it is not a valid account-name shape. Returns
 /// `RimapError::UnknownAccount { ... }` if the name does not match a
 /// configured account.
-#[expect(
-    clippy::unused_async,
-    reason = "handler shape uniform with async-handler siblings"
-)]
 pub async fn handle_use_account(
+    session: &SessionState,
     registry: &AccountRegistry,
     input: UseAccountInput,
 ) -> Result<ToolResponse<UseAccountMeta>, rimap_core::RimapError> {
@@ -69,9 +71,31 @@ pub async fn handle_use_account(
             "account: disallowed bidi/zero-width/tag codepoint in name",
         ));
     }
-    rimap_core::account::AccountId::new(&input.account)
+    let new_id = rimap_core::account::AccountId::new(&input.account)
         .map_err(|_| rimap_core::RimapError::invalid_input("invalid account name"))?;
-    let previous = registry.set_active(&input.account)?;
+
+    // Confirm the account exists in the registry before committing.
+    registry
+        .accounts()
+        .get(&new_id)
+        .ok_or_else(|| rimap_core::RimapError::UnknownAccount {
+            name: input.account.clone(),
+            available: registry
+                .accounts()
+                .keys()
+                .map(ToString::to_string)
+                .collect(),
+        })?;
+
+    let previous = {
+        let mut guard = session.active_account.write().await;
+        let prev = guard.as_ref().map(ToString::to_string);
+        if guard.as_ref() != Some(&new_id) {
+            *guard = Some(new_id);
+        }
+        prev
+    };
+
     Ok(ToolResponse::meta_only(UseAccountMeta {
         account: input.account,
         previous,
@@ -127,6 +151,10 @@ mod tests {
         AccountRegistry::new(BTreeMap::new())
     }
 
+    fn empty_session() -> SessionState {
+        SessionState::new(rimap_core::SessionId::new())
+    }
+
     fn assert_invalid_input(err: &RimapError) {
         match err {
             RimapError::Authz { code, .. } => {
@@ -138,8 +166,10 @@ mod tests {
 
     #[tokio::test]
     async fn use_account_rejects_empty_name() {
+        let session = empty_session();
         let reg = empty_registry();
         let err = handle_use_account(
+            &session,
             &reg,
             UseAccountInput {
                 account: String::new(),
@@ -152,8 +182,10 @@ mod tests {
 
     #[tokio::test]
     async fn use_account_rejects_name_with_invalid_chars() {
+        let session = empty_session();
         let reg = empty_registry();
         let err = handle_use_account(
+            &session,
             &reg,
             UseAccountInput {
                 account: "has spaces".to_string(),
@@ -166,8 +198,10 @@ mod tests {
 
     #[tokio::test]
     async fn use_account_rejects_overlong_name() {
+        let session = empty_session();
         let reg = empty_registry();
         let err = handle_use_account(
+            &session,
             &reg,
             UseAccountInput {
                 account: "a".repeat(65),
@@ -182,8 +216,10 @@ mod tests {
     async fn use_account_valid_shape_but_unknown_returns_unknown_account() {
         // Name passes shape validation, so we proceed to registry lookup;
         // an empty registry produces `UnknownAccount`, not `InvalidInput`.
+        let session = empty_session();
         let reg = empty_registry();
         let err = handle_use_account(
+            &session,
             &reg,
             UseAccountInput {
                 account: "missing".to_string(),
@@ -210,11 +246,12 @@ mod tests {
 
     #[tokio::test]
     async fn use_account_rejects_bidi_override_in_name() {
+        let session = empty_session();
         let registry = empty_registry();
         let input = UseAccountInput {
             account: "work\u{202e}cnyS".to_string(),
         };
-        let err = handle_use_account(&registry, input)
+        let err = handle_use_account(&session, &registry, input)
             .await
             .expect_err("must reject");
         assert_invalid_input(&err);
@@ -229,11 +266,12 @@ mod tests {
 
     #[tokio::test]
     async fn use_account_rejects_zero_width_space_in_name() {
+        let session = empty_session();
         let registry = empty_registry();
         let input = UseAccountInput {
             account: "work\u{200b}mail".to_string(),
         };
-        let err = handle_use_account(&registry, input)
+        let err = handle_use_account(&session, &registry, input)
             .await
             .expect_err("must reject");
         assert_invalid_input(&err);

@@ -5,33 +5,34 @@
 mod cli;
 
 use rimap_server::boot::{audit_init, logging, registry};
-use rimap_server::mcp::server;
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Context;
 use clap::Parser;
-use rimap_authz::DispatchGuard;
-use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
-use rimap_authz::matrix::EffectiveMatrix;
-use rimap_authz::rate_limit::Governor;
 use rimap_config::credential::{CredentialStore, KeyringStore};
 use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
-use rimap_config::validate::ValidatedAccountConfig;
-use rimap_imap::{Connection, ConnectionConfig};
-use secrecy::ExposeSecret;
+
+use clap::CommandFactory as _;
 
 use crate::cli::{AuditAction, Cli, Command};
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     logging::init();
     let cli = Cli::parse();
-    match run(cli) {
+
+    // Shim is special: it manages its own exit code rather than fitting the
+    // anyhow::Result pattern. Handle it here before entering `run`.
+    if matches!(cli.command, Some(Command::Shim)) {
+        return rimap_server::shim::run().await;
+    }
+
+    match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("{e:#}");
@@ -40,7 +41,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(cli: Cli) -> anyhow::Result<()> {
+async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Some(Command::Login {
         account,
         host,
@@ -98,8 +99,40 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return cli::dry_run::run(&path, &mut stdout);
     }
 
-    // Server mode: load config, build subsystems, run MCP transport.
-    let config_path = resolve_cli_config_path(&cli)?;
+    if let Some(Command::Daemon) = cli.command {
+        return daemon_main(cli.config).await;
+    }
+
+    // No subcommand and not --dry-run: print help and bail.
+    // Shim is handled earlier in main() before this function is called.
+    Cli::command().print_help().context("print help")?;
+    writeln!(std::io::stderr().lock())?;
+    anyhow::bail!("no subcommand provided — see `rusty-imap-mcp daemon` and `rusty-imap-mcp shim`")
+}
+
+async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
+    use rimap_server::daemon::run::run;
+    use rimap_server::daemon::shutdown::install_shutdown_handler;
+    use rimap_server::daemon::socket_path;
+    use rimap_server::daemon::state::DaemonState;
+    #[cfg(windows)]
+    use rimap_server::daemon::transport::windows::NamedPipeListener;
+    #[cfg(unix)]
+    use rimap_server::daemon::{hardening, socket_setup, transport::unix::UnixSocketListener};
+
+    // Harden the daemon process before anything reads credentials or
+    // performs network I/O: setrlimit(RLIMIT_CORE,0) + PR_SET_DUMPABLE=0
+    // (Linux) prevent credential bytes from leaking via a crash dump or
+    // a same-UID `/proc/self/mem` / ptrace attach. Review finding I4.
+    #[cfg(unix)]
+    hardening::lock_down_process()
+        .context("daemon startup hardening (rlimit_core / prctl_dumpable)")?;
+
+    let config_path = config_override
+        .or_else(|| resolve_config_path(None))
+        .ok_or_else(|| {
+            anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
+        })?;
     let multi = load_and_validate(&config_path)
         .with_context(|| format!("loading config {}", config_path.display()))?;
     let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
@@ -109,54 +142,73 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let download_dir: Arc<std::path::Path> =
         Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
 
-    let audit_for_shutdown = audit.clone();
-    let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+    let registry = registry::build(&multi, &audit, &credentials, &download_dir)
+        .await
+        .context("building account registry")?;
 
-    let mcp_result: anyhow::Result<()> = rt.block_on(async {
-        let registry = build_registry(&multi, &audit, &credentials, &download_dir)
+    let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
+    let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
+
+    #[cfg(unix)]
+    let listener = {
+        let ep = socket_path::resolve();
+        let path = ep
+            .as_path_buf()
+            .ok_or_else(|| anyhow::anyhow!("unix path resolver returned non-path endpoint"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
+        let our_uid = rustix::process::geteuid().as_raw();
+        // Defense in depth: hold the verified parent-directory fd across the
+        // `bind` call. `UnixListener::bind(path)` still re-walks the path, so
+        // an ancestor-symlink swap after `prepare_socket_dir` returns could
+        // redirect `bind`. Narrowing the residual window to full bindat-by-fd
+        // is tracked as a follow-up; in the meantime the held fd plus the
+        // leaf-symlink refusal + post-bind mode assertion + umask guard keep
+        // the attack surface bounded.
+        let _parent_fd = socket_setup::prepare_socket_dir(parent, our_uid)
+            .with_context(|| format!("preparing {}", parent.display()))?;
+        UnixSocketListener::bind(&path)
             .await
-            .context("building account registry")?;
+            .with_context(|| format!("binding daemon socket at {}", path.display()))?
+    };
+    #[cfg(windows)]
+    let listener = {
+        let ep = socket_path::resolve().context("resolving daemon pipe name")?;
+        NamedPipeListener::bind(ep.as_str())
+            .with_context(|| format!("creating named pipe {}", ep.as_str()))?
+    };
 
-        let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
-        let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
+    let max_sessions =
+        usize::try_from(multi.daemon.max_concurrent_sessions.get()).unwrap_or(usize::MAX);
+    let session_permits = Arc::new(tokio::sync::Semaphore::new(max_sessions));
 
-        let mcp_server = server::ImapMcpServer::new(registry, audit, cancellation_tx);
-        let transport = rmcp::transport::io::stdio();
-        let service = Box::pin(rmcp::serve_server(mcp_server, transport))
-            .await
-            .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
-        // waiting() takes ownership of service, consuming it and dropping the
-        // ImapMcpServer (including all cancellation sender clones) when it
-        // returns. The drainer task exits once all senders have dropped.
-        service
-            .waiting()
-            .await
-            .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
-
-        // All senders dropped above. Wait for the drainer to flush any
-        // remaining queued cancellation records before the runtime exits.
-        if let Err(e) = drainer_handle.await {
-            tracing::error!(error = %e, "cancellation drainer join error");
-        }
-        Ok(())
+    let state = Arc::new(DaemonState {
+        registry: Arc::new(registry),
+        audit: audit.clone(),
+        download_dir,
+        cancellation_tx,
+        started_at: std::time::Instant::now(),
+        session_permits,
     });
 
-    // Best-effort process_end emission.
+    let shutdown = install_shutdown_handler();
+    let mcp_result = run(state, listener, shutdown).await;
+
     let reason = match &mcp_result {
         Ok(()) => rimap_audit::ProcessEndReason::Eof,
         Err(_) => rimap_audit::ProcessEndReason::Error,
     };
-    // total_tool_calls is not tracked yet — use 0 as placeholder.
-    // A future PR can add an AtomicU64 counter to ImapMcpServer.
-    let process_end = rimap_audit::ProcessEnd {
-        reason,
-        total_tool_calls: 0,
-    };
-    match audit_for_shutdown.log_process_end(process_end) {
-        Ok(seq) => tracing::info!(seq = %seq, "process_end audit record written"),
-        Err(e) => tracing::error!(error = %e, "failed to write process_end audit record"),
+    if let Err(e) = drainer_handle.await {
+        tracing::error!(error = %e, "cancellation drainer join error");
     }
-
+    if let Err(e) = audit.log_process_end(rimap_audit::ProcessEnd {
+        reason,
+        // Aggregation across sessions is a follow-up — leave 0 for v1.
+        total_tool_calls: 0,
+    }) {
+        tracing::error!(error = %e, "failed to write process_end");
+    }
     mcp_result
 }
 
@@ -169,135 +221,6 @@ fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| {
             anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
         })
-}
-
-/// Build the account registry from a validated multi-account config.
-async fn build_registry(
-    multi: &rimap_config::validate::ValidatedMultiConfig,
-    audit: &rimap_audit::AuditWriter,
-    credentials: &Arc<dyn CredentialStore>,
-    download_dir: &Arc<std::path::Path>,
-) -> anyhow::Result<registry::AccountRegistry> {
-    let mut account_states = std::collections::BTreeMap::new();
-    let auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
-    for (id, acfg) in &multi.accounts {
-        let guard = build_account_guard(acfg).context("building dispatch guard")?;
-        let conn_cfg = build_account_connection(id, acfg);
-        let resolver: Arc<dyn rimap_core::CredentialResolver> =
-            Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
-                credentials.clone(),
-                acfg.fallback_mode,
-            ));
-        let imap = Connection::new(conn_cfg, auth_sink.clone(), resolver);
-
-        let special_use = rimap_server::boot::discovery::resolve_special_use(&imap)
-            .await
-            .with_context(|| {
-                format!("resolving special-use folders for account {}", id.as_str())
-            })?;
-
-        // Expand the config-supplied protected-folders list with any
-        // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
-        // The merge is case-insensitive so user-configured literals
-        // (`"Sent"`) are not duplicated when the server also reports
-        // `"Sent"` on the same mailbox.
-        let mut protected = acfg.security.protected_folders.clone();
-        for discovered in special_use.all_discovered() {
-            if !protected
-                .iter()
-                .any(|p| p.eq_ignore_ascii_case(&discovered))
-            {
-                protected.push(discovered);
-            }
-        }
-
-        let smtp = build_smtp_client(acfg, credentials)?;
-
-        let folder_guard =
-            rimap_authz::FolderGuard::new(&protected, &acfg.security.expunge_folders);
-
-        let state = registry::AccountState {
-            id: id.clone(),
-            imap,
-            smtp,
-            guard,
-            folder_guard,
-            download_dir: Arc::clone(download_dir),
-            special_use,
-        };
-        account_states.insert(id.clone(), state);
-    }
-    Ok(registry::AccountRegistry::new(account_states))
-}
-
-/// Build an SMTP client from account config, if SMTP is configured.
-fn build_smtp_client(
-    acfg: &ValidatedAccountConfig,
-    credentials: &Arc<dyn CredentialStore>,
-) -> anyhow::Result<Option<rimap_smtp::SmtpClient>> {
-    let Some(ref smtp_cfg) = acfg.smtp else {
-        return Ok(None);
-    };
-    let (smtp_password, _src) = rimap_config::resolve_credential(
-        &**credentials,
-        &acfg.id,
-        &smtp_cfg.username,
-        &smtp_cfg.host,
-        acfg.fallback_mode,
-    )
-    .with_context(|| format!("resolving SMTP credential for account {}", acfg.id.as_str()))?;
-    let client = rimap_smtp::SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
-        .with_context(|| format!("building SMTP client for account {}", acfg.id.as_str()))?;
-    drop(smtp_password);
-    Ok(Some(client))
-}
-
-/// Build the composed authz guard from a per-account config.
-fn build_account_guard(
-    acfg: &ValidatedAccountConfig,
-) -> anyhow::Result<DispatchGuard<SystemClock>> {
-    let matrix = EffectiveMatrix::build(acfg.security.posture, &acfg.tool_overrides);
-    let breaker_cfg = BreakerConfig {
-        error_threshold: acfg.limits.circuit_breaker_error_threshold,
-        window: Duration::from_secs(u64::from(acfg.limits.circuit_breaker_window_seconds)),
-        ..BreakerConfig::default_spec()
-    };
-    let breaker = CircuitBreaker::new(SystemClock::new(), breaker_cfg);
-    let governor = Governor::new(
-        acfg.limits.commands_per_second,
-        acfg.limits.drafts_per_minute,
-        acfg.limits.sends_per_minute,
-    )
-    .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
-    Ok(DispatchGuard::new(matrix, breaker, governor))
-}
-
-/// Map a per-account config to a `ConnectionConfig`.
-fn build_account_connection(
-    id: &rimap_core::account::AccountId,
-    acfg: &ValidatedAccountConfig,
-) -> ConnectionConfig {
-    let account = if id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
-        None
-    } else {
-        Some(id.as_str().to_string())
-    };
-    ConnectionConfig {
-        account,
-        account_id: id.clone(),
-        host: acfg.imap.host.clone(),
-        port: acfg.imap.port,
-        encryption: match acfg.imap.encryption {
-            rimap_config::model::ImapEncryption::Tls => rimap_imap::ImapEncryption::Tls,
-            rimap_config::model::ImapEncryption::Starttls => rimap_imap::ImapEncryption::Starttls,
-        },
-        username: acfg.imap.username.clone(),
-        pinned_fingerprint: acfg.tls_fingerprint,
-        connect_timeout: Duration::from_secs(u64::from(acfg.imap.connect_timeout_seconds)),
-        command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
-        max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
-        max_append_bytes: acfg.limits.max_append_bytes,
-    }
 }
 
 /// Resolve the attachment download directory from a multi-account config.
@@ -361,7 +284,7 @@ fn run_migrate_keyring(account: &str, username: &str, host: &str) -> anyhow::Res
 #[expect(clippy::expect_used, reason = "tests")]
 mod resolve_download_dir_tests {
     use super::resolve_download_dir_multi;
-    use rimap_config::model::{AttachmentsConfig, AuditConfig};
+    use rimap_config::model::{AttachmentsConfig, AuditConfig, DaemonConfig};
     use rimap_config::validate::ValidatedMultiConfig;
     use std::collections::BTreeMap;
     use std::os::unix::fs::PermissionsExt;
@@ -380,6 +303,7 @@ mod resolve_download_dir_tests {
                 allowed_base_dir: None,
             },
             attachments: AttachmentsConfig { download_dir },
+            daemon: DaemonConfig::default(),
         }
     }
 

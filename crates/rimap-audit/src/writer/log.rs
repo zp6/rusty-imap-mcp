@@ -152,6 +152,29 @@ impl AuditWriter {
         };
         self.emit(crate::record::Payload::ProcessStart(payload))
     }
+
+    /// Emit a `session_start` record. Blocking FS I/O; callers on an
+    /// async runtime must invoke this from `tokio::task::spawn_blocking`.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_session_start(
+        &self,
+        record: crate::record::SessionStart,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        self.emit(crate::record::Payload::SessionStart(record))
+    }
+
+    /// Emit a `session_end` record.
+    ///
+    /// # Errors
+    /// Propagates any error from `allocate_seq` or `write_record`.
+    pub fn log_session_end(
+        &self,
+        record: crate::record::SessionEnd,
+    ) -> Result<crate::record::ids::Seq, AuditError> {
+        self.emit(crate::record::Payload::SessionEnd(record))
+    }
 }
 
 /// Inputs to [`AuditWriter::log_tool_end`].
@@ -173,6 +196,9 @@ pub struct ToolEndInputs {
     pub result_summary: crate::record::ResultSummary,
     /// Recently-read message IDs and window.
     pub provenance: crate::record::Provenance,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission.
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 impl From<ToolEndInputs> for crate::record::ToolEnd {
@@ -186,6 +212,7 @@ impl From<ToolEndInputs> for crate::record::ToolEnd {
             duration_ms: i.duration_ms,
             result_summary: i.result_summary,
             provenance: i.provenance,
+            session_id: i.session_id,
         }
     }
 }
@@ -210,6 +237,9 @@ pub struct ToolStartInputs {
     /// SHA-256 of the canonical JSON serialization of the *unredacted*
     /// payload, hex-encoded.
     pub arguments_hash_sha256: String,
+    /// Per-session identifier when emitted from a session context.
+    /// `None` for daemon-level emission.
+    pub session_id: Option<rimap_core::SessionId>,
 }
 
 impl From<ToolStartInputs> for crate::record::ToolStart {
@@ -220,6 +250,7 @@ impl From<ToolStartInputs> for crate::record::ToolStart {
             posture_effective: crate::record::PostureEffective::from_optional(i.posture_effective),
             arguments_redacted: i.arguments_redacted,
             arguments_hash_sha256: i.arguments_hash_sha256,
+            session_id: i.session_id,
         }
     }
 }
@@ -250,4 +281,79 @@ pub struct ProcessStartInputs {
     /// Inode of the audit file as observed AFTER this writer was opened
     /// (call `crate::writer::self_check::current_inode` on the path).
     pub current_inode: u64,
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod session_writer_tests {
+    use crate::record::{PeerIdentity, SessionEndReason};
+    use crate::writer::{AuditOptions, AuditWriter};
+    use rimap_core::SessionId;
+    use tempfile::TempDir;
+
+    #[test]
+    fn log_session_start_writes_a_session_start_record() {
+        let dir = TempDir::new().expect("tmpdir");
+        let path = dir.path().join("a.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::record::ids::Seq::FIRST,
+        })
+        .expect("open");
+        let sid = SessionId::new();
+        let seq = writer
+            .log_session_start(crate::record::SessionStart {
+                session_id: sid,
+                peer_identity: PeerIdentity::Unix {
+                    uid: 1000,
+                    pid: Some(1),
+                },
+                socket_path: "/tmp/x.sock".to_string(),
+            })
+            .expect("write");
+        assert!(seq.get() > 0);
+        drop(writer);
+        let contents = std::fs::read_to_string(&path).expect("read");
+        let last = contents.lines().last().expect("at least one line");
+        let v: serde_json::Value = serde_json::from_str(last).expect("parse");
+        assert_eq!(v["kind"], "session_start");
+        assert_eq!(v["session_id"], sid.to_string());
+    }
+
+    #[test]
+    fn log_session_end_writes_a_session_end_record() {
+        let dir = TempDir::new().expect("tmpdir");
+        let path = dir.path().join("a.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::record::ids::Seq::FIRST,
+        })
+        .expect("open");
+        let sid = SessionId::new();
+        let _ = writer
+            .log_session_end(crate::record::SessionEnd {
+                session_id: sid,
+                reason: SessionEndReason::DaemonShutdown,
+                duration_ms: 100,
+                total_tool_calls: 3,
+                last_error: None,
+            })
+            .expect("write");
+        drop(writer);
+        let contents = std::fs::read_to_string(&path).expect("read");
+        let last = contents.lines().last().expect("at least one line");
+        let v: serde_json::Value = serde_json::from_str(last).expect("parse");
+        assert_eq!(v["kind"], "session_end");
+        assert_eq!(v["reason"], "daemon_shutdown");
+        assert_eq!(v["total_tool_calls"], 3);
+        assert!(v.get("last_error").is_none());
+    }
 }

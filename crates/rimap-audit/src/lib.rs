@@ -24,8 +24,9 @@ pub use crate::reader::{Filter, open_shared, stream_records};
 pub use crate::record::error::AuditError;
 pub use crate::record::ids::{ProcessId, Seq, Timestamp};
 pub use crate::record::{
-    AccountSummary, AuditRecord, Auth, AuthResult, ConfigEvent, Payload, ProcessEnd,
-    ProcessEndReason, ProcessStart, Provenance, ResultSummary, ToolEnd, ToolStart, ToolStatus,
+    AccountSummary, AuditRecord, Auth, AuthResult, ConfigEvent, Payload, PeerIdentity, ProcessEnd,
+    ProcessEndReason, ProcessStart, Provenance, ResultSummary, SessionEnd, SessionEndReason,
+    SessionStart, ToolEnd, ToolStart, ToolStatus,
 };
 pub use crate::redact::{
     FieldPolicy, RedactionSalt, RedactionSchema, Redactor, ToolRedactionSchema, hash_arguments,
