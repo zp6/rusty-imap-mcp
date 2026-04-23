@@ -161,11 +161,24 @@ mod tests {
     use super::*;
     use std::io;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
     use tempfile::TempDir;
+
+    /// Snapshot the authoritative temp directory once, before any sibling
+    /// test enters a `temp_env` block that overrides `TMPDIR`. `TempDir`
+    /// honors `TMPDIR` via `std::env::temp_dir()`, and `temp_env` mutates
+    /// the process-global environment, so tests that run in parallel with
+    /// env-mutating tests must pin an explicit base path.
+    fn real_tempdir() -> PathBuf {
+        static REAL: OnceLock<PathBuf> = OnceLock::new();
+        REAL.get_or_init(std::env::temp_dir).clone()
+    }
 
     #[test]
     fn uses_xdg_runtime_dir_when_set() {
-        let dir = TempDir::new().unwrap();
+        let base = real_tempdir();
+        let dir = TempDir::new_in(&base).unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let dir_str = dir.path().to_string_lossy().into_owned();
         let expected = format!("{dir_str}/rusty-imap-mcp/daemon.sock");
@@ -177,7 +190,8 @@ mod tests {
 
     #[test]
     fn falls_back_when_xdg_runtime_dir_has_wrong_mode() {
-        let dir = TempDir::new().unwrap();
+        let base = real_tempdir();
+        let dir = TempDir::new_in(&base).unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let dir_str = dir.path().to_string_lossy().into_owned();
         temp_env::with_vars(
@@ -195,6 +209,8 @@ mod tests {
 
     #[test]
     fn falls_back_to_tmpdir_when_xdg_unset() {
+        // Prime the snapshot before mutating TMPDIR.
+        let _ = real_tempdir();
         temp_env::with_vars(
             [("XDG_RUNTIME_DIR", None), ("TMPDIR", Some("/alt-tmp"))],
             || {
@@ -207,7 +223,8 @@ mod tests {
 
     #[test]
     fn rejects_xdg_runtime_dir_owned_by_other_uid() {
-        let dir = TempDir::new().unwrap();
+        let base = real_tempdir();
+        let dir = TempDir::new_in(&base).unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let wrong_uid = rustix::process::geteuid().as_raw().wrapping_add(1);
         let err = verify_runtime_dir(dir.path(), wrong_uid).unwrap_err();
@@ -216,7 +233,8 @@ mod tests {
 
     #[test]
     fn rejects_xdg_runtime_dir_wrong_mode() {
-        let dir = TempDir::new().unwrap();
+        let base = real_tempdir();
+        let dir = TempDir::new_in(&base).unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
         let our_uid = rustix::process::geteuid().as_raw();
         let err = verify_runtime_dir(dir.path(), our_uid).unwrap_err();
@@ -225,7 +243,8 @@ mod tests {
 
     #[test]
     fn accepts_xdg_runtime_dir_0700_and_ours() {
-        let dir = TempDir::new().unwrap();
+        let base = real_tempdir();
+        let dir = TempDir::new_in(&base).unwrap();
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let our_uid = rustix::process::geteuid().as_raw();
         verify_runtime_dir(dir.path(), our_uid).unwrap();
@@ -233,7 +252,8 @@ mod tests {
 
     #[test]
     fn rejects_symlinked_xdg_runtime_dir() {
-        let base = TempDir::new().unwrap();
+        let base_tmp = real_tempdir();
+        let base = TempDir::new_in(&base_tmp).unwrap();
         let real = base.path().join("real");
         std::fs::create_dir_all(&real).unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
