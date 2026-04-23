@@ -16,12 +16,12 @@ filed as #141–#149.
 | 6 | Windows Service (SCM) integration | [#129](https://github.com/randomparity/rusty-imap-mcp/issues/129) |
 | 7 | Daemon idle-timeout / lazy-spawn | [#130](https://github.com/randomparity/rusty-imap-mcp/issues/130) |
 | 8 | Provenance ring buffer scoping knob | [#131](https://github.com/randomparity/rusty-imap-mcp/issues/131) |
-| 9 | Real Windows peer-identity capture | [#132](https://github.com/randomparity/rusty-imap-mcp/issues/132) |
-| 10 | Custom DACL on Windows named pipe | [#133](https://github.com/randomparity/rusty-imap-mcp/issues/133) |
+| 9 | Real Windows peer-identity capture `LOCAL-OS-*` | [#132](https://github.com/randomparity/rusty-imap-mcp/issues/132) |
+| 10 | Custom DACL on Windows named pipe `LOCAL-OS-*` | [#133](https://github.com/randomparity/rusty-imap-mcp/issues/133) |
 | 11 | Shim e2e test: resolver-path harness | [#134](https://github.com/randomparity/rusty-imap-mcp/issues/134) |
 | 12 | `process_end.total_tool_calls` aggregator | [#135](https://github.com/randomparity/rusty-imap-mcp/issues/135) |
 | 13 | Full Dovecot-backed integration suite | [#136](https://github.com/randomparity/rusty-imap-mcp/issues/136) |
-| 14 | `session_end(DaemonShutdown)` for aborted sessions | [#137](https://github.com/randomparity/rusty-imap-mcp/issues/137) |
+| 14 | `session_end(DaemonShutdown)` for aborted sessions `MCP-AUD-01` `RUST-ASYNC-*` | [#137](https://github.com/randomparity/rusty-imap-mcp/issues/137) |
 | 15 | Config path resolution duplication | [#138](https://github.com/randomparity/rusty-imap-mcp/issues/138) |
 | 16 | Doc sweep: stale `AccountRegistry.active` refs | [#139](https://github.com/randomparity/rusty-imap-mcp/issues/139) |
 
@@ -34,7 +34,7 @@ architectural findings below are tracked as separate issues.
 | # | Title | Issue |
 |---|-------|-------|
 | 17 | Hoist `RedactionSalt` to `DaemonState` | [#141](https://github.com/randomparity/rusty-imap-mcp/issues/141) |
-| 18 | `spawn_blocking` around session_start / session_end writes | [#142](https://github.com/randomparity/rusty-imap-mcp/issues/142) |
+| 18 | `spawn_blocking` around session_start / session_end writes `RUST-ASYNC-*` | [#142](https://github.com/randomparity/rusty-imap-mcp/issues/142) |
 | 19 | `ArcSwapOption` for `SessionState.active_account` | [#143](https://github.com/randomparity/rusty-imap-mcp/issues/143) |
 | 20 | Parallelize `registry::build` per-account setup | [#144](https://github.com/randomparity/rusty-imap-mcp/issues/144) |
 | 21 | Tighten `DaemonState` visibility + narrow `raw_writer` | [#145](https://github.com/randomparity/rusty-imap-mcp/issues/145) |
@@ -93,7 +93,7 @@ Per-daemon today; revisit if forensics want tighter granularity.
 
 ## Discovered during implementation
 
-### 9. Real Windows peer-identity capture
+### 9. Real Windows peer-identity capture  `LOCAL-OS-*`
 
 Task 11 ships a placeholder `PeerIdentity::Windows { sid: "S-unknown",
 pid: 0 }` because workspace `unsafe_code = "forbid"` blocks the Win32
@@ -107,7 +107,7 @@ Two viable approaches: (a) quarantine the FFI in a separate
 `rimap-server`. Approach (a) is cleaner — keeps workspace-wide
 `forbid(unsafe_code)` intact and contains the FFI blast radius.
 
-### 10. Custom DACL for scope B on Windows
+### 10. Custom DACL for scope B on Windows  `LOCAL-OS-*`
 
 Task 11's `create_server_instance` uses tokio's default
 `SECURITY_ATTRIBUTES` (creator-only access). Scope B needs an explicit
@@ -148,7 +148,7 @@ Specifically deferred tests: rate-limit sharing (T23), breaker sharing
 function level), second-daemon-fails-fast (T26 — unit-tested at
 `UnixSocketListener::bind`), Windows-specific named-pipe tests (T29).
 
-### 14. `session_end(DaemonShutdown)` for aborted sessions
+### 14. `session_end(DaemonShutdown)` for aborted sessions  `MCP-AUD-01` `RUST-ASYNC-*`
 
 During graceful shutdown, `drain_sessions` in `daemon/run.rs` calls
 `sessions.shutdown().await` after the 5 s deadline, aborting any tasks

@@ -297,6 +297,12 @@ See docs/quickstart-proton-bridge.md for setup details.
 - Parent dir: `mkdir 0700`; if present, verify `owner == our_uid && mode == 0700 && !is_symlink` (use `openat` with `O_NOFOLLOW`).
 - Socket file: `bind()` + explicit `fchmod 0600`.
 - Stale socket recovery: `bind` returns `EADDRINUSE` → try `connect()`. Connect succeeds → another live daemon → exit with `Locked`. Connect fails → carcass → `unlink`, retry `bind`, log the unlink.
+
+> **Limitation:** this flow defends leaf symlink swaps (regression test
+> `bind_refuses_to_unlink_symlink_squatter`) but does NOT defend the
+> pre-binding squatter case where an attacker `bind()`s the same path
+> between our `unlink` and our `bind`. Tracked at follow-up #26.
+
 - Peer identity: `tokio::net::UnixStream::peer_cred()` → `(uid, pid)`.
 
 ### 9.2 Windows (`#[cfg(windows)]`)
