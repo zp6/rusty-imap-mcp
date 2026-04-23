@@ -35,6 +35,11 @@ pub struct UnixSocketListener {
 /// daemon's `bind` is a one-shot startup event on the main task, so the
 /// exposure window is negligible; callers should still keep the guard
 /// scoped as tightly as possible.
+///
+/// NOTE: `umask(2)` is process-global. On modern glibc (>= 2.32) it is
+/// per-thread, but we do not rely on that: the daemon's `bind` runs on
+/// the main task before any worker tasks are spawned, so no concurrent
+/// `open(2)` / `mkdir(2)` in another thread can race the umask window.
 struct UmaskGuard {
     prior: rustix::fs::Mode,
 }
@@ -89,7 +94,10 @@ impl UnixSocketListener {
             if metadata.file_type().is_symlink() {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    format!("refusing to bind: {} is a symlink", path.display()),
+                    format!(
+                        "refusing to bind: {} is a symlink; remove the symlink or bind at a different path",
+                        path.display()
+                    ),
                 ));
             }
             if UnixStream::connect(path).await.is_ok() {
@@ -101,6 +109,11 @@ impl UnixSocketListener {
                     ),
                 ));
             }
+            // `unlink(2)` does NOT follow terminal symlinks; it unlinks the
+            // link itself. Combined with the `symlink_metadata` pre-check
+            // above, a same-UID attacker that races a symlink onto `path`
+            // after the pre-check cannot make us delete the symlink's
+            // target. Task 3's C3 regression test locks in this invariant.
             std::fs::remove_file(path)?;
             tracing::info!(path = %path.display(), "unlinked stale daemon socket");
         }
@@ -122,7 +135,7 @@ impl UnixSocketListener {
         if mode != 0o600 {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
-                format!("bound socket has mode {mode:o}, require 0600"),
+                format!("bound socket has mode {mode:o}, require 0600; check umask and filesystem"),
             ));
         }
 
@@ -267,9 +280,11 @@ mod tests {
 
     #[tokio::test]
     async fn socket_file_is_mode_0600_even_under_permissive_umask() {
-        // Force a wide-open umask before bind. Correct code must override
-        // it via UmaskGuard so the kernel creates the inode with mode
-        // 0700 directly — closing the window between bind and chmod.
+        // Force a wide-open umask before bind, then assert the mode==0600
+        // invariant. This does NOT prove UmaskGuard is load-bearing, since
+        // the post-bind `set_permissions(0o600)` also enforces it; the two
+        // paths are indistinguishable from outside. The invariant is what
+        // matters — either path (or both) satisfying it is acceptable.
         // Use rustix to avoid `unsafe` (workspace forbids `unsafe_code`).
         let prior = rustix::process::umask(rustix::fs::Mode::empty());
         let dir = TempDir::new().unwrap();
