@@ -25,6 +25,8 @@
 //! produces neither a normal `tool_end` nor a cancellation `tool_end`,
 //! resulting in silent audit-record loss.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
 use rimap_audit::redact::{Redactor, ToolRedactionSchema, hash_arguments};
 use rimap_audit::{CancelledToolEndSender, ToolEndInputs, ToolStartInputs};
@@ -33,6 +35,23 @@ use rmcp::model::{CallToolResult, ErrorData};
 
 use crate::mcp::dispatch::{DispatchTicket, PostureContext};
 use crate::mcp::server::ImapMcpServer;
+
+/// Count of `tool_end` cancellation records that could not be enqueued
+/// (channel full or drainer already exited). Exposed for observability;
+/// a non-zero value indicates audit-record loss that operators should
+/// investigate. See `AuditEnvelopeGuard::drop`.
+static DROPPED_CANCELLATIONS: AtomicU64 = AtomicU64::new(0);
+
+/// Read the running count of dropped cancellation records.
+#[must_use]
+#[expect(
+    dead_code,
+    reason = "observability hook exposed for tests / ops metrics; \
+              no in-crate caller today but surface is intentionally kept"
+)]
+pub fn dropped_cancellation_count() -> u64 {
+    DROPPED_CANCELLATIONS.load(Ordering::Relaxed)
+}
 
 impl ImapMcpServer {
     /// Wrap an inner dispatch `body` in the full audit envelope: emit
@@ -267,9 +286,11 @@ impl Drop for AuditEnvelopeGuard {
             session_id: Some(inner.session_id),
         };
         if let Err(e) = inner.sender.try_send(cancellation) {
+            DROPPED_CANCELLATIONS.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
                 error = %e,
                 tool = tool.as_str(),
+                total_dropped = DROPPED_CANCELLATIONS.load(Ordering::Relaxed),
                 "cancellation tool_end drop: failed to enqueue (channel full or closed)",
             );
         }
