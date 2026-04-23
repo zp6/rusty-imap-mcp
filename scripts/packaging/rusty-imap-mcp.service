@@ -1,16 +1,46 @@
 [Unit]
 Description=Rusty IMAP MCP daemon
+Documentation=https://github.com/randomparity/rusty-imap-mcp
 After=default.target
 
 [Service]
 ExecStart=%h/.local/bin/rusty-imap-mcp daemon
 Restart=on-failure
 RestartSec=3
+
+# Filesystem isolation
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.local/state/rusty-imap-mcp %h/.config/rusty-imap-mcp %t
+ReadWritePaths=%h/.local/state/rusty-imap-mcp %h/.config/rusty-imap-mcp
+RuntimeDirectory=rusty-imap-mcp
+RuntimeDirectoryMode=0700
+
+# Privilege & syscall surface
 NoNewPrivileges=true
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @cpu-emulation @debug @obsolete @raw-io @reboot @swap
+
+# Kernel protection
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Resource bounds (defense in depth with rimap-server/src/daemon/hardening.rs)
+LimitCORE=0
+LimitNOFILE=1024
+UMask=0077
+
+# Networking is required (IMAP TLS); do not disable it.
 
 [Install]
 WantedBy=default.target
