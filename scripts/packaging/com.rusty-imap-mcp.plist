@@ -13,6 +13,20 @@
   <dict>
     <key>SuccessfulExit</key><false/>
   </dict>
-  <key>StandardErrorPath</key><string>/tmp/rusty-imap-mcp.err.log</string>
+  <!--
+    Log to the user's Library/Logs; NEVER /tmp (world-writable, symlink-attack sink).
+    __REPLACE_HOME__ must be substituted with the user's home dir (e.g. /Users/alice)
+    at install time — see scripts/packaging/register-agent.sh (if present) or the
+    README's packaging section.
+  -->
+  <key>StandardErrorPath</key><string>__REPLACE_HOME__/Library/Logs/rusty-imap-mcp.err.log</string>
+  <key>StandardOutPath</key><string>__REPLACE_HOME__/Library/Logs/rusty-imap-mcp.out.log</string>
+  <key>ProcessType</key><string>Background</string>
+  <key>Umask</key><integer>63</integer><!-- 0o077 = 63 decimal -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Don't inherit a potentially hostile TMPDIR from the loading shell. -->
+    <key>TMPDIR</key><string>__REPLACE_HOME__/Library/Caches/rusty-imap-mcp</string>
+  </dict>
 </dict>
 </plist>
