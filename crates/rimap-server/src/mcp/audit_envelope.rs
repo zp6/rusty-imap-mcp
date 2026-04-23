@@ -11,6 +11,12 @@
 //! [`AuditEnvelopeGuard`] is a drop-guard that synthesizes a cancellation
 //! `tool_end` if the enclosing future is dropped between `tool_start`
 //! emission and the normal `emit_tool_end` call (#71, #99).
+//!
+//! **Ordering invariant (MCP-AUD-01):** the guard must remain armed across
+//! `emit_tool_end.await`, and only be disarmed AFTER that await returns.
+//! Disarming first would leave a window in which a dropped dispatch future
+//! produces neither a normal `tool_end` nor a cancellation `tool_end`,
+//! resulting in silent audit-record loss.
 
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
 use rimap_audit::redact::{Redactor, ToolRedactionSchema, hash_arguments};
@@ -73,10 +79,10 @@ impl ImapMcpServer {
         let ticket = DispatchTicket::new();
         let result = body(ticket).await;
 
-        // Body completed normally. Disarm before any further await points so
-        // a drop of THIS future between here and emit_tool_end does not cause
-        // double emission.
-        guard.disarm();
+        // DO NOT disarm yet — keep the guard armed across `emit_tool_end.await`
+        // so that a drop of this future between body completion and end emission
+        // still produces a cancellation record (not a silent loss). See review
+        // finding MCP-AUD-01.
 
         let duration_ms = crate::duration_ms_since(start_time);
         let (status, error_code) = match &result {
@@ -98,6 +104,10 @@ impl ImapMcpServer {
             session_id: None,
         })
         .await;
+
+        // Normal tool_end is on the wire. Disarm now so our own Drop doesn't
+        // produce a duplicate cancellation record.
+        guard.disarm();
 
         match result {
             Ok(value) => Ok(CallToolResult::structured(value)),
