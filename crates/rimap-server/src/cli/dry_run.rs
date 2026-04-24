@@ -38,7 +38,7 @@ use rimap_core::tool::ToolName;
 /// # Errors
 /// Propagates config load/validate errors, audit lock acquisition errors, and
 /// I/O errors from the writer.
-pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
+pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
     let multi =
         load_and_validate(path).with_context(|| format!("loading config {}", path.display()))?;
 
@@ -76,6 +76,27 @@ pub fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
         {
             writeln!(out, "  [ok ] {tool}")?;
         }
+
+        // TLS + CAPABILITY preflight per account (#117). Errors are
+        // reported inline but do not abort the dry-run — a multi-account
+        // config may have one unreachable host and still want to print
+        // the matrix for the others.
+        let conn_cfg = rimap_server::boot::registry::build_account_connection(id, acfg);
+        match rimap_imap::preflight::probe_preflight(&conn_cfg).await {
+            Ok(info) => {
+                writeln!(out, "Capabilities ({}:{}):", conn_cfg.host, conn_cfg.port)?;
+                for cap in &info.capabilities {
+                    writeln!(out, "  [ok ] {cap}")?;
+                }
+            }
+            Err(e) => {
+                writeln!(
+                    out,
+                    "Capabilities ({}:{}): unavailable ({e})",
+                    conn_cfg.host, conn_cfg.port,
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -110,12 +131,12 @@ allowed_base_dir = "{}"
         config_path
     }
 
-    #[test]
-    fn dry_run_prints_matrix_with_default_posture() {
+    #[tokio::test]
+    async fn dry_run_prints_matrix_with_default_posture() {
         let dir = TempDir::new().unwrap();
         let path = write_minimal_config(&dir);
         let mut out = Vec::new();
-        run(&path, &mut out).unwrap();
+        run(&path, &mut out).await.unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("draft-safe"));
         assert!(text.contains("list_folders"));
@@ -125,8 +146,8 @@ allowed_base_dir = "{}"
         assert!(text.contains("[ok ] list_folders"));
     }
 
-    #[test]
-    fn second_dry_run_against_same_audit_fails_with_config_error() {
+    #[tokio::test]
+    async fn second_dry_run_against_same_audit_fails_with_config_error() {
         use rimap_audit::{AuditOptions, AuditWriter};
 
         let dir = TempDir::new().unwrap();
@@ -134,7 +155,7 @@ allowed_base_dir = "{}"
 
         // First dry-run acquires the lock for the duration of the call.
         let mut out1 = Vec::new();
-        run(&path, &mut out1).unwrap();
+        run(&path, &mut out1).await.unwrap();
 
         // Hold the audit file open with a direct writer so the second dry-run
         // collides with us.
@@ -149,7 +170,7 @@ allowed_base_dir = "{}"
         })
         .unwrap();
 
-        let err = run(&path, &mut Vec::new()).unwrap_err();
+        let err = run(&path, &mut Vec::new()).await.unwrap_err();
         let chain: String = err
             .chain()
             .map(|c| format!("{c}"))
@@ -161,8 +182,8 @@ allowed_base_dir = "{}"
         );
     }
 
-    #[test]
-    fn dry_run_lists_infrastructure_tools_separately() {
+    #[tokio::test]
+    async fn dry_run_lists_infrastructure_tools_separately() {
         // Infrastructure tools (use_account, list_accounts) bypass the posture
         // matrix at runtime, so printing them as `[deny]` alongside content
         // tools misleads users into thinking the tools are unavailable. They
@@ -170,7 +191,7 @@ allowed_base_dir = "{}"
         let dir = TempDir::new().unwrap();
         let path = write_minimal_config(&dir);
         let mut out = Vec::new();
-        run(&path, &mut out).unwrap();
+        run(&path, &mut out).await.unwrap();
         let text = String::from_utf8(out).unwrap();
 
         assert!(
@@ -195,12 +216,12 @@ allowed_base_dir = "{}"
         );
     }
 
-    #[test]
-    fn dry_run_surfaces_parse_errors_as_anyhow() {
+    #[tokio::test]
+    async fn dry_run_surfaces_parse_errors_as_anyhow() {
         let dir = TempDir::new().unwrap();
         let bad = dir.path().join("bad.toml");
         std::fs::write(&bad, "not valid toml =\n").unwrap();
-        let err = run(&bad, &mut Vec::new()).unwrap_err();
+        let err = run(&bad, &mut Vec::new()).await.unwrap_err();
         // anyhow chains context; the bottom-most error comes from rimap-config.
         let mut chain = String::new();
         for cause in err.chain() {

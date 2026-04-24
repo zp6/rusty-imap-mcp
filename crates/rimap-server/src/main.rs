@@ -96,7 +96,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.dry_run {
         let path = resolve_cli_config_path(&cli)?;
         let mut stdout = std::io::stdout().lock();
-        return cli::dry_run::run(&path, &mut stdout);
+        return cli::dry_run::run(&path, &mut stdout).await;
     }
 
     if let Some(Command::Daemon) = cli.command {
