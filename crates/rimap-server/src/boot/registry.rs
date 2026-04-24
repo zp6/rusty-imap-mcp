@@ -332,7 +332,8 @@ fn build_account_guard(
 }
 
 /// Map a per-account config to a `ConnectionConfig`.
-fn build_account_connection(
+#[must_use]
+pub fn build_account_connection(
     id: &rimap_core::account::AccountId,
     acfg: &ValidatedAccountConfig,
 ) -> ConnectionConfig {
