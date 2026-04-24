@@ -78,8 +78,8 @@ exits. It does not authenticate.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `ERR_AUTH` | Wrong password | Re-run `rusty-imap-mcp login` with the correct App Password |
 | `ERR_TLS` | TLS handshake failure | Verify your network allows connections to imap.gmail.com:993 |
+| `Capabilities ...: unavailable (...)` | Preflight could not complete | Inspect the parenthesised cause — typically connectivity, DNS, or TLS. `--dry-run` does not authenticate, so an auth error cannot surface here |
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Config not found | Wrong file location | Verify the path matches your platform (see Step 2) or use `--config <path>` |
 

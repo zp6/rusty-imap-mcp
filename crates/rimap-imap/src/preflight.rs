@@ -69,10 +69,19 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     };
 
     let mut client = ImapPlainClient::new(tls_stream);
+    // Greeting + CAPABILITY must also be bounded: a server that accepts
+    // the socket and completes TLS but then stalls before sending the
+    // greeting, or a server that stalls mid-CAPABILITY, would otherwise
+    // hang `probe_preflight` forever. Reuse `command_timeout` for the
+    // CAPABILITY leg (it is the per-command budget); apply the remaining
+    // connect-budget to the greeting read.
+    let greeting_budget = total_deadline.saturating_sub(started.elapsed());
     if !already_greeted {
-        client
-            .read_response()
+        timeout(greeting_budget, client.read_response())
             .await
+            .map_err(|_| ImapError::Timeout {
+                op: "imap_greeting",
+            })?
             .map_err(ImapError::Connect)?
             .ok_or(ImapError::Connect(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -81,10 +90,15 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     }
 
     let (tx, rx) = async_channel::bounded::<UnsolicitedResponse>(32);
-    client
-        .run_command_and_check_ok("CAPABILITY", Some(tx))
-        .await
-        .map_err(ImapError::Protocol)?;
+    timeout(
+        cfg.command_timeout,
+        client.run_command_and_check_ok("CAPABILITY", Some(tx)),
+    )
+    .await
+    .map_err(|_| ImapError::Timeout {
+        op: "imap_capability",
+    })?
+    .map_err(ImapError::Protocol)?;
 
     // Extract capabilities using the same pattern as `capability_advertised`
     // in connection.rs. `ImapCapability::Atom` wraps `Cow<'_, str>`, so

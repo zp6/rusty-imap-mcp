@@ -124,8 +124,8 @@ exits. It does not authenticate.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `ERR_AUTH` | Wrong password | Re-run `rusty-imap-mcp login` with the bridge password (not your Proton account password) |
 | `ERR_TLS` | Fingerprint mismatch or Bridge not running | Verify Bridge is running, then re-capture the fingerprint (Step 2) |
+| `Capabilities ...: unavailable (...)` | Preflight could not complete | Inspect the parenthesised cause — typically connectivity or TLS. `--dry-run` does not authenticate, so an auth error cannot surface here |
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Connection refused | Bridge not running or wrong port | Start Proton Bridge and verify the IMAP port in Bridge settings |
 
