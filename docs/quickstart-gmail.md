@@ -70,8 +70,9 @@ MCP server:
 rusty-imap-mcp --dry-run
 ```
 
-A successful run prints the account summary and server capabilities,
-then exits.
+A successful run prints the posture matrix, the active tool allowlist,
+and the IMAP server's capability list (after a TLS handshake), then
+exits. It does not authenticate.
 
 **If it fails:**
 
