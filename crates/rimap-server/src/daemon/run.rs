@@ -329,6 +329,12 @@ async fn emit_session_end(
     let total = session
         .tool_call_count
         .load(std::sync::atomic::Ordering::Relaxed);
+    // Sessions aborted by `drain_sessions` after the 5s grace window don't
+    // reach this point — their in-flight tool_call_count does not contribute
+    // to the daemon-level aggregator. Tracked as #137.
+    state
+        .total_tool_calls
+        .fetch_add(total, std::sync::atomic::Ordering::Relaxed);
     let end = rimap_audit::record::SessionEnd {
         session_id: session.id,
         reason,

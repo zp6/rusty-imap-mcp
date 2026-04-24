@@ -290,6 +290,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         cancellation_tx,
         started_at: std::time::Instant::now(),
         session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
+        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
     });
     let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
     let server = ImapMcpServer::new(daemon_state, session_state);

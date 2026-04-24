@@ -103,6 +103,7 @@ pub fn test_daemon_state_with_limit(
         cancellation_tx,
         started_at: std::time::Instant::now(),
         session_permits,
+        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
     })
 }
 
