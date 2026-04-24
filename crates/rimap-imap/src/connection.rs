@@ -1078,7 +1078,7 @@ fn drain_for_starttls(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool
 
 /// Perform the TLS handshake over an established TCP stream using the
 /// provided `TlsConfigBundle`. Pin verification happens inside this call.
-async fn tls_handshake(
+pub(crate) async fn tls_handshake(
     tcp: TcpStream,
     bundle: &TlsConfigBundle,
     host: &str,
@@ -1094,7 +1094,7 @@ async fn tls_handshake(
 
 /// Full STARTTLS upgrade: plaintext negotiation + TLS handshake with the
 /// same `TlsConfigBundle` the implicit-TLS path uses.
-async fn starttls_upgrade(
+pub(crate) async fn starttls_upgrade(
     tcp: TcpStream,
     bundle: &TlsConfigBundle,
     host: &str,
