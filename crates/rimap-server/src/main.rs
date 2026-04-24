@@ -186,10 +186,11 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         cancellation_tx,
         started_at: std::time::Instant::now(),
         session_permits,
+        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
     });
 
     let shutdown = install_shutdown_handler();
-    let mcp_result = run(state, listener, shutdown).await;
+    let mcp_result = run(state.clone(), listener, shutdown).await;
 
     let reason = match &mcp_result {
         Ok(()) => rimap_audit::ProcessEndReason::Eof,
@@ -198,10 +199,12 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(e) = drainer_handle.await {
         tracing::error!(error = %e, "cancellation drainer join error");
     }
+    let total_tool_calls = state
+        .total_tool_calls
+        .load(std::sync::atomic::Ordering::Relaxed);
     if let Err(e) = audit.log_process_end(rimap_audit::ProcessEnd {
         reason,
-        // Aggregation across sessions is a follow-up — leave 0 for v1.
-        total_tool_calls: 0,
+        total_tool_calls,
     }) {
         tracing::error!(error = %e, "failed to write process_end");
     }

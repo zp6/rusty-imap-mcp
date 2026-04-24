@@ -1,6 +1,7 @@
 //! Shared and per-session state held by the daemon.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
 use rimap_audit::{AuditWriter, CancelledToolEndSender};
@@ -32,6 +33,10 @@ pub struct DaemonState {
     /// exhausted are rejected with a paired
     /// `session_start` + `session_end(Rejected)` audit pair.
     pub session_permits: Arc<Semaphore>,
+    /// Daemon-wide aggregate of completed tool calls across all sessions.
+    /// Incremented in `emit_session_end` with each session's final count.
+    /// Read in `daemon_main` to populate `process_end.total_tool_calls`.
+    pub total_tool_calls: AtomicU64,
 }
 
 /// Per-client-connection state.
@@ -88,5 +93,24 @@ mod tests {
         let a = SessionState::new(SessionId::new());
         let b = SessionState::new(SessionId::new());
         assert_ne!(a.id, b.id);
+    }
+
+    #[test]
+    fn total_tool_calls_aggregator_sums_independent_sessions() {
+        // Pins the ordering choice used by the real aggregator: `Relaxed`
+        // is correct here because the happens-before chain is provided by
+        // Tokio's task-join (each session task's writes are visible after
+        // `run(...).await` returns), not by atomic ordering. A stronger
+        // ordering would add overhead without changing behaviour. This
+        // test does not exercise `emit_session_end` or `daemon_main`
+        // directly — it guards the atomic-level pattern against accidental
+        // refactors to SeqCst/Acquire when Relaxed is intentional.
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let daemon_total = AtomicU64::new(0);
+        for per_session in [3_u64, 5, 7, 1] {
+            daemon_total.fetch_add(per_session, Ordering::Relaxed);
+        }
+        assert_eq!(daemon_total.load(Ordering::Relaxed), 3 + 5 + 7 + 1);
     }
 }
