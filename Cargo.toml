@@ -43,6 +43,7 @@ secrecy = "0.10"
 governor = "0.10"
 utf7-imap = "0.3.2"
 nonzero_ext = "0.3"
+arc-swap = "1"
 parking_lot = "0.12"
 
 # Async runtime
