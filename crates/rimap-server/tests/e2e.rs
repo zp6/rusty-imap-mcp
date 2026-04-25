@@ -283,15 +283,13 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     let registry = rimap_server::boot::registry::AccountRegistry::new(accounts);
 
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-    let daemon_state = Arc::new(DaemonState {
-        registry: Arc::new(registry),
-        audit: audit.clone(),
-        download_dir: std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
+    let daemon_state = Arc::new(DaemonState::new(
+        Arc::new(registry),
+        audit.clone(),
+        std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
         cancellation_tx,
-        started_at: std::time::Instant::now(),
-        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
-        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
-    });
+        Arc::new(tokio::sync::Semaphore::new(64)),
+    ));
     let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
     let server = ImapMcpServer::new(daemon_state, session_state);
 

@@ -9,7 +9,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use rimap_audit::redact::RedactionSalt;
 use rimap_core::account::AccountId;
 use rimap_core::tool::ToolName;
 use rmcp::RoleServer;
@@ -38,15 +37,13 @@ pub struct ImapMcpServer {
     pub(crate) session: Arc<SessionState>,
     /// Session-scoped audit sink — guarantees `session_id` injection.
     pub(crate) audit: SessionAuditSink,
-    /// Per-process salt used when applying `Redactor` to tool arguments.
-    /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
-    pub(crate) redaction_salt: Arc<RedactionSalt>,
 }
 
 impl ImapMcpServer {
-    /// Construct a per-session server. Builds the per-process redaction salt;
-    /// per-tool schemas are dispatched on demand via
-    /// [`rimap_audit::redact::ToolRedactionSchema::redaction_schema`].
+    /// Construct a per-session server. Per-tool schemas are dispatched on
+    /// demand via [`rimap_audit::redact::ToolRedactionSchema::redaction_schema`];
+    /// the per-process redaction salt lives on [`DaemonState`] and is shared
+    /// across every session.
     #[must_use]
     pub fn new(state: Arc<DaemonState>, session: Arc<SessionState>) -> Self {
         let audit = SessionAuditSink::new(state.audit.clone(), session.id);
@@ -54,7 +51,6 @@ impl ImapMcpServer {
             state,
             session,
             audit,
-            redaction_salt: Arc::new(RedactionSalt::new_random()),
         }
     }
 

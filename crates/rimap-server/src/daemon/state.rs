@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
+use rimap_audit::redact::RedactionSalt;
 use rimap_audit::{AuditWriter, CancelledToolEndSender};
 use rimap_core::{SessionId, account::AccountId};
 use tokio::sync::{RwLock, Semaphore};
@@ -12,31 +13,83 @@ use crate::boot::registry::AccountRegistry;
 
 /// Daemon-wide shared state. One `Arc<DaemonState>` is built at boot and
 /// cloned into every `PerSessionHandler`.
+///
+/// Fields are `pub(crate)` so in-crate code reads them directly; external
+/// consumers (the `main.rs` binary + integration tests) must construct via
+/// [`DaemonState::new`] and go through the in-crate APIs for reads. See
+/// issue #145 (Tighten `DaemonState` field visibility).
 pub struct DaemonState {
     /// Account registry (all accounts, all connections, all per-account
     /// governors and breakers). `Connection`s are already `Arc`-backed
     /// internally; sharing the registry via `Arc` gives every session
     /// cheap access.
-    pub registry: Arc<AccountRegistry>,
+    pub(crate) registry: Arc<AccountRegistry>,
     /// Audit writer; the single fs-locked backing file is shared.
-    pub audit: AuditWriter,
+    pub(crate) audit: AuditWriter,
     /// Attachment download directory (read-only after boot).
-    pub download_dir: Arc<std::path::Path>,
+    #[expect(dead_code, reason = "will be read by download-attachment tool (#145)")]
+    pub(crate) download_dir: Arc<std::path::Path>,
     /// Cancellation channel sender for the audit drainer.
-    pub cancellation_tx: CancelledToolEndSender,
+    pub(crate) cancellation_tx: CancelledToolEndSender,
     /// Daemon start time (used to compute session durations).
-    pub started_at: Instant,
+    #[expect(
+        dead_code,
+        reason = "will be read by session-duration reporting (#145)"
+    )]
+    pub(crate) started_at: Instant,
     /// Bound on concurrent shim sessions. An `OwnedSemaphorePermit` is
     /// acquired on each accept and held for the session's lifetime;
     /// dropping the permit (when the session future returns) releases
     /// the slot. Connections that arrive while the semaphore is
     /// exhausted are rejected with a paired
     /// `session_start` + `session_end(Rejected)` audit pair.
-    pub session_permits: Arc<Semaphore>,
+    pub(crate) session_permits: Arc<Semaphore>,
     /// Daemon-wide aggregate of completed tool calls across all sessions.
     /// Incremented in `emit_session_end` with each session's final count.
     /// Read in `daemon_main` to populate `process_end.total_tool_calls`.
-    pub total_tool_calls: AtomicU64,
+    pub(crate) total_tool_calls: AtomicU64,
+    /// Per-process salt used by [`rimap_audit::redact::Redactor`] to hash
+    /// tool arguments. One salt for the daemon lifetime; hashes are not
+    /// comparable across restarts (by design — fresh randomness per boot).
+    /// Cloned cheaply into every `ImapMcpServer`. See #141.
+    pub(crate) redaction_salt: Arc<RedactionSalt>,
+}
+
+impl DaemonState {
+    /// Build daemon-wide shared state. Called once in `daemon_main`;
+    /// integration tests also use this so a new field on `DaemonState`
+    /// does not require updating every test's struct literal.
+    ///
+    /// Generates one [`RedactionSalt`] from the OS RNG and wraps it in
+    /// `Arc` so `spawn_blocking` closures can cheaply capture it.
+    #[must_use]
+    pub fn new(
+        registry: Arc<AccountRegistry>,
+        audit: AuditWriter,
+        download_dir: Arc<std::path::Path>,
+        cancellation_tx: CancelledToolEndSender,
+        session_permits: Arc<Semaphore>,
+    ) -> Self {
+        Self {
+            registry,
+            audit,
+            download_dir,
+            cancellation_tx,
+            started_at: Instant::now(),
+            session_permits,
+            total_tool_calls: AtomicU64::new(0),
+            redaction_salt: Arc::new(RedactionSalt::new_random()),
+        }
+    }
+
+    /// Read the daemon-wide total tool-call counter. `main.rs` consumes
+    /// this at `process_end` emission; external callers have no other
+    /// reason to touch the `AtomicU64` directly.
+    #[must_use]
+    pub fn total_tool_calls(&self) -> u64 {
+        self.total_tool_calls
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 /// Per-client-connection state.
@@ -112,5 +165,59 @@ mod tests {
             daemon_total.fetch_add(per_session, Ordering::Relaxed);
         }
         assert_eq!(daemon_total.load(Ordering::Relaxed), 3 + 5 + 7 + 1);
+    }
+
+    #[tokio::test]
+    async fn daemon_state_new_builds_one_salt_per_daemon_lifetime() {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        use rimap_audit::{AuditOptions, AuditWriter, Seq};
+        use tempfile::tempdir;
+
+        use super::DaemonState;
+        use crate::boot::registry::AccountRegistry;
+
+        fn build_state(dir: &std::path::Path) -> Arc<DaemonState> {
+            let audit = AuditWriter::open(&AuditOptions {
+                path: dir.join("a.jsonl"),
+                rotate_bytes: 0,
+                rotate_keep: 0,
+                retention_seconds: None,
+                fail_open: false,
+                initial_seq: Seq::FIRST,
+            })
+            .unwrap();
+            let (cancellation_tx, _rx) = rimap_audit::cancellation_channel();
+            Arc::new(DaemonState::new(
+                Arc::new(AccountRegistry::new(BTreeMap::new())),
+                audit,
+                Arc::from(dir.to_path_buf().into_boxed_path()),
+                cancellation_tx,
+                Arc::new(tokio::sync::Semaphore::new(1)),
+            ))
+        }
+
+        let dir_a = tempdir().unwrap();
+        let dir_b = tempdir().unwrap();
+        let state_a = build_state(dir_a.path());
+        let state_b = build_state(dir_b.path());
+
+        // Different daemon constructions => different salt Arcs (each `new()`
+        // mints its own RedactionSalt). A weaker test that compared two clones
+        // of the same `state.redaction_salt` would be trivially true regardless
+        // of implementation; this catches a regression that re-allocates on
+        // every read.
+        assert!(
+            !Arc::ptr_eq(&state_a.redaction_salt, &state_b.redaction_salt),
+            "DaemonState::new must mint a fresh RedactionSalt per daemon",
+        );
+
+        // Within one daemon, cloning the field yields the same Arc.
+        let clone_a = Arc::clone(&state_a.redaction_salt);
+        assert!(
+            Arc::ptr_eq(&state_a.redaction_salt, &clone_a),
+            "Arc clones of the salt field must point to the same allocation",
+        );
     }
 }
