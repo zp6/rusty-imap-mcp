@@ -70,23 +70,6 @@ impl SessionAuditSink {
         inputs.session_id = Some(self.session_id);
         self.writer.log_tool_end(inputs)
     }
-
-    /// The underlying writer, for emitting records that are explicitly
-    /// NOT session-scoped (e.g. `process_start` / `process_end`).
-    /// Call sites must justify their non-session status.
-    ///
-    /// Scoped to `pub(crate)` so session-scoped code outside this crate
-    /// cannot bypass the `session_id` injection — out-of-crate call sites
-    /// must go through `log_tool_start` / `log_tool_end`.
-    #[must_use]
-    #[expect(
-        dead_code,
-        reason = "in-crate escape hatch for non-session-scoped records (process_start/process_end); \
-                  kept available even when no current caller uses it, per MCP-AUD-03 design"
-    )]
-    pub(crate) fn raw_writer(&self) -> &AuditWriter {
-        &self.writer
-    }
 }
 
 #[cfg(test)]
