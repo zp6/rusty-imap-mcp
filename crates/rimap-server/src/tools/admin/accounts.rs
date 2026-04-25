@@ -53,6 +53,10 @@ pub struct ListAccountsMeta {
 /// codepoints, or if it is not a valid account-name shape. Returns
 /// `RimapError::UnknownAccount { ... }` if the name does not match a
 /// configured account.
+#[expect(
+    clippy::unused_async,
+    reason = "handler shape uniform with async-handler siblings"
+)]
 pub async fn handle_use_account(
     session: &SessionState,
     registry: &AccountRegistry,
@@ -88,12 +92,15 @@ pub async fn handle_use_account(
         })?;
 
     let previous = {
-        let mut guard = session.active_account.write().await;
-        let prev = guard.as_ref().map(ToString::to_string);
-        if guard.as_ref() != Some(&new_id) {
-            *guard = Some(new_id);
+        use std::sync::Arc;
+        let prev_arc = session.active_account.load_full();
+        let prev_string = prev_arc.as_deref().map(ToString::to_string);
+        // Skip the store if the value is identical — avoids a pointless
+        // allocation of Arc<AccountId> on the no-op path.
+        if prev_arc.as_deref() != Some(&new_id) {
+            session.active_account.store(Some(Arc::new(new_id)));
         }
-        prev
+        prev_string
     };
 
     Ok(ToolResponse::meta_only(UseAccountMeta {

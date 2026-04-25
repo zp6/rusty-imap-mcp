@@ -4,10 +4,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Instant;
 
+use arc_swap::ArcSwapOption;
 use rimap_audit::redact::RedactionSalt;
 use rimap_audit::{AuditWriter, CancelledToolEndSender};
 use rimap_core::{SessionId, account::AccountId};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::Semaphore;
 
 use crate::boot::registry::AccountRegistry;
 
@@ -107,9 +108,10 @@ pub struct SessionState {
     /// Generated on accept; carried through every audit record.
     pub id: SessionId,
     /// Session-scoped active account (overrides the config default).
-    /// `RwLock` because `use_account` is the only writer and reads
-    /// happen on every tool call.
-    pub active_account: RwLock<Option<AccountId>>,
+    /// `ArcSwapOption` because `use_account` is the only writer and
+    /// reads happen on every tool call; lock-free swap removes the
+    /// `.await` from the read path. See #143.
+    pub active_account: ArcSwapOption<AccountId>,
     /// When this session started — for `duration_ms` on `session_end`.
     pub started_at: Instant,
     /// Count of completed tool calls in this session, feeds
@@ -124,7 +126,7 @@ impl SessionState {
     pub fn new(id: SessionId) -> Self {
         Self {
             id,
-            active_account: RwLock::new(None),
+            active_account: ArcSwapOption::from(None),
             started_at: Instant::now(),
             tool_call_count: std::sync::atomic::AtomicU64::new(0),
         }
@@ -137,18 +139,31 @@ mod tests {
     use super::SessionState;
     use rimap_core::SessionId;
 
-    #[tokio::test]
-    async fn new_session_has_no_active_account() {
+    #[test]
+    fn new_session_has_no_active_account() {
         let s = SessionState::new(SessionId::new());
-        assert!(s.active_account.read().await.is_none());
+        assert!(s.active_account.load().is_none());
     }
 
-    #[tokio::test]
-    async fn active_account_write_then_read_reflects_update() {
+    #[test]
+    fn active_account_store_then_load_reflects_update() {
+        use std::sync::Arc;
         let s = SessionState::new(SessionId::new());
         let id = rimap_core::account::AccountId::new("work").unwrap();
-        *s.active_account.write().await = Some(id.clone());
-        assert_eq!(*s.active_account.read().await, Some(id));
+        s.active_account.store(Some(Arc::new(id.clone())));
+        let loaded = s.active_account.load_full();
+        assert_eq!(loaded.as_deref(), Some(&id));
+    }
+
+    #[test]
+    fn active_account_store_is_lock_free_no_await_required() {
+        // Compile-time proof: if `store` still needed `.await`, this
+        // non-async fn could not call it. The test exists so a future
+        // refactor back to RwLock breaks compilation.
+        use std::sync::Arc;
+        let s = SessionState::new(SessionId::new());
+        let id = rimap_core::account::AccountId::new("work").unwrap();
+        s.active_account.store(Some(Arc::new(id)));
     }
 
     #[test]
