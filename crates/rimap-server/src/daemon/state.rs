@@ -26,15 +26,25 @@ pub struct DaemonState {
     pub(crate) registry: Arc<AccountRegistry>,
     /// Audit writer; the single fs-locked backing file is shared.
     pub(crate) audit: AuditWriter,
-    /// Attachment download directory (read-only after boot).
-    #[expect(dead_code, reason = "will be read by download-attachment tool (#145)")]
+    /// Attachment download directory (read-only after boot). Stored on
+    /// `DaemonState` and propagated into `AccountRegistry::build`, which
+    /// copies it onto each `AccountState`; tool handlers read it from the
+    /// per-account copy. The daemon-level field is currently vestigial —
+    /// retained for symmetry with other daemon-shared paths and as a
+    /// holding spot for any future tool that needs the unscoped path.
+    #[expect(
+        dead_code,
+        reason = "vestigial daemon-level copy; per-account download_dir on AccountState is the live path"
+    )]
     pub(crate) download_dir: Arc<std::path::Path>,
     /// Cancellation channel sender for the audit drainer.
     pub(crate) cancellation_tx: CancelledToolEndSender,
-    /// Daemon start time (used to compute session durations).
+    /// Daemon start time. Captured for symmetry with `process_start`'s
+    /// timestamp; nothing reads it today (per-session durations come from
+    /// `SessionState.started_at`, not from this field).
     #[expect(
         dead_code,
-        reason = "will be read by session-duration reporting (#145)"
+        reason = "vestigial; eligible for removal in a future cleanup PR"
     )]
     pub(crate) started_at: Instant,
     /// Bound on concurrent shim sessions. An `OwnedSemaphorePermit` is
