@@ -291,9 +291,20 @@ mod session_writer_tests {
     use rimap_core::SessionId;
     use tempfile::TempDir;
 
+    fn tight_tempdir() -> TempDir {
+        let dir = TempDir::new().expect("tmpdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("chmod 0700");
+        }
+        dir
+    }
+
     #[test]
     fn log_session_start_writes_a_session_start_record() {
-        let dir = TempDir::new().expect("tmpdir");
+        let dir = tight_tempdir();
         let path = dir.path().join("a.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -326,7 +337,7 @@ mod session_writer_tests {
 
     #[test]
     fn log_session_end_writes_a_session_end_record() {
-        let dir = TempDir::new().expect("tmpdir");
+        let dir = tight_tempdir();
         let path = dir.path().join("a.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
