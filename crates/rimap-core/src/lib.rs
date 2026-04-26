@@ -9,6 +9,8 @@ pub mod credential;
 pub use credential::{CredentialResolver, CredentialResolverError, CredentialSource};
 pub mod error;
 pub mod folder_name;
+#[cfg(unix)]
+pub mod fs;
 pub mod posture;
 pub mod posture_matrix;
 pub mod session;
