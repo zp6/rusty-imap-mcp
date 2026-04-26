@@ -60,7 +60,9 @@ fn require_proton() -> Option<ProtonConfig> {
 }
 
 fn build_connection(cfg: &ProtonConfig) -> Connection {
-    let dir = tempfile::tempdir().unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let audit = AuditWriter::open(&AuditOptions {
         path: dir.path().join("audit.jsonl"),
         rotate_bytes: 0,

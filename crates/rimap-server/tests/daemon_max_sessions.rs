@@ -14,9 +14,20 @@ use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::UnixStream;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = TempDir::new().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod 0700 on tempdir");
+    dir
+}
+
 #[tokio::test]
 async fn daemon_rejects_session_past_limit() {
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
     // Bound at 1: the first connection holds the only permit; the
@@ -105,7 +116,7 @@ async fn daemon_releases_permit_on_session_end() {
     // Limit = 1. First connection holds the permit, then closes. A
     // second connection afterwards must succeed (no rejection) because
     // the permit dropped with the first session future.
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
     let state = test_daemon_state_with_limit(tempdir.path(), &audit_path, 1);

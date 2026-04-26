@@ -7,9 +7,20 @@ mod common;
 use common::daemon_harness::{TestDaemon, test_daemon_state};
 use tempfile::TempDir;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = TempDir::new().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod 0700 on tempdir");
+    dir
+}
+
 #[tokio::test]
 async fn daemon_spawns_and_shuts_down_cleanly() {
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
     let state = test_daemon_state(tempdir.path(), &audit_path);
@@ -29,7 +40,7 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::UnixStream;
 
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
     let state = test_daemon_state(tempdir.path(), &audit_path);

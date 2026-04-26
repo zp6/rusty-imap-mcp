@@ -85,8 +85,15 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    fn fresh_writer() -> (TempDir, AuditWriter, PathBuf) {
+    fn tight_tempdir() -> TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
         let dir = TempDir::new().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
+    fn fresh_writer() -> (TempDir, AuditWriter, PathBuf) {
+        let dir = tight_tempdir();
         let path = dir.path().join("a.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),

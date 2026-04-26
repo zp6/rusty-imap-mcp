@@ -6,12 +6,22 @@
 #![expect(clippy::panic, reason = "tests")]
 
 use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt as _;
 
 use rimap_audit::{
     AuditError, AuditOptions, AuditRecord, AuditWriter, Payload, ProcessEnd, ProcessEndReason,
     ProcessId, Seq, Timestamp,
 };
 use tempfile::TempDir;
+
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
 
 fn record(seq: u64) -> AuditRecord {
     AuditRecord {
@@ -29,7 +39,7 @@ const N: u64 = 25;
 
 #[test]
 fn writes_survive_multiple_rotations() {
-    let dir = TempDir::new().unwrap();
+    let dir = tight_tempdir();
     let path = dir.path().join("audit.jsonl");
     let writer = AuditWriter::open(&AuditOptions {
         path: path.clone(),
@@ -69,7 +79,7 @@ fn writes_survive_multiple_rotations() {
 
 #[test]
 fn lock_persists_across_rotations() {
-    let dir = TempDir::new().unwrap();
+    let dir = tight_tempdir();
     let path = dir.path().join("audit.jsonl");
     let writer = AuditWriter::open(&AuditOptions {
         path: path.clone(),

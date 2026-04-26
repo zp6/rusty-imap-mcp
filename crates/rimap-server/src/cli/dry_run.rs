@@ -110,6 +110,16 @@ mod tests {
 
     use crate::cli::dry_run::run;
 
+    /// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+    /// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+    /// `umask` (often 0755).
+    fn tight_tempdir() -> TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     fn write_minimal_config(dir: &TempDir) -> PathBuf {
         let audit = dir.path().join("audit.jsonl");
         let config_path = dir.path().join("config.toml");
@@ -133,7 +143,7 @@ allowed_base_dir = "{}"
 
     #[tokio::test]
     async fn dry_run_prints_matrix_with_default_posture() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = write_minimal_config(&dir);
         let mut out = Vec::new();
         run(&path, &mut out).await.unwrap();
@@ -150,7 +160,7 @@ allowed_base_dir = "{}"
     async fn second_dry_run_against_same_audit_fails_with_config_error() {
         use rimap_audit::{AuditOptions, AuditWriter};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = write_minimal_config(&dir);
 
         // First dry-run acquires the lock for the duration of the call.
@@ -188,7 +198,7 @@ allowed_base_dir = "{}"
         // matrix at runtime, so printing them as `[deny]` alongside content
         // tools misleads users into thinking the tools are unavailable. They
         // should appear in their own "always available" section instead.
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = write_minimal_config(&dir);
         let mut out = Vec::new();
         run(&path, &mut out).await.unwrap();

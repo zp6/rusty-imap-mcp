@@ -10,6 +10,15 @@ use rimap_audit::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 use rimap_audit::{AuditOptions, AuditWriter};
 use tempfile::TempDir;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 fn make_record(seq: u64) -> AuditRecord {
     AuditRecord {
         seq: Seq(seq),
@@ -36,7 +45,7 @@ fn unlock_parent(parent: &std::path::Path) {
 
 #[test]
 fn fail_open_false_propagates_rotation_failure() {
-    let dir = TempDir::new().unwrap();
+    let dir = tight_tempdir();
     let path = dir.path().join("audit.jsonl");
     let writer = AuditWriter::open(&AuditOptions {
         path: path.clone(),
@@ -64,7 +73,7 @@ fn fail_open_false_propagates_rotation_failure() {
 
 #[test]
 fn fail_open_true_suppresses_rotation_failure_and_counts_it() {
-    let dir = TempDir::new().unwrap();
+    let dir = tight_tempdir();
     let path = dir.path().join("audit.jsonl");
     let writer = AuditWriter::open(&AuditOptions {
         path: path.clone(),

@@ -105,13 +105,31 @@ impl AuditWriter {
     pub fn open(opts: &AuditOptions) -> Result<Self, AuditError> {
         if let Some(parent) = opts.path.parent()
             && !parent.as_os_str().is_empty()
-            && !parent.exists()
         {
-            std::fs::create_dir_all(parent).map_err(|source| AuditError::ParentDir {
-                path: opts.path.clone(),
-                source,
-            })?;
-            set_parent_mode_0700(parent);
+            #[cfg(unix)]
+            {
+                let our_uid = rustix::process::geteuid().as_raw();
+                // Drop the OwnedFd immediately — the subsequent
+                // writer_open_options().open(&opts.path) re-walks the path,
+                // so holding the fd would be only a momentary defense. The
+                // verified-state-at-this-instant is the security property we
+                // want; a concurrent attacker with write access to the
+                // parent directory would already have bigger problems.
+                let _verified_parent =
+                    rimap_core::fs::ensure_tight_dir(parent, our_uid).map_err(|source| {
+                        AuditError::ParentDir {
+                            path: opts.path.clone(),
+                            source,
+                        }
+                    })?;
+            }
+            #[cfg(not(unix))]
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|source| AuditError::ParentDir {
+                    path: opts.path.clone(),
+                    source,
+                })?;
+            }
         }
         let file = crate::fs::writer_open_options()
             .open(&opts.path)
@@ -256,21 +274,6 @@ pub(crate) fn set_file_mode_0600(file: &File) {
 #[cfg(not(unix))]
 pub(crate) fn set_file_mode_0600(_file: &File) {}
 
-#[cfg(unix)]
-fn set_parent_mode_0700(parent: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = std::fs::metadata(parent) {
-        let mut perms = meta.permissions();
-        perms.set_mode(0o700);
-        if let Err(err) = std::fs::set_permissions(parent, perms) {
-            tracing::warn!(error = %err, "failed to set audit parent dir mode 0700");
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn set_parent_mode_0700(_parent: &Path) {}
-
 #[cfg(test)]
 #[expect(clippy::unwrap_used, clippy::panic, reason = "tests")]
 mod tests {
@@ -279,9 +282,22 @@ mod tests {
     use crate::AuditError;
     use crate::writer::{AuditOptions, AuditWriter};
 
+    /// Create a temporary directory with mode 0700 so that `ensure_tight_dir`
+    /// accepts it as an audit parent on Unix. On non-Unix the default mode is
+    /// fine.
+    fn tight_tempdir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        dir
+    }
+
     #[test]
     fn open_creates_file_and_acquires_lock() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -298,7 +314,7 @@ mod tests {
 
     #[test]
     fn second_open_against_same_path_fails_with_locked() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let _first = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -326,7 +342,7 @@ mod tests {
 
     #[test]
     fn drop_releases_the_lock() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         {
             let _first = AuditWriter::open(&AuditOptions {
@@ -373,7 +389,7 @@ mod tests {
         use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -410,7 +426,7 @@ mod tests {
         use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -445,7 +461,7 @@ mod tests {
         use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -515,7 +531,7 @@ mod tests {
         use crate::record::ids::{ProcessId, Seq, Timestamp};
         use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -557,7 +573,7 @@ mod tests {
 
     #[test]
     fn writer_holds_a_stable_process_id() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path,
@@ -575,7 +591,7 @@ mod tests {
 
     #[test]
     fn writer_allocates_sequential_seqs() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path,
@@ -596,7 +612,7 @@ mod tests {
 
     #[test]
     fn writer_resumes_seq_from_initial_seq_option() {
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path,
@@ -615,7 +631,7 @@ mod tests {
     fn log_auth_writes_one_record_with_allocated_seq() {
         use crate::record::{Auth, AuthResult};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -659,7 +675,7 @@ mod tests {
     fn log_auth_uses_writer_process_id_for_every_record() {
         use crate::record::{Auth, AuthResult};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -705,7 +721,7 @@ mod tests {
         use crate::writer::ProcessStartInputs;
         use crate::writer::self_check::TrailingState;
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -749,7 +765,7 @@ mod tests {
     fn log_process_end_writes_valid_record() {
         use crate::record::{ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -781,7 +797,7 @@ mod tests {
     fn log_process_end_uses_writer_process_id() {
         use crate::record::{ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),
@@ -808,12 +824,52 @@ mod tests {
         assert_eq!(v["reason"], "signal_term");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_audit_parent_that_is_a_symlink() {
+        // Security invariant from #147: AuditWriter::open must refuse a
+        // symlinked parent directory. Before #147, set_parent_mode_0700
+        // silently chmodded through the symlink; after #147 we fail loud.
+        use crate::record::ids::Seq;
+        use std::os::unix::fs::PermissionsExt as _;
+        use tempfile::TempDir;
+
+        let base = TempDir::new().unwrap();
+        let real_parent = base.path().join("real");
+        std::fs::create_dir_all(&real_parent).unwrap();
+        std::fs::set_permissions(&real_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link_parent = base.path().join("link");
+        std::os::unix::fs::symlink(&real_parent, &link_parent).unwrap();
+
+        let audit_path = link_parent.join("audit.jsonl");
+        let err = AuditWriter::open(&AuditOptions {
+            path: audit_path,
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap_err();
+
+        match err {
+            AuditError::ParentDir { source, .. } => {
+                assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(
+                    source.to_string().contains("symlink"),
+                    "expected symlink-specific error, got: {source}",
+                );
+            }
+            other => panic!("expected ParentDir, got {other:?}"),
+        }
+    }
+
     #[test]
     fn log_process_start_marks_inode_unchanged_when_matching() {
         use crate::writer::ProcessStartInputs;
         use crate::writer::self_check::TrailingState;
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),

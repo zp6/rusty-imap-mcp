@@ -13,6 +13,16 @@ use rimap_audit::{
 };
 use tempfile::TempDir;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = TempDir::new().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 fn record(seq: u64, pid: ProcessId) -> AuditRecord {
     AuditRecord {
         seq: Seq(seq),
@@ -27,7 +37,7 @@ fn record(seq: u64, pid: ProcessId) -> AuditRecord {
 
 #[test]
 fn audit_merge_round_trips_synthetic_log() {
-    let dir = TempDir::new().unwrap();
+    let dir = tight_tempdir();
     let path = dir.path().join("audit.jsonl");
     let config_path = dir.path().join("config.toml");
     std::fs::write(&config_path, b"# synthetic config for test").unwrap();
@@ -91,7 +101,7 @@ fn audit_merge_round_trips_synthetic_log() {
 
 #[test]
 fn audit_merge_filters_by_kind() {
-    let dir = TempDir::new().unwrap();
+    let dir = tight_tempdir();
     let path = dir.path().join("audit.jsonl");
 
     {

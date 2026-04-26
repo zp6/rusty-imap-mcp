@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **audit (security, minor-breaking):** `AuditWriter::open` now rejects a
+  symlinked, wrong-owned, or non-`0700` audit parent directory. Operators
+  whose deployment scripts symlink the audit dir or relied on the previous
+  best-effort chmod must migrate to a real `0700` directory owned by the
+  running user before upgrade. The strict TOCTOU-safe check is the same
+  primitive the daemon already enforces on its socket directory (#147).
 - **Breaking (keyring):** Credential keyring entries are now namespaced by
   account id (`<account-id>/<username>@<host>`) to prevent collisions in
   multi-account deployments (#77). Existing entries under the legacy

@@ -94,7 +94,17 @@ mod tests {
     use crate::{AuditWriter, Seq, ToolEndInputs, ToolStartInputs};
     use rimap_core::ErrorCode;
     use rimap_core::tool::ToolName;
-    use tempfile::tempdir;
+    use tempfile::TempDir;
+
+    fn tight_tempdir() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        dir
+    }
 
     fn dummy_inputs(account: &str) -> ToolEndInputs {
         ToolEndInputs {
@@ -133,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn drainer_writes_records_to_audit_writer() {
-        let dir = tempdir().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = AuditWriter::open(&AuditOptions {
             path: path.clone(),

@@ -340,7 +340,15 @@ mod tests {
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
-        let tmp = TempDir::new().expect("tempdir");
+        fn tight_tempdir() -> TempDir {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = TempDir::new().expect("tempdir");
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("chmod 0700 on audit tempdir");
+            dir
+        }
+
+        let tmp = tight_tempdir();
         let audit_path = tmp.path().join("audit.jsonl");
         let audit = AuditWriter::open(&AuditOptions {
             path: audit_path.clone(),
