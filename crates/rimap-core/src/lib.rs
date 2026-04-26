@@ -15,6 +15,7 @@ pub mod session;
 pub mod tls;
 pub mod tool;
 pub mod uid_selector;
+pub mod ulid_newtype;
 pub mod warning;
 
 pub use crate::auth_event::{AuthEvent, AuthResult};
