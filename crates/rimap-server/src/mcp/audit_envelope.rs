@@ -28,7 +28,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rimap_audit::record::{Provenance, ResultSummary, ToolStatus};
-use rimap_audit::redact::{Redactor, ToolRedactionSchema, hash_arguments};
+use rimap_audit::redact::{Redactor, ToolRedactionSchema, hash_arguments_map};
 use rimap_audit::{CancelledToolEndSender, ToolEndInputs, ToolStartInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
@@ -162,10 +162,9 @@ impl ImapMcpServer {
         tool: ToolName,
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> (serde_json::Value, String) {
-        let args_value = serde_json::Value::Object(args.clone());
         let redacted = Redactor::new(&tool.redaction_schema(), self.state.redaction_salt.as_ref())
-            .apply(&args_value);
-        let hash = hash_arguments(&args_value);
+            .apply_map(args);
+        let hash = hash_arguments_map(args);
         (redacted, hash)
     }
 
@@ -431,6 +430,75 @@ mod tests {
             !contents.contains(r#""status":"cancelled""#),
             "disarmed guard must not write a cancellation record: {contents}",
         );
+    }
+
+    /// Regression test for #149: `compute_tool_args_artifacts` MUST produce
+    /// the same `arguments_hash_sha256` after the refactor to
+    /// `hash_arguments_map`. If someone swaps the underlying serialization
+    /// path (e.g. sorts Map keys, changes the JSON writer), existing
+    /// audit-log consumers break. This test compares the output against an
+    /// explicit `hash_arguments(&Value::Object(map))` expected value — the
+    /// pre-refactor code path — so the identity is pinned regardless of
+    /// which implementation `compute_tool_args_artifacts` chooses internally.
+    #[tokio::test]
+    async fn compute_artifacts_hash_matches_legacy_value_object_path() {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        use rimap_audit::{
+            AuditOptions, AuditWriter, Seq,
+            redact::{hash_arguments, hash_arguments_map},
+        };
+
+        use crate::boot::registry::AccountRegistry;
+        use crate::daemon::state::{DaemonState, SessionState};
+        use crate::mcp::server::ImapMcpServer;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        // Force 0700 on the audit-parent tempdir per #147 — `AuditWriter::open`
+        // refuses looser modes since the ensure_tight_dir migration.
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let audit = AuditWriter::open(&AuditOptions {
+            path: dir.path().join("audit.jsonl"),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap();
+        let (cancellation_tx, _rx) = rimap_audit::cancellation_channel();
+        let download_dir: Arc<std::path::Path> =
+            Arc::from(std::path::Path::new("/tmp/test-downloads"));
+        let daemon_state = Arc::new(DaemonState::new(
+            Arc::new(AccountRegistry::new(BTreeMap::new())),
+            audit,
+            download_dir,
+            cancellation_tx,
+            Arc::new(tokio::sync::Semaphore::new(64)),
+        ));
+        let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
+        let server = ImapMcpServer::new(daemon_state, session_state);
+
+        let mut args = serde_json::Map::new();
+        args.insert(
+            "folder".to_string(),
+            serde_json::Value::String("INBOX".to_string()),
+        );
+        args.insert(
+            "uid".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(17)),
+        );
+
+        let (_redacted, computed) = server.compute_tool_args_artifacts(ToolName::Search, &args);
+
+        let legacy = hash_arguments(&serde_json::Value::Object(args.clone()));
+        let via_map = hash_arguments_map(&args);
+        assert_eq!(computed, legacy, "hash diverged from Value::Object path");
+        assert_eq!(computed, via_map, "hash diverged from Map path");
     }
 
     /// `compute_tool_args_artifacts` must hash the FULL args map as
