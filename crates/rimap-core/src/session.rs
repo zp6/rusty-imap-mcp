@@ -4,48 +4,10 @@
 //! sorted by `session_id` land in roughly creation order — a forensic
 //! aid when reading the audit log.
 
-use core::fmt;
-use core::str::FromStr;
-
-use serde::{Deserialize, Serialize};
-
-/// Per-client-connection identifier. Generated on accept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SessionId(ulid::Ulid);
-
-impl SessionId {
-    /// Generate a fresh `SessionId` from the system clock + randomness.
-    #[must_use]
-    pub fn new() -> Self {
-        Self(ulid::Ulid::new())
-    }
-
-    /// Underlying ULID (escape hatch for interop).
-    #[must_use]
-    pub fn as_ulid(self) -> ulid::Ulid {
-        self.0
-    }
-}
-
-impl Default for SessionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-
-/// Parse a 26-char ULID into a `SessionId`.
-impl FromStr for SessionId {
-    type Err = ulid::DecodeError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        ulid::Ulid::from_str(s).map(Self)
-    }
+crate::ulid_newtype! {
+    /// Per-client-connection identifier. Generated on accept.
+    pub struct SessionId;
+    ctor: new;
 }
 
 #[cfg(test)]
@@ -87,6 +49,23 @@ mod tests {
         assert!(
             second.to_string() > first.to_string(),
             "expected later ULID's string form to be >= earlier; got {first} then {second}"
+        );
+    }
+
+    #[test]
+    fn serde_json_is_a_bare_string_not_a_struct() {
+        // On-disk schema pin: SessionId serializes as a bare JSON string,
+        // NOT as `{"0":"..."}`. Any future refactor that drops serde
+        // transparent would break every recorded audit log. This test is
+        // deliberately conservative.
+        let id = SessionId::new();
+        let json = serde_json::to_string(&id).unwrap();
+        assert!(json.starts_with('"') && json.ends_with('"'), "{json}");
+        let inner = &json[1..json.len() - 1];
+        assert_eq!(
+            inner.len(),
+            26,
+            "serialized form must be a raw ULID: {json}"
         );
     }
 }
