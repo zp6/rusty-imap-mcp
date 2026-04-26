@@ -179,15 +179,13 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
         usize::try_from(multi.daemon.max_concurrent_sessions.get()).unwrap_or(usize::MAX);
     let session_permits = Arc::new(tokio::sync::Semaphore::new(max_sessions));
 
-    let state = Arc::new(DaemonState {
-        registry: Arc::new(registry),
-        audit: audit.clone(),
+    let state = Arc::new(DaemonState::new(
+        Arc::new(registry),
+        audit.clone(),
         download_dir,
         cancellation_tx,
-        started_at: std::time::Instant::now(),
         session_permits,
-        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
-    });
+    ));
 
     let shutdown = install_shutdown_handler();
     let mcp_result = run(state.clone(), listener, shutdown).await;
@@ -199,9 +197,7 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     if let Err(e) = drainer_handle.await {
         tracing::error!(error = %e, "cancellation drainer join error");
     }
-    let total_tool_calls = state
-        .total_tool_calls
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let total_tool_calls = state.total_tool_calls();
     if let Err(e) = audit.log_process_end(rimap_audit::ProcessEnd {
         reason,
         total_tool_calls,

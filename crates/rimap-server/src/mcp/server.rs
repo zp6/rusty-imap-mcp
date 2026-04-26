@@ -9,7 +9,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
-use rimap_audit::redact::RedactionSalt;
 use rimap_core::account::AccountId;
 use rimap_core::tool::ToolName;
 use rmcp::RoleServer;
@@ -38,15 +37,13 @@ pub struct ImapMcpServer {
     pub(crate) session: Arc<SessionState>,
     /// Session-scoped audit sink — guarantees `session_id` injection.
     pub(crate) audit: SessionAuditSink,
-    /// Per-process salt used when applying `Redactor` to tool arguments.
-    /// Wrapped in `Arc` so `spawn_blocking` closures can cheaply capture it.
-    pub(crate) redaction_salt: Arc<RedactionSalt>,
 }
 
 impl ImapMcpServer {
-    /// Construct a per-session server. Builds the per-process redaction salt;
-    /// per-tool schemas are dispatched on demand via
-    /// [`rimap_audit::redact::ToolRedactionSchema::redaction_schema`].
+    /// Construct a per-session server. Per-tool schemas are dispatched on
+    /// demand via [`rimap_audit::redact::ToolRedactionSchema::redaction_schema`];
+    /// the per-process redaction salt lives on [`DaemonState`] and is shared
+    /// across every session.
     #[must_use]
     pub fn new(state: Arc<DaemonState>, session: Arc<SessionState>) -> Self {
         let audit = SessionAuditSink::new(state.audit.clone(), session.id);
@@ -54,7 +51,6 @@ impl ImapMcpServer {
             state,
             session,
             audit,
-            redaction_salt: Arc::new(RedactionSalt::new_random()),
         }
     }
 
@@ -435,9 +431,7 @@ impl ServerHandler for ImapMcpServer {
                 .await;
         }
 
-        let account = self
-            .resolve_account_for_call(namespaced_account.as_deref(), &mut args)
-            .await?;
+        let account = self.resolve_account_for_call(namespaced_account.as_deref(), &mut args)?;
 
         self.dispatch_account_scoped(
             account,
@@ -523,7 +517,7 @@ impl ImapMcpServer {
     /// Precedence: URI namespace, then `args["account"]`, then the session
     /// default, then auto-select. Consumes the `account` entry from `args`
     /// so the downstream handler does not observe it as a tool argument.
-    async fn resolve_account_for_call(
+    fn resolve_account_for_call(
         &self,
         namespaced_account: Option<&str>,
         args: &mut serde_json::Map<String, serde_json::Value>,
@@ -532,9 +526,9 @@ impl ImapMcpServer {
             args.remove("account")
                 .and_then(|v| v.as_str().map(String::from))
         });
-        let session_default = self.session.active_account.read().await.clone();
+        let session_default = self.session.active_account.load_full();
         self.registry()
-            .resolve_with_active(explicit_account.as_deref(), session_default.as_ref())
+            .resolve_with_active(explicit_account.as_deref(), session_default.as_deref())
             .map_err(|e| crate::mcp::error::to_mcp_error(&e))
     }
 }

@@ -163,7 +163,7 @@ impl ImapMcpServer {
         args: &serde_json::Map<String, serde_json::Value>,
     ) -> (serde_json::Value, String) {
         let args_value = serde_json::Value::Object(args.clone());
-        let redacted = Redactor::new(&tool.redaction_schema(), self.redaction_salt.as_ref())
+        let redacted = Redactor::new(&tool.redaction_schema(), self.state.redaction_salt.as_ref())
             .apply(&args_value);
         let hash = hash_arguments(&args_value);
         (redacted, hash)
@@ -454,15 +454,13 @@ mod tests {
         let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
         let download_dir: Arc<std::path::Path> =
             Arc::from(std::path::Path::new("/tmp/test-downloads"));
-        let daemon_state = Arc::new(DaemonState {
-            registry: Arc::new(AccountRegistry::new(BTreeMap::new())),
+        let daemon_state = Arc::new(DaemonState::new(
+            Arc::new(AccountRegistry::new(BTreeMap::new())),
             audit,
             download_dir,
             cancellation_tx,
-            started_at: std::time::Instant::now(),
-            session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
-            total_tool_calls: std::sync::atomic::AtomicU64::new(0),
-        });
+            Arc::new(tokio::sync::Semaphore::new(64)),
+        ));
         let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
         let server = ImapMcpServer::new(daemon_state, session_state);
 

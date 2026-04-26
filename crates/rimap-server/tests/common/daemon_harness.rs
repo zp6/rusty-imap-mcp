@@ -96,15 +96,13 @@ pub fn test_daemon_state_with_limit(
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
     let session_permits = Arc::new(tokio::sync::Semaphore::new(max_concurrent_sessions));
 
-    Arc::new(DaemonState {
+    Arc::new(DaemonState::new(
         registry,
         audit,
         download_dir,
         cancellation_tx,
-        started_at: std::time::Instant::now(),
         session_permits,
-        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
-    })
+    ))
 }
 
 impl TestDaemon {

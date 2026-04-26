@@ -44,15 +44,13 @@ fn build_test_server() -> TestFixture {
     let registry = AccountRegistry::new(BTreeMap::new());
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
     let download_dir: Arc<std::path::Path> = Arc::from(std::path::Path::new("/tmp/test-downloads"));
-    let daemon_state = Arc::new(DaemonState {
-        registry: Arc::new(registry),
-        audit: audit.clone(),
+    let daemon_state = Arc::new(DaemonState::new(
+        Arc::new(registry),
+        audit.clone(),
         download_dir,
         cancellation_tx,
-        started_at: std::time::Instant::now(),
-        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
-        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
-    });
+        Arc::new(tokio::sync::Semaphore::new(64)),
+    ));
     let session_state = Arc::new(SessionState::new(rimap_core::SessionId::new()));
     let server = ImapMcpServer::new(daemon_state, session_state);
 
@@ -214,15 +212,13 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
     let drainer = spawn_drainer(cancellation_rx, audit.clone());
     let download_dir_2: Arc<std::path::Path> =
         Arc::from(std::path::Path::new("/tmp/test-downloads"));
-    let daemon_state_2 = Arc::new(rimap_server::daemon::state::DaemonState {
-        registry: Arc::new(registry),
-        audit: audit.clone(),
-        download_dir: download_dir_2,
+    let daemon_state_2 = Arc::new(rimap_server::daemon::state::DaemonState::new(
+        Arc::new(registry),
+        audit.clone(),
+        download_dir_2,
         cancellation_tx,
-        started_at: std::time::Instant::now(),
-        session_permits: Arc::new(tokio::sync::Semaphore::new(64)),
-        total_tool_calls: std::sync::atomic::AtomicU64::new(0),
-    });
+        Arc::new(tokio::sync::Semaphore::new(64)),
+    ));
     let session_id = rimap_core::SessionId::new();
     let session_state_2 = Arc::new(rimap_server::daemon::state::SessionState::new(session_id));
     let server = Arc::new(rimap_server::mcp::server::ImapMcpServer::new(
