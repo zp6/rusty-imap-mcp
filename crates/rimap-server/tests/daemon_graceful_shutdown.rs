@@ -9,6 +9,17 @@ use tempfile::TempDir;
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::UnixStream;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = TempDir::new().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod 0700 on tempdir");
+    dir
+}
+
 /// Verifies that SIGTERM (simulated via `shutdown.notify_one`) stops the accept
 /// loop and drains in-flight sessions within the 5s deadline configured in
 /// `run::drain_sessions`.
@@ -18,7 +29,7 @@ use tokio::net::UnixStream;
 /// within the drain window.
 #[tokio::test]
 async fn shutdown_drains_active_sessions_within_deadline() {
-    let tempdir = TempDir::new().expect("tempdir");
+    let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
     let state = test_daemon_state(tempdir.path(), &audit_path);

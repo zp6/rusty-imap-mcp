@@ -9,11 +9,20 @@
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq, ToolStartInputs};
 use rimap_core::tool::ToolName;
-use tempfile::tempdir;
+
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
 
 #[test]
 fn fail_open_suppresses_write_failure_and_increments_counter() {
-    let dir = tempdir().unwrap();
+    let dir = tight_tempdir();
     let writer = AuditWriter::open(&AuditOptions {
         path: dir.path().join("audit.jsonl"),
         rotate_bytes: 10 * 1024 * 1024,
@@ -55,7 +64,7 @@ fn fail_open_false_propagates_write_failure() {
     // AuditError::Write. Not strictly required by #72 but pins the
     // complementary contract so a regression in either direction trips a
     // test.
-    let dir = tempdir().unwrap();
+    let dir = tight_tempdir();
     let writer = AuditWriter::open(&AuditOptions {
         path: dir.path().join("audit.jsonl"),
         rotate_bytes: 10 * 1024 * 1024,

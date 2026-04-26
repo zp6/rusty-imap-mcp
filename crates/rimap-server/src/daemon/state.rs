@@ -198,10 +198,17 @@ mod tests {
         use std::sync::Arc;
 
         use rimap_audit::{AuditOptions, AuditWriter, Seq};
-        use tempfile::tempdir;
+        use tempfile::TempDir;
 
         use super::DaemonState;
         use crate::boot::registry::AccountRegistry;
+
+        fn tight_tempdir() -> TempDir {
+            use std::os::unix::fs::PermissionsExt as _;
+            let dir = TempDir::new().unwrap();
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+            dir
+        }
 
         fn build_state(dir: &std::path::Path) -> Arc<DaemonState> {
             let audit = AuditWriter::open(&AuditOptions {
@@ -223,8 +230,8 @@ mod tests {
             ))
         }
 
-        let dir_a = tempdir().unwrap();
-        let dir_b = tempdir().unwrap();
+        let dir_a = tight_tempdir();
+        let dir_b = tight_tempdir();
         let state_a = build_state(dir_a.path());
         let state_b = build_state(dir_b.path());
 

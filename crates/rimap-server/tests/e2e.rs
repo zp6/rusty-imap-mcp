@@ -47,6 +47,16 @@ use tempfile::TempDir;
 use rimap_server::daemon::state::{DaemonState, SessionState};
 use rimap_server::mcp::server::ImapMcpServer;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = TempDir::new().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
 // ── Container harness (adapted from rimap-imap) ─────────────────────
 
 fn runtime() -> &'static str {
@@ -248,7 +258,7 @@ struct TestEnv {
 }
 
 fn build_test_env(harness: DovecotHarness) -> TestEnv {
-    let audit_dir = TempDir::new().expect("audit tempdir");
+    let audit_dir = tight_tempdir();
     let download_dir = TempDir::new().expect("download tempdir");
 
     let audit = AuditWriter::open(&AuditOptions {

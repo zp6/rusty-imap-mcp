@@ -556,6 +556,14 @@ impl ConnectedHarness {
     ) -> Result<Self, HarnessError> {
         let harness = DovecotHarness::try_start()?;
         let audit_dir = TempDir::new().expect("tempdir");
+        // `AuditWriter::open` (post-#147) refuses parents with looser modes;
+        // `tempfile::TempDir::new()` may inherit 0755 from the system umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(audit_dir.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("chmod 0700 on audit tempdir");
+        }
         let audit_path = audit_dir.path().join("audit.jsonl");
         let audit = AuditWriter::open(&AuditOptions {
             path: audit_path,

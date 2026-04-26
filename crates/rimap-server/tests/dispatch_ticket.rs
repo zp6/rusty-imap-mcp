@@ -22,6 +22,17 @@ use rimap_server::mcp::server::ImapMcpServer;
 use serde_json::json;
 use tempfile::TempDir;
 
+/// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+/// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+/// `umask` (often 0755).
+fn tight_tempdir() -> TempDir {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = TempDir::new().expect("tempdir");
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("chmod 0700 on audit tempdir");
+    dir
+}
+
 struct TestFixture {
     server: ImapMcpServer,
     audit_path: std::path::PathBuf,
@@ -29,7 +40,7 @@ struct TestFixture {
 }
 
 fn build_test_server() -> TestFixture {
-    let audit_dir = TempDir::new().expect("audit tempdir");
+    let audit_dir = tight_tempdir();
     let audit_path = audit_dir.path().join("audit.jsonl");
     let audit = AuditWriter::open(&AuditOptions {
         path: audit_path.clone(),
@@ -194,7 +205,7 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
     use std::sync::Arc;
     use tokio::time::Duration;
 
-    let audit_dir = tempfile::TempDir::new().expect("audit tempdir");
+    let audit_dir = tight_tempdir();
     let audit_path = audit_dir.path().join("audit.jsonl");
     let audit = rimap_audit::AuditWriter::open(&rimap_audit::AuditOptions {
         path: audit_path.clone(),

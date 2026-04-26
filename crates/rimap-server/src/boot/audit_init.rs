@@ -102,6 +102,16 @@ mod tests {
 
     use super::init_audit_writer_multi;
 
+    /// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+    /// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+    /// `umask` (often 0755).
+    fn tight_tempdir() -> TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     fn write_config(dir: &TempDir) -> std::path::PathBuf {
         let audit = dir.path().join("audit.jsonl");
         let config_path = dir.path().join("config.toml");
@@ -130,7 +140,7 @@ allowed_base_dir = "{}"
     fn process_start_emitted_as_first_record() {
         use sha2::{Digest, Sha256};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let config_path = write_config(&dir);
 
         let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
@@ -167,7 +177,7 @@ allowed_base_dir = "{}"
     fn process_end_writes_after_start() {
         use rimap_audit::{ProcessEnd, ProcessEndReason};
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let config_path = write_config(&dir);
         let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
         let validated = rimap_config::validate::validate_legacy_as_multi(raw).unwrap();
@@ -202,7 +212,7 @@ allowed_base_dir = "{}"
             ProcessId, Seq, Timestamp,
         };
 
-        let dir = TempDir::new().unwrap();
+        let dir = tight_tempdir();
         let config_path = write_config(&dir);
         let raw = rimap_config::loader::load_from_path(&config_path).unwrap();
         let validated = rimap_config::validate::validate_legacy_as_multi(raw).unwrap();

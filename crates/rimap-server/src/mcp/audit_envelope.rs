@@ -304,9 +304,18 @@ mod tests {
     use rimap_audit::{AuditWriter, Seq, ToolStartInputs, cancellation_channel, spawn_drainer};
     use rimap_core::SessionId;
     use rimap_core::tool::ToolName;
-    use tempfile::tempdir;
 
     use super::AuditEnvelopeGuard;
+
+    /// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
+    /// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+    /// `umask` (often 0755).
+    fn tight_tempdir() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
 
     fn test_writer(path: std::path::PathBuf) -> AuditWriter {
         AuditWriter::open(&AuditOptions {
@@ -327,7 +336,7 @@ mod tests {
     /// This is the core invariant for #71, #99, and the `session_id` fix.
     #[tokio::test]
     async fn dropped_guard_enqueues_cancellation_record() {
-        let dir = tempdir().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = test_writer(path.clone());
 
@@ -394,7 +403,7 @@ mod tests {
     /// A disarmed guard's drop is a no-op: no cancellation record is written.
     #[tokio::test]
     async fn disarmed_guard_does_not_enqueue() {
-        let dir = tempdir().unwrap();
+        let dir = tight_tempdir();
         let path = dir.path().join("audit.jsonl");
         let writer = test_writer(path.clone());
 
@@ -440,7 +449,7 @@ mod tests {
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
-        let dir = tempdir().unwrap();
+        let dir = tight_tempdir();
         let audit_path = dir.path().join("audit.jsonl");
         let audit = AuditWriter::open(&AuditOptions {
             path: audit_path,
