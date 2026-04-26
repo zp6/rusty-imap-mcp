@@ -2096,6 +2096,7 @@ dependencies = [
  "proptest",
  "rand 0.9.4",
  "rimap-core",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -2173,6 +2174,7 @@ version = "1.0.0"
 dependencies = [
  "hex",
  "proptest",
+ "rustix",
  "schemars",
  "secrecy",
  "serde",
