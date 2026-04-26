@@ -7,7 +7,6 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use ulid::Ulid;
 
 /// Per-process monotonic sequence number. Starts at 1 on `process_start`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -37,24 +36,11 @@ impl fmt::Display for Seq {
     }
 }
 
-/// Stable identifier for a single process lifetime. Backed by a ULID so logs
-/// from different processes interleave in a meaningful order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ProcessId(pub Ulid);
-
-impl ProcessId {
-    /// Generate a fresh process ID from the current system time + randomness.
-    #[must_use]
-    pub fn new_now() -> Self {
-        Self(Ulid::new())
-    }
-}
-
-impl fmt::Display for ProcessId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
+rimap_core::ulid_newtype! {
+    /// Stable identifier for a single process lifetime. Backed by a ULID so
+    /// logs from different processes interleave in a meaningful order.
+    pub struct ProcessId;
+    ctor: new_now;
 }
 
 /// Millisecond-precision UTC timestamp, serialized as RFC 3339.
@@ -142,6 +128,30 @@ mod tests {
     #[test]
     fn seq_display_uses_integer() {
         assert_eq!(Seq(42).to_string(), "42");
+    }
+
+    #[test]
+    fn process_id_serde_json_is_a_bare_string_not_a_struct() {
+        // On-disk schema pin for ProcessId: serializes as a bare JSON
+        // string, NOT as `{"0":"..."}`. Every audit record on disk
+        // carries one of these; any drift breaks the reader.
+        let id = ProcessId::new_now();
+        let json = serde_json::to_string(&id).unwrap();
+        assert!(json.starts_with('"') && json.ends_with('"'), "{json}");
+        let inner = &json[1..json.len() - 1];
+        assert_eq!(
+            inner.len(),
+            26,
+            "serialized form must be a raw ULID: {json}"
+        );
+    }
+
+    #[test]
+    fn process_id_round_trips_through_serde_json() {
+        let id = ProcessId::new_now();
+        let json = serde_json::to_string(&id).unwrap();
+        let back: ProcessId = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, id);
     }
 
     #[test]
