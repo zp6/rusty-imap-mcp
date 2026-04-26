@@ -30,7 +30,7 @@ pub use crate::record::{
 };
 pub use crate::redact::{
     FieldPolicy, RedactionSalt, RedactionSchema, Redactor, ToolRedactionSchema, hash_arguments,
-    schemas,
+    hash_arguments_map, schemas,
 };
 pub use crate::writer::provenance::ProvenanceBuffer;
 pub use crate::writer::self_check::{TrailingState, current_inode, read_trailing_state};
