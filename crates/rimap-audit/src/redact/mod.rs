@@ -110,19 +110,32 @@ impl<'a> Redactor<'a> {
     ///
     /// Non-object inputs are turned into a one-field object
     /// `{"_non_object": "<redacted:?>"}` so the audit layer always writes a
-    /// homogeneous shape.
+    /// homogeneous shape. Callers that already hold an owned
+    /// `Map<String, Value>` should call [`Redactor::apply_map`] directly;
+    /// this method exists to preserve the `&Value` public surface.
     #[must_use]
     pub fn apply(&self, args: &Value) -> Value {
-        let Value::Object(map) = args else {
+        if let Value::Object(map) = args {
+            self.apply_map(map)
+        } else {
             let mut out = Map::new();
             out.insert(
                 "_non_object".to_string(),
                 Value::String("<redacted:?>".to_string()),
             );
-            return Value::Object(out);
-        };
+            Value::Object(out)
+        }
+    }
+
+    /// Apply the schema to an argument map directly, skipping the
+    /// `Value::Object(...)` wrap that [`Redactor::apply`] requires. Output
+    /// is byte-identical to `apply(&Value::Object(map.clone()))`; used by
+    /// `rimap-server::mcp::audit_envelope::compute_tool_args_artifacts` to
+    /// avoid a per-tool-call deep-clone of the argument map (#149).
+    #[must_use]
+    pub fn apply_map(&self, args: &Map<String, Value>) -> Value {
         let mut out = Map::new();
-        for (name, value) in map {
+        for (name, value) in args {
             let policy = self
                 .schema
                 .policies
@@ -191,6 +204,26 @@ impl<'a> Redactor<'a> {
 )]
 pub fn hash_arguments(args: &Value) -> String {
     let bytes = serde_json::to_vec(args).expect("serde_json::to_vec of Value is infallible");
+    let digest = Sha256::digest(&bytes);
+    hex::encode(digest)
+}
+
+/// Computes `sha256(serde_json::to_vec(args))` on the *unredacted* arguments
+/// for the `arguments_hash_sha256` audit field. Accepts `&Map<String, Value>`
+/// directly so callers with an already-owned map skip the
+/// `Value::Object(...)` wrap+clone.
+///
+/// Output is byte-identical to `hash_arguments(&Value::Object(map.clone()))`
+/// because `Value::serialize` delegates to `Map::serialize` for the Object
+/// variant — no outer framing is emitted.
+#[must_use]
+#[expect(
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "serde_json::to_vec(Map<String, Value>) is infallible"
+)]
+pub fn hash_arguments_map(args: &Map<String, Value>) -> String {
+    let bytes = serde_json::to_vec(args).expect("serde_json::to_vec of Map is infallible");
     let digest = Sha256::digest(&bytes);
     hex::encode(digest)
 }
@@ -526,7 +559,9 @@ mod tests {
 
     use rimap_core::tool::ToolName;
 
-    use crate::redact::{FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments};
+    use crate::redact::{
+        FieldPolicy, RedactionSalt, RedactionSchema, Redactor, hash_arguments, hash_arguments_map,
+    };
 
     fn schema() -> RedactionSchema {
         RedactionSchema::new(
@@ -816,5 +851,64 @@ mod tests {
             schema.policies.get("message_count").copied(),
             Some(FieldPolicy::Verbatim),
         );
+    }
+
+    #[test]
+    fn apply_and_apply_map_produce_identical_output_for_object_input() {
+        // The new apply_map exists so callers with a Map in hand skip the
+        // Value::Object wrap+clone. Output MUST be byte-identical to what
+        // apply(&Value::Object(map)) returns, otherwise callers migrating
+        // from one to the other would break on-disk audit record stability.
+        let s = schema();
+        let salt = salt();
+        let r = Redactor::new(&s, &salt);
+        let map: serde_json::Map<String, serde_json::Value> = json!({
+            "subject": "hi",
+            "body_text": "long body",
+            "in_reply_to_uid": 42,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let via_value = r.apply(&serde_json::Value::Object(map.clone()));
+        let via_map = r.apply_map(&map);
+        assert_eq!(via_value, via_map);
+    }
+
+    #[test]
+    fn hash_arguments_and_hash_arguments_map_are_byte_identical_for_object_input() {
+        // Same invariant for the hash function: if callers switch from
+        // hash_arguments(Value) to hash_arguments_map(Map), the audit
+        // record's arguments_hash_sha256 field must not change.
+        let map: serde_json::Map<String, serde_json::Value> = json!({
+            "folder": "INBOX",
+            "uid": 17,
+            "subject": "hi",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let via_value = hash_arguments(&serde_json::Value::Object(map.clone()));
+        let via_map = hash_arguments_map(&map);
+        assert_eq!(via_value, via_map);
+    }
+
+    #[test]
+    fn hash_arguments_map_is_deterministic() {
+        // Parallel guard to the pre-existing `hash_arguments_is_stable_and_hex_encoded`
+        // test, but for the Map variant — ensures the Map path does not
+        // accidentally serialize with a different field-ordering policy.
+        let map: serde_json::Map<String, serde_json::Value> = json!({
+            "uid": 1,
+            "folder": "INBOX",
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let a = hash_arguments_map(&map);
+        let b = hash_arguments_map(&map);
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
     }
 }
