@@ -315,6 +315,51 @@ async fn log_session_end_blocking(state: &Arc<DaemonState>, end: rimap_audit::re
     }
 }
 
+/// Emit a paired `session_start` + `session_end(reason)` for a connection
+/// that we refused at the gate. Both records hit the audit writer inside a
+/// single `spawn_blocking` so the accept loop only pays one task-spawn
+/// round trip per rejection, not two.
+///
+/// Errors are logged but not propagated; at this point the connection is
+/// already being dropped and the caller has nothing to do with the result.
+async fn log_session_rejected_pair(
+    state: &Arc<DaemonState>,
+    sid: SessionId,
+    identity: PeerIdentity,
+    socket_path: &str,
+    reason: rimap_audit::record::SessionEndReason,
+    last_error: Option<String>,
+) {
+    let audit = state.audit.clone();
+    let socket_path = socket_path.to_owned();
+    let join = tokio::task::spawn_blocking(move || {
+        let start = rimap_audit::record::SessionStart {
+            session_id: sid,
+            peer_identity: identity,
+            socket_path,
+        };
+        if let Err(e) = audit.log_session_start(start) {
+            tracing::error!(error = %e, "rejected-pair session_start write failed");
+            return;
+        }
+        let end = rimap_audit::record::SessionEnd {
+            session_id: sid,
+            reason,
+            duration_ms: 0,
+            total_tool_calls: 0,
+            last_error,
+        };
+        if let Err(e) = audit.log_session_end(end) {
+            tracing::warn!(error = %e, "rejected-pair session_end write failed");
+        }
+    })
+    .await;
+    if let Err(join_err) = join {
+        let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
+        tracing::error!(error = %rimap_err, "rejected-pair spawn_blocking join error");
+    }
+}
+
 /// Emit paired `session_start` + `session_end(PeerUidRejected)` for a
 /// connection whose peer identity does not match ours, then close it.
 async fn handle_rejected_peer(
@@ -323,15 +368,15 @@ async fn handle_rejected_peer(
     socket_path: &str,
 ) {
     let sid = SessionId::new();
-    let _ = log_session_start_blocking(state, sid, identity.clone(), socket_path).await;
-    let end = rimap_audit::record::SessionEnd {
-        session_id: sid,
-        reason: rimap_audit::record::SessionEndReason::PeerUidRejected,
-        duration_ms: 0,
-        total_tool_calls: 0,
-        last_error: None,
-    };
-    log_session_end_blocking(state, end).await;
+    log_session_rejected_pair(
+        state,
+        sid,
+        identity.clone(),
+        socket_path,
+        rimap_audit::record::SessionEndReason::PeerUidRejected,
+        None,
+    )
+    .await;
     tracing::warn!(?identity, "rejected peer with mismatching identity");
 }
 
@@ -344,15 +389,15 @@ async fn handle_rejected_over_capacity(
     socket_path: &str,
 ) {
     let sid = SessionId::new();
-    let _ = log_session_start_blocking(state, sid, identity.clone(), socket_path).await;
-    let end = rimap_audit::record::SessionEnd {
-        session_id: sid,
-        reason: rimap_audit::record::SessionEndReason::Rejected,
-        duration_ms: 0,
-        total_tool_calls: 0,
-        last_error: Some("max_concurrent_sessions reached".to_owned()),
-    };
-    log_session_end_blocking(state, end).await;
+    log_session_rejected_pair(
+        state,
+        sid,
+        identity.clone(),
+        socket_path,
+        rimap_audit::record::SessionEndReason::Rejected,
+        Some("max_concurrent_sessions reached".to_owned()),
+    )
+    .await;
     tracing::warn!(
         ?identity,
         "rejected session: max_concurrent_sessions reached",
