@@ -83,10 +83,81 @@ async fn shutdown_drains_active_sessions_within_deadline() {
         "expected at least 2 session_start records (one per client); got {session_starts}:\n{audit}"
     );
 
-    // session_end is only emitted if the session task runs to completion.
-    // When the drain deadline expires, `JoinSet::shutdown().await` aborts
-    // remaining tasks — those futures are dropped mid-flight without reaching
-    // `emit_session_end`. So session_end count may be 0, 1, or 2 depending on
-    // timing; we do not assert a minimum here. The timing assertion above
-    // (elapsed < 6 s) is the meaningful correctness check for the abort path.
+    // After the fix (#137), drain_sessions synthesizes session_end records for
+    // aborted sessions. Every start must now have a matching end.
+    let session_ends = audit
+        .lines()
+        .filter(|l| l.contains(r#""kind":"session_end""#))
+        .count();
+    assert_eq!(
+        session_starts, session_ends,
+        "every session_start must have a matching session_end after #137 fix; \
+         starts={session_starts} ends={session_ends}\naudit log:\n{audit}"
+    );
+}
+
+/// Regression test for #137: every active session emits a
+/// `session_end(reason="daemon_shutdown")` record when the daemon
+/// shuts down, including those aborted mid-flight by the `JoinSet`
+/// drain. Before the fix, aborted futures never reached
+/// `emit_session_end` and the audit log was missing those records.
+#[tokio::test]
+async fn shutdown_synthesizes_session_end_for_aborted_sessions() {
+    let tempdir = tight_tempdir();
+    let audit_path = tempdir.path().join("audit.jsonl");
+    let socket_path = tempdir.path().join("daemon.sock");
+    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let daemon =
+        TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
+
+    // Open two sessions and write nothing through them. The shim-layer
+    // serve_server.waiting() is parked on a stalled stdin read; we don't
+    // need to send any MCP frames — what matters is that the session is
+    // ALIVE in the daemon's JoinSet at shutdown time.
+    let s1 = UnixStream::connect(&daemon.socket_path)
+        .await
+        .expect("connect 1");
+    let s2 = UnixStream::connect(&daemon.socket_path)
+        .await
+        .expect("connect 2");
+
+    // Give the accept loop a beat to spawn the per-session futures and
+    // call `live.insert` for each. 50ms is generous on every CI we run
+    // and far faster than the 5s drain window.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Trigger shutdown. The drain has 5s to clean-close, then JoinSet
+    // aborts. Sessions that never completed handshake will be aborted —
+    // exactly the path #137 fixes.
+    let audit_log = daemon.shutdown().await;
+    drop(s1);
+    drop(s2);
+
+    // Count `session_end(reason="daemon_shutdown")` records.
+    let shutdown_ends = audit_log
+        .lines()
+        .filter(|line| line.contains(r#""kind":"session_end""#))
+        .filter(|line| line.contains(r#""reason":"daemon_shutdown""#))
+        .count();
+    assert_eq!(
+        shutdown_ends, 2,
+        "expected 2 session_end(daemon_shutdown) records, got {shutdown_ends}; \
+         audit log was:\n{audit_log}",
+    );
+
+    // Total session_end count must equal session_start count — no orphan
+    // start records and no over-count.
+    let starts = audit_log
+        .lines()
+        .filter(|line| line.contains(r#""kind":"session_start""#))
+        .count();
+    let ends = audit_log
+        .lines()
+        .filter(|line| line.contains(r#""kind":"session_end""#))
+        .count();
+    assert_eq!(
+        starts, ends,
+        "session_start ({starts}) must pair with session_end ({ends}); \
+         audit log was:\n{audit_log}",
+    );
 }

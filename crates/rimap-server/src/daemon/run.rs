@@ -1,15 +1,67 @@
 //! Daemon entry point: accept loop, per-session spawn, graceful shutdown.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rimap_audit::record::PeerIdentity;
 use rimap_core::SessionId;
-use tokio::sync::{Notify, OwnedSemaphorePermit};
+use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit};
 use tokio::task::JoinSet;
 
 use crate::daemon::state::{DaemonState, SessionState};
 use crate::daemon::transport::{AcceptedConnection, PlatformListener};
 use crate::mcp::server::ImapMcpServer;
+
+/// Side table of in-flight sessions, keyed by `SessionId`. Used by the
+/// graceful-shutdown drain to synthesize `session_end(DaemonShutdown)`
+/// records for sessions that `JoinSet::shutdown` aborts before they
+/// could emit their own end records (see #137).
+///
+/// The map lives behind a Tokio `Mutex` rather than a `parking_lot`
+/// mutex because the contention pattern is async-task spawn/join, not
+/// CPU-bound — and the lock is held only across two `HashMap` ops
+/// (insert/remove or drain), well under the `await_holding_lock` clippy
+/// threshold.
+pub(crate) struct LiveSessions {
+    inner: Mutex<HashMap<SessionId, Arc<SessionState>>>,
+}
+
+impl LiveSessions {
+    /// Construct an empty live-session table.
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Record that `session` is now in flight. Called from the accept
+    /// loop immediately before `sessions.spawn(...)`.
+    pub(crate) async fn insert(&self, sid: SessionId, session: Arc<SessionState>) {
+        self.inner.lock().await.insert(sid, session);
+    }
+
+    /// Remove `sid` from the table. Called from `build_session_future`
+    /// on every normal exit path — both Ok and Err cases — so an
+    /// aborted future is the only one that leaves an entry behind.
+    pub(crate) async fn remove(&self, sid: SessionId) {
+        self.inner.lock().await.remove(&sid);
+    }
+
+    /// Test-only convenience for membership checks.
+    #[cfg(test)]
+    pub(crate) async fn contains(&self, sid: SessionId) -> bool {
+        self.inner.lock().await.contains_key(&sid)
+    }
+
+    /// Drain every remaining entry. Called from `drain_sessions` AFTER
+    /// `JoinSet::shutdown().await`, so any session still here was
+    /// aborted mid-flight and needs a synthesized `session_end`.
+    pub(crate) async fn drain(&self) -> Vec<(SessionId, Arc<SessionState>)> {
+        let mut guard = self.inner.lock().await;
+        std::mem::take(&mut *guard).into_iter().collect()
+    }
+}
 
 /// Run the daemon until a shutdown signal fires.
 ///
@@ -32,6 +84,7 @@ where
     let socket_path = resolve_socket_path();
     let peer_gate = make_peer_gate();
     let mut sessions: JoinSet<()> = JoinSet::new();
+    let live = Arc::new(LiveSessions::new());
 
     loop {
         tokio::select! {
@@ -67,11 +120,16 @@ where
                     drop(stream);
                     continue;
                 }
+                // Insert BEFORE spawn so `drain_sessions` can find the
+                // session even if the accept loop exits between insert
+                // and spawn.
+                live.insert(sid, Arc::clone(&session)).await;
                 sessions.spawn(build_session_future(
                     Arc::clone(&state),
                     stream,
                     session,
                     permit,
+                    Arc::clone(&live),
                 ));
             }
             Some(_) = sessions.join_next() => {
@@ -81,13 +139,38 @@ where
     }
 
     listener.shutdown();
-    drain_sessions(sessions).await;
+    drain_sessions(sessions, &state, Arc::clone(&live)).await;
     Ok(())
 }
 
-/// Wait up to 5 seconds for in-flight sessions to finish, then abort the rest.
-async fn drain_sessions(mut sessions: JoinSet<()>) {
+/// Wait up to 5 seconds for in-flight sessions to finish, then abort the rest
+/// AND synthesize a `session_end(DaemonShutdown)` audit record for every
+/// session that was aborted. The synthesized record carries the per-session
+/// duration and tool-call count harvested from `SessionState`, byte-
+/// equivalent to what the live future would have emitted.
+///
+/// See #137: prior to this fix, `JoinSet::shutdown().await` aborted the
+/// in-flight session futures before they could emit their own end records,
+/// leaving the audit log silently incomplete.
+async fn drain_sessions(
+    mut sessions: JoinSet<()>,
+    state: &Arc<DaemonState>,
+    live: Arc<LiveSessions>,
+) {
     if sessions.is_empty() {
+        // No tasks ever spawned; the live table should be empty too, but
+        // belt-and-braces drain it in case an entry slipped in between
+        // `live.insert` and `sessions.spawn` and the accept loop then
+        // exited.
+        for (_, session) in live.drain().await {
+            emit_session_end(
+                state,
+                &session,
+                rimap_audit::record::SessionEndReason::DaemonShutdown,
+                None,
+            )
+            .await;
+        }
         return;
     }
     tracing::info!(
@@ -106,13 +189,36 @@ async fn drain_sessions(mut sessions: JoinSet<()>) {
             Ok(None) | Err(_) => break, // drained or deadline elapsed
         }
     }
-    let aborted = sessions.len();
+    let still_running = sessions.len();
     let shutdown = tokio::time::timeout(std::time::Duration::from_secs(2), sessions.shutdown());
-    if shutdown.await.is_ok() {
-        tracing::info!(aborted_count = aborted, "session drain complete");
+    let shutdown_clean = shutdown.await.is_ok();
+
+    // After `JoinSet::shutdown`, any remaining entry in `live` is a session
+    // that was aborted mid-flight. Synthesize its `session_end` record
+    // now — same content the live future would have emitted, with reason
+    // = DaemonShutdown.
+    let aborted = live.drain().await;
+    let synthesized = aborted.len();
+    for (_, session) in aborted {
+        emit_session_end(
+            state,
+            &session,
+            rimap_audit::record::SessionEndReason::DaemonShutdown,
+            None,
+        )
+        .await;
+    }
+
+    if shutdown_clean {
+        tracing::info!(
+            join_set_aborted = still_running,
+            session_end_synthesized = synthesized,
+            "session drain complete",
+        );
     } else {
         tracing::warn!(
-            aborted_count = aborted,
+            join_set_aborted = still_running,
+            session_end_synthesized = synthesized,
             "session shutdown deadline exceeded; exiting with stuck tasks",
         );
     }
@@ -267,12 +373,14 @@ async fn build_session_future<S>(
     stream: S,
     session: Arc<SessionState>,
     permit: OwnedSemaphorePermit,
+    live: Arc<LiveSessions>,
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     // Hold the permit for the session's lifetime; drops when this future
     // returns, releasing a slot back to the semaphore.
     let _permit = permit;
+    let sid = session.id;
     let mcp = ImapMcpServer::new(Arc::clone(&state), Arc::clone(&session));
     let serve_result = Box::pin(rmcp::serve_server(mcp, stream)).await;
     let running = match serve_result {
@@ -286,12 +394,16 @@ async fn build_session_future<S>(
                 Some(format!("serve_server init: {e}")),
             )
             .await;
+            // Remove only AFTER emission so a panic in emit_session_end
+            // leaves the entry visible for the drain path's safety net.
+            live.remove(sid).await;
             return;
         }
     };
     let quit = running.waiting().await;
     let (reason, last_err) = session_end_from_quit(quit);
     emit_session_end(&state, &session, reason, last_err).await;
+    live.remove(sid).await;
 }
 
 /// Map `waiting()`'s `QuitReason` outcome to an audit `(SessionEndReason,
@@ -329,9 +441,6 @@ async fn emit_session_end(
     let total = session
         .tool_call_count
         .load(std::sync::atomic::Ordering::Relaxed);
-    // Sessions aborted by `drain_sessions` after the 5s grace window don't
-    // reach this point — their in-flight tool_call_count does not contribute
-    // to the daemon-level aggregator. Tracked as #137.
     state
         .total_tool_calls
         .fetch_add(total, std::sync::atomic::Ordering::Relaxed);
@@ -343,4 +452,63 @@ async fn emit_session_end(
         last_error,
     };
     log_session_end_blocking(state, end).await;
+}
+
+#[cfg(test)]
+mod live_sessions_tests {
+    use super::LiveSessions;
+    use crate::daemon::state::SessionState;
+    use rimap_core::SessionId;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn insert_then_remove_drops_entry() {
+        let live = LiveSessions::new();
+        let sid = SessionId::new();
+        let session = Arc::new(SessionState::new(sid));
+        live.insert(sid, Arc::clone(&session)).await;
+        assert!(live.contains(sid).await);
+        live.remove(sid).await;
+        assert!(!live.contains(sid).await);
+    }
+
+    #[tokio::test]
+    async fn drain_returns_all_remaining_entries_in_one_pass() {
+        let live = LiveSessions::new();
+        let sid_a = SessionId::new();
+        let sid_b = SessionId::new();
+        live.insert(sid_a, Arc::new(SessionState::new(sid_a))).await;
+        live.insert(sid_b, Arc::new(SessionState::new(sid_b))).await;
+        let drained = live.drain().await;
+        assert_eq!(drained.len(), 2);
+        // After draining the table is empty so subsequent drain returns nothing.
+        let again = live.drain().await;
+        assert!(again.is_empty());
+    }
+
+    #[tokio::test]
+    async fn drain_preserves_session_state_arc_for_duration_and_count_reads() {
+        // The drain path uses `started_at` and `tool_call_count` from the
+        // returned SessionState — pin that the Arcs come back live, not
+        // lost copies. Bumping the counter inside the drained Arc must be
+        // visible to the holder of the original Arc.
+        let live = LiveSessions::new();
+        let sid = SessionId::new();
+        let session = Arc::new(SessionState::new(sid));
+        live.insert(sid, Arc::clone(&session)).await;
+        let drained = live.drain().await;
+        assert_eq!(drained.len(), 1);
+        let (drained_sid, drained_session) = &drained[0];
+        assert_eq!(*drained_sid, sid);
+        drained_session
+            .tool_call_count
+            .fetch_add(7, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(
+            session
+                .tool_call_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+            7,
+            "drained Arc must point to the same SessionState as the inserted Arc",
+        );
+    }
 }
