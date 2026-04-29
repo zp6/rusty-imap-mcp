@@ -15,7 +15,7 @@ use crate::boot::registry::AccountState;
 /// Whether the registry holds exactly one account and its id is the
 /// legacy `"default"` value. Used to preserve bare (non-namespaced)
 /// tool names for single-account deployments.
-pub(super) fn is_legacy_single_account(
+pub(crate) fn is_legacy_single_account(
     accounts: &std::collections::BTreeMap<AccountId, AccountState>,
 ) -> bool {
     accounts.len() == 1

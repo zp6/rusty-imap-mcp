@@ -99,6 +99,13 @@ pub struct AccountRegistry {
     /// Clock used by the infrastructure limiter; stored so that
     /// `wait_time_from` can format retry hints.
     clock: DefaultClock,
+    /// Lazily-populated `tools/list` result. Built once per
+    /// `AccountRegistry` instance from the registered accounts'
+    /// posture matrices and the static tool catalog; the rmcp
+    /// `ListToolsResult` API requires `Vec<Tool>` by value, so callers
+    /// clone the inner vec at the boundary, but the per-tool
+    /// `format!` and `Tool::clone` work happens once. See #148.
+    list_tools_cache: std::sync::OnceLock<Arc<Vec<rmcp::model::Tool>>>,
 }
 
 impl AccountRegistry {
@@ -110,6 +117,7 @@ impl AccountRegistry {
             accounts,
             infrastructure_limiter: RateLimiter::direct(quota),
             clock: DefaultClock::default(),
+            list_tools_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -214,6 +222,77 @@ impl AccountRegistry {
     fn find_by_name(&self, name: &str) -> Option<&AccountState> {
         let id = AccountId::new(name).ok()?;
         self.accounts.get(&id)
+    }
+
+    /// Return the cached `tools/list` result. Populated lazily on first
+    /// call from the registered accounts' posture matrices and the
+    /// static tool catalog; subsequent calls return the same `Arc<Vec>`.
+    ///
+    /// The `Arc` clone is `O(1)`. The rmcp `ListToolsResult` API takes
+    /// `Vec<Tool>` by value, so the call site clones the inner Vec at
+    /// the rmcp boundary — but the per-tool `format!` /
+    /// `Tool::clone` work no longer runs per request. See #148.
+    #[must_use]
+    pub fn list_tools_cached(&self) -> Arc<Vec<rmcp::model::Tool>> {
+        Arc::clone(
+            self.list_tools_cache
+                .get_or_init(|| Arc::new(self.compute_advertised_tools())),
+        )
+    }
+
+    /// Build the advertised tool list from registered accounts. Mirrors
+    /// the dispatch logic that previously lived inside
+    /// `ServerHandler::list_tools`; centralized here so the cache
+    /// builds it once.
+    fn compute_advertised_tools(&self) -> Vec<rmcp::model::Tool> {
+        use crate::mcp::tool_catalog::TOOL_DEFS;
+        use crate::mcp::tool_name::is_legacy_single_account;
+
+        let mut tools: Vec<rmcp::model::Tool> = Vec::new();
+
+        // Infrastructure tools — always advertised, never namespaced.
+        for name in [
+            rimap_core::tool::ToolName::UseAccount,
+            rimap_core::tool::ToolName::ListAccounts,
+        ] {
+            if let Some(def) = TOOL_DEFS.get(&name) {
+                tools.push(def.clone());
+            }
+        }
+
+        let use_bare_names = is_legacy_single_account(&self.accounts);
+
+        for (id, state) in &self.accounts {
+            for &tn in &state.guard.matrix().advertised() {
+                let Some(base_def) = TOOL_DEFS.get(&tn) else {
+                    continue;
+                };
+                let tool_name = if use_bare_names {
+                    base_def.name.clone()
+                } else {
+                    format!("{}.{}", id.as_str(), base_def.name).into()
+                };
+                let description = if use_bare_names {
+                    base_def.description.clone()
+                } else {
+                    Some(
+                        format!(
+                            "[account: {}, posture: {}] {}",
+                            id.as_str(),
+                            state.guard.matrix().posture().as_str(),
+                            base_def.description.as_deref().unwrap_or(""),
+                        )
+                        .into(),
+                    )
+                };
+                let mut def = base_def.clone();
+                def.name = tool_name;
+                def.description = description;
+                tools.push(def);
+            }
+        }
+
+        tools
     }
 }
 
@@ -396,6 +475,47 @@ pub fn build_account_connection(
         command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
         max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
         max_append_bytes: acfg.limits.max_append_bytes,
+    }
+}
+
+#[cfg(test)]
+mod list_tools_cache_tests {
+    use super::AccountRegistry;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn list_tools_cached_returns_same_arc_across_calls() {
+        // Pin the cache contract: list_tools_cached returns the same
+        // Arc<Vec<Tool>> on every call within a registry generation.
+        // If a future refactor reverts to "build fresh on every call",
+        // this assertion catches the regression — Arc::ptr_eq checks
+        // identity, not equality.
+        let reg = AccountRegistry::new(BTreeMap::new());
+        let a = reg.list_tools_cached();
+        let b = reg.list_tools_cached();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "list_tools_cached must return the same Arc on repeat calls",
+        );
+    }
+
+    #[test]
+    fn list_tools_cached_includes_use_account_and_list_accounts_for_empty_registry() {
+        // Empty registry still advertises the two infrastructure tools
+        // (use_account, list_accounts). The cached Vec should contain
+        // both, and only those, when no accounts are configured.
+        let reg = AccountRegistry::new(BTreeMap::new());
+        let tools = reg.list_tools_cached();
+        let names: std::collections::BTreeSet<_> =
+            tools.iter().map(|t| t.name.to_string()).collect();
+        assert!(names.contains("use_account"), "tools = {names:?}");
+        assert!(names.contains("list_accounts"), "tools = {names:?}");
+        assert_eq!(
+            tools.len(),
+            2,
+            "empty registry should advertise exactly 2 tools, got {tools:?}",
+        );
     }
 }
 

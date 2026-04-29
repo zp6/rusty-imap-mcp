@@ -16,7 +16,7 @@ use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ErrorCode as McpCode, ErrorData, Implementation,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerInfo, Tool,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerInfo,
 };
 use rmcp::service::RequestContext;
 
@@ -260,49 +260,13 @@ impl ServerHandler for ImapMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut tools: Vec<Tool> = Vec::new();
-
-        // Infrastructure tools — always advertised, never namespaced.
-        for name in [ToolName::UseAccount, ToolName::ListAccounts] {
-            if let Some(def) = TOOL_DEFS.get(&name) {
-                tools.push(def.clone());
-            }
-        }
-
-        let accounts = self.registry().accounts();
-        let use_bare_names = is_legacy_single_account(accounts);
-
-        for (id, state) in accounts {
-            for &tn in &state.guard.matrix().advertised() {
-                let Some(base_def) = TOOL_DEFS.get(&tn) else {
-                    continue;
-                };
-                let tool_name = if use_bare_names {
-                    base_def.name.clone()
-                } else {
-                    format!("{}.{}", id.as_str(), base_def.name).into()
-                };
-                let description = if use_bare_names {
-                    base_def.description.clone()
-                } else {
-                    Some(
-                        format!(
-                            "[account: {}, posture: {}] {}",
-                            id.as_str(),
-                            state.guard.matrix().posture().as_str(),
-                            base_def.description.as_deref().unwrap_or(""),
-                        )
-                        .into(),
-                    )
-                };
-                let mut def = base_def.clone();
-                def.name = tool_name;
-                def.description = description;
-                tools.push(def);
-            }
-        }
-
-        Ok(ListToolsResult::with_all_items(tools))
+        // Cached on AccountRegistry — same Vec contents as the prior
+        // inline build, just computed once per registry generation.
+        // The rmcp boundary still wants `Vec<Tool>` by value, so we
+        // clone the inner vec; the per-tool format!/clone hot path
+        // no longer runs per request. See #148.
+        let cached = self.registry().list_tools_cached();
+        Ok(ListToolsResult::with_all_items((*cached).clone()))
     }
 
     async fn list_resources(
