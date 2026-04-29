@@ -2218,6 +2218,7 @@ dependencies = [
  "arc-swap",
  "assert_cmd",
  "clap",
+ "futures-util",
  "governor",
  "hex",
  "infer",

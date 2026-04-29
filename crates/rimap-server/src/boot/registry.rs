@@ -99,6 +99,13 @@ pub struct AccountRegistry {
     /// Clock used by the infrastructure limiter; stored so that
     /// `wait_time_from` can format retry hints.
     clock: DefaultClock,
+    /// Lazily-populated `tools/list` result. Built once per
+    /// `AccountRegistry` instance from the registered accounts'
+    /// posture matrices and the static tool catalog; the rmcp
+    /// `ListToolsResult` API requires `Vec<Tool>` by value, so callers
+    /// clone the inner vec at the boundary, but the per-tool
+    /// `format!` and `Tool::clone` work happens once. See #148.
+    list_tools_cache: std::sync::OnceLock<Arc<Vec<rmcp::model::Tool>>>,
 }
 
 impl AccountRegistry {
@@ -110,6 +117,7 @@ impl AccountRegistry {
             accounts,
             infrastructure_limiter: RateLimiter::direct(quota),
             clock: DefaultClock::default(),
+            list_tools_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -215,6 +223,77 @@ impl AccountRegistry {
         let id = AccountId::new(name).ok()?;
         self.accounts.get(&id)
     }
+
+    /// Return the cached `tools/list` result. Populated lazily on first
+    /// call from the registered accounts' posture matrices and the
+    /// static tool catalog; subsequent calls return the same `Arc<Vec>`.
+    ///
+    /// The `Arc` clone is `O(1)`. The rmcp `ListToolsResult` API takes
+    /// `Vec<Tool>` by value, so the call site clones the inner Vec at
+    /// the rmcp boundary — but the per-tool `format!` /
+    /// `Tool::clone` work no longer runs per request. See #148.
+    #[must_use]
+    pub fn list_tools_cached(&self) -> Arc<Vec<rmcp::model::Tool>> {
+        Arc::clone(
+            self.list_tools_cache
+                .get_or_init(|| Arc::new(self.compute_advertised_tools())),
+        )
+    }
+
+    /// Build the advertised tool list from registered accounts. Mirrors
+    /// the dispatch logic that previously lived inside
+    /// `ServerHandler::list_tools`; centralized here so the cache
+    /// builds it once.
+    fn compute_advertised_tools(&self) -> Vec<rmcp::model::Tool> {
+        use crate::mcp::tool_catalog::TOOL_DEFS;
+        use crate::mcp::tool_name::is_legacy_single_account;
+
+        let mut tools: Vec<rmcp::model::Tool> = Vec::new();
+
+        // Infrastructure tools — always advertised, never namespaced.
+        for name in [
+            rimap_core::tool::ToolName::UseAccount,
+            rimap_core::tool::ToolName::ListAccounts,
+        ] {
+            if let Some(def) = TOOL_DEFS.get(&name) {
+                tools.push(def.clone());
+            }
+        }
+
+        let use_bare_names = is_legacy_single_account(&self.accounts);
+
+        for (id, state) in &self.accounts {
+            for &tn in &state.guard.matrix().advertised() {
+                let Some(base_def) = TOOL_DEFS.get(&tn) else {
+                    continue;
+                };
+                let tool_name = if use_bare_names {
+                    base_def.name.clone()
+                } else {
+                    format!("{}.{}", id.as_str(), base_def.name).into()
+                };
+                let description = if use_bare_names {
+                    base_def.description.clone()
+                } else {
+                    Some(
+                        format!(
+                            "[account: {}, posture: {}] {}",
+                            id.as_str(),
+                            state.guard.matrix().posture().as_str(),
+                            base_def.description.as_deref().unwrap_or(""),
+                        )
+                        .into(),
+                    )
+                };
+                let mut def = base_def.clone();
+                def.name = tool_name;
+                def.description = description;
+                tools.push(def);
+            }
+        }
+
+        tools
+    }
 }
 
 /// Build the account registry from a validated multi-account config.
@@ -234,55 +313,94 @@ pub async fn build(
     credentials: &Arc<dyn CredentialStore>,
     download_dir: &Arc<std::path::Path>,
 ) -> anyhow::Result<AccountRegistry> {
-    let mut account_states = BTreeMap::new();
+    use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
+
+    /// Cap the number of in-flight per-account setups. The work per
+    /// account is one IMAP `LIST` round trip; `4` is a conservative
+    /// bound that gives parallelism speedup for typical 1–5-account
+    /// configs without flooding the system with sockets when an
+    /// operator deploys with 50 accounts. Tuning beyond this is a
+    /// separate concern (see #128 IMAP connection pool depth).
+    const PARALLEL_BUILD_CONCURRENCY: usize = 4;
+
     let auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
-    for (id, acfg) in &multi.accounts {
-        let guard = build_account_guard(acfg).context("building dispatch guard")?;
-        let conn_cfg = build_account_connection(id, acfg);
-        let resolver: Arc<dyn rimap_core::CredentialResolver> =
-            Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
-                credentials.clone(),
-                acfg.fallback_mode,
-            ));
-        let imap = Connection::new(conn_cfg, auth_sink.clone(), resolver);
 
-        let special_use = crate::boot::discovery::resolve_special_use(&imap)
-            .await
-            .with_context(|| {
-                format!("resolving special-use folders for account {}", id.as_str())
-            })?;
+    // Build per-account `(AccountId, AccountState)` futures. Each future
+    // owns a clone of `auth_sink`, `credentials`, and `download_dir`,
+    // and borrows nothing from `multi` so that the buffer can hold
+    // them as `Send + 'static`.
+    let account_iter = multi.accounts.iter().map(|(id, acfg)| {
+        let id = id.clone();
+        let acfg = acfg.clone();
+        let auth_sink = Arc::clone(&auth_sink);
+        let credentials = Arc::clone(credentials);
+        let download_dir = Arc::clone(download_dir);
+        async move { build_one_account(id, acfg, auth_sink, credentials, download_dir).await }
+    });
 
-        // Expand the config-supplied protected-folders list with any
-        // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
-        // The merge is case-insensitive so user-configured literals
-        // (`"Sent"`) are not duplicated when the server also reports
-        // `"Sent"` on the same mailbox.
-        let mut protected = acfg.security.protected_folders.clone();
-        for discovered in special_use.all_discovered() {
-            if !protected
-                .iter()
-                .any(|p| p.eq_ignore_ascii_case(&discovered))
-            {
-                protected.push(discovered);
-            }
-        }
+    let states: Vec<(AccountId, AccountState)> = stream::iter(account_iter)
+        .buffer_unordered(PARALLEL_BUILD_CONCURRENCY)
+        .try_collect()
+        .await?;
 
-        let smtp = build_smtp_client(acfg, credentials)?;
-
-        let folder_guard = FolderGuard::new(&protected, &acfg.security.expunge_folders);
-
-        let state = AccountState {
-            id: id.clone(),
-            imap,
-            smtp,
-            guard,
-            folder_guard,
-            download_dir: Arc::clone(download_dir),
-            special_use,
-        };
-        account_states.insert(id.clone(), state);
-    }
+    let account_states: BTreeMap<AccountId, AccountState> = states.into_iter().collect();
     Ok(AccountRegistry::new(account_states))
+}
+
+/// Single-account setup: build the dispatch guard, IMAP connection, run
+/// special-use discovery, and assemble the `AccountState`.
+///
+/// Owns the `Arc`s passed in so the resulting future is `Send + 'static`
+/// for `buffer_unordered` consumption.
+async fn build_one_account(
+    id: AccountId,
+    acfg: ValidatedAccountConfig,
+    auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink>,
+    credentials: Arc<dyn CredentialStore>,
+    download_dir: Arc<std::path::Path>,
+) -> anyhow::Result<(AccountId, AccountState)> {
+    let guard = build_account_guard(&acfg).context("building dispatch guard")?;
+    let conn_cfg = build_account_connection(&id, &acfg);
+    let resolver: Arc<dyn rimap_core::CredentialResolver> =
+        Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+            Arc::clone(&credentials),
+            acfg.fallback_mode,
+        ));
+    let imap = Connection::new(conn_cfg, auth_sink, resolver);
+
+    let special_use = crate::boot::discovery::resolve_special_use(&imap)
+        .await
+        .with_context(|| format!("resolving special-use folders for account {}", id.as_str()))?;
+
+    // Expand the config-supplied protected-folders list with any
+    // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
+    // The merge is case-insensitive so user-configured literals
+    // (`"Sent"`) are not duplicated when the server also reports
+    // `"Sent"` on the same mailbox.
+    let mut protected = acfg.security.protected_folders.clone();
+    for discovered in special_use.all_discovered() {
+        if !protected
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(&discovered))
+        {
+            protected.push(discovered);
+        }
+    }
+
+    let smtp = build_smtp_client(&acfg, &credentials)?;
+
+    let folder_guard = FolderGuard::new(&protected, &acfg.security.expunge_folders);
+
+    let state = AccountState {
+        id: id.clone(),
+        imap,
+        smtp,
+        guard,
+        folder_guard,
+        download_dir,
+        special_use,
+    };
+    Ok((id, state))
 }
 
 /// Build an SMTP client from account config, if SMTP is configured.
@@ -357,6 +475,47 @@ pub fn build_account_connection(
         command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
         max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
         max_append_bytes: acfg.limits.max_append_bytes,
+    }
+}
+
+#[cfg(test)]
+mod list_tools_cache_tests {
+    use super::AccountRegistry;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    #[test]
+    fn list_tools_cached_returns_same_arc_across_calls() {
+        // Pin the cache contract: list_tools_cached returns the same
+        // Arc<Vec<Tool>> on every call within a registry generation.
+        // If a future refactor reverts to "build fresh on every call",
+        // this assertion catches the regression — Arc::ptr_eq checks
+        // identity, not equality.
+        let reg = AccountRegistry::new(BTreeMap::new());
+        let a = reg.list_tools_cached();
+        let b = reg.list_tools_cached();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "list_tools_cached must return the same Arc on repeat calls",
+        );
+    }
+
+    #[test]
+    fn list_tools_cached_includes_use_account_and_list_accounts_for_empty_registry() {
+        // Empty registry still advertises the two infrastructure tools
+        // (use_account, list_accounts). The cached Vec should contain
+        // both, and only those, when no accounts are configured.
+        let reg = AccountRegistry::new(BTreeMap::new());
+        let tools = reg.list_tools_cached();
+        let names: std::collections::BTreeSet<_> =
+            tools.iter().map(|t| t.name.to_string()).collect();
+        assert!(names.contains("use_account"), "tools = {names:?}");
+        assert!(names.contains("list_accounts"), "tools = {names:?}");
+        assert_eq!(
+            tools.len(),
+            2,
+            "empty registry should advertise exactly 2 tools, got {tools:?}",
+        );
     }
 }
 
