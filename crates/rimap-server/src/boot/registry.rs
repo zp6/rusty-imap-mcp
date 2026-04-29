@@ -234,55 +234,94 @@ pub async fn build(
     credentials: &Arc<dyn CredentialStore>,
     download_dir: &Arc<std::path::Path>,
 ) -> anyhow::Result<AccountRegistry> {
-    let mut account_states = BTreeMap::new();
+    use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
+
+    /// Cap the number of in-flight per-account setups. The work per
+    /// account is one IMAP `LIST` round trip; `4` is a conservative
+    /// bound that gives parallelism speedup for typical 1–5-account
+    /// configs without flooding the system with sockets when an
+    /// operator deploys with 50 accounts. Tuning beyond this is a
+    /// separate concern (see #128 IMAP connection pool depth).
+    const PARALLEL_BUILD_CONCURRENCY: usize = 4;
+
     let auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
-    for (id, acfg) in &multi.accounts {
-        let guard = build_account_guard(acfg).context("building dispatch guard")?;
-        let conn_cfg = build_account_connection(id, acfg);
-        let resolver: Arc<dyn rimap_core::CredentialResolver> =
-            Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
-                credentials.clone(),
-                acfg.fallback_mode,
-            ));
-        let imap = Connection::new(conn_cfg, auth_sink.clone(), resolver);
 
-        let special_use = crate::boot::discovery::resolve_special_use(&imap)
-            .await
-            .with_context(|| {
-                format!("resolving special-use folders for account {}", id.as_str())
-            })?;
+    // Build per-account `(AccountId, AccountState)` futures. Each future
+    // owns a clone of `auth_sink`, `credentials`, and `download_dir`,
+    // and borrows nothing from `multi` so that the buffer can hold
+    // them as `Send + 'static`.
+    let account_iter = multi.accounts.iter().map(|(id, acfg)| {
+        let id = id.clone();
+        let acfg = acfg.clone();
+        let auth_sink = Arc::clone(&auth_sink);
+        let credentials = Arc::clone(credentials);
+        let download_dir = Arc::clone(download_dir);
+        async move { build_one_account(id, acfg, auth_sink, credentials, download_dir).await }
+    });
 
-        // Expand the config-supplied protected-folders list with any
-        // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
-        // The merge is case-insensitive so user-configured literals
-        // (`"Sent"`) are not duplicated when the server also reports
-        // `"Sent"` on the same mailbox.
-        let mut protected = acfg.security.protected_folders.clone();
-        for discovered in special_use.all_discovered() {
-            if !protected
-                .iter()
-                .any(|p| p.eq_ignore_ascii_case(&discovered))
-            {
-                protected.push(discovered);
-            }
-        }
+    let states: Vec<(AccountId, AccountState)> = stream::iter(account_iter)
+        .buffer_unordered(PARALLEL_BUILD_CONCURRENCY)
+        .try_collect()
+        .await?;
 
-        let smtp = build_smtp_client(acfg, credentials)?;
-
-        let folder_guard = FolderGuard::new(&protected, &acfg.security.expunge_folders);
-
-        let state = AccountState {
-            id: id.clone(),
-            imap,
-            smtp,
-            guard,
-            folder_guard,
-            download_dir: Arc::clone(download_dir),
-            special_use,
-        };
-        account_states.insert(id.clone(), state);
-    }
+    let account_states: BTreeMap<AccountId, AccountState> = states.into_iter().collect();
     Ok(AccountRegistry::new(account_states))
+}
+
+/// Single-account setup: build the dispatch guard, IMAP connection, run
+/// special-use discovery, and assemble the `AccountState`.
+///
+/// Owns the `Arc`s passed in so the resulting future is `Send + 'static`
+/// for `buffer_unordered` consumption.
+async fn build_one_account(
+    id: AccountId,
+    acfg: ValidatedAccountConfig,
+    auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink>,
+    credentials: Arc<dyn CredentialStore>,
+    download_dir: Arc<std::path::Path>,
+) -> anyhow::Result<(AccountId, AccountState)> {
+    let guard = build_account_guard(&acfg).context("building dispatch guard")?;
+    let conn_cfg = build_account_connection(&id, &acfg);
+    let resolver: Arc<dyn rimap_core::CredentialResolver> =
+        Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
+            Arc::clone(&credentials),
+            acfg.fallback_mode,
+        ));
+    let imap = Connection::new(conn_cfg, auth_sink, resolver);
+
+    let special_use = crate::boot::discovery::resolve_special_use(&imap)
+        .await
+        .with_context(|| format!("resolving special-use folders for account {}", id.as_str()))?;
+
+    // Expand the config-supplied protected-folders list with any
+    // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
+    // The merge is case-insensitive so user-configured literals
+    // (`"Sent"`) are not duplicated when the server also reports
+    // `"Sent"` on the same mailbox.
+    let mut protected = acfg.security.protected_folders.clone();
+    for discovered in special_use.all_discovered() {
+        if !protected
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(&discovered))
+        {
+            protected.push(discovered);
+        }
+    }
+
+    let smtp = build_smtp_client(&acfg, &credentials)?;
+
+    let folder_guard = FolderGuard::new(&protected, &acfg.security.expunge_folders);
+
+    let state = AccountState {
+        id: id.clone(),
+        imap,
+        smtp,
+        guard,
+        folder_guard,
+        download_dir,
+        special_use,
+    };
+    Ok((id, state))
 }
 
 /// Build an SMTP client from account config, if SMTP is configured.
