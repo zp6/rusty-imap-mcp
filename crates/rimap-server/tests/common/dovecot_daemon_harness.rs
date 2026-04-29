@@ -60,6 +60,24 @@ impl DovecotDaemon {
     /// # Panics
     /// Panics on any setup failure when `RIMAP_REQUIRE_LIVE_IMAP=1`.
     pub async fn try_spawn(max_concurrent_sessions: usize) -> Option<Self> {
+        Self::try_spawn_inner(max_concurrent_sessions, None).await
+    }
+
+    /// Like [`try_spawn`], but binds the daemon socket at the
+    /// caller-supplied path instead of allocating one inside the
+    /// tempdir. Used by the shim-reconnect scenario, which spawns two
+    /// daemons in sequence at the same path.
+    pub async fn try_spawn_at(
+        max_concurrent_sessions: usize,
+        socket_path: PathBuf,
+    ) -> Option<Self> {
+        Self::try_spawn_inner(max_concurrent_sessions, Some(socket_path)).await
+    }
+
+    async fn try_spawn_inner(
+        max_concurrent_sessions: usize,
+        socket_path_override: Option<PathBuf>,
+    ) -> Option<Self> {
         let dovecot = match DovecotHarness::try_start() {
             Ok(h) => h,
             Err(e) => {
@@ -77,7 +95,8 @@ impl DovecotDaemon {
             .expect("chmod tempdir 0700");
 
         let audit_path = tempdir.path().join("audit.jsonl");
-        let socket_path = tempdir.path().join("daemon.sock");
+        let socket_path =
+            socket_path_override.unwrap_or_else(|| tempdir.path().join("daemon.sock"));
         let download_dir: Arc<std::path::Path> =
             Arc::from(tempdir.path().to_path_buf().into_boxed_path());
 
