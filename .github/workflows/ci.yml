@@ -112,8 +112,11 @@ jobs:
 
   sonarqube:
     name: SonarQube
-    # Skip on PRs from forks (they can't access the SONAR_TOKEN secret).
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    # Skip on PRs from forks and from Dependabot (neither can access the
+    # SONAR_TOKEN secret). Skipped required checks satisfy branch protection.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false)
     runs-on: ubuntu-24.04
     # SONAR_TOKEN lives in the `sonarcloud` environment for future hardening
     # (branch restrictions, required reviewers) without changing the workflow.
