@@ -9,6 +9,15 @@ authors.workspace = true
 readme.workspace = true
 description = "IMAP session, TLS pinning, and read operations for rusty-imap-mcp"
 
+[features]
+default = []
+# Exposes `DovecotHarness` and related fixture types as a public API for
+# cross-crate integration tests. Off by default; enabled by rimap-server's
+# dev-deps for the Dovecot-backed daemon suite. Pulls in `serde_json` to
+# parse `compose ls --format json` for stale-project pruning — the same
+# parsing path the in-crate tests already exercise via the dev-dep.
+test-support = ["dep:serde_json"]
+
 [lints]
 workspace = true
 
@@ -41,6 +50,10 @@ time = { workspace = true }
 
 # Observability
 tracing = { workspace = true }
+
+# Optional: only pulled in when the `test-support` feature is enabled
+# (cross-crate consumers). In-crate tests get this through dev-dependencies.
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Integration tests build the production wiring (AuditWriter implementing

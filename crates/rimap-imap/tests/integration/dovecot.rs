@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use rimap_imap::error::{AuthFailure, ImapError};
 use rimap_imap::{Connection, ConnectionConfig};
-use support::container::{ConnectedHarness, DovecotHarness, HarnessError, PinChoice};
+use support::connect::{ConnectedHarness, PinChoice};
+use support::container::{DovecotHarness, HarnessError};
 
 fn boot(pin: PinChoice) -> Option<ConnectedHarness> {
     match ConnectedHarness::new(pin) {
@@ -287,7 +288,7 @@ async fn case_10_fetch_body_over_limit_drops_connection() {
         max_fetch_body_bytes: 10,
         max_append_bytes: 10_485_760,
     };
-    let store: Arc<dyn CredentialStore> = Arc::new(support::container::StaticCreds(
+    let store: Arc<dyn CredentialStore> = Arc::new(support::connect::StaticCreds(
         DovecotHarness::password().to_string(),
     ));
     let creds: Arc<dyn rimap_core::CredentialResolver> =
