@@ -1,7 +1,8 @@
-//! Scenario 4 of #136: peer-identity round-trip. Asserts the daemon's
-//! audit record carries the test process's own UID in
-//! `session_start.peer_identity`, validating that `SO_PEERCRED` fires
-//! through to the audit layer end-to-end.
+//! Peer-identity round-trip: asserts the daemon's audit record carries
+//! the test process's own UID in `session_start.peer_identity`,
+//! validating that `SO_PEERCRED` fires through to the audit layer
+//! end-to-end. Mocked harnesses bypass the syscall, so this is the
+//! first place the real cred-passing path is observed.
 
 #![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]

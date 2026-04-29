@@ -1,57 +1,24 @@
-//! Scenario 5 of #136: shim reconnects to a freshly-restarted daemon.
-//! Two daemon spawns at the same socket path, two shim subprocess
-//! invocations; asserts the two audit logs carry distinct `process_id`s
-//! (proving the daemon is a separate process and the shim re-resolved
-//! to the new socket after the first daemon exited).
+//! Two daemon spawns at the same socket path drive two shim subprocess
+//! invocations; asserts the two audit logs carry distinct `process_id`s.
+//! This proves the daemon is a separate process and the shim re-resolves
+//! to the new socket after the first daemon exits, without any CLI
+//! surface for the path.
 
 #![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]
-#![expect(
-    clippy::panic,
-    reason = "test helpers panic with diagnostic context on failure"
-)]
 
 mod common;
 
 use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Stdio;
-use std::time::Duration;
 
-use serde_json::Value;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::io::{AsyncBufReadExt as _, BufReader};
+use tokio::process::Command;
 
 use common::dovecot_daemon_harness::DovecotDaemon;
-
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
-
-fn resolved_socket_path(runtime_dir: &Path) -> PathBuf {
-    runtime_dir.join("rusty-imap-mcp").join("daemon.sock")
-}
-
-async fn send_frame(stdin: &mut ChildStdin, value: &Value, what: &str) {
-    let line = format!("{value}\n");
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .unwrap_or_else(|e| panic!("write {what}: {e}"));
-    stdin
-        .flush()
-        .await
-        .unwrap_or_else(|e| panic!("flush {what}: {e}"));
-}
-
-async fn recv_frame(reader: &mut Lines<BufReader<ChildStdout>>, what: &str) -> Value {
-    let line = tokio::time::timeout(READ_TIMEOUT, reader.next_line())
-        .await
-        .unwrap_or_else(|_| panic!("{what} response timed out"))
-        .unwrap_or_else(|e| panic!("{what} read error: {e}"))
-        .unwrap_or_else(|| panic!("{what} EOF before response"));
-    serde_json::from_str(&line)
-        .unwrap_or_else(|e| panic!("{what} response is not valid JSON: {e}; line: {line}"))
-}
+use common::shim_jsonrpc::{READ_TIMEOUT, recv_frame, resolved_socket_path, send_frame};
 
 /// Drive one shim subprocess against `runtime_dir`'s XDG path:
 /// `initialize` + `notifications/initialized` + `tools/list`, then EOF
@@ -112,7 +79,7 @@ async fn run_shim_session(runtime_dir: &Path) {
 fn first_process_id(log: &str) -> Option<String> {
     log.lines()
         .find(|l| l.contains(r#""kind":"session_start""#))
-        .and_then(|l| serde_json::from_str::<Value>(l).ok())
+        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .and_then(|v| v["process_id"].as_str().map(str::to_owned))
 }
 

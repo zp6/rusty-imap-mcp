@@ -6,40 +6,20 @@
 
 #![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]
-#![expect(
-    clippy::panic,
-    reason = "test helpers panic with diagnostic context on failure"
-)]
 
 mod common;
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
 
 use rimap_core::tool::ToolName;
-use serde_json::Value;
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
+use tokio::io::{AsyncBufReadExt as _, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
 use common::daemon_harness::{TestDaemon, test_daemon_state};
-
-/// Per-read timeout. Generous against CI scheduler jitter, well under the
-/// daemon's 5s drain bound so the test never sits idle longer than needed.
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Build the socket path the production resolver returns when
-/// `XDG_RUNTIME_DIR` is `runtime_dir` and `TMPDIR` is unset.
-///
-/// Mirrors `daemon::socket_path::resolve` (Linux XDG branch). Kept in sync
-/// by hand: if the resolver's algorithm changes, this helper must change
-/// too. The companion test `shim_error_no_daemon.rs` constructs the same
-/// path inline.
-fn resolved_socket_path(runtime_dir: &Path) -> PathBuf {
-    runtime_dir.join("rusty-imap-mcp").join("daemon.sock")
-}
+use common::shim_jsonrpc::{READ_TIMEOUT, recv_frame, resolved_socket_path, send_frame};
 
 /// Set up the freedesktop runtime dir layout and spawn the daemon at the
 /// path the shim's resolver will land on.
@@ -102,32 +82,6 @@ fn spawn_shim(runtime_dir: &Path) -> (Child, ChildStdin, Lines<BufReader<ChildSt
     let stdout = shim.stdout.take().expect("shim stdout");
     let reader = BufReader::new(stdout).lines();
     (shim, stdin, reader)
-}
-
-/// Write a single JSON-RPC frame (one line + newline) to the shim's stdin
-/// and flush.
-async fn send_frame(stdin: &mut ChildStdin, value: &Value, what: &str) {
-    let line = format!("{value}\n");
-    stdin
-        .write_all(line.as_bytes())
-        .await
-        .unwrap_or_else(|e| panic!("write {what}: {e}"));
-    stdin
-        .flush()
-        .await
-        .unwrap_or_else(|e| panic!("flush {what}: {e}"));
-}
-
-/// Read one JSON-RPC frame from the shim's stdout, fail if it doesn't
-/// arrive within `READ_TIMEOUT`, and return the parsed value.
-async fn recv_frame(reader: &mut Lines<BufReader<ChildStdout>>, what: &str) -> Value {
-    let line = tokio::time::timeout(READ_TIMEOUT, reader.next_line())
-        .await
-        .unwrap_or_else(|_| panic!("{what} response timed out after {READ_TIMEOUT:?}"))
-        .unwrap_or_else(|e| panic!("{what} read error: {e}"))
-        .unwrap_or_else(|| panic!("{what} EOF before response"));
-    serde_json::from_str(&line)
-        .unwrap_or_else(|e| panic!("{what} response is not valid JSON: {e}; line: {line}"))
 }
 
 #[tokio::test]

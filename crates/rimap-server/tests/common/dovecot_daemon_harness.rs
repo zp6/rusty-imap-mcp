@@ -41,14 +41,17 @@ pub fn live_imap_required() -> bool {
 
 /// A daemon spawned against a fresh Dovecot container.
 pub struct DovecotDaemon {
+    /// Caller-relevant — scenarios connect through this path.
     pub socket_path: PathBuf,
-    pub audit_path: PathBuf,
-    pub tempdir: TempDir,
-    pub shutdown: Arc<Notify>,
-    pub handle: JoinHandle<anyhow::Result<()>>,
-    /// Hold the harness so the container's `Drop` (compose down) fires
-    /// when this struct drops, AFTER the daemon has shut down.
-    pub _dovecot: DovecotHarness,
+    audit_path: PathBuf,
+    /// Held only for lifetime; tests don't need to reach in.
+    _tempdir: TempDir,
+    shutdown: Arc<Notify>,
+    handle: JoinHandle<anyhow::Result<()>>,
+    /// Held so the container's `Drop` (compose down) fires when this
+    /// struct drops, AFTER the daemon has shut down. Field declaration
+    /// order matters: this is last so all sibling fields drop first.
+    _dovecot: DovecotHarness,
 }
 
 impl DovecotDaemon {
@@ -90,7 +93,8 @@ impl DovecotDaemon {
         };
 
         let tempdir = TempDir::new().expect("tempdir");
-        // 0700 on the audit parent (post-#147).
+        // `AuditWriter::open` rejects parent dirs with mode != 0700;
+        // `TempDir::new` inherits the system umask, so chmod explicitly.
         std::fs::set_permissions(tempdir.path(), std::fs::Permissions::from_mode(0o700))
             .expect("chmod tempdir 0700");
 
@@ -138,7 +142,7 @@ impl DovecotDaemon {
         Some(Self {
             socket_path,
             audit_path,
-            tempdir,
+            _tempdir: tempdir,
             shutdown,
             handle,
             _dovecot: dovecot,

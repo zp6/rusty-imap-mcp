@@ -1,7 +1,7 @@
-//! Scenario 1 of #136: graceful shutdown under load. Open four sessions
-//! against a Dovecot-backed daemon, trigger shutdown, assert the drain
-//! completes within the 5s grace + headroom and every session produces
-//! a `session_end` record.
+//! Graceful shutdown under load: open four sessions against a
+//! Dovecot-backed daemon, trigger shutdown, assert the drain completes
+//! within the 5s grace + headroom and every session produces a
+//! `session_end` record.
 
 #![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]

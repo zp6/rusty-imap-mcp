@@ -1,7 +1,7 @@
-//! Scenario 2 of #136: max-sessions enforcement against a live Dovecot.
-//! Spawn daemon with `max_concurrent_sessions = 2`, open three sessions,
-//! assert the third sees a paired `session_start` + `session_end(Rejected)`
-//! audit pair (the accept-loop's PR2 #137 invariant under live load).
+//! Max-sessions enforcement against a live Dovecot. Spawn the daemon
+//! with `max_concurrent_sessions = 2`, open three sessions, assert the
+//! third sees a paired `session_start` + `session_end(Rejected)` audit
+//! pair — the accept-loop's paired-record invariant under live load.
 
 #![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]
