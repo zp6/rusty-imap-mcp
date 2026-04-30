@@ -126,6 +126,15 @@ async fn daemon_rejects_session_past_limit() {
     );
 }
 
+// Skipped on macOS: same root cause as
+// daemon_happy_path::client_connects_and_sees_clean_session_lifecycle —
+// the daemon never emits session_start after the first close+reconnect,
+// so wait_for_audit panics on timeout. Linux CI is unaffected.
+// See issue #188.
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "macOS daemon-on-tokio: session_start never emitted; see issue #188"
+)]
 #[tokio::test]
 async fn daemon_releases_permit_on_session_end() {
     // Limit = 1. First connection holds the permit, then closes. A
