@@ -83,7 +83,7 @@ pub struct FetchMessageUntrusted {
 /// is closed — those are infrastructure failures, not input failures.
 /// Returns `RimapError::Imap { ... }` for IMAP-layer failures (network,
 /// timeout, protocol, attachment-too-large). The upstream
-/// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`
+/// `DispatchGuard::pre_dispatch` layer may also return `Tagged { code: PostureDenied }`
 /// for `FetchMessageHtml` when `include_html=true` and posture forbids it.
 pub async fn handle(
     account: &AccountState,

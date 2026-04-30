@@ -170,7 +170,7 @@ mod tests {
             RimapError::Tagged { code, .. } => {
                 assert_eq!(*code, ErrorCode::InvalidInput);
             }
-            other => panic!("expected Authz{{InvalidInput}}, got {other:?}"),
+            other => panic!("expected Tagged{{InvalidInput}}, got {other:?}"),
         }
     }
 

@@ -63,7 +63,7 @@ pub struct DeleteFolderMeta {
 ///
 /// `FolderGuard::check_protected` runs before any IMAP traffic and is
 /// the first source of errors:
-/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if the name
 ///   fails structural validation (empty, too long, forbidden chars).
 /// - `RimapError::Tagged { code: ProtectedFolder, ... }` if the name is
 ///   in the protected list or is INBOX.
@@ -94,7 +94,7 @@ pub async fn handle_create_folder(
 ///
 /// `FolderGuard::check_rename` runs before any IMAP traffic and is the
 /// first source of errors:
-/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if either the
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if either the
 ///   source or destination name fails structural validation.
 /// - `RimapError::Tagged { code: ProtectedFolder, ... }` if either name
 ///   is in the protected list or is INBOX.
@@ -130,7 +130,7 @@ pub async fn handle_rename_folder(
 ///
 /// `FolderGuard` runs before any IMAP traffic and is the first source
 /// of errors:
-/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if the name
 ///   fails structural validation (from `check_protected` or
 ///   `check_expunge`).
 /// - `RimapError::Tagged { code: ProtectedFolder, ... }` if the name is

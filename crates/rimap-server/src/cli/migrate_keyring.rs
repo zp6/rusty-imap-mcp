@@ -23,7 +23,7 @@ use secrecy::ExposeSecret;
 /// will still see the legacy account entry with an empty secret until they
 /// clear it manually. `CredentialStore` has no delete method; adding one is
 /// tracked for a future refactor.
-pub fn migrate_one<S: CredentialStore>(
+pub(crate) fn migrate_one<S: CredentialStore>(
     store: &S,
     account_id: &AccountId,
     username: &str,

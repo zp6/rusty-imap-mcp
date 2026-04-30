@@ -5,7 +5,7 @@ use rimap_imap::types::{FetchSpec, FetchedMessage, Uid};
 use crate::boot::account_state::AccountState;
 
 /// Fetch exactly one message by UID, mapping an empty result to
-/// `Authz { code: NotFound }`.
+/// `Tagged { code: NotFound }`.
 ///
 /// Several handlers (`list_attachments`, `list_labels`, ...) share this
 /// preamble: request a single UID with a caller-chosen `FetchSpec`, then
@@ -92,7 +92,7 @@ mod tests {
                     "message missing folder: {message}"
                 );
             }
-            other => panic!("expected Authz{{NotFound}}, got {other:?}"),
+            other => panic!("expected Tagged{{NotFound}}, got {other:?}"),
         }
     }
 

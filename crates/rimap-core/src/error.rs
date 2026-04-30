@@ -250,7 +250,7 @@ pub enum RimapError {
 }
 
 impl RimapError {
-    /// Construct an `Authz { code: InvalidInput, ... }` for caller-side
+    /// Construct an `Tagged { code: InvalidInput, ... }` for caller-side
     /// argument validation failures. Use this instead of hand-rolling the
     /// struct form — the `Authz` variant is the canonical envelope for
     /// codes that surface to MCP as `INVALID_PARAMS`.

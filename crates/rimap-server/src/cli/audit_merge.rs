@@ -20,19 +20,19 @@ use time::format_description::well_known::Rfc3339;
 /// the CLI parser. Parsed into `rimap_audit::Filter` inside [`run`] so
 /// error contexts can point back at the originating flag.
 #[derive(Debug, Default, Clone, Copy)]
-pub struct RunArgs<'a> {
+pub(crate) struct RunArgs<'a> {
     /// `--since` RFC 3339 timestamp.
-    pub since: Option<&'a str>,
+    pub(crate) since: Option<&'a str>,
     /// `--until` RFC 3339 timestamp.
-    pub until: Option<&'a str>,
+    pub(crate) until: Option<&'a str>,
     /// `--tool` name filter.
-    pub tool: Option<&'a str>,
+    pub(crate) tool: Option<&'a str>,
     /// `--kind` record-kind filter.
-    pub kind: Option<&'a str>,
+    pub(crate) kind: Option<&'a str>,
     /// `--process` id filter.
-    pub process: Option<&'a str>,
+    pub(crate) process: Option<&'a str>,
     /// `--account` name filter.
-    pub account: Option<&'a str>,
+    pub(crate) account: Option<&'a str>,
 }
 
 /// Parse CLI [`RunArgs`] into a [`Filter`]. Pure: no I/O, no logging;
@@ -44,7 +44,7 @@ pub struct RunArgs<'a> {
 /// - Returns an `anyhow::Error` with context when `--since` or `--until`
 ///   is not an RFC 3339 timestamp. All string fields pass through
 ///   unchanged.
-pub fn parse_filter(args: &RunArgs<'_>) -> anyhow::Result<Filter> {
+pub(crate) fn parse_filter(args: &RunArgs<'_>) -> anyhow::Result<Filter> {
     let since = args
         .since
         .map(|s| OffsetDateTime::parse(s, &Rfc3339))
@@ -71,7 +71,7 @@ pub fn parse_filter(args: &RunArgs<'_>) -> anyhow::Result<Filter> {
 /// - Any `AuditError` from opening / locking / reading the file.
 /// - Parse errors on `--since` / `--until` arguments.
 /// - Stdout I/O errors.
-pub fn run(path: &Path, args: RunArgs<'_>) -> anyhow::Result<()> {
+pub(crate) fn run(path: &Path, args: RunArgs<'_>) -> anyhow::Result<()> {
     let filter = parse_filter(&args)?;
 
     let mut stdout = std::io::stdout().lock();

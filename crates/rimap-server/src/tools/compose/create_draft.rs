@@ -30,12 +30,15 @@ pub struct CreateDraftMeta {
 ///
 /// Returns `RimapError::Tagged { code: InvalidInput, ... }` for malformed
 /// recipient addresses, subject/body size violations, or bad threading
-/// headers. Returns `RimapError::Imap { ... }` on APPEND failure.
-/// Returns `RimapError::Internal` if `message_builder::build_message`
-/// or `apply_threading_headers` reports an unrecoverable construction
-/// failure (should not happen with validated input). The upstream
-/// `DispatchGuard::pre_dispatch` gate returns
-/// `Authz { code: PostureDenied }` when posture forbids draft creation.
+/// headers. When `input.in_reply_to_uid` is set, threading-header
+/// construction calls the IMAP fetch path, so `RimapError::Imap` may
+/// also propagate from `message_builder::build_message`. APPEND
+/// failures surface as `RimapError::Imap { ... }` directly. Returns
+/// `RimapError::Internal` if `message_builder` reports an
+/// unrecoverable construction failure (should not happen with
+/// validated input). The upstream `DispatchGuard::pre_dispatch`
+/// gate returns `Tagged { code: PostureDenied }` when posture
+/// forbids draft creation.
 pub async fn handle(
     account: &AccountState,
     input: CreateDraftInput,

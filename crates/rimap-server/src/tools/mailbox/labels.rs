@@ -158,7 +158,7 @@ pub async fn handle_add_label(
 ///
 /// # Errors
 ///
-/// Same shape as [`handle_add_label`]: `Authz { InvalidInput }` for shape
+/// Same shape as [`handle_add_label`]: `Tagged { InvalidInput }` for shape
 /// errors and `Imap { ... }` for IMAP-layer failures.
 pub async fn handle_remove_label(
     account: &AccountState,

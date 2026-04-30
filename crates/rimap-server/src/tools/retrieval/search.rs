@@ -107,7 +107,7 @@ pub struct SearchUntrusted {
 /// Returns `RimapError::Tagged { code: InvalidInput, ... }` for malformed
 /// `since`/`before` dates or control bytes in `advanced_query`. Returns
 /// `RimapError::Imap { ... }` for IMAP-layer failures. The upstream
-/// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`
+/// `DispatchGuard::pre_dispatch` layer may also return `Tagged { code: PostureDenied }`
 /// for `SearchAdvanced` when `advanced_query` is set and posture forbids it.
 pub async fn handle(
     account: &AccountState,
