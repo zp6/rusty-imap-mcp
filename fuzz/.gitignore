@@ -4,11 +4,9 @@ artifacts/
 coverage/
 
 # libfuzzer-generated mutation files inside corpus subdirectories.
-# Mutations are SHA-1-named (40 hex chars, no extension); human-curated
-# seeds we *want* to commit always have an extension (.eml, .html, .txt,
-# etc.) and are negated below.
-corpus/*/*
-!corpus/*/.gitkeep
-!corpus/*/*.eml
-!corpus/*/*.html
-!corpus/*/*.txt
+# Mutations are SHA-1-named (40 lowercase hex chars, no extension).
+# Identify them by name shape rather than by extension whitelist so
+# that human-curated seeds with arbitrary names (e.g. Task 6's
+# 'utf8-ascii') are tracked correctly. The pattern below repeats
+# [0-9a-f] forty times because gitignore has no count quantifier.
+corpus/*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]
