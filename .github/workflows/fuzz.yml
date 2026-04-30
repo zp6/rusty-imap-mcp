@@ -8,6 +8,8 @@ on:
       - 'crates/rimap-audit/**'
       - 'crates/rimap-server/**'
       - 'fuzz/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/fuzz.yml'
   schedule:
     # Nightly at 03:17 UTC. The odd minute spreads load on shared GHA
