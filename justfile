@@ -201,8 +201,13 @@ test-injection:
 
 # Run a single fuzz target for a fixed time budget. Requires nightly.
 # Example: just fuzz content_mime
+#
+# -O builds in release mode (no debug assertions). This matches the
+# production runtime of parse_message and avoids tripping internal
+# debug_assert! guards in upstream crates (mail-parser 0.11.2 in
+# particular) that are not contracts of our public API.
 fuzz TARGET *ARGS:
-    cd fuzz && cargo +nightly fuzz run {{TARGET}} -- -max_total_time=30 {{ARGS}}
+    cd fuzz && cargo +nightly fuzz run -O {{TARGET}} -- -max_total_time=30 {{ARGS}}
 
 # List the available fuzz targets.
 fuzz-list:
