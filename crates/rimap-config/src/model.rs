@@ -551,21 +551,22 @@ mod imap_encryption_tests {
 
     #[test]
     fn deserializes_starttls() {
-        let v =
-            ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"starttls\"")).unwrap();
+        let de = toml::de::ValueDeserializer::parse("\"starttls\"").unwrap();
+        let v = ImapEncryption::deserialize(de).unwrap();
         assert_eq!(v, ImapEncryption::Starttls);
     }
 
     #[test]
     fn deserializes_tls() {
-        let v = ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"tls\"")).unwrap();
+        let de = toml::de::ValueDeserializer::parse("\"tls\"").unwrap();
+        let v = ImapEncryption::deserialize(de).unwrap();
         assert_eq!(v, ImapEncryption::Tls);
     }
 
     #[test]
     fn rejects_unknown_value() {
-        let err = ImapEncryption::deserialize(toml::de::ValueDeserializer::new("\"mutual-tls\""))
-            .unwrap_err();
+        let de = toml::de::ValueDeserializer::parse("\"mutual-tls\"").unwrap();
+        let err = ImapEncryption::deserialize(de).unwrap_err();
         assert!(err.to_string().contains("mutual-tls"));
     }
 }
