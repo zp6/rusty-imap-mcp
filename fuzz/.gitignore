@@ -2,3 +2,13 @@ target/
 Cargo.lock
 artifacts/
 coverage/
+
+# libfuzzer-generated mutation files inside corpus subdirectories.
+# Mutations are SHA-1-named (40 hex chars, no extension); human-curated
+# seeds we *want* to commit always have an extension (.eml, .html, .txt,
+# etc.) and are negated below.
+corpus/*/*
+!corpus/*/.gitkeep
+!corpus/*/*.eml
+!corpus/*/*.html
+!corpus/*/*.txt
