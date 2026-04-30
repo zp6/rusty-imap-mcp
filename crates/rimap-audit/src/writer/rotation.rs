@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
-use fs4::fs_std::FileExt;
+use fs4::{FileExt, TryLockError};
 use time::OffsetDateTime;
 
 use crate::AuditError;
@@ -64,7 +64,7 @@ fn unique_rotated_path(active: &Path, now: OffsetDateTime) -> PathBuf {
 /// errors — a stale rotated file is not a write failure.
 ///
 /// # Errors
-/// Any I/O error during `rename`, `open`, or `try_lock_exclusive` surfaces as
+/// Any I/O error during `rename`, `open`, or `try_lock` surfaces as
 /// [`AuditError::Rotate`] with a descriptive `reason`.
 pub fn rotate_file(
     active: &Path,
@@ -86,21 +86,21 @@ pub fn rotate_file(
 
     crate::writer::set_file_mode_0600(&new_file);
 
-    // Race window: between `open` and `try_lock_exclusive` a concurrent
+    // Race window: between `open` and `try_lock` a concurrent
     // AuditWriter::open on the same path could grab the fresh inode's lock
-    // first, in which case our try_lock_exclusive returns Ok(false) and we
-    // surface AuditError::Rotate. This is the documented failure mode and is
-    // expected to be rare (only relevant if a supervisor restarts the server
-    // mid-rotation).
-    match FileExt::try_lock_exclusive(&new_file) {
-        Ok(true) => {}
-        Ok(false) => {
+    // first, in which case our try_lock returns TryLockError::WouldBlock and
+    // we surface AuditError::Rotate. This is the documented failure mode and
+    // is expected to be rare (only relevant if a supervisor restarts the
+    // server mid-rotation).
+    match FileExt::try_lock(&new_file) {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
             return Err(AuditError::Rotate {
                 path: active.to_path_buf(),
                 reason: "fresh file unexpectedly locked by another process".to_string(),
             });
         }
-        Err(e) => {
+        Err(TryLockError::Error(e)) => {
             return Err(AuditError::Rotate {
                 path: active.to_path_buf(),
                 reason: format!("lock fresh file: {e}"),

@@ -83,7 +83,7 @@ impl AuditWriter {
     ///
     /// This function performs synchronous filesystem I/O: at minimum a
     /// `write_all` + `flush` + (conditionally) `fsync`, and on rotation
-    /// additionally `rename`, `open`, `try_lock_exclusive`, `read_dir`,
+    /// additionally `rename`, `open`, `try_lock`, `read_dir`,
     /// `symlink_metadata`, and `remove_file`. Callers in an async context
     /// MUST invoke this inside `tokio::task::spawn_blocking` to avoid
     /// stalling the runtime executor. The existing production call sites
