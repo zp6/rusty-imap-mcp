@@ -81,7 +81,7 @@ pub struct MoveMessageMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` for malformed
 /// `uid`/`uids` (zero, both/neither set, batch over 100) or malformed
 /// folder names. Returns `RimapError::Imap { ... }` for IMAP-layer
 /// failures.

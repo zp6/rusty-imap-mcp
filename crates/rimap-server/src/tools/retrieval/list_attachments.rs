@@ -67,7 +67,7 @@ pub struct ListAttachmentsUntrusted {
 ///
 /// # Errors
 ///
-/// - `RimapError::Authz { code: NotFound, ... }` if the UID is absent
+/// - `RimapError::Tagged { code: NotFound, ... }` if the UID is absent
 ///   from `folder`.
 /// - `RimapError::Internal` if the server accepted the FETCH but did
 ///   not return a `BODYSTRUCTURE`.

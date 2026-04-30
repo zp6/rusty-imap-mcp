@@ -28,7 +28,7 @@ pub struct CreateDraftMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` for malformed
 /// recipient addresses, subject/body size violations, or bad threading
 /// headers. Returns `RimapError::Imap { ... }` on APPEND failure.
 /// Returns `RimapError::Internal` if `message_builder::build_message`

@@ -104,7 +104,7 @@ pub struct SearchUntrusted {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` for malformed
 /// `since`/`before` dates or control bytes in `advanced_query`. Returns
 /// `RimapError::Imap { ... }` for IMAP-layer failures. The upstream
 /// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`

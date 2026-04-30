@@ -51,7 +51,7 @@ pub struct ListAccountsMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` if
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` if
 /// `input.account` contains bidi-control, zero-width, or Unicode Tag
 /// codepoints, or if it is not a valid account-name shape. Returns
 /// `RimapError::UnknownAccount { ... }` if the name does not match a
@@ -167,7 +167,7 @@ mod tests {
 
     fn assert_invalid_input(err: &RimapError) {
         match err {
-            RimapError::Authz { code, .. } => {
+            RimapError::Tagged { code, .. } => {
                 assert_eq!(*code, ErrorCode::InvalidInput);
             }
             other => panic!("expected Authz{{InvalidInput}}, got {other:?}"),

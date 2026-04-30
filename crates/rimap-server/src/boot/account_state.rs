@@ -29,14 +29,14 @@ use rimap_smtp::SmtpClient;
 /// In-memory, unkeyed governor limiter used for infrastructure tools.
 type InfrastructureLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock, NoOpMiddleware>;
 
-/// Translate a `governor` rejection into [`RimapError::Authz`] with a
+/// Translate a `governor` rejection into [`RimapError::Tagged`] with a
 /// rate-limited error code and a human-readable retry hint. The
 /// underlying ms math is shared with the per-account governor via
 /// [`retry_after_ms`]; this wrapper adds the infrastructure-tool
 /// framing and skips the intermediate `AuthzError`.
 fn infra_rate_limited(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> RimapError {
     let wait_ms = retry_after_ms(not_until, clock);
-    RimapError::Authz {
+    RimapError::Tagged {
         code: ErrorCode::RateLimited,
         message: format!("infrastructure tool rate limit exceeded; retry in {wait_ms}ms"),
     }
@@ -126,7 +126,7 @@ impl AccountRegistry {
     ///
     /// # Errors
     ///
-    /// Returns [`RimapError::Authz`] with
+    /// Returns [`RimapError::Tagged`] with
     /// [`ErrorCode::RateLimited`] when the limit is exceeded. The
     /// error message includes a retry hint in milliseconds.
     pub fn check_infrastructure_rate(&self) -> Result<(), RimapError> {

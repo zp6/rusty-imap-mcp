@@ -16,7 +16,7 @@ use rimap_core::RimapError;
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` when the
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` when the
 /// user-supplied `dest_dir` cannot be canonicalized (missing path,
 /// permission denied) or when the canonical form falls outside
 /// `allowed_root`.
@@ -105,7 +105,7 @@ pub(crate) fn write_attachment(
 /// # Errors
 ///
 /// Propagates whatever [`resolve_dest_dir`] returns (typically
-/// `RimapError::Authz` with `InvalidInput` when the path cannot be
+/// `RimapError::Tagged` with `InvalidInput` when the path cannot be
 /// canonicalized or escapes `root`). Returns `RimapError::Internal` if
 /// the blocking task panics.
 pub(crate) async fn resolve_dest_dir_async(

@@ -143,7 +143,7 @@ pub struct ListLabelsMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` for invalid
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` for invalid
 /// labels (empty, control chars, atom-specials, system-flag collisions,
 /// zero UID, batch over 100). Returns `RimapError::Imap { ... }` for
 /// IMAP-layer failures.
@@ -206,7 +206,7 @@ async fn handle_label_op(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: NotFound }` if the message UID is
+/// Returns `RimapError::Tagged { code: NotFound }` if the message UID is
 /// missing in the folder, and `Imap { ... }` for IMAP-layer failures.
 pub async fn handle_list_labels(
     account: &AccountState,

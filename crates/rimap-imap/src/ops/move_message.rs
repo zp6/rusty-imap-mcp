@@ -147,7 +147,8 @@ async fn copy_delete_fallback(
     uids: &[Uid],
     has_uidplus: bool,
 ) -> Result<(Vec<MoveResult>, Option<u32>), ImapError> {
-    crate::ops::folders::validate_server_folder_name(dest_folder)?;
+    // `dest_folder` is already validated at the `move_messages` entry — this
+    // function is only reachable from there.
     let uid_set = store::uid_set_string(uids);
 
     // Step 1: COPY to destination.

@@ -66,7 +66,7 @@ mod tests {
     use super::to_mcp_error;
 
     fn authz_error(code: ErrorCode, msg: &str) -> RimapError {
-        RimapError::Authz {
+        RimapError::Tagged {
             code,
             message: msg.to_owned(),
         }

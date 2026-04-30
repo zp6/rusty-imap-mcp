@@ -31,9 +31,9 @@ pub struct ExpungeMeta {
 ///
 /// `FolderGuard::check_expunge` runs before any IMAP traffic and is the
 /// first source of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if the name
 ///   fails structural validation (empty, too long, forbidden chars).
-/// - `RimapError::Authz { code: ExpungeDenied, ... }` when the folder
+/// - `RimapError::Tagged { code: ExpungeDenied, ... }` when the folder
 ///   is not in `expunge_folders`.
 ///
 /// After the guard passes, `RimapError::Imap { ... }` may be propagated

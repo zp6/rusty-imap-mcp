@@ -20,7 +20,7 @@ use crate::boot::account_state::AccountState;
 ///
 /// - `RimapError::Imap { code: UidValidityChanged }` if expected UIDVALIDITY
 ///   does not match the server's observed value.
-/// - `RimapError::Authz { code: NotFound }` if the server returned no
+/// - `RimapError::Tagged { code: NotFound }` if the server returned no
 ///   message for `uid` in `folder`.
 /// - Propagates `RimapError::Imap { ... }` from the underlying
 ///   `SELECT` / `UID FETCH`.
@@ -51,7 +51,7 @@ fn first_or_not_found(
     messages
         .into_iter()
         .next()
-        .ok_or_else(|| rimap_core::RimapError::Authz {
+        .ok_or_else(|| rimap_core::RimapError::Tagged {
             code: rimap_core::error::ErrorCode::NotFound,
             message: format!("message UID {} not found in folder '{}'", uid.get(), folder),
         })
@@ -84,7 +84,7 @@ mod tests {
     fn empty_fetch_result_maps_to_not_found_authz() {
         let err = first_or_not_found(Vec::new(), "INBOX", uid(42)).unwrap_err();
         match err {
-            RimapError::Authz { code, message } => {
+            RimapError::Tagged { code, message } => {
                 assert_eq!(code, ErrorCode::NotFound);
                 assert!(message.contains("42"), "message missing UID: {message}");
                 assert!(

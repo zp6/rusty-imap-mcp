@@ -46,14 +46,16 @@ pub struct SendEmailMeta {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` for malformed
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` for malformed
 /// recipient addresses or compose-input violations. Returns
 /// `RimapError::Config` if no SMTP is configured for the account.
-/// Returns `RimapError::Smtp { ... }` on SMTP failure. Returns
-/// `RimapError::Internal` if the lettre envelope cannot be built from an
-/// already-validated compose input (should not happen in practice). The
-/// copy-to-Sent APPEND is best-effort; an IMAP failure there surfaces via
-/// `sent_copy.failed` in the response, not as an error.
+/// Returns `RimapError::Smtp { ... }` on SMTP failure (including
+/// client-side `Rejected` for addresses that fail `lettre::Address`
+/// parsing — see [`rimap_smtp::SmtpClient::send_raw`]). When
+/// `input.in_reply_to_uid` is set, threading-header construction calls
+/// the IMAP fetch path, so `RimapError::Imap` may also propagate.
+/// The copy-to-Sent APPEND is best-effort; an IMAP failure there
+/// surfaces via `sent_copy.failed` in the response, not as an error.
 pub async fn handle(
     account: &AccountState,
     input: SendEmailInput,

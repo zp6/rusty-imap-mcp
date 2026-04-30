@@ -33,8 +33,6 @@ pub struct DeleteFolderInput {
 #[derive(Debug, Serialize)]
 #[non_exhaustive]
 pub struct CreateFolderMeta {
-    /// Always `true` when the handler returns `Ok`.
-    pub created: bool,
     /// Name of the created folder.
     pub folder: String,
 }
@@ -43,8 +41,6 @@ pub struct CreateFolderMeta {
 #[derive(Debug, Serialize)]
 #[non_exhaustive]
 pub struct RenameFolderMeta {
-    /// Always `true` when the handler returns `Ok`.
-    pub renamed: bool,
     /// Previous folder name.
     pub old_folder: String,
     /// New folder name.
@@ -55,8 +51,6 @@ pub struct RenameFolderMeta {
 #[derive(Debug, Serialize)]
 #[non_exhaustive]
 pub struct DeleteFolderMeta {
-    /// Always `true` when the handler returns `Ok`.
-    pub deleted: bool,
     /// Name of the deleted folder.
     pub folder: String,
     /// Number of messages that were in the folder before deletion.
@@ -69,9 +63,9 @@ pub struct DeleteFolderMeta {
 ///
 /// `FolderGuard::check_protected` runs before any IMAP traffic and is
 /// the first source of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if the name
 ///   fails structural validation (empty, too long, forbidden chars).
-/// - `RimapError::Authz { code: ProtectedFolder, ... }` if the name is
+/// - `RimapError::Tagged { code: ProtectedFolder, ... }` if the name is
 ///   in the protected list or is INBOX.
 ///
 /// After the guard passes, `RimapError::Imap { ... }` may be propagated
@@ -90,7 +84,6 @@ pub async fn handle_create_folder(
     account.imap.create_folder(&input.folder).await?;
 
     Ok(ToolResponse::meta_only(CreateFolderMeta {
-        created: true,
         folder: input.folder,
     }))
 }
@@ -101,9 +94,9 @@ pub async fn handle_create_folder(
 ///
 /// `FolderGuard::check_rename` runs before any IMAP traffic and is the
 /// first source of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if either the
+/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if either the
 ///   source or destination name fails structural validation.
-/// - `RimapError::Authz { code: ProtectedFolder, ... }` if either name
+/// - `RimapError::Tagged { code: ProtectedFolder, ... }` if either name
 ///   is in the protected list or is INBOX.
 ///
 /// After the guard passes, `RimapError::Imap { ... }` may be propagated
@@ -126,7 +119,6 @@ pub async fn handle_rename_folder(
         .await?;
 
     Ok(ToolResponse::meta_only(RenameFolderMeta {
-        renamed: true,
         old_folder: input.folder,
         new_folder: input.new_folder,
     }))
@@ -138,12 +130,12 @@ pub async fn handle_rename_folder(
 ///
 /// `FolderGuard` runs before any IMAP traffic and is the first source
 /// of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidFolderName, ... }` if the name
 ///   fails structural validation (from `check_protected` or
 ///   `check_expunge`).
-/// - `RimapError::Authz { code: ProtectedFolder, ... }` if the name is
+/// - `RimapError::Tagged { code: ProtectedFolder, ... }` if the name is
 ///   in the protected list or is INBOX.
-/// - `RimapError::Authz { code: ExpungeDenied, ... }` if the folder is
+/// - `RimapError::Tagged { code: ExpungeDenied, ... }` if the folder is
 ///   not in the expunge allowlist.
 ///
 /// After the guards pass, `RimapError::Imap { ... }` may be propagated
@@ -179,7 +171,6 @@ pub async fn handle_delete_folder(
     account.imap.delete_folder(&input.folder).await?;
 
     Ok(ToolResponse::meta_only(DeleteFolderMeta {
-        deleted: true,
         folder: input.folder,
         message_count,
     }))
