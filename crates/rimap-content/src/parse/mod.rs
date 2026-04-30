@@ -17,7 +17,7 @@ mod bodies;
 mod filename;
 mod headers;
 mod meta;
-mod mime_scrub;
+pub(crate) mod mime_scrub;
 mod sniff;
 
 use crate::parse::bodies::extract_bodies;
@@ -271,6 +271,29 @@ mod tests {
         let logical: Vec<&[u8]> = vec![b"Subject: =?utf-8?B?aA==?= =?utf-8?B?Yg==?=\r\n"];
         let mask = detect_smuggling_spans(&logical);
         assert_eq!(mask, vec![false]);
+    }
+
+    #[test]
+    fn back_to_back_encoded_word_cross_line_is_flagged() {
+        // =?=? — the closing ?= of the first encoded-word immediately
+        // precedes the opening =? of the second. The scan_from cursor must
+        // be set to end_rel_to_header+1 (not +2) so the '=' that begins
+        // the next opener is not skipped, ensuring a cross-line smuggling
+        // span is still detected.
+        //
+        // Input: header line 0 contains "=?utf-8?B?aGVs?=?utf-8?B?" where
+        // "?=" closes the first eword and "=?" (starting at the '=') opens
+        // the second; the second eword has its "?=" in line 1. The entire
+        // span (lines 0 and 1) must be dropped.
+        let logical: Vec<&[u8]> = vec![
+            b"Subject: =?utf-8?B?aGVs?=?utf-8?B?\r\n",
+            b"Bcc: victim@example.com\r\n",
+            b"?=\r\n",
+        ];
+        let mask = detect_smuggling_spans(&logical);
+        assert!(mask[0], "line 0 must be flagged");
+        assert!(mask[1], "line 1 must be flagged (inside smuggling span)");
+        assert!(mask[2], "line 2 must be flagged (carries the closing ?=)");
     }
 
     #[test]

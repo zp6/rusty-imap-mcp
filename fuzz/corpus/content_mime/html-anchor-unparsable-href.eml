@@ -1,0 +1,10 @@
+From: phisher@evil.example
+To: victim@example.com
+Subject: Unparsable href test
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+<p>Click to verify your account:</p>
+<a href="https://evilserver/phishing-page">Visit paypal.com to verify</a>
+</body></html>

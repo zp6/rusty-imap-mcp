@@ -1,0 +1,7 @@
+From: sender@example.com
+To: victim@example.com
+Subject: Statement ready
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your statement is ready.</p><p><a href="https://attacker.example/phish">bank.example.com</a></p></body></html>

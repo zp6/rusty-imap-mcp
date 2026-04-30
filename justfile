@@ -199,6 +199,20 @@ test-integration:
 test-injection:
     cargo nextest run -p rimap-content --locked --test injection_corpus
 
+# Run a single fuzz target for a fixed time budget. Requires nightly.
+# Example: just fuzz content_mime
+#
+# -O builds in release mode (no debug assertions). This matches the
+# production runtime of parse_message and avoids tripping internal
+# debug_assert! guards in upstream crates (mail-parser 0.11.2 in
+# particular) that are not contracts of our public API.
+fuzz TARGET *ARGS:
+    cd fuzz && cargo +nightly fuzz run -O {{TARGET}} -- -max_total_time=30 {{ARGS}}
+
+# List the available fuzz targets.
+fuzz-list:
+    cd fuzz && cargo +nightly fuzz list
+
 # Bulk regression runner for the external EPVME malicious-email dataset.
 test-epvme *args:
     ./scripts/test-epvme.sh {{args}}

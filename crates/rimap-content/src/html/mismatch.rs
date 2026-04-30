@@ -7,11 +7,25 @@ use scraper::{Html, Selector};
 use crate::html::MAX_ANCHOR_TEXT_SCAN;
 use crate::html::MAX_MISMATCH_HITS;
 use crate::html::hidden::compile_selector;
+use crate::unicode::truncate_graphemes;
 
 /// Selector matching anchor elements with an `href` attribute.
 pub(super) static SEL_ANCHOR: LazyLock<Selector> = LazyLock::new(|| compile_selector("a[href]"));
 /// Selector matching `<img>` elements.
 pub(super) static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| compile_selector("img"));
+
+/// Collect an anchor's text into a single space-joined string and cap
+/// it at [`MAX_ANCHOR_TEXT_SCAN`] bytes on a grapheme-cluster boundary.
+///
+/// The cap exists because the linkify URL scan downstream is O(n) over
+/// the input length, and the cap protects against denial-of-service
+/// from anchors with megabyte-scale text. The grapheme-cluster boundary
+/// guarantees the truncation never lands inside a multi-byte UTF-8
+/// sequence (which would panic `String::truncate`).
+fn collect_anchor_text(anchor: &scraper::ElementRef<'_>) -> String {
+    let text: String = anchor.text().collect::<Vec<&str>>().join(" ");
+    truncate_graphemes(&text, MAX_ANCHOR_TEXT_SCAN)
+}
 
 /// Extract the registrable domain from a URL-looking string.
 ///
@@ -89,10 +103,7 @@ pub(super) fn detect_mismatches(
             continue;
         };
         let Some(href_domain) = extract_registrable_domain(href) else {
-            let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
-            if text.len() > MAX_ANCHOR_TEXT_SCAN {
-                text.truncate(MAX_ANCHOR_TEXT_SCAN);
-            }
+            let text = collect_anchor_text(&anchor);
             let has_url_text = finder
                 .links(&text)
                 .any(|l| l.kind() == &linkify::LinkKind::Url);
@@ -101,10 +112,7 @@ pub(super) fn detect_mismatches(
             }
             continue;
         };
-        let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
-        if text.len() > MAX_ANCHOR_TEXT_SCAN {
-            text.truncate(MAX_ANCHOR_TEXT_SCAN);
-        }
+        let text = collect_anchor_text(&anchor);
         let mut link_iter = finder
             .links(&text)
             .filter(|l| l.kind() == &linkify::LinkKind::Url);

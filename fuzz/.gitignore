@@ -1,0 +1,12 @@
+target/
+Cargo.lock
+artifacts/
+coverage/
+
+# libfuzzer-generated mutation files inside corpus subdirectories.
+# Mutations are SHA-1-named (40 lowercase hex chars, no extension).
+# Identify them by name shape rather than by extension whitelist so
+# that human-curated seeds with arbitrary names (e.g. Task 6's
+# 'utf8-ascii') are tracked correctly. The pattern below repeats
+# [0-9a-f] forty times because gitignore has no count quantifier.
+corpus/*/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]

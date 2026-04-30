@@ -7,13 +7,18 @@
 
 use crate::output::{SecurityWarning, WarningCode};
 
+// `pub` only because `testutil` re-exports through `pub mod testutil` (Rust
+// E0364 forbids `pub use` of `pub(crate)` items). Module privacy
+// (`pub(crate) mod mime_scrub` in `parse/mod.rs`) keeps this unreachable
+// outside the crate; production callers reach it via
+// [`crate::parse::parse_message`].
 /// Scan the header block for raw CRLF inside RFC 2047 encoded-words.
 /// Drop any offending logical header(s) and emit
 /// [`WarningCode::ParseHeaderSmugglingBlocked`].
 ///
 /// Returns a byte vector containing the message with the offending
 /// header lines removed.
-pub(super) fn scrub_header_smuggling(raw: &[u8], warnings: &mut Vec<SecurityWarning>) -> Vec<u8> {
+pub fn scrub_header_smuggling(raw: &[u8], warnings: &mut Vec<SecurityWarning>) -> Vec<u8> {
     let Some((header_end, _sep_len)) = find_header_end(raw) else {
         return raw.to_vec(); // no headers = no smuggling
     };
@@ -83,7 +88,11 @@ pub(super) fn detect_smuggling_spans(logical: &[&[u8]]) -> Vec<bool> {
         let start_pos = search_start + rel;
         match locate_encoded_word_end(logical, idx, start_pos + 2) {
             EncodedWordEnd::SameHeader(end_rel_to_header) => {
-                scan_from = end_rel_to_header + 2;
+                // Advance past the '?' of '?=' but keep the '=' in view.
+                // Using +2 would skip the '=' at end_rel_to_header+1, missing
+                // a back-to-back encoded-word opener like '=?=?' where the
+                // closing '?=' and the next '=?' share the '=' byte.
+                scan_from = end_rel_to_header + 1;
             }
             EncodedWordEnd::LaterHeader(end_idx) => {
                 for flag in mask.iter_mut().take(end_idx + 1).skip(idx) {
@@ -137,7 +146,14 @@ fn locate_encoded_word_end(
 /// Find the byte offset where the header block ends (exclusive of the
 /// blank-line separator). Handles both CRLF and LF line endings.
 /// Returns `(header_end, separator_length)`.
-pub(super) fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
+//
+// `pub` only because `testutil` re-exports through `pub mod testutil` (Rust
+// E0364 forbids `pub use` of `pub(crate)` items). Module privacy
+// (`pub(crate) mod mime_scrub` in `parse/mod.rs`) keeps this unreachable
+// outside the crate; production callers reach it via
+// [`crate::parse::parse_message`].
+#[must_use]
+pub fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
     if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
         return Some((pos + 2, 2));
     }

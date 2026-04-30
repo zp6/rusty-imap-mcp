@@ -1,0 +1,15 @@
+From: a@example.com
+Subject: attachment with spoofed type
+Content-Type: multipart/mixed; boundary="BOUND"
+
+--BOUND
+Content-Type: text/plain; charset=utf-8
+
+see attached
+--BOUND
+Content-Type: image/png
+Content-Disposition: attachment; filename="fake.png"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAA=
+--BOUND--

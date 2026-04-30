@@ -1,0 +1,52 @@
+[package]
+name = "rusty-imap-mcp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.94.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.rimap-content]
+path = "../crates/rimap-content"
+features = ["test-util"]
+
+# Targets are added in later tasks. Until at least one fuzz target exists,
+# `cargo +nightly fuzz list` returns an empty list, which is correct.
+
+[workspace]
+# Standalone — not part of the rusty-imap-mcp workspace because
+# libfuzzer-sys is nightly-only and the workspace stable build must
+# not pull it in.
+
+[[bin]]
+name = "content_mime"
+path = "fuzz_targets/content_mime.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content_html"
+path = "fuzz_targets/content_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content_rfc2047"
+path = "fuzz_targets/content_rfc2047.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "content_charset"
+path = "fuzz_targets/content_charset.rs"
+test = false
+doc = false
+bench = false

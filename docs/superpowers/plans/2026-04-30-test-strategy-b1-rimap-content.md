@@ -12,6 +12,15 @@
 
 **Branch:** `feat/test-strategy-b1-rimap-content` (cut from current `main` after this plan's PR lands).
 
+## Phase split
+
+During execution this plan was split into two PRs to keep blast radius bounded and let the security-class fixes (char-boundary panic, encoded-word smuggling gap) ship as soon as they were ready:
+
+- **Phase 1 — Pre-flight + Tasks 1–6 + /simplify cleanup.** Fuzz infrastructure + four harnesses + two security-relevant bug fixes the harnesses surfaced. PR opens once Tasks 1–6 are complete.
+- **Phase 2 — Tasks 7–11 + Wrap-up.** `cargo-mutants` baseline refresh, mutation cleanup, ClusterFuzzLite workflow, draft-PR smoke test, done-criteria validation. Branch will be cut from `main` after Phase 1 merges.
+
+Tasks below are tagged `[P1]` or `[P2]` accordingly. The split is described here, not in the spec — the spec's Sprint B1 acceptance criteria still require both phases.
+
 ---
 
 ## Pre-flight
@@ -38,7 +47,7 @@ Expected:
 
 ---
 
-## Task 1: Scaffold the `fuzz/` workspace member
+## Task 1 [P1]: Scaffold the `fuzz/` workspace member
 
 **Why:** `cargo-fuzz` needs a standalone Cargo crate with a known directory layout (`fuzz/Cargo.toml` + `fuzz/fuzz_targets/`). The repo workspace must explicitly exclude it because `libfuzzer-sys` is nightly-only and must not be pulled into stable workspace builds.
 
@@ -187,7 +196,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 2: Expose `rimap-content` private entry points under `test-util`
+## Task 2 [P1]: Expose `rimap-content` private entry points under `test-util`
 
 **Why:** Two of the four fuzz targets need to call functions that are currently `pub(crate)` or `pub(super)` inside `rimap-content`. Re-exporting them under the existing `test-util` feature keeps the production API surface unchanged and matches the `epvme_runner`/dev-dep precedent already in `crates/rimap-content/Cargo.toml`.
 
@@ -341,7 +350,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 3: `content_mime` fuzz harness
+## Task 3 [P1]: `content_mime` fuzz harness
 
 **Why:** Whole-message MIME parse is the highest-value entry point — the v1 spec calls it the #1 attacker surface. A coverage-guided fuzzer explores edge cases that proptest's structured-string generation will not find.
 
@@ -457,7 +466,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 4: `content_html` fuzz harness
+## Task 4 [P1]: `content_html` fuzz harness
 
 **Why:** The HTML sanitizer has its own attack surface (DOM-tree traversal, ammonia filtering, link extraction) distinct from the MIME parser. The existing proptest harness uses structured string generation; libfuzzer's coverage-guided exploration finds different bugs.
 
@@ -606,7 +615,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 5: `content_rfc2047` fuzz harness
+## Task 5 [P1]: `content_rfc2047` fuzz harness
 
 **Why:** The RFC 2047 encoded-word path is a known attack surface — `tests/injection-corpus/rfc2047-crlf-smuggling/` documents that a maliciously-encoded `=?...?=` token can carry CRLF bytes that splice unintended headers into the message. The smuggling-detection function `scrub_header_smuggling` is the load-bearing defense.
 
@@ -725,7 +734,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 6: `content_charset` fuzz harness
+## Task 6 [P1]: `content_charset` fuzz harness
 
 **Why:** Charset label parsing has historically been a source of bugs in mail clients. `unicode::decode(bytes, charset_label)` is the entry point that turns server-controlled label strings into encoding decisions; a panic here is a remote DoS vector.
 
@@ -876,7 +885,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 7: Refresh `cargo-mutants` baseline on `rimap-content`
+## Task 7 [P2]: Refresh `cargo-mutants` baseline on `rimap-content`
 
 **Why:** The current `mutants.out/` snapshot is from 2026-04-08 and predates `desloppify`/BootError/rotation-clock-seam landings. The 67 reported survivors in non-`bin/` code are the starting list — but we must refresh first to filter false positives caused by code that has since changed.
 
@@ -975,7 +984,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 8: Mutation cleanup — `parse/`, `html/`, `unicode.rs`, `lookalike.rs`
+## Task 8 [P2]: Mutation cleanup — `parse/`, `html/`, `unicode.rs`, `lookalike.rs`
 
 **Why:** These four modules implement the active sanitization pipeline. Per the spec, every survivor here must be killed (a test added that catches the mutation) — there is no "best-effort" branch in security-critical paths.
 
@@ -1066,7 +1075,7 @@ Expected: both clean.
 
 ---
 
-## Task 9: Mutation cleanup — `output.rs`, `error.rs`, `raw_parts.rs`, `testutil.rs`
+## Task 9 [P2]: Mutation cleanup — `output.rs`, `error.rs`, `raw_parts.rs`, `testutil.rs`
 
 **Why:** Per the spec, these are "plumbing" — survivors that change observable output get killed; survivors equivalent under serialization round-trip get annotated. The bar is lower than Task 8.
 
@@ -1125,7 +1134,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 10: ClusterFuzzLite workflow (PR smoke + nightly)
+## Task 10 [P2]: ClusterFuzzLite workflow (PR smoke + nightly)
 
 **Why:** Continuous fuzzing in CI is the runtime artifact that completes Sprint B1's done criteria. The PR-smoke job runs `content_mime` + `content_html` for 5 minutes each on every PR (the other two stay nightly-only per spec §4.4). The nightly job runs all four targets at 30 minutes each on `main`.
 
@@ -1280,7 +1289,7 @@ Refs: docs/superpowers/specs/2026-04-30-test-strategy-improvements-design.md"
 
 ---
 
-## Task 11: Smoke-test the workflow on a draft PR
+## Task 11 [P2]: Smoke-test the workflow on a draft PR
 
 **Why:** ClusterFuzzLite has many quiet failure modes (missing `language` keyword, wrong sanitizer, corpus path resolution). A draft PR is the cheapest way to verify the wiring on a real GHA runner before the work merges to `main`.
 
