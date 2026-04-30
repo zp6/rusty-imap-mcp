@@ -1,0 +1,7 @@
+From: PayPal <service@pаypal.com>
+To: victim@example.com
+Subject: Your balance
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Your PayPal balance is ready to withdraw.</p><p><a href="https://pаypal.com/login">Sign in</a></p></body></html>

@@ -1,0 +1,52 @@
+From: a@example.com
+Content-Type: multipart/mixed; boundary="B0"
+
+--B0
+Content-Type: multipart/mixed; boundary="B1"
+
+--B1
+Content-Type: multipart/mixed; boundary="B2"
+
+--B2
+Content-Type: multipart/mixed; boundary="B3"
+
+--B3
+Content-Type: multipart/mixed; boundary="B4"
+
+--B4
+Content-Type: multipart/mixed; boundary="B5"
+
+--B5
+Content-Type: multipart/mixed; boundary="B6"
+
+--B6
+Content-Type: multipart/mixed; boundary="B7"
+
+--B7
+Content-Type: multipart/mixed; boundary="B8"
+
+--B8
+Content-Type: multipart/mixed; boundary="B9"
+
+--B9
+Content-Type: multipart/mixed; boundary="B10"
+
+--B10
+Content-Type: multipart/mixed; boundary="B11"
+
+--B11
+Content-Type: text/plain
+
+inner
+--B11--
+--B10--
+--B9--
+--B8--
+--B7--
+--B6--
+--B5--
+--B4--
+--B3--
+--B2--
+--B1--
+--B0--

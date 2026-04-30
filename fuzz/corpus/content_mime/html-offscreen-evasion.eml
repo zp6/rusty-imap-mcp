@@ -1,0 +1,11 @@
+From: attacker@evil.example
+To: victim@example.com
+Subject: Offscreen evasion test
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body>
+<p>Please review the attached document.</p>
+<div style="position: absolute; left: -999px">HIDDEN BY LEFT OFFSET</div>
+<div style="position: fixed; transform: translateX(-9999px)">HIDDEN BY TRANSFORM</div>
+</body></html>
