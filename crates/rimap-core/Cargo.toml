@@ -23,7 +23,13 @@ hex = { workspace = true }
 strum = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true }
+# `std` is required so `rustix::fd::AsFd` resolves to the `std::os::fd` re-export
+# rather than the no_std polyfill trait — otherwise `std::os::fd::OwnedFd` does
+# not satisfy the `AsFd` bound on `openat` / `fstat` and standalone builds of
+# this crate (`cargo check -p rimap-core`) fail. The workspace's `fs4`
+# dependency happens to enable it transitively, but isolated checks must not
+# rely on that unification.
+rustix = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }
