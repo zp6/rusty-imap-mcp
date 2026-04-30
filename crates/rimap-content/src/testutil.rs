@@ -19,7 +19,9 @@ pub use crate::html::sanitize_html;
 pub use crate::parse::mime_scrub::scrub_header_smuggling;
 
 /// Re-export of [`crate::html::HtmlResult`] so external callers of the
-/// re-exported `sanitize_html` can name the return type.
+/// re-exported `sanitize_html` can name the return type. Production code
+/// does not see `HtmlResult` directly — its fields are folded into
+/// [`crate::output::Content`] by [`crate::parse::parse_message`].
 pub use crate::html::HtmlResult;
 
 use crate::{ContentError, WarningCode};
