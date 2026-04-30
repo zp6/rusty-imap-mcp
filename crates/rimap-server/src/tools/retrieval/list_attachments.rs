@@ -4,7 +4,7 @@ use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::retrieval::part_walker::walk_body_structure;
 
@@ -29,6 +29,7 @@ pub struct ListAttachmentsInput {
 
 /// Metadata for a single attachment discovered in the MIME tree.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct AttachmentInfo {
     /// IMAP part identifier (e.g. `"2"`, `"1.2"`).
     pub part_id: String,
@@ -42,6 +43,7 @@ pub struct AttachmentInfo {
 
 /// Trusted metadata for a `list_attachments` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ListAttachmentsMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -65,7 +67,7 @@ pub struct ListAttachmentsUntrusted {
 ///
 /// # Errors
 ///
-/// - `RimapError::Authz { code: NotFound, ... }` if the UID is absent
+/// - `RimapError::Tagged { code: NotFound, ... }` if the UID is absent
 ///   from `folder`.
 /// - `RimapError::Internal` if the server accepted the FETCH but did
 ///   not return a `BODYSTRUCTURE`.
@@ -74,7 +76,7 @@ pub async fn handle(
     account: &AccountState,
     input: ListAttachmentsInput,
 ) -> Result<ToolResponse<ListAttachmentsMeta, ListAttachmentsUntrusted>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let uid = Uid::from(input.uid);
 
@@ -82,9 +84,14 @@ pub async fn handle(
         bodystructure: true,
         ..FetchSpec::default()
     };
-    let (msg, _uid_validity) =
-        crate::tools::fetch_by_uid::fetch_single_by_uid(account, &input.folder, uid, spec, None)
-            .await?;
+    let (msg, _uid_validity) = crate::tools::common::fetch_by_uid::fetch_single_by_uid(
+        account,
+        &input.folder,
+        uid,
+        spec,
+        None,
+    )
+    .await?;
 
     let bodystructure = msg.bodystructure.ok_or_else(|| {
         rimap_core::RimapError::Internal("server did not return BODYSTRUCTURE".into())

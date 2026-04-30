@@ -10,7 +10,7 @@ use rimap_audit::{AuditWriter, CancelledToolEndSender};
 use rimap_core::{SessionId, account::AccountId};
 use tokio::sync::Semaphore;
 
-use crate::boot::registry::AccountRegistry;
+use crate::boot::account_state::AccountRegistry;
 
 /// Daemon-wide shared state. One `Arc<DaemonState>` is built at boot and
 /// cloned into every `PerSessionHandler`.
@@ -27,27 +27,8 @@ pub struct DaemonState {
     pub(crate) registry: Arc<AccountRegistry>,
     /// Audit writer; the single fs-locked backing file is shared.
     pub(crate) audit: AuditWriter,
-    /// Attachment download directory (read-only after boot). Stored on
-    /// `DaemonState` and propagated into `AccountRegistry::build`, which
-    /// copies it onto each `AccountState`; tool handlers read it from the
-    /// per-account copy. The daemon-level field is currently vestigial —
-    /// retained for symmetry with other daemon-shared paths and as a
-    /// holding spot for any future tool that needs the unscoped path.
-    #[expect(
-        dead_code,
-        reason = "vestigial daemon-level copy; per-account download_dir on AccountState is the live path"
-    )]
-    pub(crate) download_dir: Arc<std::path::Path>,
     /// Cancellation channel sender for the audit drainer.
     pub(crate) cancellation_tx: CancelledToolEndSender,
-    /// Daemon start time. Captured for symmetry with `process_start`'s
-    /// timestamp; nothing reads it today (per-session durations come from
-    /// `SessionState.started_at`, not from this field).
-    #[expect(
-        dead_code,
-        reason = "vestigial; eligible for removal in a future cleanup PR"
-    )]
-    pub(crate) started_at: Instant,
     /// Bound on concurrent shim sessions. An `OwnedSemaphorePermit` is
     /// acquired on each accept and held for the session's lifetime;
     /// dropping the permit (when the session future returns) releases
@@ -77,16 +58,13 @@ impl DaemonState {
     pub fn new(
         registry: Arc<AccountRegistry>,
         audit: AuditWriter,
-        download_dir: Arc<std::path::Path>,
         cancellation_tx: CancelledToolEndSender,
         session_permits: Arc<Semaphore>,
     ) -> Self {
         Self {
             registry,
             audit,
-            download_dir,
             cancellation_tx,
-            started_at: Instant::now(),
             session_permits,
             total_tool_calls: AtomicU64::new(0),
             redaction_salt: Arc::new(RedactionSalt::new_random()),
@@ -201,7 +179,7 @@ mod tests {
         use tempfile::TempDir;
 
         use super::DaemonState;
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
 
         fn tight_tempdir() -> TempDir {
             use std::os::unix::fs::PermissionsExt as _;
@@ -224,7 +202,6 @@ mod tests {
             Arc::new(DaemonState::new(
                 Arc::new(AccountRegistry::new(BTreeMap::new())),
                 audit,
-                Arc::from(dir.to_path_buf().into_boxed_path()),
                 cancellation_tx,
                 Arc::new(tokio::sync::Semaphore::new(1)),
             ))

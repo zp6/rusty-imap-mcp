@@ -33,7 +33,8 @@ use rimap_audit::{CancelledToolEndSender, ToolEndInputs, ToolStartInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
 
-use crate::mcp::dispatch::{DispatchTicket, PostureContext};
+use crate::mcp::dispatch::DispatchTicket;
+use crate::mcp::posture_context::PostureContext;
 use crate::mcp::server::ImapMcpServer;
 
 /// Count of `tool_end` cancellation records that could not be enqueued
@@ -203,17 +204,7 @@ impl ImapMcpServer {
     /// finished and the caller sees its original result.
     async fn emit_tool_end(&self, inputs: ToolEndInputs) {
         let sink = self.audit.clone();
-        let join = tokio::task::spawn_blocking(move || sink.log_tool_end(inputs)).await;
-        match join {
-            Ok(Ok(_)) => {}
-            Ok(Err(audit_err)) => {
-                tracing::error!(error = %audit_err, "tool_end audit write failed");
-            }
-            Err(join_err) => {
-                let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
-                tracing::error!(error = %rimap_err, "tool_end join error");
-            }
-        }
+        let _ = crate::mcp::run_audit_blocking("tool_end", move || sink.log_tool_end(inputs)).await;
     }
 }
 
@@ -450,7 +441,7 @@ mod tests {
             redact::{hash_arguments, hash_arguments_map},
         };
 
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
@@ -471,12 +462,9 @@ mod tests {
         })
         .unwrap();
         let (cancellation_tx, _rx) = rimap_audit::cancellation_channel();
-        let download_dir: Arc<std::path::Path> =
-            Arc::from(std::path::Path::new("/tmp/test-downloads"));
         let daemon_state = Arc::new(DaemonState::new(
             Arc::new(AccountRegistry::new(BTreeMap::new())),
             audit,
-            download_dir,
             cancellation_tx,
             Arc::new(tokio::sync::Semaphore::new(64)),
         ));
@@ -513,7 +501,7 @@ mod tests {
 
         use rimap_audit::{AuditOptions, AuditWriter, Seq, redact::hash_arguments};
 
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
@@ -529,12 +517,9 @@ mod tests {
         })
         .unwrap();
         let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-        let download_dir: Arc<std::path::Path> =
-            Arc::from(std::path::Path::new("/tmp/test-downloads"));
         let daemon_state = Arc::new(DaemonState::new(
             Arc::new(AccountRegistry::new(BTreeMap::new())),
             audit,
-            download_dir,
             cancellation_tx,
             Arc::new(tokio::sync::Semaphore::new(64)),
         ));

@@ -20,10 +20,10 @@ use rmcp::model::{
 };
 use rmcp::service::RequestContext;
 
-use crate::boot::registry::{AccountRegistry, AccountState};
+use crate::boot::account_state::{AccountRegistry, AccountState};
 use crate::daemon::audit_sink::SessionAuditSink;
 use crate::daemon::state::{DaemonState, SessionState};
-use crate::mcp::dispatch::{PostureContext, rimap_error_to_breaker_reason};
+use crate::mcp::posture_context::{PostureContext, rimap_error_to_breaker_reason};
 use crate::mcp::tool_catalog::TOOL_DEFS;
 use crate::mcp::tool_name::{
     is_bare_simple_tool_name, is_legacy_single_account, refine_tool_name, split_tool_name,
@@ -211,7 +211,7 @@ impl ImapMcpServer {
         self.run_with_audit_envelope(
             tool,
             None,
-            crate::mcp::dispatch::PostureContext::Infrastructure,
+            crate::mcp::posture_context::PostureContext::Infrastructure,
             arguments_redacted,
             arguments_hash_sha256,
             |_ticket| body_fut,

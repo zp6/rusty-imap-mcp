@@ -4,7 +4,7 @@ use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for the `fetch_message` tool.
@@ -32,6 +32,7 @@ pub struct FetchMessageInput {
 
 /// Trusted metadata for a `fetch_message` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FetchMessageMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -73,22 +74,22 @@ pub struct FetchMessageUntrusted {
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` when
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` when
 /// `rimap-content` rejects the body as malformed RFC 5322.
-/// Returns `RimapError::Authz { code: AttachmentTooLarge, ... }` when a
+/// Returns `RimapError::Tagged { code: AttachmentTooLarge, ... }` when a
 /// content-pipeline cap (MIME depth/parts, header count, HTML size) is
 /// exceeded during parse. Returns `RimapError::Internal` if the
 /// `parse_message_async` blocking task panics or the parse semaphore
 /// is closed — those are infrastructure failures, not input failures.
 /// Returns `RimapError::Imap { ... }` for IMAP-layer failures (network,
 /// timeout, protocol, attachment-too-large). The upstream
-/// `DispatchGuard::pre_dispatch` layer may also return `Authz { code: PostureDenied }`
+/// `DispatchGuard::pre_dispatch` layer may also return `Tagged { code: PostureDenied }`
 /// for `FetchMessageHtml` when `include_html=true` and posture forbids it.
 pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse<FetchMessageMeta, FetchMessageUntrusted>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     // The `FetchMessageHtml` posture check happens upstream in
     // `refine_tool_name` + `DispatchGuard::pre_dispatch`; this handler just reads

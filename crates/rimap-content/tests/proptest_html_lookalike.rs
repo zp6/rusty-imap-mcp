@@ -3,7 +3,7 @@
 //! Each property runs at 10,000 cases. Combined wall-clock ~6s on CI.
 //!
 //! All three properties exercise the public `parse_message` entry point
-//! because `html::process` and `lookalike::classify_domain` are
+//! because `html::sanitize_html` and `lookalike::classify_domain` are
 //! crate-private.
 
 use proptest::prelude::*;
@@ -20,7 +20,7 @@ fn config() -> ProptestConfig {
 proptest! {
     #![proptest_config(config())]
 
-    /// html::process (reached via parse_message on a text/html part) must
+    /// html::sanitize_html (reached via parse_message on a text/html part) must
     /// return either Ok or Err — never panic or hang — on arbitrary UTF-8
     /// input. The 8 KiB cap is well below the 1 MiB html size gate, so
     /// every case exercises the full sanitizer + audit pipeline; a larger

@@ -43,7 +43,9 @@ pub fn live_imap_required() -> bool {
 pub struct DovecotDaemon {
     /// Caller-relevant — scenarios connect through this path.
     pub socket_path: PathBuf,
-    audit_path: PathBuf,
+    /// Audit log path — exposed so tests can poll for record arrival
+    /// instead of guessing fixed sleeps.
+    pub audit_path: PathBuf,
     /// Held only for lifetime; tests don't need to reach in.
     _tempdir: TempDir,
     shutdown: Arc<Notify>,
@@ -127,7 +129,6 @@ impl DovecotDaemon {
         let state = Arc::new(DaemonState::new(
             Arc::new(registry),
             audit,
-            download_dir,
             cancellation_tx,
             session_permits,
         ));

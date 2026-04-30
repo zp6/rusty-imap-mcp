@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for `create_folder`.
@@ -31,18 +31,16 @@ pub struct DeleteFolderInput {
 
 /// Trusted metadata for a `create_folder` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct CreateFolderMeta {
-    /// Always `true` when the handler returns `Ok`.
-    pub created: bool,
     /// Name of the created folder.
     pub folder: String,
 }
 
 /// Trusted metadata for a `rename_folder` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct RenameFolderMeta {
-    /// Always `true` when the handler returns `Ok`.
-    pub renamed: bool,
     /// Previous folder name.
     pub old_folder: String,
     /// New folder name.
@@ -51,9 +49,8 @@ pub struct RenameFolderMeta {
 
 /// Trusted metadata for a `delete_folder` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct DeleteFolderMeta {
-    /// Always `true` when the handler returns `Ok`.
-    pub deleted: bool,
     /// Name of the deleted folder.
     pub folder: String,
     /// Number of messages that were in the folder before deletion.
@@ -66,9 +63,9 @@ pub struct DeleteFolderMeta {
 ///
 /// `FolderGuard::check_protected` runs before any IMAP traffic and is
 /// the first source of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if the name
 ///   fails structural validation (empty, too long, forbidden chars).
-/// - `RimapError::Authz { code: ProtectedFolder, ... }` if the name is
+/// - `RimapError::Tagged { code: ProtectedFolder, ... }` if the name is
 ///   in the protected list or is INBOX.
 ///
 /// After the guard passes, `RimapError::Imap { ... }` may be propagated
@@ -78,6 +75,8 @@ pub async fn handle_create_folder(
     account: &AccountState,
     input: CreateFolderInput,
 ) -> Result<ToolResponse<CreateFolderMeta>, rimap_core::RimapError> {
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
+
     account
         .folder_guard
         .check_protected(&input.folder, "create")?;
@@ -85,7 +84,6 @@ pub async fn handle_create_folder(
     account.imap.create_folder(&input.folder).await?;
 
     Ok(ToolResponse::meta_only(CreateFolderMeta {
-        created: true,
         folder: input.folder,
     }))
 }
@@ -96,9 +94,9 @@ pub async fn handle_create_folder(
 ///
 /// `FolderGuard::check_rename` runs before any IMAP traffic and is the
 /// first source of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if either the
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if either the
 ///   source or destination name fails structural validation.
-/// - `RimapError::Authz { code: ProtectedFolder, ... }` if either name
+/// - `RimapError::Tagged { code: ProtectedFolder, ... }` if either name
 ///   is in the protected list or is INBOX.
 ///
 /// After the guard passes, `RimapError::Imap { ... }` may be propagated
@@ -108,6 +106,9 @@ pub async fn handle_rename_folder(
     account: &AccountState,
     input: RenameFolderInput,
 ) -> Result<ToolResponse<RenameFolderMeta>, rimap_core::RimapError> {
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("new_folder", &input.new_folder)?;
+
     account
         .folder_guard
         .check_rename(&input.folder, &input.new_folder)?;
@@ -118,7 +119,6 @@ pub async fn handle_rename_folder(
         .await?;
 
     Ok(ToolResponse::meta_only(RenameFolderMeta {
-        renamed: true,
         old_folder: input.folder,
         new_folder: input.new_folder,
     }))
@@ -130,12 +130,12 @@ pub async fn handle_rename_folder(
 ///
 /// `FolderGuard` runs before any IMAP traffic and is the first source
 /// of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if the name
 ///   fails structural validation (from `check_protected` or
 ///   `check_expunge`).
-/// - `RimapError::Authz { code: ProtectedFolder, ... }` if the name is
+/// - `RimapError::Tagged { code: ProtectedFolder, ... }` if the name is
 ///   in the protected list or is INBOX.
-/// - `RimapError::Authz { code: ExpungeDenied, ... }` if the folder is
+/// - `RimapError::Tagged { code: ExpungeDenied, ... }` if the folder is
 ///   not in the expunge allowlist.
 ///
 /// After the guards pass, `RimapError::Imap { ... }` may be propagated
@@ -145,6 +145,8 @@ pub async fn handle_delete_folder(
     account: &AccountState,
     input: DeleteFolderInput,
 ) -> Result<ToolResponse<DeleteFolderMeta>, rimap_core::RimapError> {
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
+
     account
         .folder_guard
         .check_protected(&input.folder, "delete")?;
@@ -169,7 +171,6 @@ pub async fn handle_delete_folder(
     account.imap.delete_folder(&input.folder).await?;
 
     Ok(ToolResponse::meta_only(DeleteFolderMeta {
-        deleted: true,
         folder: input.folder,
         message_count,
     }))

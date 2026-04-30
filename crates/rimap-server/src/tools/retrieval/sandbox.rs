@@ -16,7 +16,7 @@ use rimap_core::RimapError;
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Authz { code: InvalidInput, ... }` when the
+/// Returns `RimapError::Tagged { code: InvalidInput, ... }` when the
 /// user-supplied `dest_dir` cannot be canonicalized (missing path,
 /// permission denied) or when the canonical form falls outside
 /// `allowed_root`.
@@ -48,8 +48,10 @@ pub(crate) fn resolve_dest_dir(
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Internal` if writing fails or if more than
-/// 1000 filename collisions occur.
+/// Returns `RimapError::Internal` after more than 1000 filename
+/// collisions, or `RimapError::InternalSourced` (carrying the underlying
+/// `io::Error`) when the write fails. Both variants surface as
+/// `ErrorCode::Internal` to callers; pattern-match by code, not by variant.
 pub(crate) fn write_attachment(
     dir: &Path,
     filename: &str,
@@ -96,15 +98,17 @@ pub(crate) fn write_attachment(
 }
 
 /// Async wrapper around [`resolve_dest_dir`] that runs on a
-/// blocking thread.
+/// blocking thread. Note: `root` is used as BOTH the allowed root and
+/// the fallback directory — daemon callers always pass the same path
+/// for both, so the async surface collapses the two parameters.
 ///
 /// # Errors
 ///
 /// Propagates whatever [`resolve_dest_dir`] returns (typically
-/// `RimapError::Authz` with `InvalidInput` when the path cannot be
-/// canonicalized or escapes `allowed_root`). Returns
-/// `RimapError::Internal` if the blocking task panics.
-pub async fn resolve_dest_dir_async(
+/// `RimapError::Tagged` with `InvalidInput` when the path cannot be
+/// canonicalized or escapes `root`). Returns `RimapError::Internal` if
+/// the blocking task panics.
+pub(crate) async fn resolve_dest_dir_async(
     dest_dir: Option<String>,
     root: Arc<Path>,
 ) -> Result<PathBuf, RimapError> {
@@ -119,10 +123,10 @@ pub async fn resolve_dest_dir_async(
 /// # Errors
 ///
 /// Propagates whatever [`write_attachment`] returns
-/// (`RimapError::Internal` on I/O failure or after >1000 filename
-/// collisions). Also returns `RimapError::Internal` if the blocking
-/// task panics.
-pub async fn write_attachment_async(
+/// (`RimapError::Internal` after >1000 filename collisions, or
+/// `RimapError::InternalSourced` on I/O failure). Returns
+/// `RimapError::Internal` if the blocking task panics.
+pub(crate) async fn write_attachment_async(
     dir: PathBuf,
     filename: String,
     data: Vec<u8>,
@@ -134,13 +138,13 @@ pub async fn write_attachment_async(
 
 /// MIME-sniff `data` using magic bytes.
 #[must_use]
-pub fn sniff_mime(data: &[u8]) -> Option<String> {
+pub(crate) fn sniff_mime(data: &[u8]) -> Option<String> {
     infer::get(data).map(|t| t.mime_type().to_string())
 }
 
 /// SHA-256 hex digest.
 #[must_use]
-pub fn sha256_hex(data: &[u8]) -> String {
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(data);
     hex::encode(hash)

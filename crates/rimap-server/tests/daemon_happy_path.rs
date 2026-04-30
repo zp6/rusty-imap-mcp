@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::daemon_harness::{TestDaemon, test_daemon_state};
+use common::daemon_harness::{TestDaemon, count_audit_kind, test_daemon_state};
 use tempfile::TempDir;
 
 /// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
@@ -23,7 +23,7 @@ async fn daemon_spawns_and_shuts_down_cleanly() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
@@ -43,7 +43,7 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
@@ -53,25 +53,21 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     let mut stream = UnixStream::connect(&socket_path).await.expect("connect");
     // Write nothing. Immediately close the write half so the daemon sees EOF.
     stream.shutdown().await.expect("shutdown client write half");
-    // Give the daemon time to observe EOF and emit session_end.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(stream);
 
-    // Read the audit log before shutdown — tempdir lives inside daemon and
-    // would be dropped when shutdown() consumes the TestDaemon value.
-    let audit = std::fs::read_to_string(&audit_path).expect("read audit");
+    // Wait for the session_end record to land instead of guessing how
+    // long the daemon needs to observe EOF.
+    let audit = daemon
+        .wait_for_audit(std::time::Duration::from_secs(2), |c| {
+            count_audit_kind(c, "session_end") >= 1
+        })
+        .await;
 
     // Shut down the daemon (consumes it, tempdir cleaned up here).
     let _audit_after_shutdown = daemon.shutdown().await;
 
-    let session_starts = audit
-        .lines()
-        .filter(|l| l.contains(r#""kind":"session_start""#))
-        .count();
-    let session_ends = audit
-        .lines()
-        .filter(|l| l.contains(r#""kind":"session_end""#))
-        .count();
+    let session_starts = count_audit_kind(&audit, "session_start");
+    let session_ends = count_audit_kind(&audit, "session_end");
     assert!(
         session_starts >= 1,
         "expected at least one session_start, got:\n{audit}"

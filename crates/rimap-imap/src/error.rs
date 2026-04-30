@@ -202,6 +202,32 @@ impl ImapError {
             Self::Audit { .. } => ErrorCode::Internal,
         }
     }
+
+    /// Whether this error means the cached IMAP session is no longer
+    /// reusable and must be invalidated. `ConnectionLost` and `Timeout`
+    /// drop a session at every command boundary; `SizeLimit` aborts a
+    /// fetch mid-stream and leaves the IMAP response state half-consumed.
+    /// Every other variant leaves the session intact.
+    ///
+    /// Centralising this triage avoids enumerating every variant at each
+    /// call site (workspace lints ban `_ =>` wildcards, so call-site
+    /// matches would otherwise repeat the full variant list).
+    #[must_use]
+    pub fn is_invalidating(&self) -> bool {
+        match self {
+            Self::ConnectionLost | Self::Timeout { .. } | Self::SizeLimit { .. } => true,
+            Self::Tls { .. }
+            | Self::TlsHandshake(_)
+            | Self::Starttls { .. }
+            | Self::Connect(_)
+            | Self::Auth { .. }
+            | Self::Protocol(_)
+            | Self::InvalidInput { .. }
+            | Self::BatchTooLarge { .. }
+            | Self::UidValidityChanged { .. }
+            | Self::Audit { .. } => false,
+        }
+    }
 }
 
 impl From<ImapError> for RimapError {

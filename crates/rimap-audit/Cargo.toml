@@ -37,3 +37,9 @@ rustix = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
 futures = "0.3"
+
+# ulid is consumed by the rimap_core::ulid_newtype! macro expansion
+# (see crates/rimap-core/src/ulid_newtype.rs), invisible to static
+# analyzers like cargo-machete.
+[package.metadata.cargo-machete]
+ignored = ["ulid"]

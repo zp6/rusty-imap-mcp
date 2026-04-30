@@ -244,7 +244,8 @@ impl AuditWriter {
     /// Returns the current on-disk length of the active file. Used by tests.
     ///
     /// # Errors
-    /// I/O error from `metadata()`.
+    /// Returns `AuditError::Write` on `metadata()` I/O failure or if the
+    /// internal mutex is poisoned.
     pub fn on_disk_len(&self) -> Result<u64, AuditError> {
         let guard = self.lock_inner()?;
         let meta = guard

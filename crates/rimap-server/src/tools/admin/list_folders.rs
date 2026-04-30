@@ -3,10 +3,18 @@
 use std::fmt::Write as _;
 
 use rimap_content::output::SecurityWarning;
-use serde::Serialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
+
+/// Input for `list_folders`. Currently has no client-controlled fields,
+/// but the struct exists so this tool's handler shape matches every
+/// other tool's `(account, input)` signature — adding a future filter
+/// (e.g. `pattern`) will not break the call shape.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct ListFoldersInput {}
 
 const MAX_FOLDER_NAME_BYTES: usize = 1024;
 
@@ -106,6 +114,7 @@ pub struct FolderEntry {
 
 /// Trusted metadata for a `list_folders` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ListFoldersMeta {
     /// All folders returned by the server.
     pub folders: Vec<FolderEntry>,
@@ -162,6 +171,7 @@ pub(crate) fn sanitize_folder_entries(
 /// `PostureDenied`.
 pub async fn handle(
     account: &AccountState,
+    _input: ListFoldersInput,
 ) -> Result<ToolResponse<ListFoldersMeta>, rimap_core::RimapError> {
     let pairs = account.imap.list_folders_with_status("*").await?;
 

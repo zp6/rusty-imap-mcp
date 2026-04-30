@@ -6,7 +6,7 @@ use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::retrieval::part_walker::walk_body_structure;
 use crate::tools::retrieval::sandbox;
@@ -37,6 +37,7 @@ pub struct DownloadAttachmentInput {
 
 /// Trusted metadata for a `download_attachment` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct DownloadAttachmentMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -73,14 +74,14 @@ pub struct DownloadAttachmentUntrusted {
 ///
 /// # Errors
 ///
-/// - `RimapError::Authz { code: InvalidInput, ... }` if the resolved
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if the resolved
 ///   `dest_dir` cannot be canonicalized or escapes the configured
 ///   download sandbox.
-/// - `RimapError::Authz { code: NotFound, ... }` if the `part_id` is
+/// - `RimapError::Tagged { code: NotFound, ... }` if the `part_id` is
 ///   not present in the message.
 /// - Propagates `RimapError::Imap { ... }` from SELECT / UID FETCH.
-/// - `RimapError::Authz { code: InvalidInput, ... }` for malformed MIME
-///   bodies and `RimapError::Authz { code: AttachmentTooLarge, ... }`
+/// - `RimapError::Tagged { code: InvalidInput, ... }` for malformed MIME
+///   bodies and `RimapError::Tagged { code: AttachmentTooLarge, ... }`
 ///   when a content-pipeline cap (MIME depth/parts, header count, body
 ///   size) is exceeded during parse.
 /// - `RimapError::Internal` for unrecoverable filesystem or hashing
@@ -90,7 +91,7 @@ pub async fn handle(
     input: DownloadAttachmentInput,
 ) -> Result<ToolResponse<DownloadAttachmentMeta, DownloadAttachmentUntrusted>, rimap_core::RimapError>
 {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let uid = Uid::from(input.uid);
 
@@ -110,7 +111,7 @@ pub async fn handle(
     let part = parts
         .into_iter()
         .find(|p| p.part_id == input.part_id)
-        .ok_or_else(|| rimap_core::RimapError::Authz {
+        .ok_or_else(|| rimap_core::RimapError::Tagged {
             code: rimap_core::error::ErrorCode::NotFound,
             message: format!("part_id {} not found in message", input.part_id),
         })?;

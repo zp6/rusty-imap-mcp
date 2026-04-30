@@ -4,10 +4,11 @@ use core::fmt;
 use core::str::FromStr;
 
 use serde::{Deserialize, Serialize};
+use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
 /// The four supported postures. Default is [`Posture::DraftSafe`].
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter)]
 #[serde(rename_all = "kebab-case")]
 pub enum Posture {
     /// Read-only operations only. No flag changes, no drafts, no moves.
@@ -33,15 +34,12 @@ impl Posture {
         }
     }
 
-    /// Every posture, in declaration order. Useful for exhaustive tests.
+    /// Every posture, in declaration order. Built from `EnumIter` so new
+    /// variants cannot silently desynchronize this list (compile-time
+    /// parity with the enum definition).
     #[must_use]
-    pub fn all() -> [Self; 4] {
-        [
-            Self::Readonly,
-            Self::DraftSafe,
-            Self::Full,
-            Self::Destructive,
-        ]
+    pub fn all() -> Vec<Self> {
+        Self::iter().collect()
     }
 }
 

@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for `expunge`.
@@ -15,6 +15,7 @@ pub struct ExpungeInput {
 
 /// Trusted metadata for an `expunge` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ExpungeMeta {
     /// Folder that was expunged.
     pub folder: String,
@@ -30,9 +31,9 @@ pub struct ExpungeMeta {
 ///
 /// `FolderGuard::check_expunge` runs before any IMAP traffic and is the
 /// first source of errors:
-/// - `RimapError::Authz { code: InvalidFolderName, ... }` if the name
+/// - `RimapError::Tagged { code: InvalidInput, ... }` if the name
 ///   fails structural validation (empty, too long, forbidden chars).
-/// - `RimapError::Authz { code: ExpungeDenied, ... }` when the folder
+/// - `RimapError::Tagged { code: ExpungeDenied, ... }` when the folder
 ///   is not in `expunge_folders`.
 ///
 /// After the guard passes, `RimapError::Imap { ... }` may be propagated
@@ -42,7 +43,7 @@ pub async fn handle(
     account: &AccountState,
     input: ExpungeInput,
 ) -> Result<ToolResponse<ExpungeMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
     account.folder_guard.check_expunge(&input.folder)?;
 
     let (deleted_uids, expunged_count) = account.imap.expunge(&input.folder).await?;

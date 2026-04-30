@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
 use rimap_core::tool::ToolName;
-use rimap_server::boot::registry::AccountRegistry;
+use rimap_server::boot::account_state::AccountRegistry;
 use rimap_server::daemon::state::{DaemonState, SessionState};
 use rimap_server::mcp::server::ImapMcpServer;
 use serde_json::json;
@@ -54,11 +54,9 @@ fn build_test_server() -> TestFixture {
 
     let registry = AccountRegistry::new(BTreeMap::new());
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-    let download_dir: Arc<std::path::Path> = Arc::from(std::path::Path::new("/tmp/test-downloads"));
     let daemon_state = Arc::new(DaemonState::new(
         Arc::new(registry),
         audit.clone(),
-        download_dir,
         cancellation_tx,
         Arc::new(tokio::sync::Semaphore::new(64)),
     ));
@@ -218,15 +216,12 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
     .expect("audit open");
 
     let registry =
-        rimap_server::boot::registry::AccountRegistry::new(std::collections::BTreeMap::new());
+        rimap_server::boot::account_state::AccountRegistry::new(std::collections::BTreeMap::new());
     let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
     let drainer = spawn_drainer(cancellation_rx, audit.clone());
-    let download_dir_2: Arc<std::path::Path> =
-        Arc::from(std::path::Path::new("/tmp/test-downloads"));
     let daemon_state_2 = Arc::new(rimap_server::daemon::state::DaemonState::new(
         Arc::new(registry),
         audit.clone(),
-        download_dir_2,
         cancellation_tx,
         Arc::new(tokio::sync::Semaphore::new(64)),
     ));
@@ -262,16 +257,40 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
             .await
     });
 
-    // Give the envelope time to emit `tool_start` and enter the body's
-    // pending await before aborting. The `spawn_blocking` for `tool_start`
-    // is the only real work before the body; 50ms gives comfortable headroom
-    // on loaded CI runners without approaching the test's total budget.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for the envelope to emit `tool_start` (observable in the
+    // audit file) before aborting — this guarantees the abort lands
+    // INSIDE the guarded window where `AuditEnvelopeGuard::drop` is
+    // armed. Polling the audit log replaces the previous fixed sleep
+    // that gambled on `spawn_blocking` finishing within 50ms.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let audit_now = std::fs::read_to_string(&audit_path).unwrap_or_default();
+        if audit_now.contains(r#""kind":"tool_start""#) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "tool_start record never landed within 2s; audit:\n{audit_now}",
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     task.abort();
     let _ = task.await; // wait for the abort to settle
 
-    // Give the drainer time to flush the queued cancellation record.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait for the drainer to flush the cancellation `tool_end` instead
+    // of guessing how long the channel + spawn_blocking + write takes.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let audit_now = std::fs::read_to_string(&audit_path).unwrap_or_default();
+        if audit_now.contains(r#""kind":"tool_end""#) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "cancellation tool_end never landed within 2s; audit:\n{audit_now}",
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     drop(server);
     // Await the drainer after dropping server (which drops the last sender)
     // so it exits cleanly after flushing remaining records.

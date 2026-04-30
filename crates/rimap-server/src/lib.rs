@@ -5,6 +5,18 @@
 //! `tests/` can reach internal types, without advertising a stable
 //! library API. External consumers should not depend on this
 //! surface — it is an implementation detail.
+//!
+//! # Submodule visibility convention
+//!
+//! Inside the top-level subfolders (`boot/`, `daemon/`, `mcp/`,
+//! `tools/`), child modules use `pub mod` whenever any integration
+//! test (the only out-of-crate consumer) needs to reach them, and
+//! `pub(crate) mod` otherwise. The whole tree is `#[doc(hidden)]`
+//! through the wrappers above, so the `pub` does not advertise a
+//! stable library API — it just keeps integration-test reach
+//! working without stamping `#[cfg(test)] pub use` re-exports
+//! everywhere. New modules should default to `pub(crate) mod` and
+//! switch to `pub mod` only when an integration test imports them.
 
 #![deny(missing_docs)]
 

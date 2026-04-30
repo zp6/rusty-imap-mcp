@@ -30,20 +30,31 @@ pub enum SmtpError {
     Transport(#[source] lettre::transport::smtp::Error),
 }
 
+impl SmtpError {
+    /// Map this error to the canonical [`ErrorCode`] used in audit
+    /// records and the top-level [`RimapError`] envelope. Mirrors the
+    /// `code()` accessor on the other layer-crate errors so call sites
+    /// can classify without round-tripping through `RimapError`.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            Self::Connection(_) => ErrorCode::ConnectionLost,
+            Self::Auth(_) => ErrorCode::Auth,
+            Self::Tls(_) => ErrorCode::Tls,
+            Self::Rejected { .. } => ErrorCode::SmtpProtocol,
+            Self::Timeout => ErrorCode::Timeout,
+            Self::Transport(_) => ErrorCode::Internal,
+        }
+    }
+}
+
 impl From<SmtpError> for RimapError {
     fn from(err: SmtpError) -> Self {
         // Preserve Display detail (includes the lettre reason) so the
         // top-level message is not a generic placeholder; source chain
         // is still attached for callers that walk it.
         let message = err.to_string();
-        let code = match &err {
-            SmtpError::Connection(_) => ErrorCode::ConnectionLost,
-            SmtpError::Auth(_) => ErrorCode::Auth,
-            SmtpError::Tls(_) => ErrorCode::Tls,
-            SmtpError::Rejected { .. } => ErrorCode::SmtpProtocol,
-            SmtpError::Timeout => ErrorCode::Timeout,
-            SmtpError::Transport(_) => ErrorCode::Internal,
-        };
+        let code = err.code();
         RimapError::Smtp {
             code,
             message,

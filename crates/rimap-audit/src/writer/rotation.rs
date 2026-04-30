@@ -71,6 +71,27 @@ pub fn rotate_file(
     keep: u32,
     retention_seconds: Option<u64>,
 ) -> Result<(BufWriter<File>, u64), AuditError> {
+    rotate_file_with_now(
+        active,
+        keep,
+        retention_seconds,
+        std::time::SystemTime::now(),
+    )
+}
+
+/// Same as [`rotate_file`] but with an injected `now` anchor used as the
+/// retention cutoff. Production code calls [`rotate_file`] which reads
+/// `SystemTime::now()`; tests pin `now` to assert the deterministic
+/// outcome of `retention_seconds == 0` without racing the wall clock.
+///
+/// # Errors
+/// Same as [`rotate_file`].
+pub fn rotate_file_with_now(
+    active: &Path,
+    keep: u32,
+    retention_seconds: Option<u64>,
+    now: std::time::SystemTime,
+) -> Result<(BufWriter<File>, u64), AuditError> {
     let dst = unique_rotated_path(active, OffsetDateTime::now_utc());
     std::fs::rename(active, &dst).map_err(|source| AuditError::Rotate {
         path: active.to_path_buf(),
@@ -110,15 +131,20 @@ pub fn rotate_file(
 
     // Prune old rotated siblings best-effort. Failures here are logged
     // but never propagated — a stale file is not a write failure.
-    prune_rotated_siblings(active, keep, retention_seconds);
+    prune_rotated_siblings(active, keep, retention_seconds, now);
 
     Ok((BufWriter::new(new_file), 0))
 }
 
 /// Enumerate sibling files matching `<active_filename>.*`, sort by mtime
 /// descending, and delete all but the `keep` newest. `keep == 0` deletes
-/// every rotated sibling.
-fn prune_rotated_siblings(active: &Path, keep: u32, retention_seconds: Option<u64>) {
+/// every rotated sibling. `now` anchors the retention-window cutoff.
+fn prune_rotated_siblings(
+    active: &Path,
+    keep: u32,
+    retention_seconds: Option<u64>,
+    now: std::time::SystemTime,
+) {
     let parent = match active.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         Some(_) | None => return,
@@ -178,8 +204,7 @@ fn prune_rotated_siblings(active: &Path, keep: u32, retention_seconds: Option<u6
 
     let keep_usize = usize::try_from(keep).unwrap_or(usize::MAX);
     let cutoff = retention_seconds.map(|secs| {
-        std::time::SystemTime::now()
-            .checked_sub(std::time::Duration::from_secs(secs))
+        now.checked_sub(std::time::Duration::from_secs(secs))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     });
 
@@ -208,7 +233,9 @@ mod tests {
     use tempfile::TempDir;
     use time::macros::datetime;
 
-    use crate::writer::rotation::{rotate_file, rotated_path, unique_rotated_path};
+    use crate::writer::rotation::{
+        rotate_file, rotate_file_with_now, rotated_path, unique_rotated_path,
+    };
 
     #[test]
     fn rotated_path_appends_utc_stamp() {
@@ -350,7 +377,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let active = dir.path().join("audit.jsonl");
 
-        // Create two rotated siblings (milliseconds old).
+        // Create three rotated siblings (milliseconds old).
         std::fs::write(&active, b"x\n").unwrap();
         let (_buf, _len) = rotate_file(&active, 10, None).unwrap();
         sleep(Duration::from_millis(10));
@@ -359,12 +386,13 @@ mod tests {
         let (_buf, _len) = rotate_file(&active, 10, None).unwrap();
         sleep(Duration::from_millis(10));
 
-        // Both siblings are milliseconds old. Rotate with retention_seconds=0
-        // (raw function level — config validation rejects 0, but the function
-        // handles it). With retention 0, cutoff = now, so everything with
-        // mtime < now is expired.
+        // Anchor `now` to a far-future point so every sibling's mtime is
+        // strictly less than `cutoff` regardless of filesystem mtime
+        // resolution or scheduler jitter — this pins the deterministic
+        // outcome that previously raced the wall clock.
+        let future_now = std::time::SystemTime::now() + Duration::from_secs(3600);
         std::fs::write(&active, b"z\n").unwrap();
-        let (_buf, _len) = rotate_file(&active, 10, Some(0)).unwrap();
+        let (_buf, _len) = rotate_file_with_now(&active, 10, Some(0), future_now).unwrap();
 
         let rotated = std::fs::read_dir(dir.path())
             .unwrap()
@@ -375,12 +403,12 @@ mod tests {
                     .is_some_and(|n| n.starts_with("audit.jsonl."))
             })
             .count();
-        // The two older siblings should be expired by time. The newest one
-        // (just created by the third rotate_file) is racing with "now" so
-        // it may or may not survive. At most 1 should remain.
-        assert!(
-            rotated <= 1,
-            "expected at most 1 rotated sibling, got {rotated}"
+        // With retention=0 anchored an hour in the future, every sibling
+        // (including the freshly-rotated one) is past the cutoff, so all
+        // three rotated files must be pruned.
+        assert_eq!(
+            rotated, 0,
+            "retention_seconds=0 anchored to future_now must prune all rotated siblings, got {rotated}",
         );
     }
 

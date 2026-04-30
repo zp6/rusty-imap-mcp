@@ -147,9 +147,16 @@ impl<'de> Deserialize<'de> for ErrorCode {
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum RimapError {
-    /// Authorization, posture, rate limit, or breaker failure.
+    /// Generic tagged error envelope for any tool-layer failure that does
+    /// not need a typed `source` chain — authz/posture/rate-limit denials
+    /// (`PostureDenied`, `RateLimited`, `CircuitOpen`, `InvalidFolderName`,
+    /// `ProtectedFolder`, `ExpungeDenied`), input validation
+    /// (`InvalidInput`), and not-found / size-cap conditions
+    /// (`NotFound`, `AttachmentTooLarge`). The variant carries a
+    /// stable [`ErrorCode`]; consumers must classify by `code()`, not
+    /// by variant name.
     #[error("{code}: {message}")]
-    Authz {
+    Tagged {
         /// Stable error code.
         code: ErrorCode,
         /// Human-readable message.
@@ -243,13 +250,13 @@ pub enum RimapError {
 }
 
 impl RimapError {
-    /// Construct an `Authz { code: InvalidInput, ... }` for caller-side
+    /// Construct an `Tagged { code: InvalidInput, ... }` for caller-side
     /// argument validation failures. Use this instead of hand-rolling the
     /// struct form — the `Authz` variant is the canonical envelope for
     /// codes that surface to MCP as `INVALID_PARAMS`.
     #[must_use]
     pub fn invalid_input(message: impl Into<String>) -> Self {
-        Self::Authz {
+        Self::Tagged {
             code: ErrorCode::InvalidInput,
             message: message.into(),
         }
@@ -259,7 +266,7 @@ impl RimapError {
     #[must_use]
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::Authz { code, .. }
+            Self::Tagged { code, .. }
             | Self::Imap { code, .. }
             | Self::Smtp { code, .. }
             | Self::Audit { code, .. } => *code,
@@ -325,7 +332,7 @@ mod tests {
 
     #[test]
     fn rimap_error_code_accessor_matches_variant() {
-        let authz = RimapError::Authz {
+        let authz = RimapError::Tagged {
             code: ErrorCode::RateLimited,
             message: "slow down".to_string(),
         };
@@ -341,7 +348,7 @@ mod tests {
 
     #[test]
     fn rimap_error_display_includes_code_prefix() {
-        let err = RimapError::Authz {
+        let err = RimapError::Tagged {
             code: ErrorCode::PostureDenied,
             message: "tool disabled".to_string(),
         };

@@ -20,7 +20,7 @@ use tokio::sync::Semaphore;
 )]
 fn classify_content_error(err: &ContentError) -> RimapError {
     match err {
-        ContentError::LimitExceeded { .. } => RimapError::Authz {
+        ContentError::LimitExceeded { .. } => RimapError::Tagged {
             code: ErrorCode::AttachmentTooLarge,
             message: err.to_string(),
         },
@@ -39,10 +39,10 @@ static PARSE_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(8)
 /// the tokio runtime. `parse_message` is CPU-bound (~2 ms per message).
 ///
 /// Classifies failures by source:
-/// - `ContentError::Malformed` surfaces as `RimapError::Authz { code:
+/// - `ContentError::Malformed` surfaces as `RimapError::Tagged { code:
 ///   InvalidInput, ... }` — the caller-supplied bytes are syntactically
 ///   broken.
-/// - `ContentError::LimitExceeded` surfaces as `RimapError::Authz { code:
+/// - `ContentError::LimitExceeded` surfaces as `RimapError::Tagged { code:
 ///   AttachmentTooLarge, ... }` — a hard content-pipeline cap (message
 ///   bytes, MIME depth/parts, header count, HTML size) was exceeded.
 /// - Panics from the blocking task or a closed acquisition semaphore
@@ -64,9 +64,9 @@ pub async fn parse_message_async(raw: Vec<u8>) -> Result<Content, RimapError> {
 ///
 /// # Errors
 ///
-/// - `RimapError::Authz { code: InvalidInput, ... }` for
+/// - `RimapError::Tagged { code: InvalidInput, ... }` for
 ///   `ContentError::Malformed` (malformed RFC 5322).
-/// - `RimapError::Authz { code: AttachmentTooLarge, ... }` for
+/// - `RimapError::Tagged { code: AttachmentTooLarge, ... }` for
 ///   `ContentError::LimitExceeded` (hard content-pipeline cap hit).
 /// - `RimapError::Internal` for panics or a closed semaphore.
 pub async fn walk_attachment_parts_async(

@@ -240,47 +240,34 @@ impl rimap_core::CredentialResolver for KeyringCredentialResolver {
 #[derive(Debug, Default)]
 pub struct KeyringStore;
 
+/// Wrap a keyring error as `ConfigError::Keychain`, splitting `account`
+/// into the `(host, account_tag)` pair the error variant expects.
+fn keychain_error(account: &str, source: keyring::Error) -> ConfigError {
+    let (host, account_tag) = split_account_for_error(account);
+    ConfigError::Keychain {
+        host,
+        account_tag,
+        source: Box::new(source),
+    }
+}
+
 impl CredentialStore for KeyringStore {
     fn get_password(&self, account: &str) -> Result<Option<SecretString>, ConfigError> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| {
-            let (host, account_tag) = split_account_for_error(account);
-            ConfigError::Keychain {
-                host,
-                account_tag,
-                source: Box::new(e),
-            }
-        })?;
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account)
+            .map_err(|e| keychain_error(account, e))?;
         match entry.get_password() {
             Ok(p) => Ok(Some(SecretString::from(p))),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => {
-                let (host, account_tag) = split_account_for_error(account);
-                Err(ConfigError::Keychain {
-                    host,
-                    account_tag,
-                    source: Box::new(e),
-                })
-            }
+            Err(e) => Err(keychain_error(account, e)),
         }
     }
 
     fn set_password(&self, account: &str, password: &str) -> Result<(), ConfigError> {
-        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|e| {
-            let (host, account_tag) = split_account_for_error(account);
-            ConfigError::Keychain {
-                host,
-                account_tag,
-                source: Box::new(e),
-            }
-        })?;
-        entry.set_password(password).map_err(|e| {
-            let (host, account_tag) = split_account_for_error(account);
-            ConfigError::Keychain {
-                host,
-                account_tag,
-                source: Box::new(e),
-            }
-        })
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account)
+            .map_err(|e| keychain_error(account, e))?;
+        entry
+            .set_password(password)
+            .map_err(|e| keychain_error(account, e))
     }
 }
 

@@ -53,18 +53,15 @@ impl TestDaemon {
 
 /// Build a minimal `DaemonState` suitable for integration tests that do not
 /// need a real `AccountRegistry`. Registry is empty; audit writer is real
-/// (backed by `audit_path`); download dir is `tempdir`. Session-permit
-/// capacity defaults to 64 (matches the production default); tests that
-/// need a different bound should call [`test_daemon_state_with_limit`].
+/// (backed by `audit_path`). Session-permit capacity defaults to 64
+/// (matches the production default); tests that need a different bound
+/// should call [`test_daemon_state_with_limit`].
 ///
 /// # Panics
 ///
 /// Panics if the audit file cannot be opened — intentional in a test helper.
-pub fn test_daemon_state(
-    tempdir: &std::path::Path,
-    audit_path: &std::path::Path,
-) -> Arc<DaemonState> {
-    test_daemon_state_with_limit(tempdir, audit_path, 64)
+pub fn test_daemon_state(audit_path: &std::path::Path) -> Arc<DaemonState> {
+    test_daemon_state_with_limit(audit_path, 64)
 }
 
 /// Same as [`test_daemon_state`] but with a configurable
@@ -75,11 +72,10 @@ pub fn test_daemon_state(
 /// Panics if the audit file cannot be opened — intentional in a test helper.
 #[expect(clippy::expect_used, reason = "test helper — panics on setup failure")]
 pub fn test_daemon_state_with_limit(
-    tempdir: &std::path::Path,
     audit_path: &std::path::Path,
     max_concurrent_sessions: usize,
 ) -> Arc<DaemonState> {
-    use rimap_server::boot::registry::AccountRegistry;
+    use rimap_server::boot::account_state::AccountRegistry;
 
     let audit = AuditWriter::open(&AuditOptions {
         path: audit_path.to_owned(),
@@ -92,14 +88,12 @@ pub fn test_daemon_state_with_limit(
     .expect("open audit");
 
     let registry = Arc::new(AccountRegistry::new(std::collections::BTreeMap::new()));
-    let download_dir: Arc<std::path::Path> = Arc::from(tempdir.to_owned().into_boxed_path());
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
     let session_permits = Arc::new(tokio::sync::Semaphore::new(max_concurrent_sessions));
 
     Arc::new(DaemonState::new(
         registry,
         audit,
-        download_dir,
         cancellation_tx,
         session_permits,
     ))
@@ -135,4 +129,75 @@ impl TestDaemon {
             handle,
         }
     }
+
+    /// Poll the audit file at a tight interval until `predicate(content)`
+    /// returns `true`, or `timeout` elapses. Returns the file contents on
+    /// success, or panics with a diagnostic on timeout. Replaces the
+    /// fixed `tokio::time::sleep` calls that previously gambled on a
+    /// duration generous enough to outrun CI scheduler jitter.
+    ///
+    /// `predicate` is a `Fn(&str) -> bool` closure that inspects the
+    /// JSONL contents — typically a substring count or a per-line
+    /// `serde_json::from_str` parse. Tests use this to wait on actual
+    /// observable state instead of guessing how long the daemon needs.
+    ///
+    /// # Panics
+    ///
+    /// Panics on timeout with the most-recent file contents to aid
+    /// triage.
+    pub async fn wait_for_audit(
+        &self,
+        timeout: std::time::Duration,
+        predicate: impl Fn(&str) -> bool,
+    ) -> String {
+        wait_for_audit_at(&self.audit_path, timeout, predicate).await
+    }
+}
+
+/// Free-function variant of [`TestDaemon::wait_for_audit`] for tests
+/// that hold the audit path directly.
+///
+/// # Panics
+///
+/// Panics on timeout with the most-recent file contents to aid triage.
+pub async fn wait_for_audit_at(
+    audit_path: &std::path::Path,
+    timeout: std::time::Duration,
+    predicate: impl Fn(&str) -> bool,
+) -> String {
+    /// 5 ms strikes a balance between responsiveness on a quiescent CI
+    /// runner and not hammering the kernel with `stat()` calls under load.
+    const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let content = std::fs::read_to_string(audit_path).unwrap_or_default();
+        if predicate(&content) {
+            return content;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "wait_for_audit timed out after {timeout:?}; last audit contents:\n{content}",
+        );
+        tokio::time::sleep(POLL_INTERVAL).await;
+    }
+}
+
+/// Count audit lines that contain `kind` as a top-level JSON `"kind"`
+/// field. Helper used by tests to wait on event arrival.
+#[must_use]
+pub fn count_audit_kind(content: &str, kind: &str) -> usize {
+    let needle = format!(r#""kind":"{kind}""#);
+    content.lines().filter(|l| l.contains(&needle)).count()
+}
+
+/// Count `session_end` records carrying a specific reason value.
+#[must_use]
+pub fn count_session_end_reason(content: &str, reason: &str) -> usize {
+    let kind = r#""kind":"session_end""#;
+    let reason_needle = format!(r#""reason":"{reason}""#);
+    content
+        .lines()
+        .filter(|l| l.contains(kind) && l.contains(&reason_needle))
+        .count()
 }

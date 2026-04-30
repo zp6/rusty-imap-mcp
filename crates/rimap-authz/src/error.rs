@@ -1,4 +1,4 @@
-//! Authorization-layer error type. Converts into `RimapError::Authz` with the
+//! Authorization-layer error type. Converts into `RimapError::Tagged` with the
 //! appropriate error code.
 
 use rimap_core::error::{ErrorCode, RimapError};
@@ -87,7 +87,7 @@ impl AuthzError {
 
 impl From<AuthzError> for RimapError {
     fn from(err: AuthzError) -> Self {
-        RimapError::Authz {
+        RimapError::Tagged {
             code: err.code(),
             message: err.to_string(),
         }
@@ -107,7 +107,7 @@ mod tests {
         let msg = err.to_string();
         let mapped: RimapError = err.into();
         match mapped {
-            RimapError::Authz { code, message } => {
+            RimapError::Tagged { code, message } => {
                 assert_eq!(code, ErrorCode::RateLimited);
                 assert_eq!(message, msg);
             }

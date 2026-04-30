@@ -572,7 +572,11 @@ impl Connection {
             body(session).await
         })
         .await;
-        if let Err(ImapError::ConnectionLost | ImapError::Timeout { .. }) = &result {
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(ImapError::is_invalidating)
+        {
             self.invalidate().await;
         }
         result
@@ -732,29 +736,14 @@ impl Connection {
             crate::ops::fetch::fetch_body(session, folder, uid, limit).await
         })
         .await;
-        // Drop the cached session on EITHER ConnectionLost OR SizeLimit.
-        // SizeLimit means we aborted mid-stream, so the IMAP response
-        // state is half-consumed and the session cannot be reused.
-        // The match here lists every ImapError variant explicitly because
-        // workspace lints ban `_ =>` wildcards.
-        let should_invalidate = match &result {
-            Err(ImapError::ConnectionLost | ImapError::SizeLimit { .. }) => true,
-            Err(
-                ImapError::Tls { .. }
-                | ImapError::TlsHandshake(_)
-                | ImapError::Starttls { .. }
-                | ImapError::Connect(_)
-                | ImapError::Timeout { .. }
-                | ImapError::Auth { .. }
-                | ImapError::Protocol(_)
-                | ImapError::InvalidInput { .. }
-                | ImapError::BatchTooLarge { .. }
-                | ImapError::UidValidityChanged { .. }
-                | ImapError::Audit { .. },
-            )
-            | Ok(_) => false,
-        };
-        if should_invalidate {
+        // `is_invalidating` returns true on ConnectionLost / Timeout / SizeLimit:
+        // the first two drop a session at every command boundary, the third
+        // aborts the FETCH mid-stream so the response state is half-consumed.
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(ImapError::is_invalidating)
+        {
             self.invalidate().await;
         }
         result

@@ -285,34 +285,14 @@ async fn log_session_start_blocking(
         peer_identity: identity,
         socket_path: socket_path.to_owned(),
     };
-    let join = tokio::task::spawn_blocking(move || audit.log_session_start(record)).await;
-    match join {
-        Ok(Ok(seq)) => Some(seq),
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, "failed to log session_start");
-            None
-        }
-        Err(join_err) => {
-            let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
-            tracing::error!(error = %rimap_err, "session_start spawn_blocking join error");
-            None
-        }
-    }
+    crate::mcp::run_audit_blocking("session_start", move || audit.log_session_start(record)).await
 }
 
 /// Emit a `session_end` record via `spawn_blocking`. Failures are logged but
 /// not propagated; at this point the session is already over.
 async fn log_session_end_blocking(state: &Arc<DaemonState>, end: rimap_audit::record::SessionEnd) {
     let audit = state.audit.clone();
-    let join = tokio::task::spawn_blocking(move || audit.log_session_end(end)).await;
-    match join {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::warn!(error = %e, "failed to log session_end"),
-        Err(join_err) => {
-            let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
-            tracing::error!(error = %rimap_err, "session_end spawn_blocking join error");
-        }
-    }
+    let _ = crate::mcp::run_audit_blocking("session_end", move || audit.log_session_end(end)).await;
 }
 
 /// Emit a paired `session_start` + `session_end(reason)` for a connection
