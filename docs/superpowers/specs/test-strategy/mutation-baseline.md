@@ -29,12 +29,10 @@ adding a test, not annotated.
 > harnesses (Task 6, already shipped in PR #190) and ClusterFuzzLite
 > wiring (Task 10) still ship in this sprint.
 
-| File:line | Mutation | Reason kept | Annotation site |
-|---|---|---|---|
-| _deferred to follow-up plan (B1 Tasks 8/9 over-cap)_ |  |  |  |
+No survivors are annotated yet — the per-survivor table lands in the
+B1-followup PR.
 
-Per-file survivor counts at 2026-04-30 refresh (for sizing the follow-up
-plan):
+Per-file survivor counts at the 2026-04-30 refresh:
 
 | File | Survivors |
 |---|---:|
@@ -62,18 +60,6 @@ Run summary (646 mutants total): 479 caught, 96 missed (80 outside
 The `bin/epvme_runner.rs` survivors are out of scope for B1 — that crate is
 diagnostic tooling, not production. Re-evaluate post-B4.
 
-## `rimap-authz`
-
-_Populated in Sprint B2._
-
-## `rimap-audit`
-
-_Populated in Sprint B2._
-
-## `rimap-server`
-
-_Populated in Sprint B3._
-
-## `rimap-imap`
-
-_Populated in Sprint B3._
+The other four trust-boundary crates (`rimap-authz`, `rimap-audit`,
+`rimap-server`, `rimap-imap`) get their own sections here when Sprints
+B2–B3 land.
