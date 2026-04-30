@@ -43,3 +43,10 @@ path = "fuzz_targets/content_rfc2047.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content_charset"
+path = "fuzz_targets/content_charset.rs"
+test = false
+doc = false
+bench = false
