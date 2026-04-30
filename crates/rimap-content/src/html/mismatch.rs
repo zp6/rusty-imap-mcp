@@ -13,6 +13,18 @@ pub(super) static SEL_ANCHOR: LazyLock<Selector> = LazyLock::new(|| compile_sele
 /// Selector matching `<img>` elements.
 pub(super) static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| compile_selector("img"));
 
+/// Return the largest index `<= index` that lies on a UTF-8 char boundary.
+fn floor_char_boundary(s: &str, index: usize) -> usize {
+    if index >= s.len() {
+        return s.len();
+    }
+    let mut i = index;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
 /// Extract the registrable domain from a URL-looking string.
 ///
 /// Returns `None` for empty input, relative URLs, `mailto:`/`tel:`/
@@ -91,7 +103,8 @@ pub(super) fn detect_mismatches(
         let Some(href_domain) = extract_registrable_domain(href) else {
             let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
             if text.len() > MAX_ANCHOR_TEXT_SCAN {
-                text.truncate(MAX_ANCHOR_TEXT_SCAN);
+                let boundary = floor_char_boundary(&text, MAX_ANCHOR_TEXT_SCAN);
+                text.truncate(boundary);
             }
             let has_url_text = finder
                 .links(&text)
@@ -103,7 +116,8 @@ pub(super) fn detect_mismatches(
         };
         let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
         if text.len() > MAX_ANCHOR_TEXT_SCAN {
-            text.truncate(MAX_ANCHOR_TEXT_SCAN);
+            let boundary = floor_char_boundary(&text, MAX_ANCHOR_TEXT_SCAN);
+            text.truncate(boundary);
         }
         let mut link_iter = finder
             .links(&text)
