@@ -107,8 +107,6 @@ skip = [
 # cargo-deny scope without forcing a coordinated upgrade across unrelated
 # ecosystems. The newest version (0.61) remains the canonical one.
 skip-tree = [
-    { name = "windows-sys", version = "0.48" },
-    { name = "windows-sys", version = "0.52" },
     { name = "windows-sys", version = "0.59" },
 
     # Sprint 4b: the html5ever ecosystem is mid-split. `scraper 0.26` (our
