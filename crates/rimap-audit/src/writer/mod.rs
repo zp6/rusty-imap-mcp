@@ -5,7 +5,7 @@
 //! - One `AuditWriter` holds `LOCK_EX` on its active file for its entire
 //!   lifetime. The lock is released implicitly on drop (OS cleanup — no
 //!   explicit `unlock()` call required).
-//! - `try_lock_exclusive` is non-blocking; a second writer against the same
+//! - `try_lock` is non-blocking; a second writer against the same
 //!   path fails immediately with [`AuditError::Locked`].
 //! - Per-record writes go through a buffered writer, flushed after each
 //!   record. `fsync` is only issued on `process_*` / `auth` records
@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use fs4::fs_std::FileExt;
+use fs4::{FileExt, TryLockError};
 
 pub(crate) mod emit;
 pub(crate) mod log;
@@ -142,14 +142,14 @@ impl AuditWriter {
         // already sets 0600 atomically; this is a no-op in that case.
         set_file_mode_0600(&file);
 
-        match FileExt::try_lock_exclusive(&file) {
-            Ok(true) => {}
-            Ok(false) => {
+        match FileExt::try_lock(&file) {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
                 return Err(AuditError::Locked {
                     path: opts.path.clone(),
                 });
             }
-            Err(source) => {
+            Err(TryLockError::Error(source)) => {
                 return Err(AuditError::Open {
                     path: opts.path.clone(),
                     source,
