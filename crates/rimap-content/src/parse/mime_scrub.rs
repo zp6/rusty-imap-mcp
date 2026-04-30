@@ -88,7 +88,11 @@ pub(super) fn detect_smuggling_spans(logical: &[&[u8]]) -> Vec<bool> {
         let start_pos = search_start + rel;
         match locate_encoded_word_end(logical, idx, start_pos + 2) {
             EncodedWordEnd::SameHeader(end_rel_to_header) => {
-                scan_from = end_rel_to_header + 2;
+                // Advance past the '?' of '?=' but keep the '=' in view.
+                // Using +2 would skip the '=' at end_rel_to_header+1, missing
+                // a back-to-back encoded-word opener like '=?=?' where the
+                // closing '?=' and the next '=?' share the '=' byte.
+                scan_from = end_rel_to_header + 1;
             }
             EncodedWordEnd::LaterHeader(end_idx) => {
                 for flag in mask.iter_mut().take(end_idx + 1).skip(idx) {
