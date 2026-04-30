@@ -17,7 +17,7 @@ mod bodies;
 mod filename;
 mod headers;
 mod meta;
-mod mime_scrub;
+pub(crate) mod mime_scrub;
 mod sniff;
 
 use crate::parse::bodies::extract_bodies;
