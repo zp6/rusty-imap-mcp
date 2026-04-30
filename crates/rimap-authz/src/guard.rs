@@ -82,7 +82,7 @@ mod tests {
     use crate::error::AuthzError;
     use crate::guard::DispatchGuard;
     use crate::matrix::EffectiveMatrix;
-    use crate::rate_limit::Governor;
+    use crate::rate_limit::{Governor, RateConfig};
 
     fn guard(posture: Posture) -> DispatchGuard<ManualClock> {
         let matrix = EffectiveMatrix::build(posture, &BTreeMap::new());
@@ -97,7 +97,12 @@ mod tests {
                 auth_max_cooldown: Duration::from_secs(600),
             },
         );
-        let governor = Governor::new(100, 5, 3).unwrap();
+        let governor = Governor::new(&RateConfig {
+            commands_per_second: 100,
+            drafts_per_minute: 5,
+            sends_per_minute: 3,
+        })
+        .unwrap();
         DispatchGuard::new(matrix, breaker, governor)
     }
 

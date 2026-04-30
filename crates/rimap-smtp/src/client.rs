@@ -84,7 +84,10 @@ impl SmtpClient {
     /// # Errors
     ///
     /// Returns `SmtpError` variants for auth, TLS, rejection, timeout,
-    /// or transport failures.
+    /// or transport failures. Note that `SmtpError::Rejected` may also
+    /// surface here without any network round-trip when an address in
+    /// `envelope` fails to parse as a `lettre::Address` — i.e. a
+    /// client-side rejection, not a server response.
     pub async fn send_raw(&self, envelope: &SendEnvelope, raw: &[u8]) -> Result<String, SmtpError> {
         let lettre_env = build_lettre_envelope(envelope)?;
         let response = self

@@ -135,7 +135,9 @@ impl ImapMcpServer {
             download_attachment, fetch_message, list_attachments, search,
         };
         let resp = match tool {
-            ToolName::ListFolders => ser(Box::pin(list_folders::handle(account)).await?)?,
+            ToolName::ListFolders => {
+                ser(Box::pin(list_folders::handle(account, parse_args(args)?)).await?)?
+            }
             ToolName::MarkRead => {
                 ser(Box::pin(flags::handle_mark_read(account, parse_args(args)?)).await?)?
             }
@@ -362,12 +364,9 @@ mod tests {
 
         let registry = AccountRegistry::new(BTreeMap::new());
         let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-        let download_dir: Arc<std::path::Path> =
-            Arc::from(std::path::Path::new("/tmp/test-downloads"));
         let daemon_state = Arc::new(DaemonState::new(
             Arc::new(registry),
             audit.clone(),
-            download_dir,
             cancellation_tx,
             Arc::new(tokio::sync::Semaphore::new(64)),
         ));

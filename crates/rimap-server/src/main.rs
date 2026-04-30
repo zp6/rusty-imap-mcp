@@ -182,7 +182,6 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     let state = Arc::new(DaemonState::new(
         Arc::new(registry),
         audit.clone(),
-        download_dir,
         cancellation_tx,
         session_permits,
     ));

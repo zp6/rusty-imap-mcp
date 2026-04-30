@@ -56,6 +56,14 @@ pub struct FlagsMeta {
     pub uid_validity: Option<u32>,
 }
 
+/// Add the `\Seen` flag to the targeted UIDs.
+///
+/// # Errors
+///
+/// Validates `input.folder` via `validate_folder_input`. Returns
+/// `RimapError::Imap` for IMAP-layer failures (network, protocol, or
+/// `UidValidityChanged` when `expected_uidvalidity` mismatches).
+/// `DispatchGuard::pre_dispatch` may surface `PostureDenied` upstream.
 pub async fn handle_mark_read(
     account: &AccountState,
     input: FlagInput,
@@ -69,6 +77,13 @@ pub async fn handle_mark_read(
     .await
 }
 
+/// Remove the `\Seen` flag from the targeted UIDs.
+///
+/// # Errors
+///
+/// Same contract as [`handle_mark_read`]: `validate_folder_input`,
+/// IMAP-layer errors via `RimapError::Imap`, and `PostureDenied` from
+/// the upstream dispatch guard.
 pub async fn handle_mark_unread(
     account: &AccountState,
     input: FlagInput,
@@ -82,6 +97,13 @@ pub async fn handle_mark_unread(
     .await
 }
 
+/// Add the `\Flagged` (star/important) flag to the targeted UIDs.
+///
+/// # Errors
+///
+/// Same contract as [`handle_mark_read`]: `validate_folder_input`,
+/// IMAP-layer errors via `RimapError::Imap`, and `PostureDenied` from
+/// the upstream dispatch guard.
 pub async fn handle_flag(
     account: &AccountState,
     input: FlagInput,
@@ -95,6 +117,13 @@ pub async fn handle_flag(
     .await
 }
 
+/// Remove the `\Flagged` (star/important) flag from the targeted UIDs.
+///
+/// # Errors
+///
+/// Same contract as [`handle_mark_read`]: `validate_folder_input`,
+/// IMAP-layer errors via `RimapError::Imap`, and `PostureDenied` from
+/// the upstream dispatch guard.
 pub async fn handle_unflag(
     account: &AccountState,
     input: FlagInput,

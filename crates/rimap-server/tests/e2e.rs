@@ -296,7 +296,6 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     let daemon_state = Arc::new(DaemonState::new(
         Arc::new(registry),
         audit.clone(),
-        std::sync::Arc::from(download_dir.path().to_path_buf().into_boxed_path()),
         cancellation_tx,
         Arc::new(tokio::sync::Semaphore::new(64)),
     ));
@@ -362,11 +361,11 @@ fn test_connection(harness: &DovecotHarness, audit: &AuditWriter) -> Connection 
 fn test_guard(config: &ValidatedAccountConfig) -> DispatchGuard<SystemClock> {
     let matrix = EffectiveMatrix::build(config.security.posture, &config.tool_overrides);
     let breaker = CircuitBreaker::new(SystemClock::new(), BreakerConfig::default_spec());
-    let governor = Governor::new(
-        config.limits.commands_per_second,
-        config.limits.drafts_per_minute,
-        config.limits.sends_per_minute,
-    )
+    let governor = Governor::new(&rimap_authz::rate_limit::RateConfig {
+        commands_per_second: config.limits.commands_per_second,
+        drafts_per_minute: config.limits.drafts_per_minute,
+        sends_per_minute: config.limits.sends_per_minute,
+    })
     .expect("governor");
     DispatchGuard::new(matrix, breaker, governor)
 }

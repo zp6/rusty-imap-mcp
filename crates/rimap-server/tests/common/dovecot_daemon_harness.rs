@@ -127,7 +127,6 @@ impl DovecotDaemon {
         let state = Arc::new(DaemonState::new(
             Arc::new(registry),
             audit,
-            download_dir,
             cancellation_tx,
             session_permits,
         ));

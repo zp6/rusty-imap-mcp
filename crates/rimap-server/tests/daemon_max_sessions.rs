@@ -32,7 +32,7 @@ async fn daemon_rejects_session_past_limit() {
     let socket_path = tempdir.path().join("daemon.sock");
     // Bound at 1: the first connection holds the only permit; the
     // second must be rejected.
-    let state = test_daemon_state_with_limit(tempdir.path(), &audit_path, 1);
+    let state = test_daemon_state_with_limit(&audit_path, 1);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
@@ -119,7 +119,7 @@ async fn daemon_releases_permit_on_session_end() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state_with_limit(tempdir.path(), &audit_path, 1);
+    let state = test_daemon_state_with_limit(&audit_path, 1);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;

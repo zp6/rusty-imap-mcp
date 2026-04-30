@@ -43,7 +43,7 @@ async fn spawn_daemon_at_resolver_path() -> (TempDir, PathBuf, TestDaemon) {
         .expect("chmod 0700 on socket parent");
 
     let audit_path = runtime_dir.path().join("audit.jsonl");
-    let state = test_daemon_state(runtime_dir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
 
     // `spawn_bare` consumes a `TempDir` for lifetime management; hand it a
     // separately-allocated inner tempdir so the outer `runtime_dir` (which

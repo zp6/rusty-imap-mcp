@@ -32,7 +32,7 @@ async fn shutdown_drains_active_sessions_within_deadline() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
@@ -106,7 +106,7 @@ async fn shutdown_synthesizes_session_end_for_aborted_sessions() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
 

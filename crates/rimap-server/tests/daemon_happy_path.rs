@@ -23,7 +23,7 @@ async fn daemon_spawns_and_shuts_down_cleanly() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
@@ -43,7 +43,7 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
-    let state = test_daemon_state(tempdir.path(), &audit_path);
+    let state = test_daemon_state(&audit_path);
 
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;

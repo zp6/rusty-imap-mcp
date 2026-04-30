@@ -471,12 +471,9 @@ mod tests {
         })
         .unwrap();
         let (cancellation_tx, _rx) = rimap_audit::cancellation_channel();
-        let download_dir: Arc<std::path::Path> =
-            Arc::from(std::path::Path::new("/tmp/test-downloads"));
         let daemon_state = Arc::new(DaemonState::new(
             Arc::new(AccountRegistry::new(BTreeMap::new())),
             audit,
-            download_dir,
             cancellation_tx,
             Arc::new(tokio::sync::Semaphore::new(64)),
         ));
@@ -529,12 +526,9 @@ mod tests {
         })
         .unwrap();
         let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-        let download_dir: Arc<std::path::Path> =
-            Arc::from(std::path::Path::new("/tmp/test-downloads"));
         let daemon_state = Arc::new(DaemonState::new(
             Arc::new(AccountRegistry::new(BTreeMap::new())),
             audit,
-            download_dir,
             cancellation_tx,
             Arc::new(tokio::sync::Semaphore::new(64)),
         ));

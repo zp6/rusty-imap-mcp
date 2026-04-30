@@ -54,11 +54,9 @@ fn build_test_server() -> TestFixture {
 
     let registry = AccountRegistry::new(BTreeMap::new());
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
-    let download_dir: Arc<std::path::Path> = Arc::from(std::path::Path::new("/tmp/test-downloads"));
     let daemon_state = Arc::new(DaemonState::new(
         Arc::new(registry),
         audit.clone(),
-        download_dir,
         cancellation_tx,
         Arc::new(tokio::sync::Semaphore::new(64)),
     ));
@@ -221,12 +219,9 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
         rimap_server::boot::registry::AccountRegistry::new(std::collections::BTreeMap::new());
     let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
     let drainer = spawn_drainer(cancellation_rx, audit.clone());
-    let download_dir_2: Arc<std::path::Path> =
-        Arc::from(std::path::Path::new("/tmp/test-downloads"));
     let daemon_state_2 = Arc::new(rimap_server::daemon::state::DaemonState::new(
         Arc::new(registry),
         audit.clone(),
-        download_dir_2,
         cancellation_tx,
         Arc::new(tokio::sync::Semaphore::new(64)),
     ));

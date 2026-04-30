@@ -17,7 +17,7 @@ use rimap_authz::DispatchGuard;
 use rimap_authz::FolderGuard;
 use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
 use rimap_authz::matrix::EffectiveMatrix;
-use rimap_authz::rate_limit::{DefaultInstant, Governor, retry_after_ms};
+use rimap_authz::rate_limit::{DefaultInstant, Governor, RateConfig, retry_after_ms};
 use rimap_config::credential::CredentialStore;
 use rimap_config::validate::ValidatedAccountConfig;
 use rimap_core::RimapError;
@@ -440,11 +440,11 @@ fn build_account_guard(
         ..BreakerConfig::default_spec()
     };
     let breaker = CircuitBreaker::new(SystemClock::new(), breaker_cfg);
-    let governor = Governor::new(
-        acfg.limits.commands_per_second,
-        acfg.limits.drafts_per_minute,
-        acfg.limits.sends_per_minute,
-    )
+    let governor = Governor::new(&RateConfig {
+        commands_per_second: acfg.limits.commands_per_second,
+        drafts_per_minute: acfg.limits.drafts_per_minute,
+        sends_per_minute: acfg.limits.sends_per_minute,
+    })
     .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
     Ok(DispatchGuard::new(matrix, breaker, governor))
 }

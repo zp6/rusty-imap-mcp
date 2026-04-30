@@ -42,7 +42,6 @@ secrecy = "0.10"
 # Authorization primitives
 governor = "0.10"
 utf7-imap = "0.3.2"
-nonzero_ext = "0.3"
 arc-swap = "1"
 parking_lot = "0.12"
 
@@ -106,9 +105,6 @@ mail-parser = "0.11"
 encoding_rs = "0.8"
 unicode-normalization = "0.1"
 unicode-segmentation = "1.13"
-# unicode-properties provides UAX #44 general-category lookups used by
-# rimap-content::lookalike for script/category checks (Sprint 4b).
-unicode-properties = "0.1.4"
 
 # Sprint 4b: HTML + lookalike content pipeline
 # scraper pulls html5ever + selectors transitively — no direct html5ever dep.

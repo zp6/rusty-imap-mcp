@@ -52,6 +52,20 @@ fn rate_limited(not_until: &NotUntil<DefaultInstant>, clock: &DefaultClock) -> A
     }
 }
 
+/// Named rate-limit knobs used to build a [`Governor`]. Mirrors the
+/// `LimitsConfig` fields from `rimap-config` so callers convert at the
+/// crate boundary instead of passing three same-typed `u32`s positionally
+/// — a permutation of which is impossible for the compiler to catch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateConfig {
+    /// Global per-second cap across all posture-gated tools.
+    pub commands_per_second: u32,
+    /// Per-minute cap on `create_draft` calls.
+    pub drafts_per_minute: u32,
+    /// Per-minute cap on `send_email` calls.
+    pub sends_per_minute: u32,
+}
+
 /// Combined global + draft + send rate limiter.
 pub struct Governor {
     global: DirectLimiter,
@@ -61,25 +75,21 @@ pub struct Governor {
 }
 
 impl Governor {
-    /// Build from numeric limits.
+    /// Build from a [`RateConfig`].
     ///
     /// # Errors
-    /// Returns `AuthzError::MatrixBuild` if either rate is zero (validation
+    /// Returns `AuthzError::MatrixBuild` if any rate is zero (validation
     /// should have caught this already, but we refuse to build a degenerate
     /// limiter).
-    pub fn new(
-        commands_per_second: u32,
-        drafts_per_minute: u32,
-        sends_per_minute: u32,
-    ) -> Result<Self, AuthzError> {
-        let cps = NonZeroU32::new(commands_per_second).ok_or_else(|| {
+    pub fn new(cfg: &RateConfig) -> Result<Self, AuthzError> {
+        let cps = NonZeroU32::new(cfg.commands_per_second).ok_or_else(|| {
             AuthzError::MatrixBuild("commands_per_second must be > 0".to_string())
         })?;
-        let dpm = NonZeroU32::new(drafts_per_minute)
+        let dpm = NonZeroU32::new(cfg.drafts_per_minute)
             .ok_or_else(|| AuthzError::MatrixBuild("drafts_per_minute must be > 0".to_string()))?;
-        let spm = NonZeroU32::new(sends_per_minute)
+        let spm = NonZeroU32::new(cfg.sends_per_minute)
             .ok_or_else(|| AuthzError::MatrixBuild("sends_per_minute must be > 0".to_string()))?;
-        let burst = NonZeroU32::new(commands_per_second.saturating_mul(2).max(1))
+        let burst = NonZeroU32::new(cfg.commands_per_second.saturating_mul(2).max(1))
             .unwrap_or(NonZeroU32::MIN);
         let global_quota = Quota::per_second(cps).allow_burst(burst);
         let draft_quota = Quota::per_minute(dpm);
@@ -121,7 +131,7 @@ mod tests {
     use rimap_core::tool::ToolName;
 
     use crate::error::AuthzError;
-    use crate::rate_limit::{Governor, saturating_millis_to_u64};
+    use crate::rate_limit::{Governor, RateConfig, saturating_millis_to_u64};
 
     #[test]
     fn saturating_millis_exact_cast_when_in_u64() {
@@ -142,19 +152,19 @@ mod tests {
 
     #[test]
     fn zero_rate_rejected_at_build() {
-        assert!(Governor::new(0, 5, 3).is_err());
-        assert!(Governor::new(10, 0, 3).is_err());
+        assert!(Governor::new(&RateConfig { commands_per_second: 0, drafts_per_minute: 5, sends_per_minute: 3 }).is_err());
+        assert!(Governor::new(&RateConfig { commands_per_second: 10, drafts_per_minute: 0, sends_per_minute: 3 }).is_err());
     }
 
     #[test]
     fn admits_first_call_in_bucket() {
-        let g = Governor::new(10, 5, 3).unwrap();
+        let g = Governor::new(&RateConfig { commands_per_second: 10, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap();
         assert!(g.check(ToolName::ListFolders).is_ok());
     }
 
     #[test]
     fn rejects_after_bucket_drains() {
-        let g = Governor::new(2, 5, 3).unwrap(); // burst = 4
+        let g = Governor::new(&RateConfig { commands_per_second: 2, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap(); // burst = 4
         for _ in 0..4 {
             let _ = g.check(ToolName::Search);
         }
@@ -170,7 +180,7 @@ mod tests {
 
     #[test]
     fn draft_bucket_is_separate() {
-        let g = Governor::new(1000, 5, 3).unwrap(); // huge global, tight draft
+        let g = Governor::new(&RateConfig { commands_per_second: 1000, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap(); // huge global, tight draft
         for _ in 0..5 {
             let _ = g.check(ToolName::CreateDraft);
         }
@@ -181,7 +191,7 @@ mod tests {
 
     #[test]
     fn sends_bucket_is_separate() {
-        let g = Governor::new(1000, 5, 3).unwrap();
+        let g = Governor::new(&RateConfig { commands_per_second: 1000, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap();
         for _ in 0..3 {
             let _ = g.check(ToolName::SendEmail);
         }
@@ -192,7 +202,7 @@ mod tests {
 
     #[test]
     fn zero_sends_per_minute_rejected_at_build() {
-        assert!(Governor::new(10, 5, 0).is_err());
+        assert!(Governor::new(&RateConfig { commands_per_second: 10, drafts_per_minute: 5, sends_per_minute: 0 }).is_err());
     }
 
     use proptest::prelude::*;
@@ -206,7 +216,7 @@ mod tests {
             cps in 1u32..50u32,
             attempts in 1usize..200usize,
         ) {
-            let g = Governor::new(cps, 1, 3).unwrap();
+            let g = Governor::new(&RateConfig { commands_per_second: cps, drafts_per_minute: 1, sends_per_minute: 3 }).unwrap();
             let mut admitted = 0usize;
             for _ in 0..attempts {
                 if g.check(ToolName::Search).is_ok() {

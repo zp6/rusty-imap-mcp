@@ -3,8 +3,8 @@
 //! Audits domains (extracted from headers, anchor hrefs, and body text
 //! URL tokens) and attachment filenames for TR39 mixed-script violations,
 //! homograph confusables, and punycode/IDN round-trips. The only consumer
-//! of `idna`, `addr`, `unicode-script`, `unicode-properties`, and the
-//! compiled confusables map in the workspace.
+//! of `idna`, `addr`, `unicode-script`, and the compiled confusables map in
+//! the workspace.
 //!
 //! The single public (crate-visible) entrypoint is [`audit`].
 
