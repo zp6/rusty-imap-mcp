@@ -1,0 +1,14 @@
+# Keep the ClusterFuzzLite Docker context lean. Without this file, every
+# `docker build` against `.clusterfuzzlite/Dockerfile` ships gigabytes of
+# local build artifacts to the daemon. CI runners are clean checkouts so
+# this only protects local invocations.
+
+.git/
+.worktrees/
+target/
+fuzz/target/
+fuzz/artifacts/
+fuzz/coverage/
+mutants.out/
+mutants.out.old/
+*.log
