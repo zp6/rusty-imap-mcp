@@ -2,7 +2,7 @@
 
 use rimap_imap::types::{FetchSpec, FetchedMessage, Uid};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 
 /// Fetch exactly one message by UID, mapping an empty result to
 /// `Authz { code: NotFound }`.

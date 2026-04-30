@@ -279,7 +279,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
         &account_cfg.security.expunge_folders,
     );
     let id = account_cfg.id.clone();
-    let state = rimap_server::boot::registry::AccountState {
+    let state = rimap_server::boot::account_state::AccountState {
         id: id.clone(),
         imap,
         smtp: None,
@@ -290,7 +290,7 @@ fn build_test_env(harness: DovecotHarness) -> TestEnv {
     };
     let mut accounts = BTreeMap::new();
     accounts.insert(id, state);
-    let registry = rimap_server::boot::registry::AccountRegistry::new(accounts);
+    let registry = rimap_server::boot::account_state::AccountRegistry::new(accounts);
 
     let (cancellation_tx, _cancellation_rx) = rimap_audit::cancellation_channel();
     let daemon_state = Arc::new(DaemonState::new(

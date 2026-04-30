@@ -10,7 +10,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for `delete_message`.
@@ -39,6 +39,7 @@ const TRASH_FOLDER: &str = "Trash";
 
 /// Trusted metadata for a `delete_message` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct DeleteMessageMeta {
     /// Always `true` when the handler returns `Ok`.
     pub deleted: bool,
@@ -64,7 +65,7 @@ pub async fn handle(
     account: &AccountState,
     input: DeleteMessageInput,
 ) -> Result<ToolResponse<DeleteMessageMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let uid = rimap_imap::types::Uid::from(input.uid);
 

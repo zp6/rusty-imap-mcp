@@ -3,6 +3,21 @@
 //! Every tool returns a JSON object with three top-level fields:
 //! `meta` (trusted server metadata), `untrusted` (sanitized email
 //! content), and `security_warnings` (structured observations).
+//!
+//! # Convention: `#[non_exhaustive]` on response shapes
+//!
+//! All public `Meta`, `Entry`, and `Info` structs under [`crate::tools`]
+//! are wire types. Agent callers see them as JSON; they are not part
+//! of any in-process pattern-match, and the only stable contract is
+//! field names + JSON types as documented per-handler. New fields are
+//! added regularly (response refinements, security warnings, MCP
+//! enrichments), and a downstream pattern-match against a literal
+//! struct would silently break on every minor.
+//!
+//! Therefore: every public `Meta`/`Entry`/`Info` struct in `tools/`
+//! carries `#[non_exhaustive]`. The attribute is applied uniformly so
+//! the surface stays predictable; do not omit it on a new response
+//! type without an explicit comment explaining why.
 
 use serde::Serialize;
 

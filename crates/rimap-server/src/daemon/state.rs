@@ -10,7 +10,7 @@ use rimap_audit::{AuditWriter, CancelledToolEndSender};
 use rimap_core::{SessionId, account::AccountId};
 use tokio::sync::Semaphore;
 
-use crate::boot::registry::AccountRegistry;
+use crate::boot::account_state::AccountRegistry;
 
 /// Daemon-wide shared state. One `Arc<DaemonState>` is built at boot and
 /// cloned into every `PerSessionHandler`.
@@ -179,7 +179,7 @@ mod tests {
         use tempfile::TempDir;
 
         use super::DaemonState;
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
 
         fn tight_tempdir() -> TempDir {
             use std::os::unix::fs::PermissionsExt as _;

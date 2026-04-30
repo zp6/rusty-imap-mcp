@@ -17,7 +17,7 @@ use rimap_imap::types::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Maximum number of results per page.
@@ -52,6 +52,7 @@ pub struct SearchInput {
 
 /// A single message entry in a `search` untrusted payload.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct SearchResultEntry {
     /// UID of the message.
     pub uid: u32,
@@ -80,6 +81,7 @@ pub struct SearchResultEntry {
 
 /// Trusted metadata for a `search` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct SearchMeta {
     /// Folder that was searched.
     pub folder: String,
@@ -111,7 +113,7 @@ pub async fn handle(
     account: &AccountState,
     input: SearchInput,
 ) -> Result<ToolResponse<SearchMeta, SearchUntrusted>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let query = build_query(account, &input)?;
 

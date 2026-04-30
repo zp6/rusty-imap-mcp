@@ -10,7 +10,7 @@ use rimap_imap::types::{FetchSpec, Flag, FlagAction, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// IMAP atom specials (RFC 3501 §9) plus backslash. Any of these
@@ -109,6 +109,7 @@ pub struct ListLabelsInput {
 
 /// Trusted metadata for `add_label` and `remove_label` responses.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct LabelsMeta {
     /// Folder the label was applied to.
     pub folder: String,
@@ -124,6 +125,7 @@ pub struct LabelsMeta {
 
 /// Trusted metadata for a `list_labels` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ListLabelsMeta {
     /// Folder the labels were fetched from.
     pub folder: String,
@@ -172,7 +174,7 @@ async fn handle_label_op(
     input: LabelInput,
     action: FlagAction,
 ) -> Result<ToolResponse<LabelsMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
     validate_label(&input.label)?;
     let uids: Vec<Uid> = input
         .target
@@ -210,7 +212,7 @@ pub async fn handle_list_labels(
     account: &AccountState,
     input: ListLabelsInput,
 ) -> Result<ToolResponse<ListLabelsMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let uid = rimap_imap::types::Uid::from(input.uid);
 
@@ -218,7 +220,7 @@ pub async fn handle_list_labels(
         flags: true,
         ..FetchSpec::default()
     };
-    let (msg, uid_validity) = crate::tools::fetch_by_uid::fetch_single_by_uid(
+    let (msg, uid_validity) = crate::tools::common::fetch_by_uid::fetch_single_by_uid(
         account,
         &input.folder,
         uid,

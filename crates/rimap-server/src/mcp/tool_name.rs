@@ -10,7 +10,7 @@ use std::str::FromStr;
 use rimap_core::account::{AccountId, DEFAULT_ACCOUNT_NAME};
 use rimap_core::tool::ToolName;
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 
 /// Whether the registry holds exactly one account and its id is the
 /// legacy `"default"` value. Used to preserve bare (non-namespaced)

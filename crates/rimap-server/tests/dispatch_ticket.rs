@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
 use rimap_core::tool::ToolName;
-use rimap_server::boot::registry::AccountRegistry;
+use rimap_server::boot::account_state::AccountRegistry;
 use rimap_server::daemon::state::{DaemonState, SessionState};
 use rimap_server::mcp::server::ImapMcpServer;
 use serde_json::json;
@@ -216,7 +216,7 @@ async fn drop_during_body_enqueues_cancellation_tool_end() {
     .expect("audit open");
 
     let registry =
-        rimap_server::boot::registry::AccountRegistry::new(std::collections::BTreeMap::new());
+        rimap_server::boot::account_state::AccountRegistry::new(std::collections::BTreeMap::new());
     let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
     let drainer = spawn_drainer(cancellation_rx, audit.clone());
     let daemon_state_2 = Arc::new(rimap_server::daemon::state::DaemonState::new(

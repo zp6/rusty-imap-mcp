@@ -75,7 +75,7 @@ pub fn test_daemon_state_with_limit(
     audit_path: &std::path::Path,
     max_concurrent_sessions: usize,
 ) -> Arc<DaemonState> {
-    use rimap_server::boot::registry::AccountRegistry;
+    use rimap_server::boot::account_state::AccountRegistry;
 
     let audit = AuditWriter::open(&AuditOptions {
         path: audit_path.to_owned(),

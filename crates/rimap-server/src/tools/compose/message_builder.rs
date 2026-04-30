@@ -10,7 +10,7 @@ use mail_builder::headers::message_id::MessageId;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 
 /// An email address with optional display name.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -93,7 +93,7 @@ pub(crate) fn validate_compose_input(input: &ComposeInput) -> Result<(), rimap_c
         ));
     }
     if let Some(folder) = &input.in_reply_to_folder {
-        crate::tools::validation::validate_folder_input("in_reply_to_folder", folder)?;
+        crate::tools::common::validation::validate_folder_input("in_reply_to_folder", folder)?;
     }
     Ok(())
 }

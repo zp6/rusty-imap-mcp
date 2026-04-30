@@ -14,7 +14,7 @@ use rimap_imap::types::{Flag, FlagAction, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for flag mutation tools.
@@ -45,6 +45,7 @@ pub struct FlagInput {
 
 /// Trusted metadata for a flag mutation response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FlagsMeta {
     /// Folder the flags were updated in.
     pub folder: String,
@@ -143,7 +144,7 @@ async fn handle_flag_op(
     flags: &[Flag],
     action: FlagAction,
 ) -> Result<ToolResponse<FlagsMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let uids: Vec<Uid> = input
         .target

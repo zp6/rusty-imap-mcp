@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::compose::message_builder::{self, ComposeInput};
 
@@ -30,6 +30,7 @@ pub struct SentCopyInfo {
 
 /// Trusted metadata for a `send_email` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct SendEmailMeta {
     /// Whether the message was delivered via SMTP.
     pub sent: bool,

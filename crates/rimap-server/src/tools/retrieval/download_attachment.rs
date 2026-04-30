@@ -6,7 +6,7 @@ use rimap_imap::types::{BodyStructure, FetchSpec, Uid};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::retrieval::part_walker::walk_body_structure;
 use crate::tools::retrieval::sandbox;
@@ -37,6 +37,7 @@ pub struct DownloadAttachmentInput {
 
 /// Trusted metadata for a `download_attachment` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct DownloadAttachmentMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -90,7 +91,7 @@ pub async fn handle(
     input: DownloadAttachmentInput,
 ) -> Result<ToolResponse<DownloadAttachmentMeta, DownloadAttachmentUntrusted>, rimap_core::RimapError>
 {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     let uid = Uid::from(input.uid);
 

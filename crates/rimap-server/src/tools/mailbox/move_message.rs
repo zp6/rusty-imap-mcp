@@ -5,7 +5,7 @@ use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for `move_message`.
@@ -38,6 +38,7 @@ pub struct MoveMessageInput {
 
 /// Per-UID move result entry.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct MoveEntry {
     /// Source UID that was moved.
     pub old_uid: u32,
@@ -47,6 +48,7 @@ pub struct MoveEntry {
 
 /// Trusted metadata for a `move_message` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct MoveMessageMeta {
     /// Source folder.
     pub folder: String,
@@ -87,8 +89,8 @@ pub async fn handle(
     account: &AccountState,
     input: MoveMessageInput,
 ) -> Result<ToolResponse<MoveMessageMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
-    crate::tools::validation::validate_folder_input("destination", &input.destination)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("destination", &input.destination)?;
     let uids: Vec<Uid> = input
         .target
         .into_uids()

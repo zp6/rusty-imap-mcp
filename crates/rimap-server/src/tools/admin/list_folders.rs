@@ -6,7 +6,7 @@ use rimap_content::output::SecurityWarning;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for `list_folders`. Currently has no client-controlled fields,
@@ -114,6 +114,7 @@ pub struct FolderEntry {
 
 /// Trusted metadata for a `list_folders` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ListFoldersMeta {
     /// All folders returned by the server.
     pub folders: Vec<FolderEntry>,

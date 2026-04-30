@@ -4,6 +4,7 @@ pub(crate) mod audit_envelope;
 pub mod content;
 pub(crate) mod dispatch;
 pub mod error;
+pub(crate) mod posture_context;
 pub mod response;
 pub mod server;
 pub(crate) mod tool_catalog;

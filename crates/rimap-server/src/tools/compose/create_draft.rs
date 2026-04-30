@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 use crate::tools::compose::message_builder::{self, ComposeInput};
 
@@ -12,6 +12,7 @@ pub type CreateDraftInput = ComposeInput;
 
 /// Trusted metadata for a `create_draft` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct CreateDraftMeta {
     /// Folder the draft was appended to.
     pub folder: String,
@@ -44,7 +45,7 @@ pub async fn handle(
     let raw_msg = message_builder::build_message(account, from_addr, &input).await?;
 
     let drafts_folder: &str = account.special_use.drafts().unwrap_or("Drafts");
-    crate::tools::validation::validate_folder_input("drafts folder", drafts_folder)?;
+    crate::tools::common::validation::validate_folder_input("drafts folder", drafts_folder)?;
     let result = account
         .imap
         .append_message(

@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for `create_folder`.
@@ -31,6 +31,7 @@ pub struct DeleteFolderInput {
 
 /// Trusted metadata for a `create_folder` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct CreateFolderMeta {
     /// Always `true` when the handler returns `Ok`.
     pub created: bool,
@@ -40,6 +41,7 @@ pub struct CreateFolderMeta {
 
 /// Trusted metadata for a `rename_folder` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct RenameFolderMeta {
     /// Always `true` when the handler returns `Ok`.
     pub renamed: bool,
@@ -51,6 +53,7 @@ pub struct RenameFolderMeta {
 
 /// Trusted metadata for a `delete_folder` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct DeleteFolderMeta {
     /// Always `true` when the handler returns `Ok`.
     pub deleted: bool,
@@ -78,7 +81,7 @@ pub async fn handle_create_folder(
     account: &AccountState,
     input: CreateFolderInput,
 ) -> Result<ToolResponse<CreateFolderMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     account
         .folder_guard
@@ -110,8 +113,8 @@ pub async fn handle_rename_folder(
     account: &AccountState,
     input: RenameFolderInput,
 ) -> Result<ToolResponse<RenameFolderMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
-    crate::tools::validation::validate_folder_input("new_folder", &input.new_folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("new_folder", &input.new_folder)?;
 
     account
         .folder_guard
@@ -150,7 +153,7 @@ pub async fn handle_delete_folder(
     account: &AccountState,
     input: DeleteFolderInput,
 ) -> Result<ToolResponse<DeleteFolderMeta>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     account
         .folder_guard

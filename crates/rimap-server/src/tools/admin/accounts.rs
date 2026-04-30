@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountRegistry;
+use crate::boot::account_state::AccountRegistry;
 use crate::daemon::state::SessionState;
 use crate::mcp::response::ToolResponse;
 
@@ -15,6 +15,7 @@ pub struct UseAccountInput {
 
 /// Trusted metadata for a `use_account` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct UseAccountMeta {
     /// The account that is now active.
     pub account: String,
@@ -24,6 +25,7 @@ pub struct UseAccountMeta {
 
 /// A single account entry in a `list_accounts` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct AccountEntry {
     /// Account name.
     pub name: String,
@@ -33,6 +35,7 @@ pub struct AccountEntry {
 
 /// Trusted metadata for a `list_accounts` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct ListAccountsMeta {
     /// All configured accounts.
     pub accounts: Vec<AccountEntry>,

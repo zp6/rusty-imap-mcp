@@ -4,7 +4,7 @@ use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
 use crate::mcp::response::ToolResponse;
 
 /// Input for the `fetch_message` tool.
@@ -32,6 +32,7 @@ pub struct FetchMessageInput {
 
 /// Trusted metadata for a `fetch_message` response.
 #[derive(Debug, Serialize)]
+#[non_exhaustive]
 pub struct FetchMessageMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -88,7 +89,7 @@ pub async fn handle(
     account: &AccountState,
     input: FetchMessageInput,
 ) -> Result<ToolResponse<FetchMessageMeta, FetchMessageUntrusted>, rimap_core::RimapError> {
-    crate::tools::validation::validate_folder_input("folder", &input.folder)?;
+    crate::tools::common::validation::validate_folder_input("folder", &input.folder)?;
 
     // The `FetchMessageHtml` posture check happens upstream in
     // `refine_tool_name` + `DispatchGuard::pre_dispatch`; this handler just reads

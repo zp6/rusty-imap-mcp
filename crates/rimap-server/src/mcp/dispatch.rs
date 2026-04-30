@@ -5,16 +5,17 @@
 //! serializes its typed response to `serde_json::Value` so the audit
 //! envelope can work with a single future type.
 //!
-//! Also hosts [`PostureContext`] — the audit-envelope posture header
-//! tag — and [`rimap_error_to_breaker_reason`], the mapping from
-//! [`rimap_core::RimapError`] codes to [`rimap_authz::breaker::FailureReason`]
-//! used to drive the per-account circuit breaker.
+//! The audit-envelope `PostureContext` header type and the
+//! `rimap_error_to_breaker_reason` helper used to live here too, but
+//! were lifted into [`crate::mcp::posture_context`] so this module and
+//! [`crate::mcp::server`] no longer form a bidirectional file cycle.
 
 use std::marker::PhantomData;
 
 use rmcp::model::{CallToolResult, ErrorData};
 
-use crate::boot::registry::AccountState;
+use crate::boot::account_state::AccountState;
+use crate::mcp::posture_context::PostureContext;
 use crate::mcp::server::ImapMcpServer;
 use crate::mcp::tool_catalog::{parse_args, ser};
 use rimap_core::tool::ToolName;
@@ -50,61 +51,6 @@ impl DispatchTicket {
     /// machinery that opens a `tool_start` record.
     pub(super) fn new() -> Self {
         Self(PhantomData)
-    }
-}
-
-/// Posture context recorded in audit envelope headers.
-///
-/// Per-account dispatches use the account's effective posture; the
-/// infrastructure tools (`list_accounts`, `use_account`) bypass posture
-/// gating by design and record the dedicated `Infrastructure` variant so
-/// log readers can distinguish them from per-account dispatches.
-#[derive(Debug, Clone, Copy)]
-pub(super) enum PostureContext {
-    Account(rimap_core::Posture),
-    Infrastructure,
-}
-
-impl PostureContext {
-    /// The per-account [`rimap_core::Posture`] this context represents, or
-    /// `None` for the infrastructure dispatch path. The audit writer maps
-    /// `None` to the `"infrastructure"` sentinel it records on disk.
-    pub(super) fn posture(self) -> Option<rimap_core::Posture> {
-        match self {
-            Self::Account(p) => Some(p),
-            Self::Infrastructure => None,
-        }
-    }
-}
-
-/// Map a [`rimap_core::RimapError`] to the breaker's [`FailureReason`], or
-/// `None` when the error represents a user/agent/policy failure (which
-/// the breaker must ignore per its contract).
-pub(super) fn rimap_error_to_breaker_reason(
-    err: &rimap_core::RimapError,
-) -> Option<rimap_authz::breaker::FailureReason> {
-    use rimap_authz::breaker::FailureReason;
-    use rimap_core::ErrorCode;
-    match err.code() {
-        ErrorCode::ConnectionLost => Some(FailureReason::ConnectionLost),
-        ErrorCode::Auth => Some(FailureReason::Auth),
-        ErrorCode::Timeout => Some(FailureReason::Timeout),
-        ErrorCode::ImapProtocol | ErrorCode::SmtpProtocol => Some(FailureReason::Protocol),
-        ErrorCode::Tls => Some(FailureReason::Tls),
-        ErrorCode::InvalidInput
-        | ErrorCode::PostureDenied
-        | ErrorCode::RateLimited
-        | ErrorCode::CircuitOpen
-        | ErrorCode::NotFound
-        | ErrorCode::AttachmentTooLarge
-        | ErrorCode::ProtectedFolder
-        | ErrorCode::ExpungeDenied
-        | ErrorCode::Config
-        | ErrorCode::Internal
-        | ErrorCode::NoAccount
-        | ErrorCode::UnknownAccount
-        | ErrorCode::Cancelled
-        | ErrorCode::UidValidityChanged => None,
     }
 }
 
@@ -282,7 +228,7 @@ impl ImapMcpServer {
 mod tests {
     use rimap_core::tool::ToolName;
 
-    use super::rimap_error_to_breaker_reason;
+    use crate::mcp::posture_context::rimap_error_to_breaker_reason;
 
     #[test]
     fn breaker_reason_maps_service_failures() {
@@ -338,7 +284,7 @@ mod tests {
         use rimap_audit::{AuditOptions, AuditWriter, Seq};
         use tempfile::TempDir;
 
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 

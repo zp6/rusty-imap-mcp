@@ -33,7 +33,8 @@ use rimap_audit::{CancelledToolEndSender, ToolEndInputs, ToolStartInputs};
 use rimap_core::tool::ToolName;
 use rmcp::model::{CallToolResult, ErrorData};
 
-use crate::mcp::dispatch::{DispatchTicket, PostureContext};
+use crate::mcp::dispatch::DispatchTicket;
+use crate::mcp::posture_context::PostureContext;
 use crate::mcp::server::ImapMcpServer;
 
 /// Count of `tool_end` cancellation records that could not be enqueued
@@ -450,7 +451,7 @@ mod tests {
             redact::{hash_arguments, hash_arguments_map},
         };
 
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
@@ -510,7 +511,7 @@ mod tests {
 
         use rimap_audit::{AuditOptions, AuditWriter, Seq, redact::hash_arguments};
 
-        use crate::boot::registry::AccountRegistry;
+        use crate::boot::account_state::AccountRegistry;
         use crate::daemon::state::{DaemonState, SessionState};
         use crate::mcp::server::ImapMcpServer;
 
