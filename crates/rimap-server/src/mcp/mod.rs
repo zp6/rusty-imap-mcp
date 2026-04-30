@@ -22,3 +22,37 @@ pub(crate) fn spawn_blocking_panic_error(err: tokio::task::JoinError) -> rimap_c
         source: Box::new(err),
     }
 }
+
+/// Run a blocking audit-write closure on the threadpool, swallowing both
+/// `AuditError` and `JoinError` failures with structured tracing logs.
+/// Returns `Some(value)` on success, `None` on either failure path.
+///
+/// `op` is a stable identifier for the write site (e.g. `"session_start"`)
+/// — included as a structured field on every failure log so operators can
+/// triage from the audit-loss observability dashboard without grepping
+/// English error strings. The `JoinError` panic-mapping is handled
+/// uniformly through [`spawn_blocking_panic_error`] so panic payloads
+/// surface as `RimapError::InternalSourced` everywhere.
+///
+/// Use this at sites where an audit-write failure is not propagated to
+/// the caller (`session_start`, `session_end`, `tool_end`). Sites that
+/// must propagate the failure as an MCP error use bespoke matches that
+/// emit `ErrorData` — see `audit_envelope::emit_tool_start`.
+pub(crate) async fn run_audit_blocking<T, F>(op: &'static str, f: F) -> Option<T>
+where
+    F: FnOnce() -> Result<T, rimap_audit::AuditError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(Ok(value)) => Some(value),
+        Ok(Err(audit_err)) => {
+            tracing::error!(op, error = %audit_err, "audit write failed");
+            None
+        }
+        Err(join_err) => {
+            let rimap_err = spawn_blocking_panic_error(join_err);
+            tracing::error!(op, error = %rimap_err, "audit spawn_blocking join error");
+            None
+        }
+    }
+}

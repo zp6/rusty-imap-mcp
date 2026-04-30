@@ -167,6 +167,21 @@ pub enum ConfigError {
     NoAccounts,
 }
 
+impl ConfigError {
+    /// Map this error to the canonical [`rimap_core::ErrorCode`] used in
+    /// audit records and the top-level [`rimap_core::RimapError`]
+    /// envelope. Per design spec §9, every config-layer failure surfaces
+    /// as `ErrorCode::Config` — but `NoCredential` and `Keychain` are
+    /// auth-layer surface from the operator's perspective and are
+    /// already routed through the audit pipeline that way at the
+    /// boundary, so the `Config` mapping here is a single canonical
+    /// answer rather than a per-variant table.
+    #[must_use]
+    pub fn code(&self) -> rimap_core::ErrorCode {
+        rimap_core::ErrorCode::Config
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

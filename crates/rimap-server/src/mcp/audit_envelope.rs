@@ -204,17 +204,7 @@ impl ImapMcpServer {
     /// finished and the caller sees its original result.
     async fn emit_tool_end(&self, inputs: ToolEndInputs) {
         let sink = self.audit.clone();
-        let join = tokio::task::spawn_blocking(move || sink.log_tool_end(inputs)).await;
-        match join {
-            Ok(Ok(_)) => {}
-            Ok(Err(audit_err)) => {
-                tracing::error!(error = %audit_err, "tool_end audit write failed");
-            }
-            Err(join_err) => {
-                let rimap_err = crate::mcp::spawn_blocking_panic_error(join_err);
-                tracing::error!(error = %rimap_err, "tool_end join error");
-            }
-        }
+        let _ = crate::mcp::run_audit_blocking("tool_end", move || sink.log_tool_end(inputs)).await;
     }
 }
 

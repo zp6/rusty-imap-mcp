@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Context;
 use rimap_authz::DispatchGuard;
 use rimap_authz::FolderGuard;
 use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
@@ -18,12 +17,90 @@ use rimap_authz::matrix::EffectiveMatrix;
 use rimap_authz::rate_limit::{Governor, RateConfig};
 use rimap_config::credential::CredentialStore;
 use rimap_config::validate::ValidatedAccountConfig;
+use rimap_core::ErrorCode;
 use rimap_core::account::AccountId;
 use rimap_imap::{Connection, ConnectionConfig};
 use rimap_smtp::SmtpClient;
 use secrecy::ExposeSecret;
+use thiserror::Error;
 
 pub use crate::boot::account_state::{AccountRegistry, AccountState};
+
+/// Errors produced by the boot-time account-registry pipeline.
+///
+/// Every variant carries a stable [`ErrorCode`] so the boot/runtime seam
+/// preserves classification — credential / SMTP / governor / discovery
+/// failures stay distinguishable up to the call site that converts them
+/// into operator output. Source enums are boxed so this fits clippy's
+/// `result_large_err` budget for an `Err`-returning fn signature.
+/// Maps cleanly into [`rimap_core::RimapError`] via the [`From`] impl
+/// below; `main.rs` then `?`-converts to its own `anyhow::Result`
+/// wrapper at the outermost edge.
+#[derive(Debug, Error)]
+pub enum BootError {
+    /// Credential resolution failed for an account.
+    #[error("resolving credential for account {account}: {source}")]
+    Credential {
+        /// Account that failed.
+        account: String,
+        /// Underlying config-layer error.
+        #[source]
+        source: Box<rimap_config::ConfigError>,
+    },
+    /// SMTP client construction failed.
+    #[error("building SMTP client for account {account}: {source}")]
+    Smtp {
+        /// Account that failed.
+        account: String,
+        /// Underlying SMTP-layer error.
+        #[source]
+        source: Box<rimap_smtp::SmtpError>,
+    },
+    /// Special-use folder discovery (the per-account boot LIST round trip)
+    /// failed.
+    #[error("resolving special-use folders for account {account}: {source}")]
+    SpecialUseDiscovery {
+        /// Account that failed.
+        account: String,
+        /// Underlying IMAP-layer error.
+        #[source]
+        source: Box<rimap_imap::ImapError>,
+    },
+    /// Governor / rate-limiter construction failed.
+    #[error("building governor for account {account}: {source}")]
+    Governor {
+        /// Account that failed.
+        account: String,
+        /// Underlying authz-layer error.
+        #[source]
+        source: Box<rimap_authz::error::AuthzError>,
+    },
+}
+
+impl BootError {
+    /// Stable [`ErrorCode`] classification preserved across the
+    /// boot/runtime seam.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        match self {
+            Self::Credential { source, .. } => source.code(),
+            Self::Smtp { source, .. } => source.code(),
+            Self::SpecialUseDiscovery { source, .. } => source.code(),
+            Self::Governor { source, .. } => source.code(),
+        }
+    }
+}
+
+impl From<BootError> for rimap_core::RimapError {
+    fn from(err: BootError) -> Self {
+        let code = err.code();
+        let message = err.to_string();
+        rimap_core::RimapError::InternalSourced {
+            message: format!("[{code}] {message}"),
+            source: Box::new(err),
+        }
+    }
+}
 
 /// Build the account registry from a validated multi-account config.
 ///
@@ -34,14 +111,16 @@ pub use crate::boot::account_state::{AccountRegistry, AccountState};
 ///
 /// # Errors
 ///
-/// Returns an error if credential resolution, SMTP client construction, or
-/// special-use folder discovery fails for any account.
+/// Returns a [`BootError`] if credential resolution, SMTP client
+/// construction, governor build, or special-use folder discovery fails
+/// for any account. The variant carries a stable [`ErrorCode`] so the
+/// boot/runtime seam preserves classification.
 pub async fn build(
     multi: &rimap_config::validate::ValidatedMultiConfig,
     audit: &rimap_audit::AuditWriter,
     credentials: &Arc<dyn CredentialStore>,
     download_dir: &Arc<std::path::Path>,
-) -> anyhow::Result<AccountRegistry> {
+) -> Result<AccountRegistry, BootError> {
     use futures_util::stream::{self, StreamExt as _, TryStreamExt as _};
 
     /// Cap the number of in-flight per-account setups. The work per
@@ -87,8 +166,8 @@ async fn build_one_account(
     auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink>,
     credentials: Arc<dyn CredentialStore>,
     download_dir: Arc<std::path::Path>,
-) -> anyhow::Result<(AccountId, AccountState)> {
-    let guard = build_account_guard(&acfg).context("building dispatch guard")?;
+) -> Result<(AccountId, AccountState), BootError> {
+    let guard = build_account_guard(&acfg)?;
     let conn_cfg = build_account_connection(&id, &acfg);
     let resolver: Arc<dyn rimap_core::CredentialResolver> =
         Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
@@ -99,7 +178,10 @@ async fn build_one_account(
 
     let special_use = crate::boot::discovery::resolve_special_use(&imap)
         .await
-        .with_context(|| format!("resolving special-use folders for account {}", id.as_str()))?;
+        .map_err(|source| BootError::SpecialUseDiscovery {
+            account: id.as_str().to_string(),
+            source: Box::new(source),
+        })?;
 
     // Expand the config-supplied protected-folders list with any
     // server-declared RFC 6154 names (e.g. Gmail's `[Gmail]/Sent Mail`).
@@ -133,14 +215,10 @@ async fn build_one_account(
 }
 
 /// Build an SMTP client from account config, if SMTP is configured.
-///
-/// # Errors
-///
-/// Returns an error if credential resolution or SMTP client construction fails.
 fn build_smtp_client(
     acfg: &ValidatedAccountConfig,
     credentials: &Arc<dyn CredentialStore>,
-) -> anyhow::Result<Option<SmtpClient>> {
+) -> Result<Option<SmtpClient>, BootError> {
     let Some(ref smtp_cfg) = acfg.smtp else {
         return Ok(None);
     };
@@ -151,9 +229,17 @@ fn build_smtp_client(
         &smtp_cfg.host,
         acfg.fallback_mode,
     )
-    .with_context(|| format!("resolving SMTP credential for account {}", acfg.id.as_str()))?;
-    let client = SmtpClient::new(smtp_cfg, smtp_password.expose_secret())
-        .with_context(|| format!("building SMTP client for account {}", acfg.id.as_str()))?;
+    .map_err(|source| BootError::Credential {
+        account: acfg.id.as_str().to_string(),
+        source: Box::new(source),
+    })?;
+    let client =
+        SmtpClient::new(smtp_cfg, smtp_password.expose_secret()).map_err(|source| {
+            BootError::Smtp {
+                account: acfg.id.as_str().to_string(),
+                source: Box::new(source),
+            }
+        })?;
     drop(smtp_password);
     Ok(Some(client))
 }
@@ -161,7 +247,7 @@ fn build_smtp_client(
 /// Build the composed authz guard from a per-account config.
 fn build_account_guard(
     acfg: &ValidatedAccountConfig,
-) -> anyhow::Result<DispatchGuard<SystemClock>> {
+) -> Result<DispatchGuard<SystemClock>, BootError> {
     let matrix = EffectiveMatrix::build(acfg.security.posture, &acfg.tool_overrides);
     let breaker_cfg = BreakerConfig {
         error_threshold: acfg.limits.circuit_breaker_error_threshold,
@@ -174,7 +260,10 @@ fn build_account_guard(
         drafts_per_minute: acfg.limits.drafts_per_minute,
         sends_per_minute: acfg.limits.sends_per_minute,
     })
-    .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
+    .map_err(|source| BootError::Governor {
+        account: acfg.id.as_str().to_string(),
+        source: Box::new(source),
+    })?;
     Ok(DispatchGuard::new(matrix, breaker, governor))
 }
 

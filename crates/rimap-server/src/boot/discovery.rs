@@ -9,8 +9,7 @@
 //! Classification logic is unit-tested in `rimap_imap::special_use`;
 //! the live LIST path is covered by the Dovecot integration harness.
 
-use rimap_core::RimapError;
-use rimap_imap::{Connection, SpecialUseMap};
+use rimap_imap::{Connection, ImapError, SpecialUseMap};
 
 /// Run one `LIST "*"` and classify the response into a `SpecialUseMap`.
 ///
@@ -21,9 +20,11 @@ use rimap_imap::{Connection, SpecialUseMap};
 ///
 /// # Errors
 ///
-/// Returns `RimapError::Imap { ... }` when the underlying `LIST` call
-/// fails (transport error, server protocol error, auth expired, etc.).
-pub async fn resolve_special_use(connection: &Connection) -> Result<SpecialUseMap, RimapError> {
+/// Returns `ImapError` when the underlying `LIST` call fails (transport
+/// error, server protocol error, auth expired, etc.). The boot path
+/// wraps this into a `BootError::SpecialUseDiscovery` so the failing
+/// account name is recorded alongside the underlying error code.
+pub async fn resolve_special_use(connection: &Connection) -> Result<SpecialUseMap, ImapError> {
     let folders = connection.list_folders("*").await?;
     Ok(SpecialUseMap::from_folders(&folders))
 }
