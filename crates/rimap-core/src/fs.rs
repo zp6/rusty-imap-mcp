@@ -18,11 +18,34 @@ use rustix::io::Errno;
 /// Flags used for every directory handle this module holds.
 ///
 /// `O_NOFOLLOW` refuses a symlinked leaf, `O_DIRECTORY` refuses a non-directory,
-/// `O_CLOEXEC` stops the fd leaking across `exec`, `O_PATH` means we only need
-/// the fd as an anchor for subsequent `*at` syscalls — we never read or write
-/// it directly.
+/// `O_CLOEXEC` stops the fd leaking across `exec`. On platforms that support it
+/// we additionally pass `O_PATH` to signal that we only need the fd as an anchor
+/// for subsequent `*at` syscalls — we never read or write it directly. On
+/// platforms without `O_PATH` (notably macOS and the BSDs other than FreeBSD)
+/// the fd is opened for read instead; the security invariants enforced by
+/// [`verify_dir`] are unchanged.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "emscripten",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "redox",
+))]
 const DIR_OFLAGS: OFlags = OFlags::PATH
     .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "emscripten",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "redox",
+)))]
+const DIR_OFLAGS: OFlags = OFlags::DIRECTORY
     .union(OFlags::NOFOLLOW)
     .union(OFlags::CLOEXEC);
 
@@ -30,8 +53,9 @@ const DIR_OFLAGS: OFlags = OFlags::PATH
 /// symlink. Creates the directory (mode 0700) if missing.
 ///
 /// The leaf is opened with `openat(parent_fd, name, O_NOFOLLOW | O_DIRECTORY
-/// | O_CLOEXEC | O_PATH)` so that a hostile swap of an ancestor between
-/// syscalls cannot smuggle the caller onto a different directory. The returned
+/// | O_CLOEXEC)` (plus `O_PATH` on platforms that support it) so that a hostile
+/// swap of an ancestor between syscalls cannot smuggle the caller onto a
+/// different directory. The returned
 /// [`OwnedFd`] pins the verified directory — callers that perform follow-up
 /// syscalls inside `dir` should keep the fd alive and use `*at` syscalls
 /// against it rather than re-walking the path. Callers that need only the
