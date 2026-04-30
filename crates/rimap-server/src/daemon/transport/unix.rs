@@ -45,7 +45,7 @@ struct UmaskGuard {
 }
 
 impl UmaskGuard {
-    fn new(mask: u32) -> Self {
+    fn new(mask: rustix::fs::RawMode) -> Self {
         let prior = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask));
         Self { prior }
     }
