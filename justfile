@@ -193,7 +193,7 @@ test-integration:
         echo "set PROTON_BRIDGE_TEST=1 to run Proton Bridge integration tests"
         exit 1
     fi
-    cargo nextest run --workspace --locked --features proton-bridge-tests
+    cargo nextest run -p rimap-imap --locked --test proton
 
 # Adversarial email corpus against the content pipeline.
 test-injection:
