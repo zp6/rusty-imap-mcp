@@ -29,3 +29,10 @@ path = "fuzz_targets/content_mime.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content_html"
+path = "fuzz_targets/content_html.rs"
+test = false
+doc = false
+bench = false
