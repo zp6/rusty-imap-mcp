@@ -7,68 +7,24 @@ use scraper::{Html, Selector};
 use crate::html::MAX_ANCHOR_TEXT_SCAN;
 use crate::html::MAX_MISMATCH_HITS;
 use crate::html::hidden::compile_selector;
+use crate::unicode::truncate_graphemes;
 
 /// Selector matching anchor elements with an `href` attribute.
 pub(super) static SEL_ANCHOR: LazyLock<Selector> = LazyLock::new(|| compile_selector("a[href]"));
 /// Selector matching `<img>` elements.
 pub(super) static SEL_IMG: LazyLock<Selector> = LazyLock::new(|| compile_selector("img"));
 
-/// Return the largest index `<= index` that lies on a UTF-8 char boundary.
-fn floor_char_boundary(s: &str, index: usize) -> usize {
-    if index >= s.len() {
-        return s.len();
-    }
-    let mut i = index;
-    while i > 0 && !s.is_char_boundary(i) {
-        i -= 1;
-    }
-    i
-}
-
-#[cfg(test)]
-mod char_boundary_tests {
-    use super::floor_char_boundary;
-
-    #[test]
-    fn ascii_index_is_unchanged() {
-        let s = "hello world";
-        assert_eq!(floor_char_boundary(s, 5), 5);
-    }
-
-    #[test]
-    fn index_beyond_len_clamps_to_len() {
-        let s = "abc";
-        assert_eq!(floor_char_boundary(s, 100), 3);
-    }
-
-    #[test]
-    fn multibyte_at_split_walks_back_to_boundary() {
-        // U+4E2D (Chinese "middle") is 3 bytes: e4 b8 ad.
-        // A 2-byte string of "中" has bytes [e4, b8, ad]; index 1 and 2
-        // land mid-codepoint and must walk back to 0 (the only valid
-        // boundary <= 2).
-        let s = "中";
-        assert_eq!(s.len(), 3);
-        assert_eq!(floor_char_boundary(s, 0), 0);
-        assert_eq!(floor_char_boundary(s, 1), 0);
-        assert_eq!(floor_char_boundary(s, 2), 0);
-        assert_eq!(floor_char_boundary(s, 3), 3);
-    }
-
-    #[test]
-    fn truncate_at_floor_boundary_does_not_panic() {
-        // Reproduces the original bug: truncating mid-codepoint panics.
-        // Walking back to the floor boundary makes truncate safe.
-        let mut s = String::new();
-        for _ in 0..2000 {
-            s.push('中'); // 3 bytes per char → 6000 bytes total
-        }
-        let cap = 4096; // mid-codepoint
-        let boundary = floor_char_boundary(&s, cap);
-        assert!(boundary <= cap);
-        assert!(s.is_char_boundary(boundary));
-        s.truncate(boundary); // would panic without the floor walk
-    }
+/// Collect an anchor's text into a single space-joined string and cap
+/// it at [`MAX_ANCHOR_TEXT_SCAN`] bytes on a grapheme-cluster boundary.
+///
+/// The cap exists because the linkify URL scan downstream is O(n) over
+/// the input length, and the cap protects against denial-of-service
+/// from anchors with megabyte-scale text. The grapheme-cluster boundary
+/// guarantees the truncation never lands inside a multi-byte UTF-8
+/// sequence (which would panic `String::truncate`).
+fn collect_anchor_text(anchor: &scraper::ElementRef<'_>) -> String {
+    let text: String = anchor.text().collect::<Vec<&str>>().join(" ");
+    truncate_graphemes(&text, MAX_ANCHOR_TEXT_SCAN)
 }
 
 /// Extract the registrable domain from a URL-looking string.
@@ -147,11 +103,7 @@ pub(super) fn detect_mismatches(
             continue;
         };
         let Some(href_domain) = extract_registrable_domain(href) else {
-            let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
-            if text.len() > MAX_ANCHOR_TEXT_SCAN {
-                let boundary = floor_char_boundary(&text, MAX_ANCHOR_TEXT_SCAN);
-                text.truncate(boundary);
-            }
+            let text = collect_anchor_text(&anchor);
             let has_url_text = finder
                 .links(&text)
                 .any(|l| l.kind() == &linkify::LinkKind::Url);
@@ -160,11 +112,7 @@ pub(super) fn detect_mismatches(
             }
             continue;
         };
-        let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
-        if text.len() > MAX_ANCHOR_TEXT_SCAN {
-            let boundary = floor_char_boundary(&text, MAX_ANCHOR_TEXT_SCAN);
-            text.truncate(boundary);
-        }
+        let text = collect_anchor_text(&anchor);
         let mut link_iter = finder
             .links(&text)
             .filter(|l| l.kind() == &linkify::LinkKind::Url);
