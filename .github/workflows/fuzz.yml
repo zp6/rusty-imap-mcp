@@ -1,0 +1,88 @@
+name: Fuzz
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/rimap-content/**'
+      - 'crates/rimap-audit/**'
+      - 'crates/rimap-server/**'
+      - 'fuzz/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/fuzz.yml'
+  schedule:
+    # Nightly at 03:17 UTC. The odd minute spreads load on shared GHA
+    # cron schedulers (top-of-the-hour cron jobs queue heavily).
+    - cron: '17 3 * * *'
+
+concurrency:
+  # PR-smoke runs share a per-PR group so a force-push cancels the prior run.
+  # Nightly runs share a single global group so two nightly cycles cannot
+  # overlap if one runs long.
+  group: fuzz-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  # 'security-events: write' would be needed to upload SARIF; not used here
+  # because crash artifacts are sufficient for B1's scope.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pr-smoke:
+    name: pr-smoke (${{ matrix.target }})
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [content_mime, content_html]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          sanitizer: address
+      - name: Run fuzzer (${{ matrix.target }})
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          fuzz-seconds: 300
+          mode: code-change
+          sanitizer: address
+          # Restrict to a single target per matrix slot so a crash in one
+          # does not mask a regression in the other.
+          parallel-fuzzing: false
+
+  nightly:
+    name: nightly (${{ matrix.target }})
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # Keep in sync with fuzz/fuzz_targets/*.rs.
+        target: [content_mime, content_html, content_rfc2047, content_charset]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          sanitizer: address
+      - name: Run fuzzer (${{ matrix.target }})
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          fuzz-seconds: 1800  # 30 minutes per target
+          mode: batch
+          sanitizer: address
+          parallel-fuzzing: false
