@@ -8,7 +8,10 @@
 
 mod common;
 
-use common::daemon_harness::{TestDaemon, test_daemon_state_with_limit};
+use common::daemon_harness::{
+    TestDaemon, count_audit_kind, count_session_end_reason, test_daemon_state_with_limit,
+    wait_for_audit_at,
+};
 use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -41,9 +44,15 @@ async fn daemon_rejects_session_past_limit() {
     // not closing its write half. This holds the session permit.
     let mut conn1 = UnixStream::connect(&socket_path).await.expect("connect 1");
 
-    // Give the daemon a beat to emit session_start for conn1 and to
-    // acquire the permit before we race conn2 in.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for conn1's session_start to land in the audit log so the
+    // second connect races against a fully-acquired permit. Polling
+    // beats a fixed sleep — passes immediately on fast machines, holds
+    // up under CI scheduler jitter.
+    daemon
+        .wait_for_audit(Duration::from_secs(2), |c| {
+            count_audit_kind(c, "session_start") >= 1
+        })
+        .await;
 
     // Second client connects: the daemon accepts the TCP/Unix connection
     // (we can't refuse it at the socket layer without breaking the
@@ -63,24 +72,30 @@ async fn daemon_rejects_session_past_limit() {
         "expected EOF on rejected connection, got {read} bytes"
     );
 
-    // Hold conn1 open just long enough to be sure audit lines are flushed;
-    // then close both and read the log.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for the rejection pair to be flushed before closing conn1.
+    daemon
+        .wait_for_audit(Duration::from_secs(2), |c| {
+            count_session_end_reason(c, "rejected") >= 1
+        })
+        .await;
 
     // Close both connections cleanly so session_end(eof) for conn1 lands
     // before we snapshot the audit log.
     conn1.shutdown().await.expect("shutdown conn1 write");
     drop(conn1);
     drop(conn2);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Wait for both session_ends (conn1's eof + conn2's rejected).
+    daemon
+        .wait_for_audit(Duration::from_secs(2), |c| {
+            count_audit_kind(c, "session_end") >= 2
+        })
+        .await;
 
     let audit = std::fs::read_to_string(&audit_path).expect("read audit");
     let _ = daemon.shutdown().await;
 
-    let rejected_count = audit
-        .lines()
-        .filter(|l| l.contains(r#""kind":"session_end""#) && l.contains(r#""reason":"rejected""#))
-        .count();
+    let rejected_count = count_session_end_reason(&audit, "rejected");
     assert_eq!(
         rejected_count, 1,
         "expected exactly one session_end(rejected), full audit:\n{audit}"
@@ -130,7 +145,10 @@ async fn daemon_releases_permit_on_session_end() {
         c.shutdown().await.expect("shutdown 1");
         drop(c);
     }
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_audit_at(&audit_path, Duration::from_secs(2), |c| {
+        count_audit_kind(c, "session_end") >= 1
+    })
+    .await;
 
     // Round 2: permit should be back; this connection must not be
     // rejected.
@@ -139,23 +157,20 @@ async fn daemon_releases_permit_on_session_end() {
         c.shutdown().await.expect("shutdown 2");
         drop(c);
     }
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    wait_for_audit_at(&audit_path, Duration::from_secs(2), |c| {
+        count_audit_kind(c, "session_end") >= 2
+    })
+    .await;
 
     let audit = std::fs::read_to_string(&audit_path).expect("read audit");
     let _ = daemon.shutdown().await;
 
-    let rejected_count = audit
-        .lines()
-        .filter(|l| l.contains(r#""kind":"session_end""#) && l.contains(r#""reason":"rejected""#))
-        .count();
+    let rejected_count = count_session_end_reason(&audit, "rejected");
     assert_eq!(
         rejected_count, 0,
         "expected no rejections when permits are released, full audit:\n{audit}"
     );
-    let session_start_count = audit
-        .lines()
-        .filter(|l| l.contains(r#""kind":"session_start""#))
-        .count();
+    let session_start_count = count_audit_kind(&audit, "session_start");
     assert!(
         session_start_count >= 2,
         "expected at least two session_starts, got {session_start_count}:\n{audit}",

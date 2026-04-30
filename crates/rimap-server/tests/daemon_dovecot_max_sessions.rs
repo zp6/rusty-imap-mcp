@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use tokio::net::UnixStream;
 
+use common::daemon_harness::{count_audit_kind, count_session_end_reason, wait_for_audit_at};
 use common::dovecot_daemon_harness::DovecotDaemon;
 
 #[tokio::test]
@@ -26,9 +27,13 @@ async fn third_session_is_rejected_when_max_concurrent_is_two() {
     let _s2 = UnixStream::connect(&daemon.socket_path)
         .await
         .expect("s2 connect");
-    // Let the accept loop install s1 + s2 in its JoinSet so they
-    // actually hold their semaphore permits before s3 races in.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // Wait for the accept loop to register s1 + s2 in its JoinSet
+    // (observable via two session_start records) before s3 races in,
+    // instead of guessing how long the accept path takes.
+    wait_for_audit_at(&daemon.audit_path, Duration::from_secs(2), |c| {
+        count_audit_kind(c, "session_start") >= 2
+    })
+    .await;
 
     // s3 hits the semaphore at zero — accept-loop emits the paired
     // start+end(Rejected) record and drops the stream.
@@ -36,15 +41,13 @@ async fn third_session_is_rejected_when_max_concurrent_is_two() {
         .await
         .expect("s3 connect");
     drop(s3);
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    wait_for_audit_at(&daemon.audit_path, Duration::from_secs(2), |c| {
+        count_session_end_reason(c, "rejected") >= 1
+    })
+    .await;
 
     let result = daemon.shutdown().await;
-    let rejected_ends = result
-        .log
-        .lines()
-        .filter(|l| l.contains(r#""kind":"session_end""#))
-        .filter(|l| l.contains(r#""reason":"rejected""#))
-        .count();
+    let rejected_ends = count_session_end_reason(&result.log, "rejected");
     assert_eq!(
         rejected_ends, 1,
         "expected exactly 1 session_end(rejected); got {rejected_ends}; log:\n{}",
