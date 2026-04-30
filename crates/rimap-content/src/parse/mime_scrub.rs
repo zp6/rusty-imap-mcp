@@ -13,7 +13,7 @@ use crate::output::{SecurityWarning, WarningCode};
 ///
 /// Returns a byte vector containing the message with the offending
 /// header lines removed.
-pub(super) fn scrub_header_smuggling(raw: &[u8], warnings: &mut Vec<SecurityWarning>) -> Vec<u8> {
+pub fn scrub_header_smuggling(raw: &[u8], warnings: &mut Vec<SecurityWarning>) -> Vec<u8> {
     let Some((header_end, _sep_len)) = find_header_end(raw) else {
         return raw.to_vec(); // no headers = no smuggling
     };

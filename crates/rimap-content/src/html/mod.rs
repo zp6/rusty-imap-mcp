@@ -28,7 +28,7 @@ use crate::html::sanitize::sanitize_body;
 
 /// Result of processing a single HTML body part.
 #[derive(Debug, Clone)]
-pub(crate) struct HtmlResult {
+pub struct HtmlResult {
     /// Plain text extracted from the HTML, already run through
     /// `unicode::sanitize`.
     pub body_text: String,
@@ -116,7 +116,7 @@ impl HiddenMethod {
 ///
 /// Returns [`ContentError::LimitExceeded`] if `raw` exceeds
 /// [`MAX_HTML_BYTES`].
-pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, ContentError> {
+pub fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, ContentError> {
     if raw.len() > MAX_HTML_BYTES {
         return Err(ContentError::LimitExceeded {
             kind: HTML_BODY_LIMIT_KIND,
