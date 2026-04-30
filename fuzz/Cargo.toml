@@ -36,3 +36,10 @@ path = "fuzz_targets/content_html.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "content_rfc2047"
+path = "fuzz_targets/content_rfc2047.rs"
+test = false
+doc = false
+bench = false

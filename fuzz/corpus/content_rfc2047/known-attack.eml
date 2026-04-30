@@ -1,0 +1,8 @@
+From: alice@example.com
+To: bob@example.com
+Subject: =?utf-8?B?hello
+Bcc: victim@example.com
+?=
+Content-Type: text/plain
+
+body text
