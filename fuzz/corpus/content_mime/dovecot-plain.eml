@@ -1,0 +1,9 @@
+From: Test Sender <sender@example.test>
+To: rimap-test <rimap-test@example.test>
+Subject: Sprint 3 plain text fixture
+Message-ID: <plain-001@example.test>
+Date: Tue, 7 Apr 2026 10:00:00 +0000
+Content-Type: text/plain; charset=us-ascii
+
+This is a plain text fixture for the rimap-imap integration tests.
+It contains exactly one paragraph and no attachments.

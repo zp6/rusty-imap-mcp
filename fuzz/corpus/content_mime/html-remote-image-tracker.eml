@@ -1,0 +1,7 @@
+From: sender@example.com
+To: victim@example.com
+Subject: Welcome
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Thanks for subscribing.</p><img src="https://tracker.example/px.gif?u=victim" alt="" width="1" height="1"></body></html>

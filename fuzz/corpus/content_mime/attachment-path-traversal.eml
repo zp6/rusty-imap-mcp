@@ -1,0 +1,14 @@
+From: a@example.com
+Content-Type: multipart/mixed; boundary="BOUND"
+
+--BOUND
+Content-Type: text/plain
+
+see attached
+--BOUND
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="../../../etc/passwd"
+Content-Transfer-Encoding: base64
+
+Zm9v
+--BOUND--

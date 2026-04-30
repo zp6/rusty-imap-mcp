@@ -1,0 +1,19 @@
+From: sender@example.com
+To: victim@example.com
+Subject: Photo attached
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_rimap_test_boundary_4b17"
+
+--=_rimap_test_boundary_4b17
+Content-Type: text/plain; charset=utf-8
+
+See the attached photo.
+
+--=_rimap_test_boundary_4b17
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="invoice‮gpj.exe"
+Content-Transfer-Encoding: base64
+
+TVqQAAMAAAAEAAAA
+
+--=_rimap_test_boundary_4b17--
