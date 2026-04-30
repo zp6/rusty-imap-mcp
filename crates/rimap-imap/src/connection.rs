@@ -572,7 +572,11 @@ impl Connection {
             body(session).await
         })
         .await;
-        if result.as_ref().err().is_some_and(ImapError::is_invalidating) {
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(ImapError::is_invalidating)
+        {
             self.invalidate().await;
         }
         result
@@ -735,7 +739,11 @@ impl Connection {
         // `is_invalidating` returns true on ConnectionLost / Timeout / SizeLimit:
         // the first two drop a session at every command boundary, the third
         // aborts the FETCH mid-stream so the response state is half-consumed.
-        if result.as_ref().err().is_some_and(ImapError::is_invalidating) {
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(ImapError::is_invalidating)
+        {
             self.invalidate().await;
         }
         result

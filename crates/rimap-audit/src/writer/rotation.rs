@@ -71,7 +71,12 @@ pub fn rotate_file(
     keep: u32,
     retention_seconds: Option<u64>,
 ) -> Result<(BufWriter<File>, u64), AuditError> {
-    rotate_file_with_now(active, keep, retention_seconds, std::time::SystemTime::now())
+    rotate_file_with_now(
+        active,
+        keep,
+        retention_seconds,
+        std::time::SystemTime::now(),
+    )
 }
 
 /// Same as [`rotate_file`] but with an injected `now` anchor used as the

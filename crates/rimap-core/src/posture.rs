@@ -8,9 +8,7 @@ use strum::{EnumIter, IntoEnumIterator};
 use thiserror::Error;
 
 /// The four supported postures. Default is [`Posture::DraftSafe`].
-#[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter,
-)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter)]
 #[serde(rename_all = "kebab-case")]
 pub enum Posture {
     /// Read-only operations only. No flag changes, no drafts, no moves.

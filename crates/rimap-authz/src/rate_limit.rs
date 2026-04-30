@@ -152,19 +152,43 @@ mod tests {
 
     #[test]
     fn zero_rate_rejected_at_build() {
-        assert!(Governor::new(&RateConfig { commands_per_second: 0, drafts_per_minute: 5, sends_per_minute: 3 }).is_err());
-        assert!(Governor::new(&RateConfig { commands_per_second: 10, drafts_per_minute: 0, sends_per_minute: 3 }).is_err());
+        assert!(
+            Governor::new(&RateConfig {
+                commands_per_second: 0,
+                drafts_per_minute: 5,
+                sends_per_minute: 3
+            })
+            .is_err()
+        );
+        assert!(
+            Governor::new(&RateConfig {
+                commands_per_second: 10,
+                drafts_per_minute: 0,
+                sends_per_minute: 3
+            })
+            .is_err()
+        );
     }
 
     #[test]
     fn admits_first_call_in_bucket() {
-        let g = Governor::new(&RateConfig { commands_per_second: 10, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap();
+        let g = Governor::new(&RateConfig {
+            commands_per_second: 10,
+            drafts_per_minute: 5,
+            sends_per_minute: 3,
+        })
+        .unwrap();
         assert!(g.check(ToolName::ListFolders).is_ok());
     }
 
     #[test]
     fn rejects_after_bucket_drains() {
-        let g = Governor::new(&RateConfig { commands_per_second: 2, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap(); // burst = 4
+        let g = Governor::new(&RateConfig {
+            commands_per_second: 2,
+            drafts_per_minute: 5,
+            sends_per_minute: 3,
+        })
+        .unwrap(); // burst = 4
         for _ in 0..4 {
             let _ = g.check(ToolName::Search);
         }
@@ -180,7 +204,12 @@ mod tests {
 
     #[test]
     fn draft_bucket_is_separate() {
-        let g = Governor::new(&RateConfig { commands_per_second: 1000, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap(); // huge global, tight draft
+        let g = Governor::new(&RateConfig {
+            commands_per_second: 1000,
+            drafts_per_minute: 5,
+            sends_per_minute: 3,
+        })
+        .unwrap(); // huge global, tight draft
         for _ in 0..5 {
             let _ = g.check(ToolName::CreateDraft);
         }
@@ -191,7 +220,12 @@ mod tests {
 
     #[test]
     fn sends_bucket_is_separate() {
-        let g = Governor::new(&RateConfig { commands_per_second: 1000, drafts_per_minute: 5, sends_per_minute: 3 }).unwrap();
+        let g = Governor::new(&RateConfig {
+            commands_per_second: 1000,
+            drafts_per_minute: 5,
+            sends_per_minute: 3,
+        })
+        .unwrap();
         for _ in 0..3 {
             let _ = g.check(ToolName::SendEmail);
         }
@@ -202,7 +236,14 @@ mod tests {
 
     #[test]
     fn zero_sends_per_minute_rejected_at_build() {
-        assert!(Governor::new(&RateConfig { commands_per_second: 10, drafts_per_minute: 5, sends_per_minute: 0 }).is_err());
+        assert!(
+            Governor::new(&RateConfig {
+                commands_per_second: 10,
+                drafts_per_minute: 5,
+                sends_per_minute: 0
+            })
+            .is_err()
+        );
     }
 
     use proptest::prelude::*;

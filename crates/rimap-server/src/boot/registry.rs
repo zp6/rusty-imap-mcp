@@ -233,13 +233,12 @@ fn build_smtp_client(
         account: acfg.id.as_str().to_string(),
         source: Box::new(source),
     })?;
-    let client =
-        SmtpClient::new(smtp_cfg, smtp_password.expose_secret()).map_err(|source| {
-            BootError::Smtp {
-                account: acfg.id.as_str().to_string(),
-                source: Box::new(source),
-            }
-        })?;
+    let client = SmtpClient::new(smtp_cfg, smtp_password.expose_secret()).map_err(|source| {
+        BootError::Smtp {
+            account: acfg.id.as_str().to_string(),
+            source: Box::new(source),
+        }
+    })?;
     drop(smtp_password);
     Ok(Some(client))
 }
@@ -295,4 +294,3 @@ pub fn build_account_connection(
         max_append_bytes: acfg.limits.max_append_bytes,
     }
 }
-
