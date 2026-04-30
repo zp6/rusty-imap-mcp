@@ -382,63 +382,16 @@ impl Connection {
     > {
         let mut client = async_imap::Client::new(tls_stream);
 
-        // Read the server greeting — skipped for STARTTLS, which already
-        // consumed the greeting during plaintext negotiation. An absent greeting
-        // (EOF) or BYE status means the server immediately rejected us.
-        // Pre-resolve; carry `None`.
-        if !already_greeted {
-            let greeting = client
-                .read_response()
-                .await
-                .map_err(|e| (ImapError::Connect(e), None))?
-                .ok_or((
-                    ImapError::Auth {
-                        reason: AuthFailure::ServerRejected,
-                    },
-                    None,
-                ))?;
-
-            if let Response::Data {
-                status: Status::Bye,
-                ..
-            } = greeting.parsed()
-            {
-                return Err((
-                    ImapError::Auth {
-                        reason: AuthFailure::ServerRejected,
-                    },
-                    None,
-                ));
-            }
-        }
-
-        // Issue CAPABILITY and scan responses for LOGINDISABLED.
-        // We create a bounded channel so intermediate untagged responses
-        // (including `* CAPABILITY ...`) are routed through it rather than
-        // being silently discarded. Pre-resolve; carry `None`.
-        let (tx, rx) = async_channel::bounded::<UnsolicitedResponse>(32);
-        client
-            .run_command_and_check_ok("CAPABILITY", Some(tx))
+        read_greeting(&mut client, already_greeted)
             .await
-            .map_err(|e| (ImapError::Protocol(e), None))?;
+            .map_err(|e| (e, None))?;
+        assert_login_enabled(&mut client)
+            .await
+            .map_err(|e| (e, None))?;
 
-        // Drain whatever arrived on the channel (non-blocking; the command
-        // has already completed). A `Response::Capabilities` list containing
-        // LOGINDISABLED means LOGIN is prohibited. Pre-resolve; carry `None`.
-        let logindisabled = drain_for_logindisabled(&rx);
-        if logindisabled {
-            return Err((
-                ImapError::Auth {
-                    reason: AuthFailure::CapabilityMissing { needed: "LOGIN" },
-                },
-                None,
-            ));
-        }
-
-        // Resolve the password from the injected resolver. A missing
-        // credential is an authentication failure, not a network
-        // failure — map it to ERR_AUTH so retry logic and operator
-        // messages stay accurate. Pre-resolve; carry `None`.
+        // A missing credential is an authentication failure, not a network
+        // failure — map it to ERR_AUTH so retry logic and operator messages
+        // stay accurate.
         let cfg = &self.inner.cfg;
         let (password, credential_source) = self
             .inner
@@ -474,8 +427,16 @@ impl Connection {
             }
         };
 
-        // Post-login: probe CAPABILITY for MOVE (RFC 6851),
-        // UIDPLUS (RFC 4315), and LIST-STATUS (RFC 5819).
+        self.probe_post_login_capabilities(&mut session).await;
+
+        Ok((session, credential_source))
+    }
+
+    /// Post-login CAPABILITY probe: caches MOVE / UIDPLUS / LIST-STATUS
+    /// support on `self.inner` for later operations to gate on. A failed
+    /// probe is logged and treated as "no extensions" — callers must not
+    /// fail the login over this.
+    async fn probe_post_login_capabilities(&self, session: &mut ImapSession) {
         let (has_move, has_uidplus, has_list_status) = match session.capabilities().await {
             Ok(caps) => (
                 caps.has_str("MOVE"),
@@ -496,8 +457,6 @@ impl Connection {
         self.inner
             .has_list_status
             .store(has_list_status, Ordering::Relaxed);
-
-        Ok((session, credential_source))
     }
 
     /// Emit an [`AuthEvent`] through the injected sink. Runs the
@@ -983,6 +942,58 @@ fn capability_advertised(rx: &async_channel::Receiver<UnsolicitedResponse>, atom
 /// `Response::Capabilities` item contains the `LOGINDISABLED` atom.
 fn drain_for_logindisabled(rx: &async_channel::Receiver<UnsolicitedResponse>) -> bool {
     capability_advertised(rx, "LOGINDISABLED")
+}
+
+/// Read the post-TLS-handshake server greeting, unless `already_greeted`
+/// is `true` (STARTTLS, where the plaintext negotiation already consumed
+/// the greeting). An EOF or `BYE` greeting means the server immediately
+/// rejected us — surfaced as `AuthFailure::ServerRejected`.
+async fn read_greeting(
+    client: &mut async_imap::Client<TlsStream<TcpStream>>,
+    already_greeted: bool,
+) -> Result<(), ImapError> {
+    if already_greeted {
+        return Ok(());
+    }
+    let greeting = client
+        .read_response()
+        .await
+        .map_err(ImapError::Connect)?
+        .ok_or(ImapError::Auth {
+            reason: AuthFailure::ServerRejected,
+        })?;
+
+    if let Response::Data {
+        status: Status::Bye,
+        ..
+    } = greeting.parsed()
+    {
+        return Err(ImapError::Auth {
+            reason: AuthFailure::ServerRejected,
+        });
+    }
+    Ok(())
+}
+
+/// Issue `CAPABILITY` and assert that LOGIN is permitted. The bounded
+/// channel ensures the unsolicited `* CAPABILITY ...` response is
+/// captured rather than discarded; any `LOGINDISABLED` atom in that
+/// response is mapped to `AuthFailure::CapabilityMissing { needed: "LOGIN" }`.
+async fn assert_login_enabled(
+    client: &mut async_imap::Client<TlsStream<TcpStream>>,
+) -> Result<(), ImapError> {
+    let (tx, rx) = async_channel::bounded::<UnsolicitedResponse>(32);
+    client
+        .run_command_and_check_ok("CAPABILITY", Some(tx))
+        .await
+        .map_err(ImapError::Protocol)?;
+
+    if drain_for_logindisabled(&rx) {
+        return Err(ImapError::Auth {
+            reason: AuthFailure::CapabilityMissing { needed: "LOGIN" },
+        });
+    }
+    Ok(())
 }
 
 /// Plaintext STARTTLS negotiation: greeting → CAPABILITY → STARTTLS.
