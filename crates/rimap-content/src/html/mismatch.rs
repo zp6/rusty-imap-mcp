@@ -25,6 +25,52 @@ fn floor_char_boundary(s: &str, index: usize) -> usize {
     i
 }
 
+#[cfg(test)]
+mod char_boundary_tests {
+    use super::floor_char_boundary;
+
+    #[test]
+    fn ascii_index_is_unchanged() {
+        let s = "hello world";
+        assert_eq!(floor_char_boundary(s, 5), 5);
+    }
+
+    #[test]
+    fn index_beyond_len_clamps_to_len() {
+        let s = "abc";
+        assert_eq!(floor_char_boundary(s, 100), 3);
+    }
+
+    #[test]
+    fn multibyte_at_split_walks_back_to_boundary() {
+        // U+4E2D (Chinese "middle") is 3 bytes: e4 b8 ad.
+        // A 2-byte string of "中" has bytes [e4, b8, ad]; index 1 and 2
+        // land mid-codepoint and must walk back to 0 (the only valid
+        // boundary <= 2).
+        let s = "中";
+        assert_eq!(s.len(), 3);
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, 1), 0);
+        assert_eq!(floor_char_boundary(s, 2), 0);
+        assert_eq!(floor_char_boundary(s, 3), 3);
+    }
+
+    #[test]
+    fn truncate_at_floor_boundary_does_not_panic() {
+        // Reproduces the original bug: truncating mid-codepoint panics.
+        // Walking back to the floor boundary makes truncate safe.
+        let mut s = String::new();
+        for _ in 0..2000 {
+            s.push('中'); // 3 bytes per char → 6000 bytes total
+        }
+        let cap = 4096; // mid-codepoint
+        let boundary = floor_char_boundary(&s, cap);
+        assert!(boundary <= cap);
+        assert!(s.is_char_boundary(boundary));
+        s.truncate(boundary); // would panic without the floor walk
+    }
+}
+
 /// Extract the registrable domain from a URL-looking string.
 ///
 /// Returns `None` for empty input, relative URLs, `mailto:`/`tel:`/
