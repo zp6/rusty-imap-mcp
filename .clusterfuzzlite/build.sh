@@ -1,23 +1,22 @@
-#!/bin/bash -eu
+#!/usr/bin/env bash
 #
-# ClusterFuzzLite build entry point. Compiles each fuzz target in
-# `fuzz/fuzz_targets/` and copies the resulting binary plus its seed
-# corpus to $OUT, where ClusterFuzzLite expects them.
+# ClusterFuzzLite build entry point. Builds every fuzz target in
+# `fuzz/fuzz_targets/` and copies binary + seed corpus to $OUT.
 #
-# `cargo +nightly fuzz build -O` matches the local `just fuzz` invocation
-# pattern; the `-O` flag is load-bearing because mail-parser 0.11.2 trips
-# internal `debug_assert!` guards on malformed multipart input in debug
-# builds.
+# Release mode (-O) is required: debug builds trip upstream
+# `debug_assert!` guards on malformed input.
+set -euo pipefail
 
 cd "$SRC/rusty-imap-mcp/fuzz"
 
 cargo +nightly fuzz build -O
 
-FUZZ_TARGET_OUTPUT_DIR="target/x86_64-unknown-linux-gnu/release"
+host_triple="$(cargo +nightly -vV | awk '/^host:/ {print $2}')"
+fuzz_out_dir="target/${host_triple}/release"
 
 for f in fuzz_targets/*.rs; do
     name="$(basename "${f%.*}")"
-    cp "$FUZZ_TARGET_OUTPUT_DIR/$name" "$OUT/"
+    cp "$fuzz_out_dir/$name" "$OUT/"
     if [ -d "corpus/$name" ]; then
         zip -j -r "$OUT/${name}_seed_corpus.zip" "corpus/$name"
     fi
