@@ -50,8 +50,8 @@ just test-msrv       # same as `test` but on the MSRV toolchain (1.88.0)
 just deny            # cargo deny check (advisories, licenses, bans, sources)
 just ci              # full local-CI equivalent — run this before pushing
 just hooks           # re-run prek on all files
-just test-injection  # adversarial email corpus (content pipeline, future)
-just test-integration  # Proton Bridge integration tests (gated, future)
+just test-injection  # adversarial email corpus (content pipeline)
+just test-integration  # Proton Bridge integration tests (gated on PROTON_BRIDGE_TEST=1)
 ```
 
 `just` targets are defined in the `justfile` at the repo root. Add new targets
@@ -111,10 +111,9 @@ are the ones that trip people up or aren't obvious from the lint set.
   must be clean. This is the baseline, not the goal.
 - **No `println!` / `eprintln!` / `dbg!` / `todo!` in non-test source.**
   `print_stdout` and `print_stderr` are denied workspace-wide because stdout is
-  reserved for MCP transport (stderr is held in reserve for a future `tracing`
-  subscriber). In tests, debug output via these macros is allowed. In `main.rs`
-  and library code, use `tracing` (coming in Sprint 1) or `writeln!` on a
-  captured handle.
+  reserved for MCP transport; stderr is owned by the `tracing` subscriber
+  installed at boot. In tests, debug output via these macros is allowed. In
+  `main.rs` and library code, use `tracing` or `writeln!` on a captured handle.
 - **No `#[allow(...)]` attributes.** `allow_attributes = "deny"`. Use
   `#[expect(...)]` with a comment explaining why if you must suppress a lint.
 - **No `unwrap()` in non-test code.** `unwrap_used` is denied. Prefer `?`,
@@ -122,8 +121,7 @@ are the ones that trip people up or aren't obvious from the lint set.
   `#[expect(clippy::unwrap_used)]` the whole `mod tests`.
 - **No panics in `Result` functions.** `panic_in_result_fn` is denied. If you
   need to bail, return an error.
-- **`thiserror` for library crates, `anyhow` for `rimap-server`** (when those
-  dependencies land in Sprint 1).
+- **`thiserror` for library crates, `anyhow` for `rimap-server`.**
 - **100-char line length.** See `rustfmt.toml`.
 - **Absolute imports only.** No relative `..` paths.
 - **Google-style docstrings** on non-trivial public APIs. Every public crate
@@ -136,7 +134,7 @@ are the ones that trip people up or aren't obvious from the lint set.
 - **Newtypes over primitives.** `MessageUid(u32)`, not `u32`. Enums for state
   machines, not boolean flags.
 
-## Testing expectations (starting Sprint 1)
+## Testing expectations
 
 - **TDD for feature code.** Write the failing test first, run it to see it
   fail, write the minimal implementation, re-run, commit.
