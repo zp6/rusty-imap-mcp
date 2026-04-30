@@ -7,6 +7,11 @@
 
 use crate::output::{SecurityWarning, WarningCode};
 
+// `pub` only because `testutil` re-exports through `pub mod testutil` (Rust
+// E0364 forbids `pub use` of `pub(crate)` items). Module privacy
+// (`pub(crate) mod mime_scrub` in `parse/mod.rs`) keeps this unreachable
+// outside the crate; production callers reach it via
+// [`crate::parse::parse_message`].
 /// Scan the header block for raw CRLF inside RFC 2047 encoded-words.
 /// Drop any offending logical header(s) and emit
 /// [`WarningCode::ParseHeaderSmugglingBlocked`].
