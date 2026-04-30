@@ -23,16 +23,15 @@ adding a test, not annotated.
 > **Cap exceeded.** B1's mutation cleanup is scoped to "manageable inline
 > cleanup," with a 30-survivor cap defined in the plan. The refreshed run
 > recorded 80 survivors outside `src/bin/`, well above that threshold, so
-> Tasks 8 and 9 are deferred to a follow-up plan. The full survivor list
-> for this run is preserved at `/tmp/rimap-content-survivors.txt` on the
-> author's machine and in `mutants.out/missed.txt` for this commit; per-file
-> breakdown is summarised in the table below. Fuzz harnesses (Task 6,
-> already shipped in PR #190) and ClusterFuzzLite wiring (Task 10) still
-> ship in this sprint.
+> Tasks 8 and 9 are deferred to a follow-up plan. The per-file breakdown
+> below sizes that follow-up; the full line-by-line survivor list is not
+> committed (regenerate by re-running the plan's Task 7 Step 1). Fuzz
+> harnesses (Task 6, already shipped in PR #190) and ClusterFuzzLite
+> wiring (Task 10) still ship in this sprint.
 
 | File:line | Mutation | Reason kept | Annotation site |
 |---|---|---|---|
-| _populated by Task 8/9_ |  |  |  |
+| _deferred to follow-up plan (B1 Tasks 8/9 over-cap)_ |  |  |  |
 
 Per-file survivor counts at 2026-04-30 refresh (for sizing the follow-up
 plan):
