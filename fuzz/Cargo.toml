@@ -15,12 +15,6 @@ libfuzzer-sys = "0.4"
 path = "../crates/rimap-content"
 features = ["test-util"]
 
-[dependencies.rimap-audit]
-path = "../crates/rimap-audit"
-
-[dependencies.rimap-server]
-path = "../crates/rimap-server"
-
 # Targets are added in later tasks. Until at least one fuzz target exists,
 # `cargo +nightly fuzz list` returns an empty list, which is correct.
 
