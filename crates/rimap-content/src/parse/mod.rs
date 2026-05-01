@@ -18,6 +18,7 @@ mod filename;
 mod headers;
 mod meta;
 pub(crate) mod mime_scrub;
+pub(crate) mod safe_parser;
 mod sniff;
 
 use crate::parse::bodies::extract_bodies;
