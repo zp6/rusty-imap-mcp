@@ -193,6 +193,15 @@ fn scan_body_urls(body_text: &str, out: &mut Vec<SecurityWarning>) {
     // = true` always — so `end > 0` and `end >= 0` produce the same
     // exit point in every reachable trajectory.
     while end > 0 && !body_text.is_char_boundary(end) {
+        // cargo-mutants: known-equivalent — `-= with +=` is observably
+        // indistinguishable for any URL-containing input. The
+        // backward walk lands on the previous boundary; the forward
+        // walk lands on the next boundary. The window between those
+        // two boundaries spans exactly one UTF-8 multi-byte
+        // codepoint (max 4 bytes), too small to fit a URL. linkify's
+        // verdict on the resulting slice is therefore the same: any
+        // URL is either fully inside both slices or fully outside
+        // both.
         end -= 1;
     }
     let scan_slice = &body_text[..end];
