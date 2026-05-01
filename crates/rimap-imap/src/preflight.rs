@@ -31,8 +31,12 @@ pub struct PreflightInfo {
     pub tls_fingerprint: rimap_core::TlsFingerprint,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl PreflightInfo {
-    /// Create a new `PreflightInfo` for testing and diagnostic purposes.
+    /// Construct a `PreflightInfo` for tests. Bypasses `#[non_exhaustive]`
+    /// so test crates can synthesize fixtures without going through
+    /// `probe_preflight`. Gated behind `test-support` to keep the constructor
+    /// out of the production public API surface.
     #[must_use]
     pub fn new(capabilities: Vec<String>, tls_fingerprint: rimap_core::TlsFingerprint) -> Self {
         Self {
