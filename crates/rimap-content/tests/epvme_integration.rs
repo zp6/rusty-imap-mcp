@@ -150,6 +150,43 @@ fn json_out_writes_valid_json() {
 }
 
 #[test]
+fn json_out_creates_missing_parent_dir_kills_mutant_delete_empty_parent_guard() {
+    let tmp = TempDir::new().unwrap();
+    write_eml(tmp.path(), "sample.eml", "JSON nested-dir test");
+
+    // Path whose parent directory does not yet exist — write_json_report must
+    // create it. The `!parent.as_os_str().is_empty()` guard exists to skip
+    // create_dir_all for bare filenames whose path.parent() returns Some(""),
+    // not to skip directory creation in the normal nested-path case.
+    let json_path = tmp
+        .path()
+        .join("reports")
+        .join("nightly")
+        .join("report.json");
+    assert!(!json_path.parent().unwrap().exists());
+
+    let output = Command::new(cargo_bin())
+        .args([
+            tmp.path().as_os_str(),
+            "--json-out".as_ref(),
+            json_path.as_os_str(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 with nested --json-out path, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        json_path.exists(),
+        "JSON report file should exist at the nested path",
+    );
+}
+
+#[test]
 fn no_args_exits_nonzero() {
     let output = Command::new(cargo_bin()).output().unwrap();
 
