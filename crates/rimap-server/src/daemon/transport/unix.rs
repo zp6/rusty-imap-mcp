@@ -319,6 +319,7 @@ mod tests {
     /// reaches accept. The output is fact-recording (`eprintln!`) rather
     /// than a hard gate; Phase 2 of the fix tightens assertions to
     /// whatever the platforms reliably do.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[expect(
         clippy::print_stderr,
         reason = "issue #188 diagnostic probe — fact-recording test"
