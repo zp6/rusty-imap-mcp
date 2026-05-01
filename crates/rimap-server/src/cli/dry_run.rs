@@ -38,13 +38,15 @@ use rimap_config::loader::load_and_validate;
 use rimap_core::tool::ToolName;
 
 /// Print the `TLS fingerprint (sha256):` section for one account, given the
-/// preflight outcome and the (optional) pinned fingerprint from config. Three
+/// preflight outcome and the (optional) pinned fingerprint from config. Four
 /// branches:
 ///
 /// - `Ok(info)` + no pin: print observed fingerprint with a paste-into-config
 ///   hint (onboarding path).
 /// - `Ok(info)` + matching pin: print observed fingerprint with `(matches
 ///   configured pin)` confirmation.
+/// - `Ok(info)` + mismatched pin: defensive unreachable-in-production print
+///   (see arm comment).
 /// - `Err(ImapError::Tls { observed, expected })`: print both values plus a
 ///   diagnostic hint pointing at the quickstart.
 ///
@@ -52,8 +54,6 @@ use rimap_core::tool::ToolName;
 /// non-mismatch reasons, `Protocol`) silently print nothing — there is no
 /// fingerprint to surface when the verifier never ran or the value is not
 /// meaningfully informative.
-///
-/// Used by unit tests below and called from `run()`.
 fn write_fingerprint_section<W: Write>(
     out: &mut W,
     result: &Result<rimap_imap::preflight::PreflightInfo, rimap_imap::error::ImapError>,
@@ -74,11 +74,15 @@ fn write_fingerprint_section<W: Write>(
             writeln!(out, "  {}  (matches configured pin)", info.tls_fingerprint)?;
         }
         (Ok(info), Some(_)) => {
-            // A live mismatch should never reach here because `probe_preflight`
-            // returns `Err(ImapError::Tls)` instead. Defensive branch: print
-            // observed only.
+            // Unreachable in production: probe_preflight returns Err(Tls) on
+            // mismatch. Defensive branch flags the anomalous state instead of
+            // silently mimicking the matching-pin output.
             writeln!(out, "TLS fingerprint (sha256):")?;
-            writeln!(out, "  {}", info.tls_fingerprint)?;
+            writeln!(
+                out,
+                "  {}  (pin mismatch — unexpected state, please report)",
+                info.tls_fingerprint
+            )?;
         }
         (Err(rimap_imap::error::ImapError::Tls { observed, expected }), _) => {
             writeln!(out, "TLS fingerprint (sha256):")?;
@@ -413,6 +417,10 @@ allowed_base_dir = "{}"
         assert!(
             text.contains(&observed.to_string()),
             "observed hex missing:\n{text}"
+        );
+        assert!(
+            text.contains("pin mismatch") && text.contains("unexpected"),
+            "anomaly annotation missing:\n{text}"
         );
         // The defensive arm prints observed only — no paste hint, no match
         // confirmation, no observed/expected diagnostic.
