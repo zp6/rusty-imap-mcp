@@ -79,3 +79,26 @@ mod confusables_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod extract_message_id_tests {
+    use super::extract_message_id;
+
+    #[test]
+    fn extract_returns_message_id_when_header_present() {
+        // Kills all three wholesale stubs at extract_message_id (None,
+        // Some(""), Some("xyzzy")). A constructed message with a
+        // distinctive Message-ID round-trips through mail_parser to
+        // a non-empty Some that contains the id substring.
+        let raw = b"From: a@example\r\n\
+                    Message-ID: <abc-123@example.com>\r\n\
+                    \r\n\
+                    body";
+        let id = extract_message_id(raw).expect("Message-ID must be extracted");
+        assert!(
+            id.contains("abc-123@example.com"),
+            "expected id to contain abc-123@example.com, got {id:?}",
+        );
+    }
+}
