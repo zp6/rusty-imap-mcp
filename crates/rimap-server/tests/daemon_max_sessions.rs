@@ -10,7 +10,7 @@ mod common;
 
 use common::daemon_harness::{
     TestDaemon, count_audit_kind, count_session_end_reason, test_daemon_state_with_limit,
-    wait_for_audit_at,
+    wait_for_audit_at, wait_for_session_start_at,
 };
 use std::time::Duration;
 use tempfile::TempDir;
@@ -48,11 +48,7 @@ async fn daemon_rejects_session_past_limit() {
     // second connect races against a fully-acquired permit. Polling
     // beats a fixed sleep — passes immediately on fast machines, holds
     // up under CI scheduler jitter.
-    daemon
-        .wait_for_audit(Duration::from_secs(2), |c| {
-            count_audit_kind(c, "session_start") >= 1
-        })
-        .await;
+    daemon.wait_for_session_start(1).await;
 
     // Second client connects: the daemon accepts the TCP/Unix connection
     // (we can't refuse it at the socket layer without breaking the
@@ -126,17 +122,19 @@ async fn daemon_rejects_session_past_limit() {
     );
 }
 
-// Skipped on macOS: same root cause as
-// daemon_happy_path::client_connects_and_sees_clean_session_lifecycle —
-// the daemon never emits session_start after the first close+reconnect,
-// so wait_for_audit panics on timeout. Linux CI is unaffected.
-// See issue #188.
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "macOS daemon-on-tokio: session_start never emitted; see issue #188"
-)]
 #[tokio::test]
 async fn daemon_releases_permit_on_session_end() {
+    // Idempotent across the test binary; zero-cost when RUST_LOG is unset.
+    // Set RUST_LOG=rimap_server=trace,rimap_audit=trace and pass --nocapture
+    // to surface daemon-side activity. See issue #188 for the diagnostic
+    // procedure.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+        )
+        .with_test_writer()
+        .try_init();
     // Limit = 1. First connection holds the permit, then closes. A
     // second connection afterwards must succeed (no rejection) because
     // the permit dropped with the first session future.
@@ -148,9 +146,12 @@ async fn daemon_releases_permit_on_session_end() {
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
 
-    // Round 1: connect, close, wait for session_end.
+    // Round 1: connect, wait for session_start (see issue #188 — macOS
+    // races accept-side syscalls against an already-EOF'd peer), close,
+    // wait for session_end.
     {
         let mut c = UnixStream::connect(&socket_path).await.expect("connect 1");
+        wait_for_session_start_at(&audit_path, 1).await;
         c.shutdown().await.expect("shutdown 1");
         drop(c);
     }
@@ -160,9 +161,10 @@ async fn daemon_releases_permit_on_session_end() {
     .await;
 
     // Round 2: permit should be back; this connection must not be
-    // rejected.
+    // rejected. Same wait-for-session_start barrier as round 1.
     {
         let mut c = UnixStream::connect(&socket_path).await.expect("connect 2");
+        wait_for_session_start_at(&audit_path, 2).await;
         c.shutdown().await.expect("shutdown 2");
         drop(c);
     }

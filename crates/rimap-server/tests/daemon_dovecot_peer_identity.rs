@@ -9,11 +9,9 @@
 
 mod common;
 
-use std::time::Duration;
-
 use tokio::net::UnixStream;
 
-use common::daemon_harness::{count_audit_kind, wait_for_audit_at};
+use common::daemon_harness::wait_for_session_start_at;
 use common::dovecot_daemon_harness::DovecotDaemon;
 
 #[tokio::test]
@@ -25,10 +23,7 @@ async fn session_start_records_our_uid_via_so_peercred() {
     let _s = UnixStream::connect(&daemon.socket_path)
         .await
         .expect("connect");
-    wait_for_audit_at(&daemon.audit_path, Duration::from_secs(2), |c| {
-        count_audit_kind(c, "session_start") >= 1
-    })
-    .await;
+    wait_for_session_start_at(&daemon.audit_path, 1).await;
 
     let result = daemon.shutdown().await;
     let our_uid = rustix::process::geteuid().as_raw();

@@ -35,17 +35,22 @@ async fn daemon_spawns_and_shuts_down_cleanly() {
     let _audit = daemon.shutdown().await;
 }
 
-// Skipped on macOS: the daemon never emits `session_start` after a client
-// connects in this test environment, so `wait_for_audit` panics on timeout
-// even at multi-second budgets. Linux CI is unaffected. See issue #188.
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "macOS daemon-on-tokio: session_start never emitted; see issue #188"
-)]
 #[tokio::test]
 async fn client_connects_and_sees_clean_session_lifecycle() {
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::UnixStream;
+
+    // Idempotent across the test binary; zero-cost when RUST_LOG is unset.
+    // Set RUST_LOG=rimap_server=trace,rimap_audit=trace and pass --nocapture
+    // to surface daemon-side activity. See issue #188 for the diagnostic
+    // procedure.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+        )
+        .with_test_writer()
+        .try_init();
 
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
@@ -58,6 +63,12 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     // Connect as a raw client — we're not speaking MCP, just proving the
     // accept loop works and session_start/session_end get emitted.
     let mut stream = UnixStream::connect(&socket_path).await.expect("connect");
+    // Wait for the daemon to record session_start before closing the
+    // client. macOS races the daemon's accept-side syscalls against an
+    // already-EOF'd peer; without this barrier the daemon never emits
+    // session_start. See issue #188 and the comment in
+    // tests/common/daemon_harness.rs near `wait_for_audit_at`.
+    daemon.wait_for_session_start(1).await;
     // Write nothing. Immediately close the write half so the daemon sees EOF.
     stream.shutdown().await.expect("shutdown client write half");
     drop(stream);

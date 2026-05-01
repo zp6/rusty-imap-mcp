@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::daemon_harness::{TestDaemon, count_audit_kind, test_daemon_state};
+use common::daemon_harness::{TestDaemon, test_daemon_state};
 use tempfile::TempDir;
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::UnixStream;
@@ -45,11 +45,7 @@ async fn shutdown_drains_active_sessions_within_deadline() {
 
     // Wait for the daemon to observe both connections and spawn session
     // tasks (verified via two session_start records in the audit log).
-    daemon
-        .wait_for_audit(std::time::Duration::from_secs(2), |c| {
-            count_audit_kind(c, "session_start") >= 2
-        })
-        .await;
+    daemon.wait_for_session_start(2).await;
 
     // Trigger shutdown and measure wall-clock time until the daemon exits.
     // `shutdown()` reads the audit log just before dropping the TempDir, so
@@ -130,11 +126,7 @@ async fn shutdown_synthesizes_session_end_for_aborted_sessions() {
     // call `live.insert` for each — observable via two session_start
     // records reaching the audit log. Far more reliable than a fixed
     // sleep on a loaded CI runner.
-    daemon
-        .wait_for_audit(std::time::Duration::from_secs(2), |c| {
-            count_audit_kind(c, "session_start") >= 2
-        })
-        .await;
+    daemon.wait_for_session_start(2).await;
 
     // Trigger shutdown. The drain has 5s to clean-close, then JoinSet
     // aborts. Sessions that never completed handshake will be aborted —
