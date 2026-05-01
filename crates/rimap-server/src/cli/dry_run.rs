@@ -20,6 +20,12 @@
 //! Infrastructure tools (always available):
 //!   [ok ] use_account
 //!   [ok ] list_accounts
+//! Capabilities (imap.example.com:993):
+//!   [ok ] IMAP4REV1
+//!   [ok ] IDLE
+//! TLS fingerprint (sha256):
+//!   ab:cd:...:ef
+//!   (add `tls_fingerprint_sha256 = "ab:cd:...:ef"` under [imap] in config.toml to pin)
 //! ```
 
 use std::io::Write;
@@ -47,9 +53,7 @@ use rimap_core::tool::ToolName;
 /// fingerprint to surface when the verifier never ran or the value is not
 /// meaningfully informative.
 ///
-/// Used by unit tests below; will be called from `run()` in task 5.
-#[allow(clippy::allow_attributes, dead_code)]
-// ^ Justification: Used by tests; wiring into run() is task 5.
+/// Used by unit tests below and called from `run()`.
 fn write_fingerprint_section<W: Write>(
     out: &mut W,
     result: &Result<rimap_imap::preflight::PreflightInfo, rimap_imap::error::ImapError>,
@@ -144,7 +148,8 @@ pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
         // config may have one unreachable host and still want to print
         // the matrix for the others.
         let conn_cfg = rimap_server::boot::registry::build_account_connection(id, acfg);
-        match rimap_imap::preflight::probe_preflight(&conn_cfg).await {
+        let preflight_result = rimap_imap::preflight::probe_preflight(&conn_cfg).await;
+        match &preflight_result {
             Ok(info) => {
                 writeln!(out, "Capabilities ({}:{}):", conn_cfg.host, conn_cfg.port)?;
                 for cap in &info.capabilities {
@@ -159,6 +164,7 @@ pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
                 )?;
             }
         }
+        write_fingerprint_section(out, &preflight_result, conn_cfg.pinned_fingerprint)?;
     }
     Ok(())
 }

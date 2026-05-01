@@ -9,6 +9,13 @@ authors.workspace = true
 readme.workspace = true
 description = "IMAP session, TLS pinning, and read operations for rusty-imap-mcp"
 
+[features]
+default = []
+# Exposes test-only constructors (e.g. `PreflightInfo::new`) so cross-crate
+# tests in `rimap-server` can synthesize fixtures without going through the
+# real probe. Off by default; enabled by `rimap-server`'s dev-deps.
+test-support = []
+
 [lints]
 workspace = true
 
