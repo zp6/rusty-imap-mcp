@@ -177,3 +177,30 @@ pub(super) fn collect_anchor_hrefs(sanitized_html: &str) -> Vec<String> {
         .filter_map(|a| a.value().attr("href").map(str::to_string))
         .collect()
 }
+
+#[cfg(test)]
+mod extract_tests {
+    use super::push_text;
+
+    #[test]
+    fn push_text_does_not_prepend_space_at_start() {
+        // Kills `&& with ||` on the space-insertion guard. Under `||`,
+        // an empty `out` (`!out.is_empty() = false`) combined with a
+        // non-whitespace tail (`!out.ends_with(ws) = true`) still
+        // triggers the push, producing " hello" instead of "hello".
+        let mut out = String::new();
+        push_text(&mut out, "hello");
+        assert_eq!(out, "hello");
+    }
+
+    #[test]
+    fn push_text_does_not_double_space_after_existing_whitespace() {
+        // Companion to the above. Under `||`, a non-empty `out` ending
+        // in space (`!is_empty=true || ends_with_ws=true` short-circuits
+        // to true regardless of the second clause) still pushes another
+        // space, producing "abc  def" instead of "abc def".
+        let mut out = String::from("abc ");
+        push_text(&mut out, "def");
+        assert_eq!(out, "abc def");
+    }
+}
