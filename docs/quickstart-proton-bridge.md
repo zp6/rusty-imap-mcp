@@ -35,6 +35,35 @@ Proton Bridge uses a self-signed TLS certificate that is not in your
 system trust store. Pin the certificate fingerprint so the server can
 verify it.
 
+### Get the TLS fingerprint (recommended path)
+
+After saving an initial `config.toml` with `host`, `port`, and `username`,
+run:
+
+```bash
+rusty-imap-mcp --config config.toml --dry-run
+```
+
+The output includes a `TLS fingerprint (sha256):` line followed by the
+observed cert hash and a copy-pasteable line:
+
+```
+TLS fingerprint (sha256):
+  ab:cd:ef:...:ef
+  (add `tls_fingerprint_sha256 = "ab:cd:ef:...:ef"` under [imap] in config.toml to pin)
+```
+
+Copy the hex value into `tls_fingerprint_sha256` under `[imap]` and re-run
+`--dry-run`; the fingerprint section now reads `(matches configured pin)`.
+
+> **Trust note**: `--dry-run` records whatever cert the network presents.
+> Run it from a network you trust at the time of fingerprint extraction —
+> same caveat as the `openssl s_client` recipe below.
+
+### Alternative: extract the fingerprint with openssl
+
+If you prefer not to run a partial config first, the fingerprint can also be extracted directly:
+
 ```bash
 openssl s_client -connect 127.0.0.1:1143 -starttls imap < /dev/null 2>/dev/null \
   | openssl x509 -outform DER \

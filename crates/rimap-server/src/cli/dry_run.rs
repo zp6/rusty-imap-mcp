@@ -20,6 +20,12 @@
 //! Infrastructure tools (always available):
 //!   [ok ] use_account
 //!   [ok ] list_accounts
+//! Capabilities (imap.example.com:993):
+//!   [ok ] IMAP4REV1
+//!   [ok ] IDLE
+//! TLS fingerprint (sha256):
+//!   ab:cd:...:ef
+//!   (add `tls_fingerprint_sha256 = "ab:cd:...:ef"` under [imap] in config.toml to pin)
 //! ```
 
 use std::io::Write;
@@ -30,6 +36,70 @@ use rimap_audit::{AuditOptions, AuditWriter};
 use rimap_authz::matrix::EffectiveMatrix;
 use rimap_config::loader::load_and_validate;
 use rimap_core::tool::ToolName;
+
+/// Print the `TLS fingerprint (sha256):` section for one account, given the
+/// preflight outcome and the (optional) pinned fingerprint from config. Four
+/// branches:
+///
+/// - `Ok(info)` + no pin: print observed fingerprint with a paste-into-config
+///   hint (onboarding path).
+/// - `Ok(info)` + matching pin: print observed fingerprint with `(matches
+///   configured pin)` confirmation.
+/// - `Ok(info)` + mismatched pin: defensive unreachable-in-production print
+///   (see arm comment).
+/// - `Err(ImapError::Tls { observed, expected })`: print both values plus a
+///   diagnostic hint pointing at the quickstart.
+///
+/// All other error variants (`Connect`, `Timeout`, `TlsHandshake` for
+/// non-mismatch reasons, `Protocol`) silently print nothing — there is no
+/// fingerprint to surface when the verifier never ran or the value is not
+/// meaningfully informative.
+fn write_fingerprint_section<W: Write>(
+    out: &mut W,
+    result: &Result<rimap_imap::preflight::PreflightInfo, rimap_imap::error::ImapError>,
+    pinned: Option<rimap_core::TlsFingerprint>,
+) -> std::io::Result<()> {
+    match (result, pinned) {
+        (Ok(info), None) => {
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  {}", info.tls_fingerprint)?;
+            writeln!(
+                out,
+                "  (add `tls_fingerprint_sha256 = \"{}\"` under [imap] in config.toml to pin)",
+                info.tls_fingerprint
+            )?;
+        }
+        (Ok(info), Some(pin)) if info.tls_fingerprint == pin => {
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  {}  (matches configured pin)", info.tls_fingerprint)?;
+        }
+        (Ok(info), Some(_)) => {
+            // Unreachable in production: probe_preflight returns Err(Tls) on
+            // mismatch. Defensive branch flags the anomalous state instead of
+            // silently mimicking the matching-pin output.
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(
+                out,
+                "  {}  (pin mismatch — unexpected state, please report)",
+                info.tls_fingerprint
+            )?;
+        }
+        (Err(rimap_imap::error::ImapError::Tls { observed, expected }), _) => {
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  observed: {observed}")?;
+            writeln!(out, "  expected: {expected}  (configured pin)")?;
+            writeln!(
+                out,
+                "  hint: re-run the openssl command from the quickstart and update tls_fingerprint_sha256"
+            )?;
+        }
+        (Err(_), _) => {
+            // Connect / Timeout / TlsHandshake-non-mismatch / Protocol: nothing
+            // to print. The capabilities-section already shows the error.
+        }
+    }
+    Ok(())
+}
 
 /// Load `path`, validate, acquire an exclusive audit lock, build the effective
 /// matrix, print to `out`, and return. The audit lock is held for the duration
@@ -82,7 +152,8 @@ pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
         // config may have one unreachable host and still want to print
         // the matrix for the others.
         let conn_cfg = rimap_server::boot::registry::build_account_connection(id, acfg);
-        match rimap_imap::preflight::probe_preflight(&conn_cfg).await {
+        let preflight_result = rimap_imap::preflight::probe_preflight(&conn_cfg).await;
+        match &preflight_result {
             Ok(info) => {
                 writeln!(out, "Capabilities ({}:{}):", conn_cfg.host, conn_cfg.port)?;
                 for cap in &info.capabilities {
@@ -97,6 +168,7 @@ pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
                 )?;
             }
         }
+        write_fingerprint_section(out, &preflight_result, conn_cfg.pinned_fingerprint)?;
     }
     Ok(())
 }
@@ -109,6 +181,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::cli::dry_run::run;
+    use rimap_core::TlsFingerprint;
+    use rimap_imap::error::ImapError;
+    use rimap_imap::preflight::PreflightInfo;
 
     /// Tempdir whose mode is forced to 0700 — `AuditWriter::open` rejects looser
     /// modes after #147 and `tempfile::TempDir::new()` may inherit the system
@@ -139,6 +214,10 @@ allowed_base_dir = "{}"
         );
         std::fs::write(&config_path, body).unwrap();
         config_path
+    }
+
+    fn synth_fp(seed: &[u8]) -> TlsFingerprint {
+        TlsFingerprint::from_cert_der(seed)
     }
 
     #[tokio::test]
@@ -239,5 +318,189 @@ allowed_base_dir = "{}"
             writeln!(chain, "{cause}").unwrap();
         }
         assert!(chain.contains("loading config") || chain.contains("parse"));
+    }
+
+    #[test]
+    fn write_fingerprint_section_unpinned_prints_paste_hint() {
+        let fp = synth_fp(b"unpinned-test");
+        let info = PreflightInfo::new(vec!["IMAP4REV1".into()], fp);
+        let result: Result<PreflightInfo, ImapError> = Ok(info);
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, None).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("TLS fingerprint (sha256):"),
+            "header missing:\n{text}"
+        );
+        assert!(
+            text.contains(&fp.to_string()),
+            "fingerprint missing:\n{text}"
+        );
+        assert!(
+            text.contains("tls_fingerprint_sha256 ="),
+            "paste hint missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn write_fingerprint_section_pinned_match_prints_confirmation() {
+        let fp = synth_fp(b"matched-pin");
+        let info = PreflightInfo::new(vec!["IMAP4REV1".into()], fp);
+        let result: Result<PreflightInfo, ImapError> = Ok(info);
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, Some(fp)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("matches configured pin"),
+            "match confirmation missing:\n{text}"
+        );
+        // Paste hint must NOT appear when already pinned-and-matched.
+        assert!(
+            !text.contains("tls_fingerprint_sha256 ="),
+            "paste hint should not appear on match:\n{text}"
+        );
+    }
+
+    #[test]
+    fn write_fingerprint_section_pinned_mismatch_prints_diagnostic() {
+        let observed = synth_fp(b"observed-cert");
+        let expected = synth_fp(b"expected-pin");
+        let result: Result<PreflightInfo, ImapError> = Err(ImapError::Tls { observed, expected });
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, Some(expected)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("observed:"), "observed: missing:\n{text}");
+        assert!(text.contains("expected:"), "expected: missing:\n{text}");
+        assert!(
+            text.contains(&observed.to_string()),
+            "observed hex missing:\n{text}"
+        );
+        assert!(
+            text.contains(&expected.to_string()),
+            "expected hex missing:\n{text}"
+        );
+        assert!(text.contains("hint:"), "hint line missing:\n{text}");
+    }
+
+    #[test]
+    fn write_fingerprint_section_other_error_prints_nothing() {
+        let result: Result<PreflightInfo, ImapError> =
+            Err(ImapError::Timeout { op: "tcp_connect" });
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, None).unwrap();
+        assert!(
+            out.is_empty(),
+            "fingerprint section must be silent on non-TLS error"
+        );
+    }
+
+    #[test]
+    fn write_fingerprint_section_pinned_ok_mismatch_defensive_prints_observed() {
+        // Defensive branch: an `Ok(info)` from probe_preflight where the
+        // observed fingerprint disagrees with the configured pin should be
+        // unreachable in production (the verifier rejects the handshake on
+        // mismatch, producing Err(Tls) instead). The branch is kept as a
+        // future-proofing guard. This test exercises the branch with a
+        // synthesized state to pin its behavior.
+        let observed = synth_fp(b"observed-defensive");
+        let pinned = synth_fp(b"different-pin-defensive");
+        assert_ne!(observed, pinned, "test setup: fingerprints must differ");
+        let info = PreflightInfo::new(vec!["IMAP4REV1".into()], observed);
+        let result: Result<PreflightInfo, ImapError> = Ok(info);
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, Some(pinned)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("TLS fingerprint (sha256):"),
+            "header missing:\n{text}"
+        );
+        assert!(
+            text.contains(&observed.to_string()),
+            "observed hex missing:\n{text}"
+        );
+        assert!(
+            text.contains("pin mismatch") && text.contains("unexpected"),
+            "anomaly annotation missing:\n{text}"
+        );
+        // The defensive arm prints observed only — no paste hint, no match
+        // confirmation, no observed/expected diagnostic.
+        assert!(
+            !text.contains("tls_fingerprint_sha256 ="),
+            "paste hint must not appear:\n{text}"
+        );
+        assert!(
+            !text.contains("matches configured pin"),
+            "match confirmation must not appear:\n{text}"
+        );
+        assert!(
+            !text.contains("expected:"),
+            "mismatch diagnostic must not appear:\n{text}"
+        );
+    }
+
+    fn write_multi_account_config(dir: &TempDir) -> PathBuf {
+        let audit = dir.path().join("audit.jsonl");
+        let config_path = dir.path().join("config.toml");
+        let body = format!(
+            r#"
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "127.0.0.1"
+port = 1143
+username = "alice@work.test"
+
+[[accounts]]
+name = "personal"
+
+[accounts.imap]
+host = "127.0.0.1"
+port = 1143
+username = "alice@personal.test"
+
+[audit]
+path = "{audit}"
+allowed_base_dir = "{base}"
+"#,
+            audit = audit.display(),
+            base = dir.path().display(),
+        );
+        std::fs::write(&config_path, body).unwrap();
+        config_path
+    }
+
+    #[tokio::test]
+    async fn dry_run_single_account_omits_account_header() {
+        // With exactly one account the "Account: <name>" header should be
+        // absent — it is only useful when multiple accounts share the output.
+        let dir = tight_tempdir();
+        let path = write_minimal_config(&dir);
+        let mut out = Vec::new();
+        run(&path, &mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            !text.contains("Account:"),
+            "single-account output must not contain 'Account:' header:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_multi_account_prints_account_headers() {
+        // With two accounts each section must be prefixed with
+        // "Account: <name>" so users can tell the sections apart.
+        let dir = tight_tempdir();
+        let path = write_multi_account_config(&dir);
+        let mut out = Vec::new();
+        run(&path, &mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("Account: work"),
+            "multi-account output must contain 'Account: work':\n{text}"
+        );
+        assert!(
+            text.contains("Account: personal"),
+            "multi-account output must contain 'Account: personal':\n{text}"
+        );
     }
 }

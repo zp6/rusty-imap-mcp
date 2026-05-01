@@ -1,7 +1,9 @@
 //! Pre-auth `CAPABILITY` probe used by `--dry-run` and other diagnostic
 //! paths. Performs TCP connect → TLS handshake → IMAP greeting → pre-auth
-//! `CAPABILITY` command, then drops the connection. Does NOT perform LOGIN
-//! and does NOT emit any audit records.
+//! `CAPABILITY` command, then drops the connection. Captures the leaf-cert
+//! SHA-256 fingerprint observed during the handshake (returned via
+//! `PreflightInfo.tls_fingerprint`). Does NOT perform LOGIN and does NOT
+//! emit any audit records.
 
 use std::time::Instant;
 
@@ -24,6 +26,27 @@ pub struct PreflightInfo {
     /// Capability atoms returned by the server's pre-auth `CAPABILITY`
     /// response, upper-cased, de-duplicated, order preserved as received.
     pub capabilities: Vec<String>,
+    /// Leaf-cert SHA-256 fingerprint observed during the TLS handshake.
+    /// Captured from the verifier's `last_observed` slot. Always populated
+    /// on a successful `probe_preflight` (the verifier runs before TLS
+    /// completes); a `None` would indicate a programming bug, surfaced as
+    /// `ImapError::TlsHandshake` rather than a panic.
+    pub tls_fingerprint: rimap_core::TlsFingerprint,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl PreflightInfo {
+    /// Construct a `PreflightInfo` for tests. Bypasses `#[non_exhaustive]`
+    /// so test crates can synthesize fixtures without going through
+    /// `probe_preflight`. Gated behind `test-support` to keep the constructor
+    /// out of the production public API surface.
+    #[must_use]
+    pub fn new(capabilities: Vec<String>, tls_fingerprint: rimap_core::TlsFingerprint) -> Self {
+        Self {
+            capabilities,
+            tls_fingerprint,
+        }
+    }
 }
 
 /// Run a TCP+TLS+greeting+CAPABILITY probe against `cfg`.
@@ -32,7 +55,15 @@ pub struct PreflightInfo {
 /// Mirrors `ImapError` variants: `Connect`, `TlsHandshake`, `Timeout`,
 /// `Protocol`. Never returns `Auth` variants — no credentials are used.
 pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, ImapError> {
-    let bundle = build_tls_config(cfg.pinned_fingerprint)?;
+    // Pinned mode: enforce the configured fingerprint via PinningVerifier.
+    // Unpinned mode: use the capture-only verifier so a self-signed cert
+    // (e.g., Proton Bridge) does not abort the probe before we can surface
+    // the fingerprint to the operator. Trust-on-first-use applies — same
+    // posture as the openssl recipe in the quickstart.
+    let bundle = match cfg.pinned_fingerprint {
+        Some(_) => build_tls_config(cfg.pinned_fingerprint)?,
+        None => crate::tls::build_tls_config_capture_only()?,
+    };
     let total_deadline = cfg.connect_timeout;
     let started = Instant::now();
 
@@ -49,13 +80,16 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     // STARTTLS consumes the plaintext greeting during negotiation, so the TLS
     // stream does not receive another greeting. Implicit TLS has not read the
     // greeting yet.
+    let enrich =
+        |e| crate::connection::enrich_tls_handshake_error(e, &bundle, cfg.pinned_fingerprint);
     let (tls_stream, already_greeted) = match cfg.encryption {
         ImapEncryption::Tls => {
             let s = timeout(remaining, tls_handshake(tcp, &bundle, &cfg.host))
                 .await
                 .map_err(|_| ImapError::Timeout {
                     op: "tls_handshake",
-                })??;
+                })?
+                .map_err(enrich)?;
             (s, false)
         }
         ImapEncryption::Starttls => {
@@ -63,7 +97,8 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
                 .await
                 .map_err(|_| ImapError::Timeout {
                     op: "starttls_upgrade",
-                })??;
+                })?
+                .map_err(enrich)?;
             (s, true)
         }
     };
@@ -76,6 +111,7 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     // CAPABILITY leg (it is the per-command budget); apply the remaining
     // connect-budget to the greeting read.
     let greeting_budget = total_deadline.saturating_sub(started.elapsed());
+    // cargo-mutants: only exercised by Dovecot integration (case_21 / starttls suite); no live IMAP server at unit level.
     if !already_greeted {
         timeout(greeting_budget, client.read_response())
             .await
@@ -112,6 +148,7 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
             for cap in list {
                 if let ImapCapability::Atom(name) = cap {
                     let upper = name.to_ascii_uppercase();
+                    // cargo-mutants: filter mutations only manifest with real CAPABILITY atoms; covered by case_21's `!info.capabilities.is_empty()` assertion.
                     if !upper.is_empty() && !caps.contains(&upper) {
                         caps.push(upper);
                     }
@@ -120,5 +157,13 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
         }
     }
 
-    Ok(PreflightInfo { capabilities: caps })
+    let tls_fingerprint = bundle.last_observed.get().copied().ok_or_else(|| {
+        ImapError::TlsHandshake(tokio_rustls::rustls::Error::General(
+            "verifier did not capture fingerprint".into(),
+        ))
+    })?;
+    Ok(PreflightInfo {
+        capabilities: caps,
+        tls_fingerprint,
+    })
 }
