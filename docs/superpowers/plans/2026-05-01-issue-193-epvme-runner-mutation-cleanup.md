@@ -4,7 +4,14 @@
 
 **Goal:** Triage the surviving `cargo-mutants` mutants inside `crates/rimap-content/src/bin/epvme_runner.rs` (issue #193). Drive the file's `MISSED` count to zero by either (a) adding a test in the binary's `#[cfg(test)]` module that kills the mutant when the mutation affects the dataset's pass/fail signal or the JSON summary schema, or (b) annotating the mutation as `known-equivalent` with a one-line rationale and a row in `docs/superpowers/specs/test-strategy/mutation-baseline.md`.
 
-**Architecture:** Test-only and docs-only changes. No behavioral changes to `epvme_runner` itself, except possibly tightening a `#[cfg(test)]`-visible helper if a survivor cannot otherwise be observed. New tests live in the existing `mod tests` block at the end of `crates/rimap-content/src/bin/epvme_runner.rs` (the `simple_email`/`write_sample` helpers are already in place). Annotations live as `// cargo-mutants: known-equivalent — <rationale>` comments at the mutation site. The baseline doc gains a new `### \`bin/epvme_runner.rs\`` subsection under the existing `## \`rimap-content\`` heading.
+**Architecture:** Test-only and docs-only changes. No behavioral changes to `epvme_runner` itself, except possibly tightening a `#[cfg(test)]`-visible helper if a survivor cannot otherwise be observed. Tests have **two existing homes**, and the right home depends on what the mutation observes:
+
+1. **In-process unit tests** in the binary's existing `mod tests` block at the bottom of `crates/rimap-content/src/bin/epvme_runner.rs` (the `simple_email`/`write_sample` helpers are already in place). Use this when the mutated symbol can be called directly from tests in the same compilation unit.
+2. **Process-level integration tests** in `crates/rimap-content/tests/epvme_integration.rs`. This file already covers the happy path (`normal_run_two_files`), error path (`missing_directory_exits_nonzero`), `--limit` (`limit_flag_caps_processing`), `--json-out` (`json_out_writes_valid_json` — already pins JSON schema field names), and the no-args path (`no_args_exits_nonzero`). Use this when a mutation can only be observed via the process exit code, stdout content, or stderr content (e.g. the `RunnerError::UsageMessage` arm in `main`, which controls whether `--help` exits 0 vs. 2).
+
+Annotations live as `// cargo-mutants: known-equivalent — <rationale>` comments at the mutation site. The baseline doc gains a new `### \`bin/epvme_runner.rs\`` subsection under the existing `## \`rimap-content\`` heading.
+
+The 16 baseline survivors are *after* both the existing in-process tests and the existing integration tests run — so further test additions in either location are net-new coverage, not duplicates of what is already there.
 
 **Tech Stack:** `cargo-mutants` 25.x or 27.x, `cargo-nextest`, `cargo clippy`, the existing `tempfile`-driven tests in `epvme_runner.rs`'s `#[cfg(test)]` module.
 
