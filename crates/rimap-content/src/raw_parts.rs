@@ -59,6 +59,15 @@ fn walk(
     out: &mut Vec<RawPart>,
     depth: u32,
 ) -> Result<(), ContentError> {
+    // cargo-mutants: known-equivalent — `> with ==` and `> with >=` are
+    // observably indistinguishable for any mail_parser-reachable input.
+    // Per `crates/rimap-content/src/parse/mod.rs`, `parse_message` already
+    // rejects messages whose MIME depth exceeds 8 (`MAX_MIME_DEPTH`)
+    // before any caller of `walk_attachment_parts` sees them; the 64-level
+    // defensive cap here therefore can never fire in production. The
+    // `==` mutation only differs from `>` at exactly `depth == 64`, and
+    // `>=` only at `depth in [64, max-tree-depth]`; both ranges are
+    // unreachable.
     if depth > MAX_MIME_DEPTH {
         return Ok(());
     }
@@ -77,6 +86,13 @@ fn walk(
             } else {
                 format!("{prefix}.{num}")
             };
+            // cargo-mutants: known-equivalent — `+ with *` on `depth + 1`
+            // is observably indistinguishable for any reachable input.
+            // `depth * 1 == depth` keeps the recursion at depth 0
+            // forever, but mail_parser-reachable trees have finite depth
+            // (capped well below the 64 defensive cap by `parse_message`),
+            // so both `+ 1` and `* 1` walk to the same set of leaves
+            // before recursion bottoms out on `sub_parts() == None`.
             walk(msg, child_idx as usize, &child_id, out, depth + 1)?;
         }
     } else {
