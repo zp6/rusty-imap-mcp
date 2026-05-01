@@ -76,6 +76,30 @@ Call from both `connect_inner` and `probe_preflight`. The existing
 `connect_inner` mismatch test at `connection.rs:1140-1147` is the
 regression gate — its expectations do not change.
 
+### Unpinned-mode capture (TOFU)
+
+`probe_preflight` uses two TLS-verifier modes:
+
+- **Pinned**: when `cfg.pinned_fingerprint.is_some()`, build via
+  `build_tls_config(...)`. The `PinningVerifier` bypasses chain
+  validation and accepts only the configured fingerprint.
+- **Unpinned + capture-only**: when `cfg.pinned_fingerprint.is_none()`,
+  build via `build_tls_config_capture_only()`. The `CaptureOnlyVerifier`
+  records the leaf-cert fingerprint and **always accepts** the cert.
+
+The capture-only path is required so a self-signed cert (e.g., Proton
+Bridge) does not abort the probe before the fingerprint can be surfaced
+to the operator. The auth path (`Connection::connect_inner`) is
+unaffected — it continues to use `build_tls_config(None)` with
+webpki-roots in unpinned mode.
+
+**Trust posture**: `--dry-run` against an unpinned config has the same
+TOFU guarantee as running `openssl s_client` over the same network. A
+network attacker's cert would be captured and reported as if it were
+the server's. Quickstart docs already advise extracting the fingerprint
+in a trusted environment; that guidance applies whether the operator
+uses `--dry-run` or the openssl recipe.
+
 ### 2. Extend `PreflightInfo` and capture in `probe_preflight`
 
 `PreflightInfo` is `#[non_exhaustive]`, so adding a field is non-breaking:

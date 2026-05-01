@@ -56,6 +56,10 @@ TLS fingerprint (sha256):
 Copy the hex value into `tls_fingerprint_sha256` under `[imap]` and re-run
 `--dry-run`; the fingerprint section now reads `(matches configured pin)`.
 
+> **Trust note**: `--dry-run` records whatever cert the network presents.
+> Run it from a network you trust at the time of fingerprint extraction —
+> same caveat as the `openssl s_client` recipe below.
+
 ### Alternative: extract the fingerprint with openssl
 
 If you prefer not to run a partial config first, the fingerprint can also be extracted directly:

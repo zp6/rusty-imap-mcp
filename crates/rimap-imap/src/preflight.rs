@@ -55,7 +55,15 @@ impl PreflightInfo {
 /// Mirrors `ImapError` variants: `Connect`, `TlsHandshake`, `Timeout`,
 /// `Protocol`. Never returns `Auth` variants — no credentials are used.
 pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, ImapError> {
-    let bundle = build_tls_config(cfg.pinned_fingerprint)?;
+    // Pinned mode: enforce the configured fingerprint via PinningVerifier.
+    // Unpinned mode: use the capture-only verifier so a self-signed cert
+    // (e.g., Proton Bridge) does not abort the probe before we can surface
+    // the fingerprint to the operator. Trust-on-first-use applies — same
+    // posture as the openssl recipe in the quickstart.
+    let bundle = match cfg.pinned_fingerprint {
+        Some(_) => build_tls_config(cfg.pinned_fingerprint)?,
+        None => crate::tls::build_tls_config_capture_only()?,
+    };
     let total_deadline = cfg.connect_timeout;
     let started = Instant::now();
 
