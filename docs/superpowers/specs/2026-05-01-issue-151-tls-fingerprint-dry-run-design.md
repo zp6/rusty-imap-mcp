@@ -139,40 +139,70 @@ print when the verifier never ran.
 
 ## Testing
 
-### API contract — `crates/rimap-imap/tests/tls_pinning.rs`
+The only real-handshake test infrastructure in the repo is the
+Dovecot container harness in `crates/rimap-imap/tests/integration/`
+(`ConnectedHarness::new(PinChoice)` in `support/connect.rs`,
+`DovecotHarness` in `support/container.rs`). `tls_pinning.rs` uses
+synthetic DER bytes only; there is no in-process rustls listener.
+The issue's acceptance criterion ("integration test against the
+project's Dovecot / Mailpit fixture") maps directly to the existing
+harness. Tests split as follows:
 
-Two new tests against the existing in-process rustls listener used by
-the file's existing pinning tests:
+### API contract — `crates/rimap-imap/tests/integration/dovecot.rs`
 
-- `probe_preflight_returns_observed_fingerprint`: compute the fixture
-  cert's SHA-256 directly from the PEM, call `probe_preflight` with
-  `pinned_fingerprint = None`, assert
-  `info.tls_fingerprint == computed_hash`.
-- `probe_preflight_mismatch_returns_typed_error`: pin a deliberately
-  wrong fingerprint, assert the error is
-  `ImapError::Tls { observed, expected }` with both values populated
-  and `observed == computed_hash`, `expected == wrong_hash`.
+Two new tests using `ConnectedHarness`:
 
-### CLI output contract — `crates/rimap-server/tests/dry_run_cli.rs`
+- `case_NN_probe_preflight_returns_observed_fingerprint`: build a
+  `ConnectionConfig` from the harness with `pinned_fingerprint = None`,
+  call `probe_preflight`, assert `info.tls_fingerprint ==
+  harness.expected_fingerprint()` (the harness exposes the cert's
+  SHA-256 via the `/shared/fingerprint.hex` file the container
+  publishes).
+- `case_NN_probe_preflight_mismatch_returns_typed_error`: pin a
+  deliberately wrong fingerprint, assert the error is
+  `ImapError::Tls { observed, expected }` with `observed ==
+  harness.expected_fingerprint()` and `expected == wrong_hash`.
 
-Three new sub-tests. Each stands up a one-shot rustls listener on a
-random port using the same fixture cert as `tls_pinning.rs`, writes a
-config pointing at it, invokes the binary with `--dry-run`, and asserts
-on stdout:
+These run only when Docker/Podman is available (silent skip otherwise),
+matching the rest of the Dovecot suite.
 
-- `dry_run_prints_unpinned_fingerprint_with_paste_hint`: no
-  `tls_fingerprint_sha256` in config; assert
-  `TLS fingerprint (sha256):` appears, the expected hex appears, and
-  the substring `tls_fingerprint_sha256 =` appears as a paste hint.
-- `dry_run_prints_pinned_match_confirmation`: config pins the correct
-  fingerprint; assert `(matches configured pin)` appears.
-- `dry_run_prints_pinned_mismatch_diagnostic`: config pins a wrong
-  fingerprint; assert `observed:` and `expected:` lines both appear
-  with the right hex values, and the `hint:` line appears.
+### Printer contract — unit tests in `crates/rimap-server/src/cli/dry_run.rs`
 
-Test gate: match prevailing convention in the file. The file's
-existing tests run on Linux + macOS (no platform `cfg` gate). New
-tests inherit that.
+Extract the fingerprint-printing logic into a small pure function:
+
+```rust
+fn write_fingerprint_section<W: Write>(
+    out: &mut W,
+    result: &Result<PreflightInfo, ImapError>,
+    pinned: Option<TlsFingerprint>,
+) -> io::Result<()>
+```
+
+This function takes synthesized inputs and writes the three-case
+output. Three new unit tests cover each branch:
+
+- `write_fingerprint_section_unpinned_prints_paste_hint`: `pinned =
+  None`, `Ok(info)` with a synthesized fingerprint; assert output
+  contains `TLS fingerprint (sha256):`, the hex string, and
+  `tls_fingerprint_sha256 =`.
+- `write_fingerprint_section_pinned_match_prints_confirmation`:
+  `pinned = Some(fp)`, `Ok(info)` with the same fingerprint; assert
+  output contains `(matches configured pin)`.
+- `write_fingerprint_section_pinned_mismatch_prints_diagnostic`:
+  `pinned = Some(a)`, `Err(ImapError::Tls { observed: b, expected: a })`;
+  assert output contains `observed:`, `expected:`, both hex values,
+  and the `hint:` line.
+
+The existing `dry_run_cli.rs` integration test gets a one-line
+addition: assert that `TLS fingerprint (sha256):` appears in stdout
+(or that the `unavailable` variant fires, since the test points at
+an unreachable port). This is a smoke-level check, not the contract.
+
+### Mutation testing
+
+Run `cargo mutants --jobs 2` over the touched files (`preflight.rs`,
+`connection.rs`, `dry_run.rs`) after the change lands and kill any
+escaped mutants per the project's standing practice.
 
 ### Mutation testing
 
