@@ -352,25 +352,41 @@ mod tests {
 
         match outcome {
             Ok(Ok(_accepted)) => {
-                eprintln!(
-                    "issue #188 probe: accept Ok (peer_cred succeeded) on {}",
-                    std::env::consts::OS
+                #[cfg(target_os = "linux")]
+                eprintln!("issue #188 probe: accept Ok (peer_cred succeeded) on linux (expected)");
+                #[cfg(target_os = "macos")]
+                panic!(
+                    "issue #188 probe: macOS accept unexpectedly succeeded — \
+                     Phase 1 recorded ENOTCONN here. Update the spec if behavior changed."
                 );
             }
             Ok(Err(e)) => {
-                eprintln!(
-                    "issue #188 probe: accept Err on {} kind={:?} msg={}",
-                    std::env::consts::OS,
+                #[cfg(target_os = "macos")]
+                {
+                    // Expected on macOS Tahoe: peer_cred() inside the wrapper
+                    // returns ENOTCONN for an already-fully-disconnected peer.
+                    assert_eq!(
+                        e.kind(),
+                        std::io::ErrorKind::NotConnected,
+                        "issue #188 probe: expected NotConnected on macOS, got {:?} ({})",
+                        e.kind(),
+                        e
+                    );
+                    eprintln!(
+                        "issue #188 probe: macOS accept Err kind=NotConnected msg={e} (expected)"
+                    );
+                }
+                #[cfg(target_os = "linux")]
+                panic!(
+                    "issue #188 probe: Linux accept unexpectedly errored: kind={:?} msg={}",
                     e.kind(),
                     e
                 );
             }
-            Err(_elapsed) => {
-                eprintln!(
-                    "issue #188 probe: accept did not return within 2 s on {}",
-                    std::env::consts::OS
-                );
-            }
+            Err(tokio::time::error::Elapsed { .. }) => panic!(
+                "issue #188 probe: accept did not return within 2 s on {}",
+                std::env::consts::OS
+            ),
         }
     }
 }

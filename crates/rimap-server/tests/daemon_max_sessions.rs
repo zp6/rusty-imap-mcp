@@ -126,15 +126,6 @@ async fn daemon_rejects_session_past_limit() {
     );
 }
 
-// Skipped on macOS: same root cause as
-// daemon_happy_path::client_connects_and_sees_clean_session_lifecycle —
-// the daemon never emits session_start after the first close+reconnect,
-// so wait_for_audit panics on timeout. Linux CI is unaffected.
-// See issue #188.
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "macOS daemon-on-tokio: session_start never emitted; see issue #188"
-)]
 #[tokio::test]
 async fn daemon_releases_permit_on_session_end() {
     // Idempotent across the test binary; zero-cost when RUST_LOG is unset.
@@ -159,9 +150,15 @@ async fn daemon_releases_permit_on_session_end() {
     let daemon =
         TestDaemon::spawn_bare(tempdir, audit_path.clone(), socket_path.clone(), state).await;
 
-    // Round 1: connect, close, wait for session_end.
+    // Round 1: connect, wait for session_start (see issue #188 — macOS
+    // races accept-side syscalls against an already-EOF'd peer), close,
+    // wait for session_end.
     {
         let mut c = UnixStream::connect(&socket_path).await.expect("connect 1");
+        wait_for_audit_at(&audit_path, Duration::from_secs(2), |s| {
+            count_audit_kind(s, "session_start") >= 1
+        })
+        .await;
         c.shutdown().await.expect("shutdown 1");
         drop(c);
     }
@@ -171,9 +168,13 @@ async fn daemon_releases_permit_on_session_end() {
     .await;
 
     // Round 2: permit should be back; this connection must not be
-    // rejected.
+    // rejected. Same wait-for-session_start barrier as round 1.
     {
         let mut c = UnixStream::connect(&socket_path).await.expect("connect 2");
+        wait_for_audit_at(&audit_path, Duration::from_secs(2), |s| {
+            count_audit_kind(s, "session_start") >= 2
+        })
+        .await;
         c.shutdown().await.expect("shutdown 2");
         drop(c);
     }

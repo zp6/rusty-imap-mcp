@@ -35,13 +35,6 @@ async fn daemon_spawns_and_shuts_down_cleanly() {
     let _audit = daemon.shutdown().await;
 }
 
-// Skipped on macOS: the daemon never emits `session_start` after a client
-// connects in this test environment, so `wait_for_audit` panics on timeout
-// even at multi-second budgets. Linux CI is unaffected. See issue #188.
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "macOS daemon-on-tokio: session_start never emitted; see issue #188"
-)]
 #[tokio::test]
 async fn client_connects_and_sees_clean_session_lifecycle() {
     use tokio::io::AsyncWriteExt as _;
@@ -70,6 +63,16 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     // Connect as a raw client — we're not speaking MCP, just proving the
     // accept loop works and session_start/session_end get emitted.
     let mut stream = UnixStream::connect(&socket_path).await.expect("connect");
+    // Wait for the daemon to record session_start before closing the
+    // client. macOS races the daemon's accept-side syscalls against an
+    // already-EOF'd peer; without this barrier the daemon never emits
+    // session_start. See issue #188 and the comment in
+    // tests/common/daemon_harness.rs near `wait_for_audit_at`.
+    daemon
+        .wait_for_audit(std::time::Duration::from_secs(2), |c| {
+            count_audit_kind(c, "session_start") >= 1
+        })
+        .await;
     // Write nothing. Immediately close the write half so the daemon sees EOF.
     stream.shutdown().await.expect("shutdown client write half");
     drop(stream);

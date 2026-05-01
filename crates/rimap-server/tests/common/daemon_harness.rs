@@ -157,6 +157,22 @@ impl TestDaemon {
 /// Free-function variant of [`TestDaemon::wait_for_audit`] for tests
 /// that hold the audit path directly.
 ///
+/// ## macOS race note (issue #188)
+///
+/// Tests that close their client connection immediately after `connect()`
+/// must first wait for `session_start` to land in the audit log. On macOS
+/// (Tahoe / Darwin 25.x), the daemon's `peer_cred()` call inside
+/// `PlatformListener::accept` returns `ENOTCONN` (errno 57,
+/// `io::ErrorKind::NotConnected`) for a peer that has fully disconnected
+/// before the server reaches it; the daemon's accept loop logs
+/// `accept failed` and `continue`s without emitting any audit record.
+/// The passing `daemon_rejects_session_past_limit` and the post-fix
+/// `daemon_releases_permit_on_session_end` /
+/// `client_connects_and_sees_clean_session_lifecycle` all use the
+/// `wait_for_audit_at(_, _, |c| count_audit_kind(c, "session_start") >= N)`
+/// pattern between `connect` and `shutdown+drop` to sidestep this race.
+/// See issue #188 for the diagnostic record.
+///
 /// # Panics
 ///
 /// Panics on timeout with the most-recent file contents to aid triage.
