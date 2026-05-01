@@ -236,6 +236,8 @@ This protects the regression even if upstream's persistent corpus-fetch
 issue (the separate 401-fetch bug referenced in #201's "out of scope")
 remains broken — the in-tree seed corpus covers it.
 
+**Course correction (2026-05-01, post-implementation):** The seed-corpus approach was abandoned during Task 10 of the implementation plan. `libfuzzer-sys` installs a panic hook that calls `std::process::abort()` before Rust unwinding begins, so `catch_unwind` inside `safe_parse` never engages within the fuzz binary — the panic surfaces as an unrecoverable libFuzzer "deadly signal" regardless of our wrapper. Keeping the known-crashing input in `fuzz/corpus/content_mime/` would cause every PR fuzz run to immediately report it as a fresh crash, making the persistent regression noise rather than signal. The repository-level regression at `crates/rimap-content/tests/parser_panic_safety.rs` (Task 5) is the sole regression guard; it pins the wrapper's behaviour by exercising production code paths where the standard unwinding panic hook is in effect. The `fuzz/corpus/` seed was deleted in the course-correction commit referenced from issue #201.
+
 ### Upstream report
 
 File a fresh issue at https://github.com/stalwartlabs/mail-parser with:
