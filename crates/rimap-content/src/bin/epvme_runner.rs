@@ -607,4 +607,27 @@ mod tests {
         );
         assert!(is_success(&summary));
     }
+
+    #[test]
+    fn run_dataset_records_read_failures() {
+        // Kills the read_failure_count += 1 mutants in run_dataset (line 276:44):
+        // both += -> -= (would underflow usize) and += -> *= (would keep 0).
+        let tempdir = TempDir::new().unwrap();
+        let root = tempdir.path();
+        let missing = root.join("does-not-exist.eml");
+        let files = vec![missing.clone()];
+
+        let summary = run_dataset(root, &files, None, parse_message);
+
+        assert_eq!(summary.processed_files, 1);
+        assert_eq!(summary.read_failure_count, 1);
+        assert_eq!(summary.ok_count, 0);
+        assert_eq!(summary.recorded_failures.len(), 1);
+        assert_eq!(summary.recorded_failures[0].kind, "read_error");
+        assert_eq!(
+            summary.recorded_failures[0].path,
+            missing.display().to_string()
+        );
+        assert!(!is_success(&summary));
+    }
 }
