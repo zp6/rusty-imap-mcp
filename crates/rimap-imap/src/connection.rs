@@ -139,7 +139,7 @@ impl std::fmt::Debug for Connection {
 /// mismatch error surfaces on every TLS-failing path.
 pub(crate) fn enrich_tls_handshake_error(
     err: ImapError,
-    bundle: &crate::tls::TlsConfigBundle,
+    bundle: &TlsConfigBundle,
     pinned: Option<TlsFingerprint>,
 ) -> ImapError {
     match err {
@@ -147,7 +147,7 @@ pub(crate) fn enrich_tls_handshake_error(
             (Some(expected), Some(observed)) if expected != observed => {
                 ImapError::Tls { observed, expected }
             }
-            _ => ImapError::TlsHandshake(inner),
+            (Some(_) | None, _) => ImapError::TlsHandshake(inner),
         },
         other => other,
     }
