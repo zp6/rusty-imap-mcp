@@ -68,11 +68,7 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     // already-EOF'd peer; without this barrier the daemon never emits
     // session_start. See issue #188 and the comment in
     // tests/common/daemon_harness.rs near `wait_for_audit_at`.
-    daemon
-        .wait_for_audit(std::time::Duration::from_secs(2), |c| {
-            count_audit_kind(c, "session_start") >= 1
-        })
-        .await;
+    daemon.wait_for_session_start(1).await;
     // Write nothing. Immediately close the write half so the daemon sees EOF.
     stream.shutdown().await.expect("shutdown client write half");
     drop(stream);

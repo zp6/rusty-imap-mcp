@@ -152,26 +152,21 @@ impl TestDaemon {
     ) -> String {
         wait_for_audit_at(&self.audit_path, timeout, predicate).await
     }
+
+    /// Wait for at least `n` `session_start` audit records to land. See
+    /// [`wait_for_session_start_at`] for the project-wide rationale and
+    /// the macOS race note.
+    pub async fn wait_for_session_start(&self, n: usize) -> String {
+        wait_for_session_start_at(&self.audit_path, n).await
+    }
 }
 
 /// Free-function variant of [`TestDaemon::wait_for_audit`] for tests
 /// that hold the audit path directly.
 ///
-/// ## macOS race note (issue #188)
-///
-/// Tests that close their client connection immediately after `connect()`
-/// must first wait for `session_start` to land in the audit log. On macOS
-/// (Tahoe / Darwin 25.x), the daemon's `peer_cred()` call inside
-/// `PlatformListener::accept` returns `ENOTCONN` (errno 57,
-/// `io::ErrorKind::NotConnected`) for a peer that has fully disconnected
-/// before the server reaches it; the daemon's accept loop logs
-/// `accept failed` and `continue`s without emitting any audit record.
-/// The passing `daemon_rejects_session_past_limit` and the post-fix
-/// `daemon_releases_permit_on_session_end` /
-/// `client_connects_and_sees_clean_session_lifecycle` all use the
-/// `wait_for_audit_at(_, _, |c| count_audit_kind(c, "session_start") >= N)`
-/// pattern between `connect` and `shutdown+drop` to sidestep this race.
-/// See issue #188 for the diagnostic record.
+/// For the common "wait for N `session_start` records" pattern, prefer
+/// [`wait_for_session_start_at`] — it codifies the macOS race
+/// workaround documented for issue #188.
 ///
 /// # Panics
 ///
@@ -197,6 +192,33 @@ pub async fn wait_for_audit_at(
         );
         tokio::time::sleep(POLL_INTERVAL).await;
     }
+}
+
+/// Wait for at least `n` `session_start` audit records to land in the file
+/// at `audit_path`, polling the same way `wait_for_audit_at` does.
+///
+/// Specialized name + fixed 2 s budget for the project-wide pattern: tests
+/// that close their client connection immediately after `connect()` must
+/// first wait for `session_start` to land in the audit log. On macOS
+/// (Tahoe / Darwin 25.x), the daemon's `peer_cred()` call inside
+/// `PlatformListener::accept` returns `ENOTCONN` (errno 57,
+/// `io::ErrorKind::NotConnected`) for a peer that has fully disconnected
+/// before the server reaches it; the daemon's accept loop logs
+/// `accept failed` and `continue`s without emitting any audit record.
+/// The `daemon_rejects_session_past_limit`,
+/// `daemon_releases_permit_on_session_end`, and
+/// `client_connects_and_sees_clean_session_lifecycle` tests all use this
+/// helper between `connect` and `shutdown+drop` to sidestep the race.
+/// See issue #188 for the diagnostic record.
+///
+/// # Panics
+///
+/// Panics on timeout with the most-recent file contents to aid triage.
+pub async fn wait_for_session_start_at(audit_path: &std::path::Path, n: usize) -> String {
+    wait_for_audit_at(audit_path, std::time::Duration::from_secs(2), move |c| {
+        count_audit_kind(c, "session_start") >= n
+    })
+    .await
 }
 
 /// Count audit lines that contain `kind` as a top-level JSON `"kind"`

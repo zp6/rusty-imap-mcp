@@ -330,10 +330,9 @@ mod tests {
         let path = dir.path().join("d.sock");
         let mut listener = UnixSocketListener::bind(&path).await.unwrap();
 
-        // Spawn a client that connects, shuts down its write half, and
-        // drops the stream — i.e., fully disconnects. Wait for that task
-        // to complete so the server-side accept() runs *after* the peer
-        // has gone.
+        // Wait for the client to finish before letting the server call
+        // accept() — that's the race we're probing (peer fully gone before
+        // peer_cred runs).
         let client_path = path.clone();
         let client = tokio::spawn(async move {
             let mut s = UnixStream::connect(&client_path).await.unwrap();

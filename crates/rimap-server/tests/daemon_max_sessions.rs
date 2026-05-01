@@ -10,7 +10,7 @@ mod common;
 
 use common::daemon_harness::{
     TestDaemon, count_audit_kind, count_session_end_reason, test_daemon_state_with_limit,
-    wait_for_audit_at,
+    wait_for_audit_at, wait_for_session_start_at,
 };
 use std::time::Duration;
 use tempfile::TempDir;
@@ -48,11 +48,7 @@ async fn daemon_rejects_session_past_limit() {
     // second connect races against a fully-acquired permit. Polling
     // beats a fixed sleep — passes immediately on fast machines, holds
     // up under CI scheduler jitter.
-    daemon
-        .wait_for_audit(Duration::from_secs(2), |c| {
-            count_audit_kind(c, "session_start") >= 1
-        })
-        .await;
+    daemon.wait_for_session_start(1).await;
 
     // Second client connects: the daemon accepts the TCP/Unix connection
     // (we can't refuse it at the socket layer without breaking the
@@ -155,10 +151,7 @@ async fn daemon_releases_permit_on_session_end() {
     // wait for session_end.
     {
         let mut c = UnixStream::connect(&socket_path).await.expect("connect 1");
-        wait_for_audit_at(&audit_path, Duration::from_secs(2), |s| {
-            count_audit_kind(s, "session_start") >= 1
-        })
-        .await;
+        wait_for_session_start_at(&audit_path, 1).await;
         c.shutdown().await.expect("shutdown 1");
         drop(c);
     }
@@ -171,10 +164,7 @@ async fn daemon_releases_permit_on_session_end() {
     // rejected. Same wait-for-session_start barrier as round 1.
     {
         let mut c = UnixStream::connect(&socket_path).await.expect("connect 2");
-        wait_for_audit_at(&audit_path, Duration::from_secs(2), |s| {
-            count_audit_kind(s, "session_start") >= 2
-        })
-        .await;
+        wait_for_session_start_at(&audit_path, 2).await;
         c.shutdown().await.expect("shutdown 2");
         drop(c);
     }
