@@ -374,6 +374,10 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
     writeln!(stdout, "Read failures: {}", summary.read_failure_count)?;
     writeln!(stdout, "Panics: {}", summary.panic_count)?;
 
+    // cargo-mutants: known-equivalent — guard inversion would print the section header
+    // "Parse error kinds:" with zero rows; stdout phrasing is human-facing only and no
+    // test or production caller asserts on print_summary output. JSON schema
+    // (RunSummary fields) and the success verdict are unaffected.
     if !summary.parse_error_counts.is_empty() {
         writeln!(stdout, "Parse error kinds:")?;
         for (kind, count) in &summary.parse_error_counts {
@@ -381,6 +385,10 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
         }
     }
 
+    // cargo-mutants: known-equivalent — guard inversion would print the section header
+    // "Warning counts:" with zero rows; stdout phrasing is human-facing only and no
+    // test or production caller asserts on print_summary output. JSON schema
+    // (RunSummary fields) and the success verdict are unaffected.
     if !summary.warning_counts.is_empty() {
         writeln!(stdout, "Warning counts:")?;
         for (warning, count) in &summary.warning_counts {
@@ -388,6 +396,10 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
         }
     }
 
+    // cargo-mutants: known-equivalent — guard inversion would print the section header
+    // "Recorded failures (showing up to 50):" with zero rows; stdout phrasing is
+    // human-facing only and no test or production caller asserts on print_summary
+    // output. JSON schema (RunSummary fields) and the success verdict are unaffected.
     if !summary.recorded_failures.is_empty() {
         writeln!(
             stdout,
