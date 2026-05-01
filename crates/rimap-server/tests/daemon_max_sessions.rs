@@ -137,6 +137,17 @@ async fn daemon_rejects_session_past_limit() {
 )]
 #[tokio::test]
 async fn daemon_releases_permit_on_session_end() {
+    // Idempotent across the test binary; zero-cost when RUST_LOG is unset.
+    // Set RUST_LOG=rimap_server=trace,rimap_audit=trace and pass --nocapture
+    // to surface daemon-side activity. See issue #188 for the diagnostic
+    // procedure.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+        )
+        .with_test_writer()
+        .try_init();
     // Limit = 1. First connection holds the permit, then closes. A
     // second connection afterwards must succeed (no rejection) because
     // the permit dropped with the first session future.

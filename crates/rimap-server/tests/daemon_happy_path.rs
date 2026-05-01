@@ -47,6 +47,18 @@ async fn client_connects_and_sees_clean_session_lifecycle() {
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::UnixStream;
 
+    // Idempotent across the test binary; zero-cost when RUST_LOG is unset.
+    // Set RUST_LOG=rimap_server=trace,rimap_audit=trace and pass --nocapture
+    // to surface daemon-side activity. See issue #188 for the diagnostic
+    // procedure.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off")),
+        )
+        .with_test_writer()
+        .try_init();
+
     let tempdir = tight_tempdir();
     let audit_path = tempdir.path().join("audit.jsonl");
     let socket_path = tempdir.path().join("daemon.sock");
