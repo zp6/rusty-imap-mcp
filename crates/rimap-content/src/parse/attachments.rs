@@ -127,3 +127,46 @@ fn content_type_string(ct: &mail_parser::ContentType<'_>) -> String {
         None => ct.ctype().to_string(),
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
+#[expect(clippy::expect_used, reason = "tests may expect on constructed values")]
+mod attachments_tests {
+    use crate::parse::parse_message;
+
+    #[test]
+    fn parse_marks_inline_image_attachment() {
+        // Kills `is_inline -> bool with false`. Construct a multipart/mixed
+        // with an image/png attachment whose Content-Disposition is
+        // `inline`; mail-parser parses it as PartType::InlineBinary, which
+        // is_inline must report as true. The `false` mutant flips the bit.
+        let raw = b"From: a@example\r\n\
+                    Content-Type: multipart/mixed; boundary=\"B\"\r\n\
+                    \r\n\
+                    --B\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    body text\r\n\
+                    --B\r\n\
+                    Content-Type: image/png\r\n\
+                    Content-Disposition: inline\r\n\
+                    Content-Transfer-Encoding: base64\r\n\
+                    \r\n\
+                    iVBORw0KGgo=\r\n\
+                    --B--\r\n";
+        let content = parse_message(raw).unwrap();
+        let attachments = &content.meta.attachments;
+        assert!(
+            !attachments.is_empty(),
+            "expected at least one attachment, got {attachments:?}",
+        );
+        let inline = attachments
+            .iter()
+            .find(|a| a.content_type.starts_with("image/"))
+            .expect("image/png attachment must be present");
+        assert!(
+            inline.is_inline,
+            "image/png with Content-Disposition: inline must report is_inline=true, got {inline:?}",
+        );
+    }
+}

@@ -131,3 +131,35 @@ fn convert_datetime(dt: &mail_parser::DateTime) -> Option<OffsetDateTime> {
     }
     OffsetDateTime::from_unix_timestamp(dt.to_timestamp()).ok()
 }
+
+#[cfg(test)]
+mod meta_tests {
+    use std::borrow::Cow;
+
+    use super::format_addr;
+
+    #[test]
+    fn format_addr_falls_back_to_email_when_name_is_empty_string() {
+        // Kills the match-guard mutation `!name.is_empty() -> true`. With
+        // `true`, an Addr with `name = Some("")` would print as " <email>"
+        // (leading space + angle-bracketed email) instead of falling
+        // through to the bare-email arm.
+        let addr = mail_parser::Addr {
+            name: Some(Cow::Borrowed("")),
+            address: Some(Cow::Borrowed("only@example")),
+        };
+        assert_eq!(format_addr(&addr), "only@example");
+    }
+
+    #[test]
+    fn format_addr_uses_name_when_present_and_non_empty() {
+        // Anchor: ensures the original arm with the guard still fires
+        // for non-empty names. (The `Some(_) | None` arm is the
+        // fall-through and is exercised by the empty-name test above.)
+        let addr = mail_parser::Addr {
+            name: Some(Cow::Borrowed("Alice")),
+            address: Some(Cow::Borrowed("alice@example")),
+        };
+        assert_eq!(format_addr(&addr), "Alice <alice@example>");
+    }
+}
