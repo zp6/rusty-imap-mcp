@@ -312,4 +312,65 @@ mod tests {
         rustix::process::umask(prior);
         assert_eq!(mode, 0o600, "expected 0600 under 0000 umask, got {mode:o}");
     }
+
+    /// Issue #188 probe — record what `PlatformListener::accept()` (which
+    /// wraps `UnixListener::accept` + `stream.peer_cred()`) does on each
+    /// platform when the client has fully disconnected before the server
+    /// reaches accept. The output is fact-recording (`eprintln!`) rather
+    /// than a hard gate; Phase 2 of the fix tightens assertions to
+    /// whatever the platforms reliably do.
+    #[expect(
+        clippy::print_stderr,
+        reason = "issue #188 diagnostic probe — fact-recording test"
+    )]
+    #[tokio::test]
+    async fn accept_and_peer_cred_handle_peer_that_disconnects_immediately() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("d.sock");
+        let mut listener = UnixSocketListener::bind(&path).await.unwrap();
+
+        // Spawn a client that connects, shuts down its write half, and
+        // drops the stream — i.e., fully disconnects. Wait for that task
+        // to complete so the server-side accept() runs *after* the peer
+        // has gone.
+        let client_path = path.clone();
+        let client = tokio::spawn(async move {
+            let mut s = UnixStream::connect(&client_path).await.unwrap();
+            s.shutdown().await.unwrap();
+            drop(s);
+        });
+        client.await.unwrap();
+
+        // Brief settle so the kernel has had a chance to flag the queued
+        // connection as peer-closed, if it does so eagerly.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Wrap accept() in a timeout — if the kernel never delivers the
+        // queued connection (or accept hangs), we still terminate.
+        let outcome =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await;
+
+        match outcome {
+            Ok(Ok(_accepted)) => {
+                eprintln!(
+                    "issue #188 probe: accept Ok (peer_cred succeeded) on {}",
+                    std::env::consts::OS
+                );
+            }
+            Ok(Err(e)) => {
+                eprintln!(
+                    "issue #188 probe: accept Err on {} kind={:?} msg={}",
+                    std::env::consts::OS,
+                    e.kind(),
+                    e
+                );
+            }
+            Err(_elapsed) => {
+                eprintln!(
+                    "issue #188 probe: accept did not return within 2 s on {}",
+                    std::env::consts::OS
+                );
+            }
+        }
+    }
 }
