@@ -54,6 +54,7 @@ pub fn error_kind_label(err: &ContentError) -> Option<&'static str> {
     let label = match err {
         ContentError::Malformed { .. } => "Malformed",
         ContentError::LimitExceeded { .. } => "LimitExceeded",
+        ContentError::ParserPanic => "ParserPanic",
         _ => return None,
     };
     Some(label)
