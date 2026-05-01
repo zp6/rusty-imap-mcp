@@ -73,7 +73,7 @@ fn write_fingerprint_section<W: Write>(
             writeln!(out, "TLS fingerprint (sha256):")?;
             writeln!(out, "  {}  (matches configured pin)", info.tls_fingerprint)?;
         }
-        (Ok(info), Some(_pin_mismatch_unreachable)) => {
+        (Ok(info), Some(_)) => {
             // A live mismatch should never reach here because `probe_preflight`
             // returns `Err(ImapError::Tls)` instead. Defensive branch: print
             // observed only.
@@ -177,6 +177,9 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::cli::dry_run::run;
+    use rimap_core::TlsFingerprint;
+    use rimap_imap::error::ImapError;
+    use rimap_imap::preflight::PreflightInfo;
 
     fn write_minimal_config(dir: &TempDir) -> PathBuf {
         let audit = dir.path().join("audit.jsonl");
@@ -197,6 +200,10 @@ allowed_base_dir = "{}"
         );
         std::fs::write(&config_path, body).unwrap();
         config_path
+    }
+
+    fn synth_fp(seed: &[u8]) -> TlsFingerprint {
+        TlsFingerprint::from_cert_der(seed)
     }
 
     #[tokio::test]
@@ -299,14 +306,6 @@ allowed_base_dir = "{}"
         assert!(chain.contains("loading config") || chain.contains("parse"));
     }
 
-    use rimap_core::TlsFingerprint;
-    use rimap_imap::error::ImapError;
-    use rimap_imap::preflight::PreflightInfo;
-
-    fn synth_fp(seed: &[u8]) -> TlsFingerprint {
-        TlsFingerprint::from_cert_der(seed)
-    }
-
     #[test]
     fn write_fingerprint_section_unpinned_prints_paste_hint() {
         let fp = synth_fp(b"unpinned-test");
@@ -378,6 +377,46 @@ allowed_base_dir = "{}"
         assert!(
             out.is_empty(),
             "fingerprint section must be silent on non-TLS error"
+        );
+    }
+
+    #[test]
+    fn write_fingerprint_section_pinned_ok_mismatch_defensive_prints_observed() {
+        // Defensive branch: an `Ok(info)` from probe_preflight where the
+        // observed fingerprint disagrees with the configured pin should be
+        // unreachable in production (the verifier rejects the handshake on
+        // mismatch, producing Err(Tls) instead). The branch is kept as a
+        // future-proofing guard. This test exercises the branch with a
+        // synthesized state to pin its behavior.
+        let observed = synth_fp(b"observed-defensive");
+        let pinned = synth_fp(b"different-pin-defensive");
+        assert_ne!(observed, pinned, "test setup: fingerprints must differ");
+        let info = PreflightInfo::new(vec!["IMAP4REV1".into()], observed);
+        let result: Result<PreflightInfo, ImapError> = Ok(info);
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, Some(pinned)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("TLS fingerprint (sha256):"),
+            "header missing:\n{text}"
+        );
+        assert!(
+            text.contains(&observed.to_string()),
+            "observed hex missing:\n{text}"
+        );
+        // The defensive arm prints observed only — no paste hint, no match
+        // confirmation, no observed/expected diagnostic.
+        assert!(
+            !text.contains("tls_fingerprint_sha256 ="),
+            "paste hint must not appear:\n{text}"
+        );
+        assert!(
+            !text.contains("matches configured pin"),
+            "match confirmation must not appear:\n{text}"
+        );
+        assert!(
+            !text.contains("expected:"),
+            "mismatch diagnostic must not appear:\n{text}"
         );
     }
 }
