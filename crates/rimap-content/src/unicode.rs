@@ -389,6 +389,16 @@ mod tests {
     }
 
     #[test]
+    fn truncate_keeps_full_multibyte_cluster_when_exactly_fits() {
+        // Regression: "中" is 3 bytes in UTF-8. "ab中cd" with max=5
+        // must yield "ab中" — the trailing cluster ends exactly at
+        // byte 5, a grapheme boundary that fits within the cap.
+        // Guards against a `> vs >=` mutation on the cluster-fits
+        // check inside `truncate_graphemes`.
+        assert_eq!(truncate_graphemes("ab中cd", 5), "ab中");
+    }
+
+    #[test]
     fn sanitize_passthrough_ascii() {
         let (text, warnings) = sanitize(b"hello", Some("utf-8"), 1024, "header:subject");
         assert_eq!(text, "hello");
