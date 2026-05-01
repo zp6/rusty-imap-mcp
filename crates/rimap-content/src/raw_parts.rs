@@ -30,8 +30,8 @@ const MAX_MIME_DEPTH: u32 = 64;
 /// Returns `ContentError::Malformed` when the input is not a
 /// parseable RFC 5322 message.
 pub fn walk_attachment_parts(raw: &[u8]) -> Result<Vec<RawPart>, ContentError> {
-    let parsed = mail_parser::MessageParser::new()
-        .parse(raw)
+    let parsed = crate::parse::safe_parser::safe_parse(raw)
+        .map_err(|_| ContentError::ParserPanic)?
         .ok_or_else(|| ContentError::Malformed {
             reason: "failed to parse RFC 5322 message".into(),
         })?;
