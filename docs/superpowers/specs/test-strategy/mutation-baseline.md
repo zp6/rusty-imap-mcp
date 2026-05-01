@@ -20,19 +20,22 @@ adding a test, not annotated.
 **Last refresh:** 2026-05-01.
 **Surviving mutants in non-`bin/` code:** 15.
 
-Run summary (646 mutants total): 540 caught, 31 missed (15 outside
-`src/bin/`, 16 inside), 11 timeout, 64 unviable. Every survivor
+Run summary (644 mutants total): 550 caught, 20 missed (15 outside
+`src/bin/`, 5 inside), 10 timeout, 64 unviable. Every survivor
 outside `src/bin/` is a mathematically equivalent mutation
-documented in the table below; the 16 `src/bin/epvme_runner.rs`
-survivors are out of scope for this work.
+documented in the table below; the 5 `src/bin/epvme_runner.rs`
+survivors are documented in the `### bin/epvme_runner.rs` subsection
+below (issue #193 took the original 16 to 5 by killing 11 with tests
+and annotating the rest).
 
 The follow-up plan
-[`archive: 2026-04-30-rimap-content-mutation-cleanup-followup.md`](https://github.com/randomparity/rusty-imap-mcp/blob/archive/daemon-experiment/docs/superpowers/plans/2026-04-30-rimap-content-mutation-cleanup-followup.md) (superseded by docs/superpowers/plans/2026-05-03-issue-225-rimap-content-mutation-waves-rextract.md)
-drives this list to zero. The table below records every survivor whose
-mutation is mathematically equivalent to the original code — those are kept
-behind a `// cargo-mutants: known-equivalent — <rationale>` comment at the
-annotation site. Survivors that are real test-suite gaps are killed by
-adding a test, not annotated, and so do not appear here.
+[`archive: 2026-04-30-rimap-content-mutation-cleanup-followup.md`](https://github.com/randomparity/rusty-imap-mcp/blob/archive/daemon-experiment/docs/superpowers/plans/2026-04-30-rimap-content-mutation-cleanup-followup.md)
+drove the non-`bin/` list to zero. The table below records every
+survivor whose mutation is mathematically equivalent to the original
+code — those are kept behind a `// cargo-mutants: known-equivalent —
+<rationale>` comment at the annotation site. Survivors that are real
+test-suite gaps are killed by adding a test, not annotated, and so do
+not appear here.
 
 | File:line | Mutation | Reason kept | Annotation site |
 |---|---|---|---|
@@ -51,24 +54,23 @@ adding a test, not annotated, and so do not appear here.
 
 ### `bin/epvme_runner.rs`
 
-**Last refresh:** YYYY-MM-DD (replace with today's date when committing Task 9).
-**Surviving mutants:** N (replace with the line count of
-`/tmp/mutation-cleanup-193/bin-survivors.txt` from Task 1 — every
-surviving mutant either has a row in the table below (annotated as
-`known-equivalent`) or has been killed by a test added in Tasks 4–8).
+**Last refresh:** 2026-05-01.
+**Surviving mutants:** 5 (all annotated as `known-equivalent`; 11 of
+the 16 mutations recorded in the 2026-04-30 baseline were killed by
+tests added under issue #193).
 
 Issue [#193](https://github.com/randomparity/rusty-imap-mcp/issues/193)
-drives this list to zero. Triage bar: a mutation that affects the
-dataset's pass/fail signal (counts in `RunSummary`, `is_success`, the
-process exit code) or the JSON summary schema is killed by adding a
-test; everything else (stdout phrasing, log-style summary lines,
-diagnostic-only counter ordering) is annotated as `known-equivalent`
-with a one-line rationale.
+drove this list to its current state. Triage bar: a mutation that
+affects the dataset's pass/fail signal (counts in `RunSummary`,
+`is_success`, the process exit code) or the JSON summary schema was
+killed by adding a test; everything else (stdout phrasing, log-style
+summary lines, diagnostic-only counter ordering) is annotated as
+`known-equivalent` with a one-line rationale.
 
 | File:line | Mutation | Reason kept | Annotation site |
 |---|---|---|---|
-| `bin/epvme_runner.rs:186` | `replace usage -> String with String::new()` | usage() output is consumed only as stderr text; no test or production caller asserts its content. Mutation leaves exit codes and JSON schema unchanged. | `bin/epvme_runner.rs:185` |
-| `bin/epvme_runner.rs:186` | `replace usage -> String with "xyzzy".into()` | Same rationale as the String::new mutation — stderr-only diagnostic text. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:188` | `replace usage -> String with String::new()` | usage() output is consumed only as stderr text; no test or production caller asserts its content. Mutation leaves exit codes and JSON schema unchanged. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:188` | `replace usage -> String with "xyzzy".into()` | Same rationale as the String::new mutation — stderr-only diagnostic text. | `bin/epvme_runner.rs:185` |
 | `bin/epvme_runner.rs:381` | `delete ! in print_summary` (`if !summary.parse_error_counts.is_empty()` guard) | Guard inversion would print "Parse error kinds:" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:377` |
 | `bin/epvme_runner.rs:392` | `delete ! in print_summary` (`if !summary.warning_counts.is_empty()` guard) | Guard inversion would print "Warning counts:" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:388` |
 | `bin/epvme_runner.rs:403` | `delete ! in print_summary` (`if !summary.recorded_failures.is_empty()` guard) | Guard inversion would print "Recorded failures (showing up to 50):" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:399` |
