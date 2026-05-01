@@ -1,7 +1,9 @@
 //! Pre-auth `CAPABILITY` probe used by `--dry-run` and other diagnostic
 //! paths. Performs TCP connect → TLS handshake → IMAP greeting → pre-auth
-//! `CAPABILITY` command, then drops the connection. Does NOT perform LOGIN
-//! and does NOT emit any audit records.
+//! `CAPABILITY` command, then drops the connection. Captures the leaf-cert
+//! SHA-256 fingerprint observed during the handshake (returned via
+//! `PreflightInfo.tls_fingerprint`). Does NOT perform LOGIN and does NOT
+//! emit any audit records.
 
 use std::time::Instant;
 
