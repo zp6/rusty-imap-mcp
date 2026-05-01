@@ -521,6 +521,47 @@ mod tests {
             panic_path.display().to_string()
         );
         assert_eq!(summary.recorded_failures[0].kind, "panic");
+        // Kills panic_message return-value mutants (327:5): detail must be the
+        // actual panic message, not "" or "xyzzy".
+        assert_eq!(summary.recorded_failures[0].detail, "boom");
+    }
+
+    #[test]
+    fn panic_message_captures_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("static str message".to_string());
+        assert_eq!(panic_message(payload), "static str message");
+    }
+
+    #[test]
+    fn panic_message_captures_static_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("static literal");
+        assert_eq!(panic_message(payload), "static literal");
+    }
+
+    #[test]
+    fn panic_message_fallback_for_unknown_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42u64);
+        assert_eq!(panic_message(payload), "panic payload was not a string");
+    }
+
+    #[test]
+    fn unknown_warning_code_label_informational() {
+        // ParseBodyTruncated has Informational severity (see rimap-core/src/warning.rs).
+        // Kills mutants 342:5 (return "" or "xyzzy") and 343:9 (delete Informational arm).
+        assert_eq!(
+            unknown_warning_code_label(WarningCode::ParseBodyTruncated),
+            "unknown_informational_warning",
+        );
+    }
+
+    #[test]
+    fn unknown_warning_code_label_adversarial() {
+        // UnicodeZeroWidthStripped has Adversarial severity (see rimap-core/src/warning.rs).
+        // Kills mutants 342:5 (return "" or "xyzzy") and 344:9 (delete Adversarial arm).
+        assert_eq!(
+            unknown_warning_code_label(WarningCode::UnicodeZeroWidthStripped),
+            "unknown_adversarial_warning",
+        );
     }
 
     #[test]
