@@ -886,3 +886,28 @@ mod starttls {
         );
     }
 }
+
+#[tokio::test]
+async fn case_21_probe_preflight_returns_observed_fingerprint() {
+    let Some(h) = boot(PinChoice::None) else {
+        return;
+    };
+    let cfg = ConnectionConfig {
+        account: None,
+        account_id: rimap_core::account::AccountId::default_account(),
+        host: DovecotHarness::host().to_string(),
+        port: h.harness.port(),
+        encryption: rimap_imap::ImapEncryption::Tls,
+        username: DovecotHarness::username().to_string(),
+        pinned_fingerprint: None,
+        connect_timeout: Duration::from_secs(10),
+        command_timeout: Duration::from_secs(10),
+        max_fetch_body_bytes: 5_242_880,
+        max_append_bytes: 10_485_760,
+    };
+    let info = rimap_imap::preflight::probe_preflight(&cfg)
+        .await
+        .expect("preflight should succeed against the live harness");
+    assert_eq!(info.tls_fingerprint, h.harness.pinned_fingerprint());
+    assert!(!info.capabilities.is_empty());
+}

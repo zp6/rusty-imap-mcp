@@ -24,6 +24,10 @@ pub struct PreflightInfo {
     /// Capability atoms returned by the server's pre-auth `CAPABILITY`
     /// response, upper-cased, de-duplicated, order preserved as received.
     pub capabilities: Vec<String>,
+    /// Leaf-cert SHA-256 fingerprint observed during the TLS handshake.
+    /// Captured from the verifier's `last_observed` slot before any IMAP
+    /// traffic flows.
+    pub tls_fingerprint: rimap_core::TlsFingerprint,
 }
 
 /// Run a TCP+TLS+greeting+CAPABILITY probe against `cfg`.
@@ -120,5 +124,13 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
         }
     }
 
-    Ok(PreflightInfo { capabilities: caps })
+    let tls_fingerprint = bundle.last_observed.get().copied().ok_or_else(|| {
+        ImapError::TlsHandshake(tokio_rustls::rustls::Error::General(
+            "verifier did not capture fingerprint".into(),
+        ))
+    })?;
+    Ok(PreflightInfo {
+        capabilities: caps,
+        tls_fingerprint,
+    })
 }
