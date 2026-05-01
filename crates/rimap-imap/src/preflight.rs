@@ -60,7 +60,14 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
                 .await
                 .map_err(|_| ImapError::Timeout {
                     op: "tls_handshake",
-                })??;
+                })?
+                .map_err(|e| {
+                    crate::connection::enrich_tls_handshake_error(
+                        e,
+                        &bundle,
+                        cfg.pinned_fingerprint,
+                    )
+                })?;
             (s, false)
         }
         ImapEncryption::Starttls => {
@@ -68,7 +75,14 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
                 .await
                 .map_err(|_| ImapError::Timeout {
                     op: "starttls_upgrade",
-                })??;
+                })?
+                .map_err(|e| {
+                    crate::connection::enrich_tls_handshake_error(
+                        e,
+                        &bundle,
+                        cfg.pinned_fingerprint,
+                    )
+                })?;
             (s, true)
         }
     };
