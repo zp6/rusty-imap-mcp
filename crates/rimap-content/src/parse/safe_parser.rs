@@ -30,11 +30,6 @@ pub(crate) struct ParserPanic;
 /// any partial `Message` are dropped immediately and never observed by
 /// our code, so logical-invariant violations the parser may have left
 /// behind cannot leak across the boundary.
-// See ParserPanic above for why cfg_attr(not(test)) is required here.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired to callers in follow-up tasks")
-)]
 pub(crate) fn safe_parse(raw: &[u8]) -> Result<Option<Message<'_>>, ParserPanic> {
     let outcome = catch_unwind(AssertUnwindSafe(|| MessageParser::default().parse(raw)));
     if let Ok(parsed) = outcome {
