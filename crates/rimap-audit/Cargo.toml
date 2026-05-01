@@ -26,6 +26,7 @@ hex = { workspace = true }
 rand = { workspace = true }
 fs4 = { workspace = true }
 tracing = { workspace = true }
+unicode-segmentation = { workspace = true }
 async-channel = { workspace = true }
 tokio = { workspace = true }
 

@@ -184,29 +184,11 @@ fn scan_anchor_hrefs(hrefs: &[String], out: &mut Vec<SecurityWarning>) {
 }
 
 /// Pass 3: linkify the first `MAX_LINKIFY_SCAN_BYTES` of `body_text`
-/// (rounded down to a UTF-8 char boundary) and classify each URL.
+/// (cut at a grapheme-cluster boundary) and classify each URL.
 fn scan_body_urls(body_text: &str, out: &mut Vec<SecurityWarning>) {
-    let mut end = MAX_LINKIFY_SCAN_BYTES.min(body_text.len());
-    // cargo-mutants: known-equivalent — `> with >=` is observably
-    // identical here. The loop also exits via `!is_char_boundary(end)
-    // = false` when `end` reaches a boundary, and `is_char_boundary(0)
-    // = true` always — so `end > 0` and `end >= 0` produce the same
-    // exit point in every reachable trajectory.
-    while end > 0 && !body_text.is_char_boundary(end) {
-        // cargo-mutants: known-equivalent — `-= with +=` is observably
-        // indistinguishable for any URL-containing input. The
-        // backward walk lands on the previous boundary; the forward
-        // walk lands on the next boundary. The window between those
-        // two boundaries spans exactly one UTF-8 multi-byte
-        // codepoint (max 4 bytes), too small to fit a URL. linkify's
-        // verdict on the resulting slice is therefore the same: any
-        // URL is either fully inside both slices or fully outside
-        // both.
-        end -= 1;
-    }
-    let scan_slice = &body_text[..end];
+    let scan_slice = crate::unicode::truncate_graphemes(body_text, MAX_LINKIFY_SCAN_BYTES);
     let finder = LinkFinder::new();
-    for link in finder.links(scan_slice) {
+    for link in finder.links(&scan_slice) {
         if link.kind() != &LinkKind::Url {
             continue;
         }
@@ -595,18 +577,14 @@ mod tests {
 
     #[test]
     fn scan_body_urls_handles_multi_byte_char_at_scan_boundary() {
-        // Kills `> with ==` and `> with <` on the char-boundary loop in
-        // scan_body_urls (`while end > 0 && !is_char_boundary(end)`).
-        // Both mutations short-circuit the loop, leaving `end` at a
-        // mid-char position so the slice `body_text[..end]` panics.
-        // Also kills `-= with +=` and `-= with /=` (line below) via
-        // timeout — both mutations leave `end` advancing or constant
-        // forever, never reaching a boundary.
+        // Regression: `scan_body_urls` truncates `body_text` at
+        // MAX_LINKIFY_SCAN_BYTES via `unicode::truncate_graphemes`. A
+        // body whose only grapheme boundary near the cap straddles the
+        // cap byte must not panic when we slice and pass to linkify.
         //
         // Construction: 65535 ASCII bytes + a 2-byte non-ASCII char
-        // straddling MAX_LINKIFY_SCAN_BYTES (=65536). The original
-        // walks back to byte 65535 (the start of the multi-byte char);
-        // the mutations either slice mid-char (panic) or never exit.
+        // straddling MAX_LINKIFY_SCAN_BYTES (=65536). `truncate_graphemes`
+        // must drop the straddling cluster cleanly.
         let mut body = String::with_capacity(MAX_LINKIFY_SCAN_BYTES + 16);
         body.push_str(&"a".repeat(MAX_LINKIFY_SCAN_BYTES - 1));
         body.push('é');
