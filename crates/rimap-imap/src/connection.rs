@@ -132,6 +132,27 @@ impl std::fmt::Debug for Connection {
     }
 }
 
+/// If `err` is `ImapError::TlsHandshake` and the bundle observed a fingerprint
+/// that disagrees with `pinned`, rewrite into `ImapError::Tls { observed,
+/// expected }`. Other error variants and matching observations pass through
+/// unchanged. Used by both `connect_inner` and `probe_preflight` so the typed
+/// mismatch error surfaces on every TLS-failing path.
+pub(crate) fn enrich_tls_handshake_error(
+    err: ImapError,
+    bundle: &crate::tls::TlsConfigBundle,
+    pinned: Option<TlsFingerprint>,
+) -> ImapError {
+    match err {
+        ImapError::TlsHandshake(inner) => match (pinned, bundle.last_observed.get().copied()) {
+            (Some(expected), Some(observed)) if expected != observed => {
+                ImapError::Tls { observed, expected }
+            }
+            _ => ImapError::TlsHandshake(inner),
+        },
+        other => other,
+    }
+}
+
 impl Connection {
     /// Build a connection handle. Does NOT open a socket.
     ///
@@ -229,16 +250,14 @@ impl Connection {
         let raw_outcome = self.connect_with_bundle(&bundle).await;
         let (outcome, credential_source) = match raw_outcome {
             Ok((session, src)) => (Ok(session), Some(src)),
-            Err((ImapError::TlsHandshake(inner), src)) => {
-                let enriched = match (cfg.pinned_fingerprint, bundle.last_observed.get().copied()) {
-                    (Some(expected), Some(observed)) if expected != observed => {
-                        ImapError::Tls { observed, expected }
-                    }
-                    (Some(_) | None, _) => ImapError::TlsHandshake(inner),
-                };
-                (Err(enriched), src)
-            }
-            Err((other, src)) => (Err(other), src),
+            Err((err, src)) => (
+                Err(enrich_tls_handshake_error(
+                    err,
+                    &bundle,
+                    cfg.pinned_fingerprint,
+                )),
+                src,
+            ),
         };
 
         let observed = bundle.last_observed.get().copied();
