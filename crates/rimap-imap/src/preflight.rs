@@ -25,8 +25,9 @@ pub struct PreflightInfo {
     /// response, upper-cased, de-duplicated, order preserved as received.
     pub capabilities: Vec<String>,
     /// Leaf-cert SHA-256 fingerprint observed during the TLS handshake.
-    /// Captured from the verifier's `last_observed` slot before any IMAP
-    /// traffic flows.
+    /// The TLS verifier writes the value into the `last_observed` slot
+    /// during `verify_server_cert`; `probe_preflight` reads the slot
+    /// after the CAPABILITY round-trip succeeds and surfaces it here.
     pub tls_fingerprint: rimap_core::TlsFingerprint,
 }
 
