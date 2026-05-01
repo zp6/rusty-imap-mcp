@@ -36,8 +36,9 @@ pub use threading::{ThreadingHeaders, extract_threading_headers};
 /// parseable or when no `Message-ID` header is present.
 #[must_use]
 pub fn extract_message_id(raw: &[u8]) -> Option<String> {
-    mail_parser::MessageParser::new()
-        .parse(raw)
+    crate::parse::safe_parser::safe_parse(raw)
+        .ok()
+        .flatten()
         .and_then(|m| m.message_id().map(ToString::to_string))
 }
 
