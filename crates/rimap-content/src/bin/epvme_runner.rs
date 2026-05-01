@@ -182,6 +182,9 @@ fn parse_args() -> RunnerResult<Args> {
     })
 }
 
+// cargo-mutants: known-equivalent — usage() output is consumed only as stderr text in
+// RunnerError::UsageMessage / RunnerError::Argument; no test or production caller asserts on its
+// content. Mutating it to "" or "xyzzy" leaves all exit codes and JSON schema unchanged.
 fn usage() -> String {
     "usage: epvme_runner <dataset-root> [--limit N] [--json-out PATH]".to_string()
 }

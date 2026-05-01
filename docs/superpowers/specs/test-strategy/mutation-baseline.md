@@ -52,8 +52,26 @@ adding a test, not annotated, and so do not appear here.
 | `raw_parts.rs:71` | `replace > with >= in walk` (same site) | Same reasoning as the `==` mutation: `>=` differs from `>` only on the unreachable range `depth in [64, max-tree-depth]`, which is gated out upstream by `parse_message`'s 8-level depth limit. | `raw_parts.rs:62` |
 | `raw_parts.rs:96` | `replace + with * in walk` (`walk(msg, child_idx, &child_id, out, depth + 1)?`) | `depth * 1 == depth` keeps the recursion depth at 0 forever, but mail_parser-reachable trees are bounded by `parse_message`'s 8-level depth limit, so both `+ 1` and `* 1` walk to the same set of leaves before recursion bottoms out on `sub_parts() == None`. | `raw_parts.rs:84` |
 
-The `bin/epvme_runner.rs` survivors are out of scope — that crate is
-diagnostic tooling, not production. Re-evaluate post-B4.
+### `bin/epvme_runner.rs`
+
+**Last refresh:** YYYY-MM-DD (replace with today's date when committing Task 9).
+**Surviving mutants:** N (replace with the line count of
+`/tmp/mutation-cleanup-193/bin-survivors.txt` from Task 1 — every
+surviving mutant either has a row in the table below (annotated as
+`known-equivalent`) or has been killed by a test added in Tasks 4–8).
+
+Issue [#193](https://github.com/randomparity/rusty-imap-mcp/issues/193)
+drives this list to zero. Triage bar: a mutation that affects the
+dataset's pass/fail signal (counts in `RunSummary`, `is_success`, the
+process exit code) or the JSON summary schema is killed by adding a
+test; everything else (stdout phrasing, log-style summary lines,
+diagnostic-only counter ordering) is annotated as `known-equivalent`
+with a one-line rationale.
+
+| File:line | Mutation | Reason kept | Annotation site |
+|---|---|---|---|
+| `bin/epvme_runner.rs:186` | `replace usage -> String with String::new()` | usage() output is consumed only as stderr text; no test or production caller asserts its content. Mutation leaves exit codes and JSON schema unchanged. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:186` | `replace usage -> String with "xyzzy".into()` | Same rationale as the String::new mutation — stderr-only diagnostic text. | `bin/epvme_runner.rs:185` |
 
 The other four trust-boundary crates (`rimap-authz`, `rimap-audit`,
 `rimap-server`, `rimap-imap`) get their own sections here when Sprints

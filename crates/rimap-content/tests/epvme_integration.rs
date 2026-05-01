@@ -158,3 +158,40 @@ fn no_args_exits_nonzero() {
         "expected non-zero exit with no arguments",
     );
 }
+
+#[test]
+fn help_flag_exits_zero_kills_mutant_delete_help_arm() {
+    let output = Command::new(cargo_bin()).arg("--help").output().unwrap();
+    assert!(
+        output.status.success(),
+        "expected exit 0 for --help, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn short_help_flag_exits_zero_kills_mutant_delete_help_arm() {
+    let output = Command::new(cargo_bin()).arg("-h").output().unwrap();
+    assert!(
+        output.status.success(),
+        "expected exit 0 for -h, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn unknown_flag_exits_nonzero_with_message_kills_mutant_flag_guard() {
+    let output = Command::new(cargo_bin()).arg("--bogus").output().unwrap();
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for unknown flag --bogus, got {:?}",
+        output.status.code(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown flag: --bogus"),
+        "stderr should contain 'unknown flag: --bogus':\n{stderr}",
+    );
+}
