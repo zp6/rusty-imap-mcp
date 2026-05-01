@@ -121,6 +121,12 @@ fn locate_encoded_word_end(
     start_offset: usize,
 ) -> EncodedWordEnd {
     let first = logical[start_idx];
+    // cargo-mutants: known-equivalent — `< first.len()` vs `<= first.len()`
+    // are observably identical here. At `start_offset == first.len()`, the
+    // empty subslice yields no `windows(2)` element, so the `let Some(rel)`
+    // guard fails either way and control falls through to the outer scan.
+    // Beyond `first.len()`, both predicates evaluate to false. See
+    // `bodies_tests` and `parse::tests::scrub_*` for behavioural coverage.
     if start_offset < first.len()
         && let Some(rel) = first[start_offset..].windows(2).position(|w| w == b"?=")
     {
@@ -171,8 +177,117 @@ pub(super) fn split_header_lines(headers: &[u8]) -> Vec<&[u8]> {
         line_start = line_end;
         i = line_end;
     }
+    // cargo-mutants: known-equivalent — `< with >` here is observably
+    // identical to the original. The inner loop always sets
+    // `line_start = line_end` after each push, and the only `line_end`
+    // value reachable when the loop exits is `headers.len()` (the
+    // `None` branch of the `\n` search). On exit, `line_start ==
+    // headers.len()`, so the predicate is false under both `<` and
+    // `>`. The trailing block is defensive dead code in current usage.
     if line_start < headers.len() {
         out.push(&headers[line_start..]);
     }
     out
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests may expect on constructed values")]
+mod mime_scrub_tests {
+    use super::{detect_smuggling_spans, scrub_header_smuggling};
+    use crate::output::WarningCode;
+
+    #[test]
+    fn scrub_smuggling_caps_dropped_names_at_eight() {
+        // Kills `< with <=` on `dropped_names.len() < 8`. Build a header
+        // block with 9 distinct smuggled headers; assert the warning's
+        // `names=[...]` list has exactly 8 entries (original) — `<=`
+        // would let the 9th name in.
+        //
+        // Each smuggled header has a unique name (`H0..H8`) and a
+        // dangling `=?` that drops it. Headers without `?=` anywhere
+        // later in the block are flagged via `EncodedWordEnd::Missing`,
+        // which sets only that single line's mask bit — exactly the
+        // shape of one-line-per-name we need.
+        let mut raw = Vec::from(&b"From: real@example\r\n"[..]);
+        for i in 0..9 {
+            raw.extend_from_slice(format!("H{i}: =?\r\n").as_bytes());
+        }
+        raw.extend_from_slice(b"\r\nbody");
+        let mut warnings = Vec::new();
+        let _scrubbed = scrub_header_smuggling(&raw, &mut warnings);
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly one aggregated smuggling warning"
+        );
+        assert_eq!(warnings[0].code, WarningCode::ParseHeaderSmugglingBlocked);
+        let detail = warnings[0].detail.as_deref().unwrap_or("");
+        // Original drops 9 headers with `count=9`, but lists at most 8 names.
+        assert!(
+            detail.contains("count=9"),
+            "expected count=9, got detail={detail:?}",
+        );
+        // names list should have exactly 8 entries (commas separate them).
+        let names_segment = detail
+            .split("names=[")
+            .nth(1)
+            .and_then(|s| s.strip_suffix(']'))
+            .expect("detail must include names=[...] when names list non-empty");
+        let name_count = names_segment.split(',').count();
+        assert_eq!(
+            name_count, 8,
+            "expected 8 names listed at the cap, got {name_count} from {names_segment:?}",
+        );
+    }
+
+    #[test]
+    fn detect_smuggling_does_not_revisit_processed_headers() {
+        // Kills `+ with -` on `idx = end_idx + 1`. With `-`, idx jumps
+        // backward to end_idx-1 = 0 after LaterHeader(1), causing
+        // detect_smuggling_spans to re-process logical[0] and re-emit
+        // LaterHeader(1) -> idx=0 -> infinite loop. The hung test then
+        // fails via cargo-mutants timeout.
+        //
+        // Construction: 2 logical headers, smuggling spans both — the
+        // minimal case where `end_idx == 1` and `end_idx - 1 == 0`.
+        let logical: Vec<&[u8]> = vec![
+            b"Subject: =?utf-8?B?x\r\n",
+            b"X-Spliced: y@e?=\r\n", // `?=` closes the smuggled encoded-word
+        ];
+        let mask = detect_smuggling_spans(&logical);
+        assert_eq!(mask, vec![true, true]);
+    }
+
+    #[test]
+    fn detect_smuggling_skips_logical_end_idx_after_later_header() {
+        // Kills `+ with *` on `idx = end_idx + 1`. With `*`, idx stays at
+        // end_idx and re-scans logical[end_idx]. If logical[end_idx]
+        // contains another `=?` whose closing falls in a later header,
+        // the mutation flips an additional mask bit — mask differs from
+        // the original.
+        //
+        // Construction:
+        //   logical[0]: opens encoded-word; closes in logical[1]
+        //   logical[1]: contains the closer `?=` AND a fresh opener `=?`
+        //               whose own closer is in logical[2]
+        //   logical[2]: closer `?=`; under original, never visited
+        //               because idx jumps to 2 (= end_idx+1 = 1+1)... wait,
+        //               LaterHeader(1) sets idx=2 which is the closer line;
+        //               that line is then walked but contains no fresh `=?`.
+        //               Under `*` mutant, idx=1: logical[1]'s fresh `=?`
+        //               is detected, closes in logical[2] -> mask[2]=true.
+        let logical: Vec<&[u8]> = vec![
+            b"A: =?u?B?p\r\n",
+            b"B: ?=garbage=?v?B?q\r\n",
+            b"C: ?=\r\n",
+            b"D: ok\r\n",
+        ];
+        let mask = detect_smuggling_spans(&logical);
+        // Original: only logical[0..=1] are smuggling.
+        assert_eq!(
+            mask,
+            vec![true, true, false, false],
+            "original mask must not flag logical[2]",
+        );
+    }
 }
