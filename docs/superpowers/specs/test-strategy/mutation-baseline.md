@@ -20,19 +20,22 @@ adding a test, not annotated.
 **Last refresh:** 2026-05-01.
 **Surviving mutants in non-`bin/` code:** 15.
 
-Run summary (646 mutants total): 540 caught, 31 missed (15 outside
-`src/bin/`, 16 inside), 11 timeout, 64 unviable. Every survivor
+Run summary (644 mutants total): 550 caught, 20 missed (15 outside
+`src/bin/`, 5 inside), 10 timeout, 64 unviable. Every survivor
 outside `src/bin/` is a mathematically equivalent mutation
-documented in the table below; the 16 `src/bin/epvme_runner.rs`
-survivors are out of scope for this work.
+documented in the table below; the 5 `src/bin/epvme_runner.rs`
+survivors are documented in the `### bin/epvme_runner.rs` subsection
+below (issue #193 took the original 16 to 5 by killing 11 with tests
+and annotating the rest).
 
 The follow-up plan
 [`2026-04-30-rimap-content-mutation-cleanup-followup.md`](../../plans/2026-04-30-rimap-content-mutation-cleanup-followup.md)
-drives this list to zero. The table below records every survivor whose
-mutation is mathematically equivalent to the original code — those are kept
-behind a `// cargo-mutants: known-equivalent — <rationale>` comment at the
-annotation site. Survivors that are real test-suite gaps are killed by
-adding a test, not annotated, and so do not appear here.
+drove the non-`bin/` list to zero. The table below records every
+survivor whose mutation is mathematically equivalent to the original
+code — those are kept behind a `// cargo-mutants: known-equivalent —
+<rationale>` comment at the annotation site. Survivors that are real
+test-suite gaps are killed by adding a test, not annotated, and so do
+not appear here.
 
 | File:line | Mutation | Reason kept | Annotation site |
 |---|---|---|---|
@@ -52,8 +55,28 @@ adding a test, not annotated, and so do not appear here.
 | `raw_parts.rs:71` | `replace > with >= in walk` (same site) | Same reasoning as the `==` mutation: `>=` differs from `>` only on the unreachable range `depth in [64, max-tree-depth]`, which is gated out upstream by `parse_message`'s 8-level depth limit. | `raw_parts.rs:62` |
 | `raw_parts.rs:96` | `replace + with * in walk` (`walk(msg, child_idx, &child_id, out, depth + 1)?`) | `depth * 1 == depth` keeps the recursion depth at 0 forever, but mail_parser-reachable trees are bounded by `parse_message`'s 8-level depth limit, so both `+ 1` and `* 1` walk to the same set of leaves before recursion bottoms out on `sub_parts() == None`. | `raw_parts.rs:84` |
 
-The `bin/epvme_runner.rs` survivors are out of scope — that crate is
-diagnostic tooling, not production. Re-evaluate post-B4.
+### `bin/epvme_runner.rs`
+
+**Last refresh:** 2026-05-01.
+**Surviving mutants:** 5 (all annotated as `known-equivalent`; 11 of
+the 16 mutations recorded in the 2026-04-30 baseline were killed by
+tests added under issue #193).
+
+Issue [#193](https://github.com/randomparity/rusty-imap-mcp/issues/193)
+drove this list to its current state. Triage bar: a mutation that
+affects the dataset's pass/fail signal (counts in `RunSummary`,
+`is_success`, the process exit code) or the JSON summary schema was
+killed by adding a test; everything else (stdout phrasing, log-style
+summary lines, diagnostic-only counter ordering) is annotated as
+`known-equivalent` with a one-line rationale.
+
+| File:line | Mutation | Reason kept | Annotation site |
+|---|---|---|---|
+| `bin/epvme_runner.rs:189` | `replace usage -> String with String::new()` | usage() output is consumed only as stderr text; no test or production caller asserts its content. Mutation leaves exit codes and JSON schema unchanged. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:189` | `replace usage -> String with "xyzzy".into()` | Same rationale as the String::new mutation — stderr-only diagnostic text. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:381` | `delete ! in print_summary` (`if !summary.parse_error_counts.is_empty()` guard) | Guard inversion would print "Parse error kinds:" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:377` |
+| `bin/epvme_runner.rs:392` | `delete ! in print_summary` (`if !summary.warning_counts.is_empty()` guard) | Guard inversion would print "Warning counts:" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:388` |
+| `bin/epvme_runner.rs:403` | `delete ! in print_summary` (`if !summary.recorded_failures.is_empty()` guard) | Guard inversion would print "Recorded failures (showing up to 50):" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:399` |
 
 The other four trust-boundary crates (`rimap-authz`, `rimap-audit`,
 `rimap-server`, `rimap-imap`) get their own sections here when Sprints
