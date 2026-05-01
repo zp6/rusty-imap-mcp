@@ -1,5 +1,6 @@
 //! `fetch_message` tool handler.
 
+use rimap_content::unicode::truncate_graphemes_in_place;
 use rimap_imap::types::Uid;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -114,13 +115,13 @@ pub async fn handle(
 
     if let Some(max) = input.max_body_bytes {
         if body_text.len() > max {
-            body_text = rimap_content::unicode::truncate_graphemes(&body_text, max);
+            truncate_graphemes_in_place(&mut body_text, max);
             truncated = true;
         }
         if let Some(html) = &mut body_html
             && html.len() > max
         {
-            *html = rimap_content::unicode::truncate_graphemes(html, max);
+            truncate_graphemes_in_place(html, max);
             truncated = true;
         }
     }
