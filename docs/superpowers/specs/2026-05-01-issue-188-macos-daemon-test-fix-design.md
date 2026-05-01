@@ -251,3 +251,53 @@ All commits on `fix/issue-188-macos-daemon-tests`:
 lands in one of the top two rows of the decision matrix. If Phase 1 finds
 any other cause, the PR stops at commit 3 with the diagnostic findings
 documented; a follow-up spec/plan addresses whatever was found.
+
+## Phase 1 findings (recorded 2026-05-01)
+
+**Probe test outcome:** `issue #188 probe: accept Err on macos kind=NotConnected msg=Socket is not connected (os error 57)`.
+
+**Daemon trace from `client_connects_and_sees_clean_session_lifecycle`:**
+
+```
+running 1 test
+2026-05-01T17:39:27.060125Z ERROR rimap_server::daemon::run: accept failed error=Socket is not connected (os error 57)
+
+thread 'client_connects_and_sees_clean_session_lifecycle' (8061218) panicked at crates/rimap-server/tests/common/daemon_harness.rs:178:9:
+wait_for_audit timed out after 2s; last audit contents:
+```
+
+The only daemon-side log line emitted before the harness's 2s wait_for_audit
+panic is the `accept failed` ERROR with `os error 57` (NotConnected). No
+`rejected peer with mismatching identity` log, no
+`max_concurrent_sessions reached` log, no `session_start` audit record.
+
+**Daemon trace from `daemon_releases_permit_on_session_end`:**
+
+```
+running 1 test
+2026-05-01T17:39:32.717404Z ERROR rimap_server::daemon::run: accept failed error=Socket is not connected (os error 57)
+
+thread 'daemon_releases_permit_on_session_end' (8061455) panicked at crates/rimap-server/tests/common/daemon_harness.rs:178:9:
+wait_for_audit timed out after 2s; last audit contents:
+```
+
+Identical signature: a single `accept failed` ERROR with `os error 57` and
+the same harness panic. Consistent with Step 2.
+
+**Root cause:** On macOS, `PlatformListener::accept` (in
+`crates/rimap-server/src/daemon/transport/unix.rs`) wraps the kernel
+`accept(2)` followed by a `peer_cred()` call. When the client end has
+already fully closed the connection by the time the server's
+`peer_cred()` runs on the freshly-accepted `UnixStream`, the macOS
+kernel returns `ENOTCONN` (errno 57) — surfaced by Rust as
+`io::ErrorKind::NotConnected` with message `"Socket is not connected
+(os error 57)"`. The wrapper propagates this as `Err(io::Error)`. The
+daemon's accept loop in `crates/rimap-server/src/daemon/run.rs:99`
+logs it via `tracing::error!(error = %e, "accept failed")` and
+`continue`s — the connection is dropped before
+`log_session_start_blocking` runs, so no `session_start` audit record
+is ever written, and the harness's `wait_for_audit` times out after 2 s.
+The probe test in `unix.rs` reproduces exactly this kernel behavior in
+isolation. This maps to decision matrix row 1.
+
+**Decision matrix outcome:** Row 1 (peer_cred error on already-EOF'd peer) — proceeding to Phase 2 with test-side wait-for-session_start barrier.
