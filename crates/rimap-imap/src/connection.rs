@@ -135,8 +135,9 @@ impl std::fmt::Debug for Connection {
 /// If `err` is `ImapError::TlsHandshake` and the bundle observed a fingerprint
 /// that disagrees with `pinned`, rewrite into `ImapError::Tls { observed,
 /// expected }`. Other error variants and matching observations pass through
-/// unchanged. Used by both `connect_inner` and `probe_preflight` so the typed
-/// mismatch error surfaces on every TLS-failing path.
+/// unchanged. Centralizes the rewrite so every TLS-failing code path produces
+/// a typed `ImapError::Tls { observed, expected }` when both fingerprints are
+/// known, rather than the generic `TlsHandshake` variant.
 pub(crate) fn enrich_tls_handshake_error(
     err: ImapError,
     bundle: &TlsConfigBundle,
@@ -1240,7 +1241,6 @@ mod tests {
         }
     }
 
-    // Helper: build a TlsConfigBundle with `observed` pre-set in last_observed.
     fn bundle_with_observed(observed: TlsFingerprint) -> crate::tls::TlsConfigBundle {
         let b = crate::tls::build_tls_config(None).expect("build_tls_config");
         b.last_observed.get_or_init(|| observed);

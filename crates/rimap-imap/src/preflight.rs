@@ -27,9 +27,10 @@ pub struct PreflightInfo {
     /// response, upper-cased, de-duplicated, order preserved as received.
     pub capabilities: Vec<String>,
     /// Leaf-cert SHA-256 fingerprint observed during the TLS handshake.
-    /// The TLS verifier writes the value into the `last_observed` slot
-    /// during `verify_server_cert`; `probe_preflight` reads the slot
-    /// after the CAPABILITY round-trip succeeds and surfaces it here.
+    /// Captured from the verifier's `last_observed` slot. Always populated
+    /// on a successful `probe_preflight` (the verifier runs before TLS
+    /// completes); a `None` would indicate a programming bug, surfaced as
+    /// `ImapError::TlsHandshake` rather than a panic.
     pub tls_fingerprint: rimap_core::TlsFingerprint,
 }
 
@@ -71,6 +72,8 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     // STARTTLS consumes the plaintext greeting during negotiation, so the TLS
     // stream does not receive another greeting. Implicit TLS has not read the
     // greeting yet.
+    let enrich =
+        |e| crate::connection::enrich_tls_handshake_error(e, &bundle, cfg.pinned_fingerprint);
     let (tls_stream, already_greeted) = match cfg.encryption {
         ImapEncryption::Tls => {
             let s = timeout(remaining, tls_handshake(tcp, &bundle, &cfg.host))
@@ -78,13 +81,7 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
                 .map_err(|_| ImapError::Timeout {
                     op: "tls_handshake",
                 })?
-                .map_err(|e| {
-                    crate::connection::enrich_tls_handshake_error(
-                        e,
-                        &bundle,
-                        cfg.pinned_fingerprint,
-                    )
-                })?;
+                .map_err(enrich)?;
             (s, false)
         }
         ImapEncryption::Starttls => {
@@ -93,13 +90,7 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
                 .map_err(|_| ImapError::Timeout {
                     op: "starttls_upgrade",
                 })?
-                .map_err(|e| {
-                    crate::connection::enrich_tls_handshake_error(
-                        e,
-                        &bundle,
-                        cfg.pinned_fingerprint,
-                    )
-                })?;
+                .map_err(enrich)?;
             (s, true)
         }
     };
@@ -112,13 +103,7 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     // CAPABILITY leg (it is the per-command budget); apply the remaining
     // connect-budget to the greeting read.
     let greeting_budget = total_deadline.saturating_sub(started.elapsed());
-    // cargo-mutants: escapes unit tests — `delete !` inverts TLS/STARTTLS
-    // greeting-read logic: for TLS (already_greeted=false) the mutant skips
-    // reading the server greeting, so CAPABILITY would be sent before the
-    // client has consumed the greeting bytes, causing a protocol error.
-    // Covered by case_21 (TLS) and the starttls suite (STARTTLS) in the
-    // Dovecot integration harness; not testable at unit level without a live
-    // TLS IMAP server.
+    // cargo-mutants: only exercised by Dovecot integration (case_21 / starttls suite); no live IMAP server at unit level.
     if !already_greeted {
         timeout(greeting_budget, client.read_response())
             .await
@@ -155,11 +140,7 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
             for cap in list {
                 if let ImapCapability::Atom(name) = cap {
                     let upper = name.to_ascii_uppercase();
-                    // cargo-mutants: escapes unit tests — mutations on
-                    // `!is_empty()`, `!contains()`, and `&&` vs `||` only
-                    // manifest with real capability atoms from a live server.
-                    // All three are caught by case_21 (asserts non-empty
-                    // capabilities vec) in the Dovecot integration suite.
+                    // cargo-mutants: filter mutations only manifest with real CAPABILITY atoms; covered by case_21's `!info.capabilities.is_empty()` assertion.
                     if !upper.is_empty() && !caps.contains(&upper) {
                         caps.push(upper);
                     }
