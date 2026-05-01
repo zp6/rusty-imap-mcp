@@ -175,7 +175,7 @@ pub(super) fn last_extension(filename: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod filename_helper_tests {
-    use super::sanitize_attachment_filename;
+    use super::{contains_bidi_override, detect_double_extension, sanitize_attachment_filename};
     use crate::output::{SecurityWarning, WarningCode};
 
     fn sanitize(name: &str) -> (String, Vec<SecurityWarning>) {
@@ -212,5 +212,93 @@ mod filename_helper_tests {
                 .any(|w| w.code == WarningCode::LookalikeFilenameExtensionSpoof),
             "expected a spoof warning for double extension",
         );
+    }
+
+    /// Sanitize the bare `sanitize_filename` helper without the
+    /// `sanitize_attachment_filename` wrapper's warning emission.
+    fn raw_sanitize(name: &str) -> (String, bool) {
+        super::sanitize_filename(name, 0)
+    }
+
+    #[test]
+    fn sanitize_filename_strips_leading_dot_and_whitespace() {
+        // Kills `||` -> `&&` mutation in the trim_start_matches predicate
+        // `c == '.' || c.is_ascii_whitespace()`. With `&&` the predicate
+        // matches no character (no char is both `.` and whitespace), so
+        // no leading bytes get trimmed.
+        let (out, rewritten) = raw_sanitize(" .secret.txt");
+        assert_eq!(out, "secret.txt", "expected leading dot+space trimmed");
+        assert!(rewritten, "name was rewritten so the flag must be true");
+    }
+
+    /// Each bidi-override codepoint maps to one `||` operator in
+    /// `contains_bidi_override`. Test each one individually to kill the
+    /// per-line `|| -> &&` mutations: one bidi codepoint flipping its
+    /// own `||` to `&&` short-circuits the entire chain to `false` (the
+    /// `&&` chain demands *every* literal-comparison succeed at once,
+    /// which is impossible since one `c` cannot equal multiple
+    /// codepoints simultaneously).
+    #[test]
+    fn contains_bidi_override_detects_lre_u202a() {
+        assert!(contains_bidi_override("\u{202A}"));
+    }
+    #[test]
+    fn contains_bidi_override_detects_rle_u202b() {
+        assert!(contains_bidi_override("\u{202B}"));
+    }
+    #[test]
+    fn contains_bidi_override_detects_pdf_u202c() {
+        assert!(contains_bidi_override("\u{202C}"));
+    }
+    #[test]
+    fn contains_bidi_override_detects_lro_u202d() {
+        assert!(contains_bidi_override("\u{202D}"));
+    }
+    #[test]
+    fn contains_bidi_override_detects_lri_u2067() {
+        assert!(contains_bidi_override("\u{2067}"));
+    }
+    #[test]
+    fn contains_bidi_override_detects_fsi_u2068() {
+        assert!(contains_bidi_override("\u{2068}"));
+    }
+    #[test]
+    fn contains_bidi_override_detects_pdi_u2069() {
+        assert!(contains_bidi_override("\u{2069}"));
+    }
+
+    #[test]
+    fn contains_bidi_override_rejects_plain_ascii() {
+        assert!(!contains_bidi_override("plain.txt"));
+    }
+
+    #[test]
+    fn detect_double_extension_returns_none_for_too_few_segments() {
+        // Kills `< with >` mutation on the `segments.len() < 3` guard.
+        // With `>`, len=1 falls through to `segments[len-2]` and panics
+        // on the unsigned wrap (debug) — which still fails the test, so
+        // the mutation is caught either way.
+        assert_eq!(detect_double_extension("nodot"), None);
+    }
+
+    #[test]
+    fn detect_double_extension_picks_penultimate_segment() {
+        // Kills `- with /` mutation on `segments.len() - 2`. With `-`,
+        // a 5-segment name picks segments[3] for penultimate; with `/`
+        // it picks segments[5/2]=segments[2]. The two yield different
+        // results when segments[2] happens to be a document extension
+        // and segments[3] is not — `a.b.pdf.x.exe` is constructed so
+        // the original returns None (penultimate "x" is not a document
+        // ext) but `/` returns Some (segments[2]=pdf, segments[4]=exe).
+        assert_eq!(detect_double_extension("a.b.pdf.x.exe"), None);
+    }
+
+    #[test]
+    fn detect_double_extension_requires_both_doc_and_executable() {
+        // Kills `&& with ||` mutation on the
+        // `DOCUMENT.contains(penultimate) && EXECUTABLE.contains(final)`
+        // guard. With `||`, `pdf.txt` (penultimate is doc, final is
+        // not executable) returns Some instead of None.
+        assert_eq!(detect_double_extension("a.pdf.txt"), None);
     }
 }
