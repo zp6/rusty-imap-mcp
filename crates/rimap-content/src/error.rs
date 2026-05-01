@@ -28,6 +28,15 @@ pub enum ContentError {
         /// The compile-time limit value that was exceeded.
         limit: usize,
     },
+
+    /// Third-party MIME parser (`mail-parser`) panicked on the input.
+    /// The panic was caught at the `rimap-content` boundary; the
+    /// process is intact. Callers should treat this as a hard rejection
+    /// of the message, equivalent to `Malformed` for control-flow
+    /// purposes, but distinct for audit and alerting (a panic means an
+    /// attacker found a way to crash the parser, not just bad bytes).
+    #[error("third-party MIME parser panicked on input")]
+    ParserPanic,
 }
 
 #[cfg(test)]
@@ -52,5 +61,11 @@ mod tests {
             reason: "unterminated boundary".to_string(),
         };
         assert_eq!(err.to_string(), "malformed message: unterminated boundary");
+    }
+
+    #[test]
+    fn parser_panic_display() {
+        let err = ContentError::ParserPanic;
+        assert_eq!(err.to_string(), "third-party MIME parser panicked on input");
     }
 }
