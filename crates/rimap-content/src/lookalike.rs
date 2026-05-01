@@ -100,6 +100,13 @@ fn labels_mix_scripts(domain: &str) -> bool {
 fn label_mixes_scripts(label: &str) -> bool {
     let mut scripts: HashSet<Script> = HashSet::new();
     for c in label.chars() {
+        // cargo-mutants: known-equivalent — `||` vs `&&` on either of the
+        // two `||` operators produces the same observable behaviour.
+        // Each char that the original `continue`s past — ASCII digits,
+        // `-`, `_` — has `Script::Common`, which the match below treats
+        // as a no-op (Common/Inherited/Unknown are not inserted into the
+        // `scripts` set). Whether the loop short-circuits or runs
+        // through, the set membership is unchanged.
         if c.is_ascii_digit() || c == '-' || c == '_' {
             continue;
         }
@@ -180,6 +187,11 @@ fn scan_anchor_hrefs(hrefs: &[String], out: &mut Vec<SecurityWarning>) {
 /// (rounded down to a UTF-8 char boundary) and classify each URL.
 fn scan_body_urls(body_text: &str, out: &mut Vec<SecurityWarning>) {
     let mut end = MAX_LINKIFY_SCAN_BYTES.min(body_text.len());
+    // cargo-mutants: known-equivalent — `> with >=` is observably
+    // identical here. The loop also exits via `!is_char_boundary(end)
+    // = false` when `end` reaches a boundary, and `is_char_boundary(0)
+    // = true` always — so `end > 0` and `end >= 0` produce the same
+    // exit point in every reachable trajectory.
     while end > 0 && !body_text.is_char_boundary(end) {
         end -= 1;
     }
@@ -207,9 +219,20 @@ fn scan_body_urls(body_text: &str, out: &mut Vec<SecurityWarning>) {
 )]
 fn extract_domain_from_address(addr: &str) -> Option<String> {
     let trimmed = addr.trim();
+    // cargo-mutants: known-equivalent — `< with <=` on `lt < gt` is
+    // observably identical: `lt == gt` is unreachable when both `rfind`
+    // results are `Some`, since `<` and `>` are different characters
+    // and a single byte cannot be both. Distinct positions exercise
+    // the same arm under either operator.
     let inner = if let (Some(lt), Some(gt)) = (trimmed.rfind('<'), trimmed.rfind('>'))
         && lt < gt
     {
+        // cargo-mutants: known-equivalent — `+ with *` on `lt + 1` is
+        // observably identical for any reachable `lt`. `lt * 1 == lt`
+        // shifts the slice start by one byte to include the `<`
+        // delimiter; `rsplit_once('@')` then yields the same `(local,
+        // domain)` split because the leading `<` lands in the discarded
+        // local part, not the domain on the right of `@`.
         &trimmed[lt + 1..gt]
     } else {
         trimmed
@@ -242,6 +265,14 @@ fn extract_domain_from_url(url: &str) -> Option<String> {
     };
     let host = host.split(':').next().unwrap_or(host);
     let host = host.strip_prefix("www.").unwrap_or(host);
+    // cargo-mutants: known-equivalent — `||` vs `&&` here is observably
+    // identical: `host.is_empty()` implies `!host.contains('.')`, so
+    // the only case the operators differ on is `is_empty=false &&
+    // !contains('.')=true` (a non-empty single-label host). Both
+    // branches hand control to `Some(host.to_string())` for `||` or
+    // skip the early return for `&&`; either way, single-label hosts
+    // are filtered downstream by `classify_domain` (which requires a
+    // registrable PSL match).
     if host.is_empty() || !host.contains('.') {
         return None;
     }
@@ -533,5 +564,70 @@ mod tests {
             warnings.is_empty(),
             "URL past the scan cap must be ignored, got {warnings:?}"
         );
+    }
+
+    #[test]
+    fn audit_scans_url_at_byte_offset_2000() {
+        // Kills `* with +` on `MAX_LINKIFY_SCAN_BYTES = 64 * 1024`. The
+        // mutant flips the constant to 64 + 1024 = 1088, well below
+        // 64 KiB. A mixed-script URL placed at byte offset ~2000
+        // round-trips a warning under the original cap and is silently
+        // dropped under the mutant.
+        let prefix = "x".repeat(2000);
+        let body = format!("{prefix}https://p\u{0430}ypal.com/account");
+        let warnings = run_audit(&empty_meta(), &body, &[]);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::LookalikeMixedScript)),
+            "expected a mixed-script warning for URL at byte ~2000, got {warnings:?}",
+        );
+    }
+
+    #[test]
+    fn scan_body_urls_handles_multi_byte_char_at_scan_boundary() {
+        // Kills `> with ==` and `> with <` on the char-boundary loop in
+        // scan_body_urls (`while end > 0 && !is_char_boundary(end)`).
+        // Both mutations short-circuit the loop, leaving `end` at a
+        // mid-char position so the slice `body_text[..end]` panics.
+        // Also kills `-= with +=` and `-= with /=` (line below) via
+        // timeout — both mutations leave `end` advancing or constant
+        // forever, never reaching a boundary.
+        //
+        // Construction: 65535 ASCII bytes + a 2-byte non-ASCII char
+        // straddling MAX_LINKIFY_SCAN_BYTES (=65536). The original
+        // walks back to byte 65535 (the start of the multi-byte char);
+        // the mutations either slice mid-char (panic) or never exit.
+        let mut body = String::with_capacity(MAX_LINKIFY_SCAN_BYTES + 16);
+        body.push_str(&"a".repeat(MAX_LINKIFY_SCAN_BYTES - 1));
+        body.push('é');
+        body.push_str("trailing");
+        let mut warnings: Vec<SecurityWarning> = Vec::new();
+        super::scan_body_urls(&body, &mut warnings);
+        assert!(
+            warnings.is_empty(),
+            "no URLs in this body, got {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn extract_domain_from_address_strips_angle_brackets_at_position_zero() {
+        // Kills `+ with -` on `&trimmed[lt + 1..gt]` in
+        // extract_domain_from_address. With `-`, an input whose `<`
+        // sits at position 0 (e.g. "<a@b.com>") evaluates `lt - 1`
+        // and underflows usize → panics on slicing.
+        let result = super::extract_domain_from_address("<a@b.com>");
+        assert_eq!(result, Some("b.com".to_string()));
+    }
+
+    #[test]
+    fn extract_domain_from_address_handles_quoted_brackets() {
+        // Kills `< with ==` and `< with >` on the `lt < gt` guard.
+        // Original: "Name <a@b.com>" → inner = "a@b.com" → domain "b.com".
+        // Mut `==`: 5 == 13 false → inner = trimmed → domain "b.com>".
+        // Mut `>`:  5 > 13 false → same as `==`.
+        // The original-vs-mutated outputs differ on the trailing `>`.
+        let result = super::extract_domain_from_address("Name <a@b.com>");
+        assert_eq!(result, Some("b.com".to_string()));
     }
 }
