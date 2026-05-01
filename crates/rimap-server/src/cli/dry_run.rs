@@ -31,6 +31,68 @@ use rimap_authz::matrix::EffectiveMatrix;
 use rimap_config::loader::load_and_validate;
 use rimap_core::tool::ToolName;
 
+/// Print the `TLS fingerprint (sha256):` section for one account, given the
+/// preflight outcome and the (optional) pinned fingerprint from config. Three
+/// branches:
+///
+/// - `Ok(info)` + no pin: print observed fingerprint with a paste-into-config
+///   hint (onboarding path).
+/// - `Ok(info)` + matching pin: print observed fingerprint with `(matches
+///   configured pin)` confirmation.
+/// - `Err(ImapError::Tls { observed, expected })`: print both values plus a
+///   diagnostic hint pointing at the quickstart.
+///
+/// All other error variants (`Connect`, `Timeout`, `TlsHandshake` for
+/// non-mismatch reasons, `Protocol`) silently print nothing — there is no
+/// fingerprint to surface when the verifier never ran or the value is not
+/// meaningfully informative.
+///
+/// Used by unit tests below; will be called from `run()` in task 5.
+#[allow(clippy::allow_attributes, dead_code)]
+// ^ Justification: Used by tests; wiring into run() is task 5.
+fn write_fingerprint_section<W: Write>(
+    out: &mut W,
+    result: &Result<rimap_imap::preflight::PreflightInfo, rimap_imap::error::ImapError>,
+    pinned: Option<rimap_core::TlsFingerprint>,
+) -> std::io::Result<()> {
+    match (result, pinned) {
+        (Ok(info), None) => {
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  {}", info.tls_fingerprint)?;
+            writeln!(
+                out,
+                "  (add `tls_fingerprint_sha256 = \"{}\"` under [imap] in config.toml to pin)",
+                info.tls_fingerprint
+            )?;
+        }
+        (Ok(info), Some(pin)) if info.tls_fingerprint == pin => {
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  {}  (matches configured pin)", info.tls_fingerprint)?;
+        }
+        (Ok(info), Some(_pin_mismatch_unreachable)) => {
+            // A live mismatch should never reach here because `probe_preflight`
+            // returns `Err(ImapError::Tls)` instead. Defensive branch: print
+            // observed only.
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  {}", info.tls_fingerprint)?;
+        }
+        (Err(rimap_imap::error::ImapError::Tls { observed, expected }), _) => {
+            writeln!(out, "TLS fingerprint (sha256):")?;
+            writeln!(out, "  observed: {observed}")?;
+            writeln!(out, "  expected: {expected}  (configured pin)")?;
+            writeln!(
+                out,
+                "  hint: re-run the openssl command from the quickstart and update tls_fingerprint_sha256"
+            )?;
+        }
+        (Err(_), _) => {
+            // Connect / Timeout / TlsHandshake-non-mismatch / Protocol: nothing
+            // to print. The capabilities-section already shows the error.
+        }
+    }
+    Ok(())
+}
+
 /// Load `path`, validate, acquire an exclusive audit lock, build the effective
 /// matrix, print to `out`, and return. The audit lock is held for the duration
 /// of the call and released on return.
@@ -229,5 +291,87 @@ allowed_base_dir = "{}"
             writeln!(chain, "{cause}").unwrap();
         }
         assert!(chain.contains("loading config") || chain.contains("parse"));
+    }
+
+    use rimap_core::TlsFingerprint;
+    use rimap_imap::error::ImapError;
+    use rimap_imap::preflight::PreflightInfo;
+
+    fn synth_fp(seed: &[u8]) -> TlsFingerprint {
+        TlsFingerprint::from_cert_der(seed)
+    }
+
+    #[test]
+    fn write_fingerprint_section_unpinned_prints_paste_hint() {
+        let fp = synth_fp(b"unpinned-test");
+        let info = PreflightInfo::new(vec!["IMAP4REV1".into()], fp);
+        let result: Result<PreflightInfo, ImapError> = Ok(info);
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, None).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("TLS fingerprint (sha256):"),
+            "header missing:\n{text}"
+        );
+        assert!(
+            text.contains(&fp.to_string()),
+            "fingerprint missing:\n{text}"
+        );
+        assert!(
+            text.contains("tls_fingerprint_sha256 ="),
+            "paste hint missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn write_fingerprint_section_pinned_match_prints_confirmation() {
+        let fp = synth_fp(b"matched-pin");
+        let info = PreflightInfo::new(vec!["IMAP4REV1".into()], fp);
+        let result: Result<PreflightInfo, ImapError> = Ok(info);
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, Some(fp)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("matches configured pin"),
+            "match confirmation missing:\n{text}"
+        );
+        // Paste hint must NOT appear when already pinned-and-matched.
+        assert!(
+            !text.contains("tls_fingerprint_sha256 ="),
+            "paste hint should not appear on match:\n{text}"
+        );
+    }
+
+    #[test]
+    fn write_fingerprint_section_pinned_mismatch_prints_diagnostic() {
+        let observed = synth_fp(b"observed-cert");
+        let expected = synth_fp(b"expected-pin");
+        let result: Result<PreflightInfo, ImapError> = Err(ImapError::Tls { observed, expected });
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, Some(expected)).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("observed:"), "observed: missing:\n{text}");
+        assert!(text.contains("expected:"), "expected: missing:\n{text}");
+        assert!(
+            text.contains(&observed.to_string()),
+            "observed hex missing:\n{text}"
+        );
+        assert!(
+            text.contains(&expected.to_string()),
+            "expected hex missing:\n{text}"
+        );
+        assert!(text.contains("hint:"), "hint line missing:\n{text}");
+    }
+
+    #[test]
+    fn write_fingerprint_section_other_error_prints_nothing() {
+        let result: Result<PreflightInfo, ImapError> =
+            Err(ImapError::Timeout { op: "tcp_connect" });
+        let mut out = Vec::new();
+        super::write_fingerprint_section(&mut out, &result, None).unwrap();
+        assert!(
+            out.is_empty(),
+            "fingerprint section must be silent on non-TLS error"
+        );
     }
 }
