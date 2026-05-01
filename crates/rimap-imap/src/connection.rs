@@ -1240,6 +1240,88 @@ mod tests {
         }
     }
 
+    // Helper: build a TlsConfigBundle with `observed` pre-set in last_observed.
+    fn bundle_with_observed(observed: TlsFingerprint) -> crate::tls::TlsConfigBundle {
+        let b = crate::tls::build_tls_config(None).expect("build_tls_config");
+        b.last_observed.get_or_init(|| observed);
+        b
+    }
+
+    #[test]
+    fn enrich_tls_handshake_mismatch_rewrites_to_typed_tls_error() {
+        // When the observed fingerprint differs from the configured pin, the
+        // raw TlsHandshake error must be rewritten to Tls { observed, expected }
+        // so callers can surface the exact fingerprints.
+        let expected = TlsFingerprint::from_cert_der(b"expected-pin");
+        let observed = TlsFingerprint::from_cert_der(b"observed-cert");
+        assert_ne!(expected, observed);
+        let bundle = bundle_with_observed(observed);
+        let err = ImapError::TlsHandshake(tokio_rustls::rustls::Error::General(
+            "handshake failed".into(),
+        ));
+        let enriched = super::enrich_tls_handshake_error(err, &bundle, Some(expected));
+        match enriched {
+            ImapError::Tls {
+                observed: obs,
+                expected: exp,
+            } => {
+                assert_eq!(obs, observed, "observed fingerprint must be propagated");
+                assert_eq!(exp, expected, "expected fingerprint must be propagated");
+            }
+            other => panic!("expected Tls variant, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrich_tls_handshake_matching_pin_passes_through_unchanged() {
+        // When observed == expected (matching pin), the error must pass through as
+        // TlsHandshake — a non-mismatch handshake failure should not masquerade as
+        // a pin mismatch.
+        let fp = TlsFingerprint::from_cert_der(b"same-cert");
+        let bundle = bundle_with_observed(fp);
+        let err =
+            ImapError::TlsHandshake(tokio_rustls::rustls::Error::General("other error".into()));
+        let enriched = super::enrich_tls_handshake_error(err, &bundle, Some(fp));
+        match enriched {
+            ImapError::TlsHandshake(e) => {
+                assert!(e.to_string().contains("other error"));
+            }
+            other => panic!("expected TlsHandshake variant (no rewrite), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrich_tls_handshake_no_pin_passes_through_unchanged() {
+        // When no pin is configured, TlsHandshake must pass through regardless
+        // of the observed fingerprint.
+        let observed = TlsFingerprint::from_cert_der(b"some-cert");
+        let bundle = bundle_with_observed(observed);
+        let err =
+            ImapError::TlsHandshake(tokio_rustls::rustls::Error::General("generic tls".into()));
+        let enriched = super::enrich_tls_handshake_error(err, &bundle, None);
+        match enriched {
+            ImapError::TlsHandshake(_) => {}
+            other => panic!("expected TlsHandshake passthrough, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enrich_tls_handshake_non_handshake_error_passes_through() {
+        // Only TlsHandshake variants are rewritten; other ImapError variants must
+        // pass through unmodified.
+        let bundle = bundle_with_observed(TlsFingerprint::from_cert_der(b"any"));
+        let err = ImapError::Timeout { op: "tcp_connect" };
+        let enriched = super::enrich_tls_handshake_error(
+            err,
+            &bundle,
+            Some(TlsFingerprint::from_cert_der(b"pin")),
+        );
+        match enriched {
+            ImapError::Timeout { op: "tcp_connect" } => {}
+            other => panic!("expected Timeout passthrough, got {other:?}"),
+        }
+    }
+
     /// Regression test for the cancellation contract on
     /// [`Connection::emit_auth`]: the sink still observes the event even
     /// when the awaiting future is dropped before `spawn_blocking`

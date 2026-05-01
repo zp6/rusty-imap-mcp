@@ -112,6 +112,13 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
     // CAPABILITY leg (it is the per-command budget); apply the remaining
     // connect-budget to the greeting read.
     let greeting_budget = total_deadline.saturating_sub(started.elapsed());
+    // cargo-mutants: escapes unit tests — `delete !` inverts TLS/STARTTLS
+    // greeting-read logic: for TLS (already_greeted=false) the mutant skips
+    // reading the server greeting, so CAPABILITY would be sent before the
+    // client has consumed the greeting bytes, causing a protocol error.
+    // Covered by case_21 (TLS) and the starttls suite (STARTTLS) in the
+    // Dovecot integration harness; not testable at unit level without a live
+    // TLS IMAP server.
     if !already_greeted {
         timeout(greeting_budget, client.read_response())
             .await
@@ -148,6 +155,11 @@ pub async fn probe_preflight(cfg: &ConnectionConfig) -> Result<PreflightInfo, Im
             for cap in list {
                 if let ImapCapability::Atom(name) = cap {
                     let upper = name.to_ascii_uppercase();
+                    // cargo-mutants: escapes unit tests — mutations on
+                    // `!is_empty()`, `!contains()`, and `&&` vs `||` only
+                    // manifest with real capability atoms from a live server.
+                    // All three are caught by case_21 (asserts non-empty
+                    // capabilities vec) in the Dovecot integration suite.
                     if !upper.is_empty() && !caps.contains(&upper) {
                         caps.push(upper);
                     }

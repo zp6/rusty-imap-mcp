@@ -181,6 +181,16 @@ mod tests {
     use rimap_imap::error::ImapError;
     use rimap_imap::preflight::PreflightInfo;
 
+    /// Build a `TempDir` whose mode is 0o700. The audit-writer requires tight
+    /// modes after #147 and `tempfile::TempDir::new()` may inherit the system
+    /// `umask` (often 0755).
+    fn tight_tempdir() -> TempDir {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        dir
+    }
+
     fn write_minimal_config(dir: &TempDir) -> PathBuf {
         let audit = dir.path().join("audit.jsonl");
         let config_path = dir.path().join("config.toml");
@@ -417,6 +427,72 @@ allowed_base_dir = "{}"
         assert!(
             !text.contains("expected:"),
             "mismatch diagnostic must not appear:\n{text}"
+        );
+    }
+
+    fn write_multi_account_config(dir: &TempDir) -> PathBuf {
+        let audit = dir.path().join("audit.jsonl");
+        let config_path = dir.path().join("config.toml");
+        let body = format!(
+            r#"
+[[accounts]]
+name = "work"
+
+[accounts.imap]
+host = "127.0.0.1"
+port = 1143
+username = "alice@work.test"
+
+[[accounts]]
+name = "personal"
+
+[accounts.imap]
+host = "127.0.0.1"
+port = 1143
+username = "alice@personal.test"
+
+[audit]
+path = "{audit}"
+allowed_base_dir = "{base}"
+"#,
+            audit = audit.display(),
+            base = dir.path().display(),
+        );
+        std::fs::write(&config_path, body).unwrap();
+        config_path
+    }
+
+    #[tokio::test]
+    async fn dry_run_single_account_omits_account_header() {
+        // With exactly one account the "Account: <name>" header should be
+        // absent — it is only useful when multiple accounts share the output.
+        let dir = tight_tempdir();
+        let path = write_minimal_config(&dir);
+        let mut out = Vec::new();
+        run(&path, &mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            !text.contains("Account:"),
+            "single-account output must not contain 'Account:' header:\n{text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_multi_account_prints_account_headers() {
+        // With two accounts each section must be prefixed with
+        // "Account: <name>" so users can tell the sections apart.
+        let dir = tight_tempdir();
+        let path = write_multi_account_config(&dir);
+        let mut out = Vec::new();
+        run(&path, &mut out).await.unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("Account: work"),
+            "multi-account output must contain 'Account: work':\n{text}"
+        );
+        assert!(
+            text.contains("Account: personal"),
+            "multi-account output must contain 'Account: personal':\n{text}"
         );
     }
 }
