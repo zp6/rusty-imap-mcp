@@ -240,3 +240,180 @@ fn depth_recursive(message: &Message<'_>, part_id: usize, current: usize) -> usi
         }
     }
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
+#[expect(clippy::expect_used, reason = "tests may expect on constructed values")]
+#[expect(clippy::panic, reason = "test failure paths")]
+mod bodies_tests {
+    use std::fmt::Write as _;
+
+    use mail_parser::MessageParser;
+
+    use super::part_charset;
+    use crate::error::ContentError;
+    use crate::output::WarningCode;
+    use crate::parse::{MAX_BODY_BYTES, MAX_MIME_DEPTH, MAX_MIME_PARTS, parse_message};
+
+    /// Build an N-leaf multipart/mixed message: one root multipart
+    /// container plus `leaves` text/plain children. Total parts =
+    /// `leaves + 1` (the root counts).
+    fn build_flat_multipart(leaves: usize) -> Vec<u8> {
+        let mut raw = String::from(
+            "From: a@example\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n",
+        );
+        for i in 0..leaves {
+            write!(raw, "--B\r\nContent-Type: text/plain\r\n\r\nleaf{i}\r\n").unwrap();
+        }
+        raw.push_str("--B--\r\n");
+        raw.into_bytes()
+    }
+
+    #[test]
+    fn parse_accepts_part_count_at_max() {
+        // Kills both `> with ==` and `> with >=` mutations on the
+        // `part_count > MAX_MIME_PARTS` guard. With root + 99 leaves =
+        // 100 = MAX_MIME_PARTS:
+        //  - original `>` :  100 > 100 -> false  -> Ok
+        //  - `==` mutant  :  100 == 100 -> true  -> Err  (caught)
+        //  - `>=` mutant  :  100 >= 100 -> true  -> Err  (caught)
+        let raw = build_flat_multipart(MAX_MIME_PARTS - 1);
+        let content = parse_message(&raw).expect("100-part message must parse");
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::ParseMimePartCountExceeded)),
+            "no ParseMimePartCountExceeded warning at the boundary",
+        );
+    }
+
+    #[test]
+    fn part_charset_returns_explicit_charset() {
+        // Kills all three wholesale stubs at part_charset (None,
+        // Some(""), Some("xyzzy")) by asserting an explicit
+        // charset=iso-8859-1 round-trips through.
+        let raw = b"From: a@example\r\n\
+                    Content-Type: text/plain; charset=iso-8859-1\r\n\
+                    \r\n\
+                    body";
+        let message = MessageParser::default().parse(raw).unwrap();
+        let part = message.parts.first().expect("a single text/plain part");
+        let charset = part_charset(part).expect("Content-Type's charset attribute populates");
+        assert_eq!(charset, "iso-8859-1");
+    }
+
+    #[test]
+    fn parse_does_not_truncate_body_at_max_bytes() {
+        // Kills `> with >=` on `raw_bytes.len() > MAX_BODY_BYTES`. With
+        // an exactly-MAX_BODY_BYTES body:
+        //  - original `>` :  1MB > 1MB -> false -> no warning
+        //  - `>=` mutant  :  1MB >= 1MB -> true  -> ParseBodyTruncated  (caught)
+        let mut raw = Vec::from(&b"From: a@example\r\nContent-Type: text/plain\r\n\r\n"[..]);
+        raw.extend(std::iter::repeat_n(b'x', MAX_BODY_BYTES));
+        let content = parse_message(&raw).expect("MAX_BODY_BYTES body must parse");
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::ParseBodyTruncated)),
+            "no ParseBodyTruncated warning at the boundary",
+        );
+    }
+
+    /// Build a `depth`-deep multipart/mixed nesting with a leaf
+    /// text/plain at the bottom. mail-parser counts depth as the
+    /// number of nested levels reachable from part 0; a value of N
+    /// means N-1 nested multiparts plus the leaf (e.g. depth=8 ->
+    /// 7 multipart containers + 1 text leaf).
+    fn build_nested_multipart(depth: usize) -> Vec<u8> {
+        let mut raw = String::from("From: a@example\r\n");
+        write!(
+            raw,
+            "Content-Type: multipart/mixed; boundary=\"B0\"\r\n\r\n"
+        )
+        .unwrap();
+        for i in 0..depth.saturating_sub(2) {
+            write!(raw, "--B{i}\r\n").unwrap();
+            write!(
+                raw,
+                "Content-Type: multipart/mixed; boundary=\"B{}\"\r\n\r\n",
+                i + 1
+            )
+            .unwrap();
+        }
+        write!(raw, "--B{}\r\n", depth.saturating_sub(2)).unwrap();
+        raw.push_str("Content-Type: text/plain\r\n\r\nleaf\r\n");
+        for i in (0..depth.saturating_sub(1)).rev() {
+            write!(raw, "--B{i}--\r\n").unwrap();
+        }
+        raw.into_bytes()
+    }
+
+    #[test]
+    fn parse_accepts_mime_depth_at_max() {
+        // Kills `> with >=` on `depth > MAX_MIME_DEPTH`. With the
+        // 8-deep construction:
+        //  - original `>` :  8 > 8  -> false -> Ok
+        //  - `>=` mutant  :  8 >= 8 -> true  -> Err  (caught)
+        let raw = build_nested_multipart(MAX_MIME_DEPTH);
+        let content = parse_message(&raw).expect("MAX_MIME_DEPTH-deep message must parse");
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| matches!(w.code, WarningCode::ParseMimeDepthExceeded)),
+            "no ParseMimeDepthExceeded warning at the boundary",
+        );
+    }
+
+    /// Build a 7-multipart-deep wrapper around a `message/rfc822`
+    /// attachment. `depth_recursive` walks 7 multipart levels (`current`
+    /// climbs 1..7), then the Message handler returns
+    /// `current + 1 = 9` — one above `MAX_MIME_DEPTH`. Mutations on
+    /// that `+ 1` (`-` returns 7, `*` returns 8) drop max depth to
+    /// 7 or 8, both within the limit, so the error stops firing.
+    fn build_message_rfc822_at_depth_8() -> Vec<u8> {
+        let mut raw = String::from("From: outer@example\r\n");
+        write!(
+            raw,
+            "Content-Type: multipart/mixed; boundary=\"B0\"\r\n\r\n"
+        )
+        .unwrap();
+        for i in 0..6 {
+            write!(raw, "--B{i}\r\n").unwrap();
+            write!(
+                raw,
+                "Content-Type: multipart/mixed; boundary=\"B{}\"\r\n\r\n",
+                i + 1
+            )
+            .unwrap();
+        }
+        // B6 contains a single message/rfc822 attachment.
+        raw.push_str("--B6\r\n");
+        raw.push_str("Content-Type: message/rfc822\r\n\r\n");
+        raw.push_str("From: inner@example\r\n\r\ninner-body\r\n");
+        // Close all the multipart containers.
+        for i in (0..7).rev() {
+            write!(raw, "--B{i}--\r\n").unwrap();
+        }
+        raw.into_bytes()
+    }
+
+    #[test]
+    fn parse_rejects_message_rfc822_at_depth_above_max() {
+        // Kills both `+ with -` and `+ with *` mutations on
+        // `PartType::Message(_) => current + 1`. The construction
+        // places the message/rfc822 part at depth 9 in the original;
+        // both mutations drop it to <= 8, removing the error.
+        let raw = build_message_rfc822_at_depth_8();
+        let err = parse_message(&raw).expect_err("depth-9 via Message must error");
+        match err {
+            ContentError::LimitExceeded { kind, limit } => {
+                assert_eq!(kind, "mime_depth");
+                assert_eq!(limit, MAX_MIME_DEPTH);
+            }
+            other => panic!("expected LimitExceeded mime_depth, got {other:?}"),
+        }
+    }
+}

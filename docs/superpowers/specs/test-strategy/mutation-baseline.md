@@ -1,6 +1,6 @@
 # Mutation-baseline — Targeted-trust-boundary survivor inventory
 
-**Updated:** 2026-04-30
+**Updated:** 2026-05-01
 **Tool:** `cargo-mutants` (run via `just mutants-crate <name>`)
 **Scope:** Five trust-boundary crates — `rimap-content`, `rimap-authz`,
 `rimap-audit`, `rimap-server`, `rimap-imap`. Other workspace crates are
@@ -17,47 +17,42 @@ adding a test, not annotated.
 
 ## `rimap-content`
 
-**Last refresh:** 2026-04-30.
-**Surviving mutants in non-`bin/` code:** 80.
+**Last refresh:** 2026-05-01.
+**Surviving mutants in non-`bin/` code:** 15.
 
-> **Cap exceeded.** B1's mutation cleanup is scoped to "manageable inline
-> cleanup," with a 30-survivor cap defined in the plan. The refreshed run
-> recorded 80 survivors outside `src/bin/`, well above that threshold, so
-> Tasks 8 and 9 are deferred to a follow-up plan. The per-file breakdown
-> below sizes that follow-up; the full line-by-line survivor list is not
-> committed (regenerate by re-running the plan's Task 7 Step 1). Fuzz
-> harnesses (Task 6, already shipped in PR #190) and ClusterFuzzLite
-> wiring (Task 10) still ship in this sprint.
+Run summary (646 mutants total): 540 caught, 31 missed (15 outside
+`src/bin/`, 16 inside), 11 timeout, 64 unviable. Every survivor
+outside `src/bin/` is a mathematically equivalent mutation
+documented in the table below; the 16 `src/bin/epvme_runner.rs`
+survivors are out of scope for this work.
 
-No survivors are annotated yet — the per-survivor table lands in the
-B1-followup PR.
+The follow-up plan
+[`2026-04-30-rimap-content-mutation-cleanup-followup.md`](../../plans/2026-04-30-rimap-content-mutation-cleanup-followup.md)
+drives this list to zero. The table below records every survivor whose
+mutation is mathematically equivalent to the original code — those are kept
+behind a `// cargo-mutants: known-equivalent — <rationale>` comment at the
+annotation site. Survivors that are real test-suite gaps are killed by
+adding a test, not annotated, and so do not appear here.
 
-Per-file survivor counts at the 2026-04-30 refresh:
+| File:line | Mutation | Reason kept | Annotation site |
+|---|---|---|---|
+| `parse/mime_scrub.rs:105` | `replace + with * in detect_smuggling_spans` (`scan_from = end_rel_to_header + 1`) | The `+ 1` and `* 1` versions point the next `=?` search at adjacent bytes; both find the same next encoded-word at the same absolute position because `windows(2).position` shifts the relative offset by 1 to compensate. | `parse/mime_scrub.rs:96` |
+| `parse/mime_scrub.rs:149` | `replace < with <= in locate_encoded_word_end` (`if start_offset < first.len()`) | At `start_offset == first.len()`, the empty `&first[start_offset..]` produces no `windows(2)` element, so the `let Some(rel)` guard short-circuits and the function falls through to the outer scan — identical to the `<` branch. | `parse/mime_scrub.rs:143` |
+| `parse/mime_scrub.rs:213` | `replace < with > in split_header_lines` (`if line_start < headers.len()`) | The inner loop's only exit invariant is `line_start == headers.len()` — the `None` branch of the `\n` search sets `line_end = headers.len()` and the subsequent push sets `line_start = line_end`. On exit, the predicate is false under both `<` and `>`; the trailing push is defensive dead code in current usage. | `parse/mime_scrub.rs:206` |
+| `html/style_parse.rs:74` | `replace < with <= in parse_translate_px` (`if px_val < current`) | The `<` and `<=` predicates differ only when `px_val == current`; in that case both arms set `min = Some(px_val)` to a value already equal to `current`, leaving the running minimum unchanged. Distinct values pick the same minimum under either operator. | `html/style_parse.rs:67` |
+| `html/mismatch.rs:65` | `replace || with && in extract_registrable_domain` (`if host.is_empty() || !host.contains('.')`) | The `||` and `&&` predicates differ only when `host.is_empty()=false && !host.contains('.')=true` — a non-empty single-label host. Both branches then route control through the idna+addr lookup, which returns `None` for any single-label host (no registrable domain exists above a TLD). The opposite case (`is_empty=true && !contains('.')=false`) is unreachable: an empty string contains no `.`. | `html/mismatch.rs:56` |
+| `lookalike.rs:110` | `replace || with && in label_mixes_scripts` (the first `||` between `is_ascii_digit()` and `c == '-'`) | Each char that the original `continue`s past — ASCII digits, `-`, `_` — has `Script::Common`, which the match below treats as a no-op. Whether the loop short-circuits via `continue` or runs through to the match, the `scripts` set membership is unchanged. | `lookalike.rs:103` |
+| `lookalike.rs:110` | `replace || with && in label_mixes_scripts` (the second `||` between `c == '-'` and `c == '_'`) | Same reasoning as the first `||` mutation: the chars that the guard short-circuits on all classify as `Script::Common`, ignored by the match arm. | `lookalike.rs:103` |
+| `lookalike.rs:195` | `replace > with >= in scan_body_urls` (`while end > 0 && !is_char_boundary(end)`) | The loop also exits via `!is_char_boundary(end)=false` when `end` reaches a boundary, and `is_char_boundary(0)=true` always. The `>` and `>=` predicates therefore produce the same exit point in every reachable trajectory. | `lookalike.rs:190` |
+| `lookalike.rs:205` | `replace -= with += in scan_body_urls` (`end -= 1` inside the char-boundary back-off loop) | The backward walk lands on the previous boundary; the forward walk lands on the next boundary. The window between those two boundaries spans exactly one UTF-8 multi-byte codepoint (max 4 bytes), too small to fit any URL token. linkify's verdict on the resulting slice is therefore identical: any URL is either fully inside both slices or fully outside both. | `lookalike.rs:196` |
+| `lookalike.rs:237` | `replace < with <= in extract_domain_from_address` (`lt < gt`) | `lt == gt` is unreachable when both `rfind` results are `Some`: a single byte cannot be both `<` and `>`. Distinct positions exercise the same arm under either operator. | `lookalike.rs:231` |
+| `lookalike.rs:245` | `replace + with * in extract_domain_from_address` (`&trimmed[lt + 1..gt]`) | `lt * 1 == lt` shifts the slice start by one byte to include the `<` delimiter; `rsplit_once('@')` then yields the same `(local, domain)` split because the leading `<` lands in the discarded local part, not the domain on the right of `@`. | `lookalike.rs:239` |
+| `lookalike.rs:285` | `replace || with && in extract_domain_from_url` (`if host.is_empty() || !host.contains('.')`) | Same equivalence as `html/mismatch.rs:65`: the only difference between `||` and `&&` is on non-empty single-label hosts, which `classify_domain` filters out anyway because no registrable PSL match exists above a TLD. | `lookalike.rs:277` |
+| `raw_parts.rs:71` | `replace > with == in walk` (`if depth > MAX_MIME_DEPTH`) | `parse_message` already rejects messages whose MIME depth exceeds 8 (`MAX_MIME_DEPTH`) before any caller of `walk_attachment_parts` sees them. The 64-level defensive cap here therefore can never fire in production; `==` only differs from `>` at exactly `depth == 64`, which is unreachable. | `raw_parts.rs:62` |
+| `raw_parts.rs:71` | `replace > with >= in walk` (same site) | Same reasoning as the `==` mutation: `>=` differs from `>` only on the unreachable range `depth in [64, max-tree-depth]`, which is gated out upstream by `parse_message`'s 8-level depth limit. | `raw_parts.rs:62` |
+| `raw_parts.rs:96` | `replace + with * in walk` (`walk(msg, child_idx, &child_id, out, depth + 1)?`) | `depth * 1 == depth` keeps the recursion depth at 0 forever, but mail_parser-reachable trees are bounded by `parse_message`'s 8-level depth limit, so both `+ 1` and `* 1` walk to the same set of leaves before recursion bottoms out on `sub_parts() == None`. | `raw_parts.rs:84` |
 
-| File | Survivors |
-|---|---:|
-| `src/lookalike.rs` | 14 |
-| `src/parse/filename.rs` | 10 |
-| `src/parse/bodies.rs` | 9 |
-| `src/html/style_parse.rs` | 8 |
-| `src/parse/headers.rs` | 7 |
-| `src/html/mismatch.rs` | 7 |
-| `src/parse/mime_scrub.rs` | 6 |
-| `src/threading.rs` | 4 |
-| `src/raw_parts.rs` | 3 |
-| `src/lib.rs` | 3 |
-| `src/html/mod.rs` | 3 |
-| `src/parse/mod.rs` | 2 |
-| `src/unicode.rs` | 1 |
-| `src/parse/meta.rs` | 1 |
-| `src/parse/attachments.rs` | 1 |
-| `src/html/extract.rs` | 1 |
-| **Total** | **80** |
-
-Run summary (646 mutants total): 479 caught, 96 missed (80 outside
-`src/bin/`, 16 inside), 8 timeout, 63 unviable.
-
-The `bin/epvme_runner.rs` survivors are out of scope for B1 — that crate is
+The `bin/epvme_runner.rs` survivors are out of scope — that crate is
 diagnostic tooling, not production. Re-evaluate post-B4.
 
 The other four trust-boundary crates (`rimap-authz`, `rimap-audit`,
