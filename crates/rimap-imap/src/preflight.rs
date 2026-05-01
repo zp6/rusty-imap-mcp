@@ -31,6 +31,17 @@ pub struct PreflightInfo {
     pub tls_fingerprint: rimap_core::TlsFingerprint,
 }
 
+impl PreflightInfo {
+    /// Create a new `PreflightInfo` for testing and diagnostic purposes.
+    #[must_use]
+    pub fn new(capabilities: Vec<String>, tls_fingerprint: rimap_core::TlsFingerprint) -> Self {
+        Self {
+            capabilities,
+            tls_fingerprint,
+        }
+    }
+}
+
 /// Run a TCP+TLS+greeting+CAPABILITY probe against `cfg`.
 ///
 /// # Errors
