@@ -60,6 +60,20 @@ mod tests {
         let args = launch_arguments(&PathBuf::from(r"C:\rusty.toml"));
         assert_eq!(args, vec!["service", "run", "--config", r"C:\rusty.toml"]);
     }
+
+    #[test]
+    fn uninstall_inputs_default_to_constant_when_name_missing() {
+        let inputs = UninstallInputs { name: None };
+        assert_eq!(resolved_uninstall_name(&inputs), SERVICE_NAME_DEFAULT);
+    }
+
+    #[test]
+    fn uninstall_inputs_use_explicit_name() {
+        let inputs = UninstallInputs {
+            name: Some("RustyImapMcpTest".to_owned()),
+        };
+        assert_eq!(resolved_uninstall_name(&inputs), "RustyImapMcpTest");
+    }
 }
 
 /// Internal helper: resolve the effective service name.
@@ -173,4 +187,54 @@ fn map_access_denied(e: windows_service::Error) -> anyhow::Error {
         }
     }
     anyhow::Error::from(e)
+}
+
+/// Inputs to [`uninstall`].
+#[derive(Debug)]
+pub struct UninstallInputs {
+    /// Service name. Defaults to [`SERVICE_NAME_DEFAULT`] when `None`.
+    pub name: Option<String>,
+}
+
+fn resolved_uninstall_name(inputs: &UninstallInputs) -> &str {
+    inputs.name.as_deref().unwrap_or(SERVICE_NAME_DEFAULT)
+}
+
+/// Remove the User Service Template registration. Idempotent: a missing
+/// service is treated as success.
+///
+/// # Errors
+/// Returns an error wrapping the underlying `windows-service` error,
+/// except for "service does not exist" which is logged and swallowed.
+/// `ERROR_ACCESS_DENIED` is re-emitted with the elevated-shell hint.
+pub fn uninstall(inputs: &UninstallInputs) -> anyhow::Result<()> {
+    let name = resolved_uninstall_name(inputs);
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(map_access_denied)
+        .context("opening Service Control Manager")?;
+
+    let service = match manager.open_service(name, ServiceAccess::DELETE) {
+        Ok(s) => s,
+        Err(e) => {
+            // `windows_service::Error::Winapi(io)` with raw_os_error == 1060
+            // (ERROR_SERVICE_DOES_NOT_EXIST) is the idempotent success case.
+            if let windows_service::Error::Winapi(io) = &e {
+                if io.raw_os_error() == Some(1060) {
+                    tracing::info!(
+                        service = name,
+                        "service not registered; uninstall is a no-op"
+                    );
+                    return Ok(());
+                }
+            }
+            return Err(map_access_denied(e)).context("opening service for delete");
+        }
+    };
+
+    service
+        .delete()
+        .map_err(map_access_denied)
+        .context("deleting service registration")?;
+    tracing::info!(service = name, "service uninstalled");
+    Ok(())
 }
