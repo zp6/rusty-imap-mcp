@@ -282,8 +282,8 @@ the regression surface.
 
 ## Follow-up issues filed
 
-- (to be filed against the spec commit) — Windows Event Log integration
-  for the daemon under SCM.
+- [#213](https://github.com/randomparity/rusty-imap-mcp/issues/213) —
+  Windows Event Log integration for the daemon under SCM.
 
 ## Acceptance criteria
 
