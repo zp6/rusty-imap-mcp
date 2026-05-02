@@ -1,0 +1,178 @@
+# Upstream report: panic on crafted input in `parsers/message.rs:449`
+
+**Target repo:** https://github.com/stalwartlabs/mail-parser
+**Affected version:** `mail-parser 0.11.2` (current crates.io release; upstream `main` at the time of writing also reads `version = "0.11.2"`)
+**Reporter context:** Discovered downstream in [randomparity/rusty-imap-mcp#201](https://github.com/randomparity/rusty-imap-mcp/issues/201) via `cargo fuzz`.
+
+---
+
+## Title
+
+> Panic on crafted input: `range start index 9 out of range for slice of length 4` in `src/parsers/message.rs:449:67`
+
+## Body
+
+A coverage-guided fuzzer driving `MessageParser::default().parse(raw)` produced an input that panics inside `mail-parser-0.11.2`:
+
+```
+thread '<unnamed>' panicked at
+mail-parser-0.11.2/src/parsers/message.rs:449:67:
+range start index 9 out of range for slice of length 4
+```
+
+The panic is a slice-OOB on a small slice: it suggests a multi-byte unchecked read against a buffer that the parser previously narrowed to four bytes. The exact code path is on you to confirm; line 449 column 67 in the published 0.11.2 source on docs.rs is the indexing operation that triggers the panic.
+
+### Possibly related
+
+[stalwartlabs/mail-parser#120](https://github.com/stalwartlabs/mail-parser/issues/120) — "The library will panic with messages containing corrupted eml attachments". The stack-trace location is unconfirmed for that issue; it may or may not be the same root cause as the input below.
+
+### Minimal reproducer
+
+`Cargo.toml`:
+
+```toml
+[package]
+name = "mail-parser-201-repro"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+mail-parser = "=0.11.2"
+```
+
+`src/main.rs`:
+
+```rust
+fn main() {
+    // The crash bytes are in `crash.bin` (base64-decoded from the block
+    // below). sha1 of `crash.bin` is
+    // 3dfef11827edd59b81f1ccc37ac16da62158472b
+    // (libfuzzer-assigned crash filename).
+    let raw = include_bytes!("../crash.bin");
+    let _ = mail_parser::MessageParser::default().parse(raw);
+    // Panics on 0.11.2:
+    //   range start index 9 out of range for slice of length 4
+    //   at mail-parser-0.11.2/src/parsers/message.rs:449:67
+}
+```
+
+`crash.bin` (base64 of the raw crash bytes — decode with `base64 -d > crash.bin`):
+
+```
+RnJvIDp1TW1sdGkgU2VuZGVyIDxtdWx0aUBleGFtcGxlLnRlc3Q+ClRvOiByaW1hcC10ZXN0IDxy
+aW1hcC10ZXN0QGV4YW1wbGUudGVzdD4KU3ViamVjdDogU3ByaW50IDMgbXVsdGlwYXJ0IGZpeHR1
+cmUKTWVzc2FnZS1JRDogPG11bHRpLTAwMUBleGFtcGxlLnRlc3Q+CkRhdGU6IFR1ZSwgNyBBcHIg
+MjAyNiAxMDowMDp0IDxyaW1hcC10ZXN0QGV4YW1wbGUudGVzdD4KU3ViamVjdDogU3ByaW50IDMg
+bXVsdGlwYXJ0IGZpeHR1cmUKTWVzc2FnZS1JRDogPG11bHRpLTAwMUBleGFtcGxlLnRlc3Q+CkRh
+dGU6IFR1ZSwgNyBBcHIgMjAyNiAxMDowMDowMSArMDAwMApNSU1FLVZlcnNpb246IDEuMApDb250
+ZW50LVR5cGU6IG11bHRpcGFydC9hbHRlcm5hdGl2ZTsgYm91bmRhcnk9ImJvdW5kYXJ5NDIiCgot
+LUJvdW5kYXJ5NDIKQ29udGVudC1UeXBlOiB0ZXh0L3BsYWluOyBjaGFyc2V0PXVzLWFzY2lpCkpQ
+bGFpbiB0ZXh0IGJvZHl1bHRpQGV4YW1wbGUudGVzdD4KVG86IHJpbWFwLXRlc3QgPHJpbWFwLXRl
+c3RAZXhhbXBsZS50ZXN0PgpTdWJqZWN0OiBTcHJpbnQgMyBtdWx0aXBhcnQgZml4dHVyZQpNZXNz
+YWdlLUlEOiA8bXVsdGktMDAxQGV4YW1wbGUudGVzdD4KRGF0ZTogVHVlLCA3IEFwciAyMDI2IDEw
+OjAwOjAxICswMDAwCk1JTUUtVmVyc2lvbjogMS4wCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L2Fs
+dGVybmF0aXZlOyBib3VuZGFyeT0iYm91bmRhcnk0MiIKCi0tQm91bmRhcnk0MgpDb250ZW50LVR5
+cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXMtYXNjaWkKSlBsYWluIHRleHQgYm9keSBvZiB0aGUg
+bXVsdGlwYXJ0IGZpeHR1cmUuCgotLWJvdW5kYXJ5NDIKQ29udGVudC1UeXBlOiB0ZXh0L2h0bWw7
+IGNoYXJzZXQ9dXMtYXNjaWkKCjxwPkhUTUwgYm9keSBvZiB0aGUgbXVsdGlwYXJ1TW1sdGkgU2Vu
+ZGVyIDxtdWx0aUBleGFtcGxlLnRlc3Q+ClRvOiByaW1hcC10ZXN0IDxyaW1hcC10ZXN0QGV4YW1w
+bGUudGVzdD4KU3ViamVjdDogU3ByaW50IDMgbXVsdGlwYXJ0IGZpeHR1cmUKTTAxICswMDAwCk1J
+TUUtVmVyc2lvbjogMS4wCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L2FsdGVybmF0aXZlOyBib3Vu
+ZGFyeT0iYm91bmRhcnk0MiIKCi0tQm91bmRhcnk0MgpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47
+IGNoYXJzZXQ9dXMtYXNjaWkKSlBsYWluIHRleHQgYm9keSBvZiB0aGUgbXVsdGlwYXJ0IGZpeHR1
+cmUuCgotLWJvdW5kYXJ5NDIKQ29udGVudC1UeXBlOiB0ZXh0L2h0bWw7IGNoYXJzZXQ9dXMtYXNj
+aWkKCjxwPkhUTUwgYm9keSBvZiB0aGUgbXVsdGlwYXJ1TW1sdGkgU2VuZGVyIDxtdWx0aUBleGFt
+cGxlLnRlc3Q+ClRvOiByaW1hcC10ZXN0IDxyaW1hcC10ZXN0QGV4YW1wbGUudGVzdD4KU3ViamVj
+dDogU3ByaW50IDMgbXVsdGlwYXJ0IGZpeHR1cgoKLS1ib3VuZGFyeTQyCkNvbnRlbnQtVHlwZTog
+dGV4dC9odG1sOyBjaGFyc2V0PXVzLWFzY2lpCgo8cD5IVE1MIGJvZHkgb2YgdGhlIG11bHRpcGFy
+dU1tbHRpIFNlbmRlciA8bXVsdGlAZXhhbXBsZS50ZXN0Pgr+VG86IHJpbWFwLXRlc3QgPHJpbWFw
+LXRlc3RAZXhhbXBsZS50ZXN0PgpTdWJqZWN0OiBTcHJpbnQgMyBtdWx0aXBhcnQgZml4dHVyZQpN
+ZXNzYWdlLUlEOiA8bXVsdGktMDAxQGV4YW1wbGUudGVzdD4KRGF0ZTogVHVlLCA3IEFwciAyMDI2
+IDEwOjAwOjAxICswMDAwCk1JTUUtVmVyc2lvbjogMS4wCkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0
+L2FsdGVybmF0aXZlOyBib3VuZGFyeT0iYm91bmRhcnk0MiIKCi0tYm91bmRhcnk0MgpDb250ZW50
+LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXMtYXNjaWkKSlBsYWluIHRleHQgYm9keSBvZiB0
+aGUgbXVsdGlwYXJ0IGZpeHR1cmUuCgotLWJvdW5kYXJ5NDIKQ3QgZml4dHVyZS48L01tbHRpIFNl
+bmRlciA8bXVsdGlAZXhhbXBsZS50ZXN0PgpUbzogcmltYXAtdGVzdCA8cmltYXAtdGVzdEBleGFt
+cGxlLnRlc3Q+ClN1YmplY3Q6IFNwcmludCAzIG11bHRpcGFydCBmaXh0dXJlCk1lc3NhZ2UtSUQ6
+IDxtdWx0aS0wMDFAZXhhbXBsZS50ZXN0PgpEYXRlOiBUdWUsIDcgQXByIDIwMjYgMTA6MDA6MDEg
+KzAwMDAKTUlNRS1WZXJzaW9uOiAxLjAKQ29udGVudC1UeXBlOiBtdWx0aXBhcnQvYWx0ZXJuYXRp
+dmU7IGJvdW5kYXJ5PSJib3VuZGFyeTQyIgoKLS1Cb3VuZGFyeTQyCkNvbnRlbnQtVHlwZTogdGV4
+dC9wbGFpbjsgY2hhcnNldD11cy1hc2NpaQpKUGxhaW4gdGV4dCBib2R5IG9mIHRoZSBtdWx0aXBh
+cnQgZml4dHVyZS4KCi0tYm91bmRhcnk0MgpDb250ZW50LVR5cGU6IHRleHQvaHRtbDsgY2hhcnNl
+dD11cy1hc2NpaQoKPHA+SFRNTCBib2R5IG9mIHRoZSBtdWx0aXBhcnVNbWx0aSBTZW5kdXJlLgoK
+LS1ib3VuZGFyeTQyCkN0IGZpeHR1cmUuPC9NbWx0aSBTZW5kZXIgPG11bHRpQGV4YW1wbGUudGVz
+dD4KVG86IHJpbWFwLXRlc3QgPHJpbWFwLXRlc3RAZXhhbXBsZS50ZXN0PgpTdWJqZWN0OiBTcHJp
+bnQgMyBtdWx0aXBhcnQgZml4dHVyZQpNZXNzYWdlLUlEOiA8bXVsdGktMDAxQGV4YW1wbGUudGVz
+dD4KRGF0ZTogVHVlLCA3IEFwciAyMDI2IDEwOjAwOjAxICswMDAwCk1JTUUtVmVyc2lvbjogMS4w
+CkNvbnRlbnQtVHlwZTogbXVsdGlwYXJ0L2FsdGVybmF0aXZlOyBib3VuZGFyeT0iYm91bmRhcnk0
+MiIKCi0tQm91bmRhcnk0MgpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXMtYXNj
+aWkKSlBsYWluIHRleHQgYm9keSBvZiB0aGUgbXVsdGlwYXJ0IGZpeHR1cmUuCgotLWJvdW5kYXJ5
+NDIKQ29udGVudC1UeXBlOiB0ZXh0L2h0bWw7IGNoYXJzZXQ9dXMtYXNjaWkKCjxwPkhUTUwgYm9k
+eSBvZiB0aGUgbXVsdGlwYXJ1TW1sdGkgU2VuZGVyIDxtdWx0aUBleGFtcGxlLnRlc3Q+ClRvOiBy
+aW1hcC10ZXN0IDxwaW1hcC10ZXN0QGV4YW1wbGUudGVzdD4KU3ViamVjdDogU3ByaW50IDMgbXVs
+dGlwYXJ0IGZpeHR1cmUKTTAxICswMDAwCk1JTUUtVmVyc2lvbjogMS4wCkNvbnRlbnQtVHlwZTog
+bXVsdGlwYXJ0L2FsdGVybmF0aXZlOyBib3VuZGFyeT0iYm91bmRhcnk0MiIKCi0tQm91bmRhcnk0
+MgpDb250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXMtYXNjaWkKSlBsYWluIHRleHQg
+Ym9keSBvZiB0aGUgbXVsdGlwYXJ0IGZpeHR1cmUuCgotLWJvdW5kYXJ5NDIKQ29udGVudC1UeXBl
+OiB0ZXh0L2h0bWw7IGNoYXJzZXQ9dXMtYXNjaWkKCjxwPkhUTUwgYm9keSBvZiB0aGUgbXVsdGlw
+YXJ1TW1sdGkgU2VuZGVyIDxtdWx0aUBleCBtdWx0aXBhcnQvYWx0ZXJuYXRpdmU7IGJvdW5kYXJ5
+PSJib3VuZGFyeTQyIgoKLS1Cb3VuZGFyeTQyCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hh
+cnNldD11cy1hc2NpaQpKUGxhaW4gdGV4dCBib2R5dWx0aUBleGFtcGxlLnRlc3Q+ClRvOiByaW1h
+cC10ZXN0IDxyaW1hcC10ZXN0QGV4YW1wbGUudGVzdD4KU3ViamVjdDogU3ByaW50IDMgbXVsdGlw
+YXJ0IGZpeHR1cmUKTWVzc2FnZS1JRDogPG11bHRpLTAwMUBleGFtcGxlLnRlc3Q+CkRhdGU6IFR1
+ZSwgNyBBcHIgMjAyNiAxMDowMDowMSArMDAwMApNSU1FLVZlcnNpb246IDEuMApDb250ZW50LVR5
+cGU6IG11bHRpcGFydC9hbHRlcm5hdGl2ZTsgYm91bmRhcnk9ImJvdW5kYXJ5NDIiCgotLUJvdW5k
+YXJ5NDIKQ29udGVudC1UeXBlOiB0ZXh0L3BsYWluOyBjaGFyc2V0PXVzLWFzY2lpCkpQbGFpbiB0
+ZXh0IGJvZHkgb2YgdGhlIG11bHRpcGFydCBmaXh0dXJlLgoKLS1ib3VuZGFyeTQyCkNvbnRlbnQt
+VHlwZTogdGV4dC9odG1sOyBjaGFyc2V0PXVzLWFzY2lpCgo8cD5IVE1MIGJvZHkgb2YgdGhlIG11
+bHRpcGFydU1tbHRpIFNlbmRlciA8bXVsdGlAZXhhbXBsZS50ZXN0PgpUbzogcmltYXAtdGVzdCA8
+cmltYXAtdGVzdEBleGFtcGxlLnRlc3Q+ClN1YmplY3Q6IFNwcmludCAzIG11bHRpcGFydCBmaXh0
+dXJlCk0wMSArMDAwMApNSU1FLVZlcnNpb246IDEuMApDb250ZW50LVR5cGU6IG11bHRpcGFydC9h
+bHRlcm5hdGl2ZTsgYm91bmRhcnk9ImJvdW5kYXJ5NDIiCgotLUJvdW5kYXJ5NDIKQ29udGVudC1U
+eXBlOiB0ZXh0L3BsYWluOyBjaGFyc2V0PXVzLWFzY2lpCkpQbGFpbiB0ZXh0IGJvZHkgb2YgdGhl
+IG11bHRpcGFydCBmaXh0dXJlLgoKLS1ib3VuZGFyeTQyCkNvbnRlbnQtVHlwZTogdGV4dC9odG1s
+OyBjaGFyc2V0PXVzLWFzY2lpCgo8cD5IVE1MIGJvZHkgb2YgdGhlIG11bHRpcGFydU1tbHRpIFNl
+bmRlciA8bXVsdGlAZXhhbXBsZS50ZXN0PgpUbzogcmltYXAtdGVzdCA8cmltYXAtdGVzdEBleGFt
+cGxlLnRlc3Q+ClN1YmplY3Q6IFNwcmludCAzIG11bHRpcGFydCBmaXh0dXIKCi0tYm91bmRhcnk0
+MgpDb250ZW50LVR5cGU6IHRleHQvaHRtbDsgY2hhcnNldD11cy1hc2NpaQoKPHA+SFRNTCBib2R5
+IG9mIHRoZSBtdWx0aXBhcnVNbWx0aSBTZW5kZXIgPG11bHRpQGV4YW1wbGUudGVzdD4K/lRvOiBy
+aW1hcC10ZXN0IDxyaW1hcC10ZXN0QGV4YW1wbGUudGVzdD4KU3ViamVjdDogU3ByaW50IDMgbXVs
+dGlwYXJ0IGZpeHR1cmUKTWVzc2FnZS1JRDogPG11bHRpLTAwMUBleGFtcGxlLnRlc3Q+CkRhdGU6
+IFR1ZSwgNyBBcHIgMjAyNiAxMDowMDowMSArMDAwMApNSU1FLVZlcnNpb246IDEuMApDb250ZW50
+LVR5cGU6IG11bHRpcGFydC9hbHRlcm5hdGl2ZTsgYm91bmRhcnk9ImJvdW5kYXJ5NDIiCgotLWJv
+dW5kYXJ5NDIKQ29udGVudC1UeXBlOiB0ZXh0L3BsYWluOyBjaGFyc2V0PXVzLWFzY2lpCkpQbGFp
+biB0ZXh0IGJvZHkgb2YgdGhlIG11bHRpcGFydCBmaXh0dXJlLgoKLS1ib3VuZGFyeTQyCkN0IGZp
+eHR1cmUuPC9NbWx0aSBTZW5kZXIgPG11bHRpQGV4YW1wbGUudGVzdD4KVG86IHJpbWFwLXRlc3Qg
+PHJpbWFwLXRlc3RAZXhhbXBsZS50ZXN0PgpTdWJqZWN0OiBTcHJpbnQgMyBtdWx0aXBhcnQgZml4
+dHVyZQpNZXNzYWdlLUlEOiA8bXVsdGktMDAxQGV4YW1wbGUudGVzdD4KRGF0ZTogVHVlLCA3IEFw
+ciAyMDI2IDEwOjAwOjAxICswMDAwCk1JTUUtVmVyc2lvbjogMS4wCkNvbnRlbnQtVHlwZTogbXVs
+dGlwYXJ0L2FsdGVybmF0aXZlOyBib3VuZGFyeT0iYm91bmRhcnk0MiIKCi0tQm91bmRhcnk0MgpD
+b250ZW50LVR5cGU6IHRleHQvcGxhaW47IGNoYXJzZXQ9dXMtYXNjaWkKSlBsYWluIHRleHQgYm9k
+eSBvZiB0aGUgbXVsdGlwYXJ0IGZpeHR1cmUuCgotLWJvdW5kYXJ5NDIKIGJvdW5kaXZ5PSJib3Vu
+ZGFyeTQyIgoKLS1ib3VuZGFyeTQyCkNvbnRlbnQtVHA+CgotLWJvdW5kYXJ5NDItLQo=
+```
+
+### Reproduction steps
+
+```bash
+cargo new mail-parser-201-repro
+cd mail-parser-201-repro
+# replace Cargo.toml and src/main.rs with the snippets above
+# create crash.bin from the base64 block above:
+echo '<paste base64>' | base64 -d > crash.bin
+cargo run
+```
+
+Expected: panic identical to the message at the top of this issue.
+
+### Downstream mitigation
+
+We have wrapped the four `MessageParser::parse` call sites in our crate with `std::panic::catch_unwind(AssertUnwindSafe(...))` so a panic becomes a typed error rather than aborting the process. The fix is downstream-defensive — it does not patch the underlying bug, and any future `mail-parser` consumer that does not wrap will hit the same crash. We would much rather pull a fixed `mail-parser` than maintain the `catch_unwind` shim, so any patch you ship will let us drop ours.
+
+### Environment
+
+- `mail-parser`: 0.11.2 (crates.io)
+- Discovered: 2026-04 via `cargo fuzz` against the public `MessageParser::default().parse` API
+- Toolchain: stable 1.x, nightly for `cargo fuzz`
+
+Happy to provide additional reproducers, a smaller minimised input if you need one, or to test patches on our fuzz corpus.

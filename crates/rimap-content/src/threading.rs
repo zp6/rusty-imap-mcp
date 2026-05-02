@@ -30,7 +30,10 @@ pub struct ThreadingHeaders {
 /// is not parseable.
 #[must_use]
 pub fn extract_threading_headers(raw: &[u8]) -> ThreadingHeaders {
-    let Some(parsed) = mail_parser::MessageParser::new().parse(raw) else {
+    let Ok(Some(parsed)) = crate::parse::safe_parser::safe_parse(raw) else {
+        // Both Err(ParserPanic) and Ok(None) (clean rejection) collapse
+        // to the same default; safe_parse's own tracing::error! line
+        // distinguishes the two for audit consumers.
         return ThreadingHeaders::default();
     };
 
