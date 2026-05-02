@@ -1741,7 +1741,7 @@ fn run_service_main() -> anyhow::Result<()> {
     }
 
     let shutdown = std::sync::Arc::new(tokio::sync::Notify::new());
-    let (reporter, _status_handle) = register_handler(
+    let reporter = register_handler(
         crate::service::SERVICE_NAME_DEFAULT,
         std::sync::Arc::clone(&shutdown),
         SERVICE_TYPE,
