@@ -1724,10 +1724,14 @@ fn run_service_main() -> anyhow::Result<()> {
     // still surfaces the failure class.
     match crate::service::tracing_sink::open_log_file() {
         Ok(file) => {
-            // tracing-subscriber's blanket MakeWriter impl covers
-            // `Arc<Mutex<W>>` for any `W: io::Write`. The Arc is needed
-            // because `init_to_writer` wants `Send + Sync + 'static`.
-            let writer = std::sync::Arc::new(std::sync::Mutex::new(file));
+            // `tracing-subscriber` has `impl MakeWriter for Mutex<W: Write>`
+            // and the subscriber owns the writer for the process lifetime,
+            // so no Arc wrapping is needed. (The `Arc<W>` blanket impl
+            // requires `&W: Write`, which `Mutex` does not satisfy, so
+            // `Arc<Mutex<File>>` would not type-check — use `Mutex<File>`
+            // directly. `Mutex<File>` is already `Send + Sync + 'static`,
+            // satisfying `init_to_writer`'s bound.)
+            let writer = std::sync::Mutex::new(file);
             crate::boot::logging::init_to_writer(writer);
         }
         Err(e) => {
