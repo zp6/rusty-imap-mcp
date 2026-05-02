@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use rimap_server::service::install::{InstallInputs, UninstallInputs, install, uninstall};
+use rimap_server::service::install::{InstallInputs, install, uninstall};
 use windows_service::service::ServiceAccess;
 use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -54,11 +54,8 @@ fn install_query_uninstall_round_trip() {
         .expect("service should be queryable after install");
 
     // Uninstall — first call deletes it.
-    uninstall(&UninstallInputs {
-        name: Some(name.clone()),
-    })
-    .expect("uninstall");
+    uninstall(Some(&name)).expect("uninstall");
 
     // Idempotent — second call against the same name succeeds.
-    uninstall(&UninstallInputs { name: Some(name) }).expect("idempotent uninstall");
+    uninstall(Some(&name)).expect("idempotent uninstall");
 }

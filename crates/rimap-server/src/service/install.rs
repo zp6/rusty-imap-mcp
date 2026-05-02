@@ -60,20 +60,6 @@ mod tests {
         let args = launch_arguments(&PathBuf::from(r"C:\rusty.toml"));
         assert_eq!(args, vec!["service", "run", "--config", r"C:\rusty.toml"]);
     }
-
-    #[test]
-    fn uninstall_inputs_default_to_constant_when_name_missing() {
-        let inputs = UninstallInputs { name: None };
-        assert_eq!(resolved_uninstall_name(&inputs), SERVICE_NAME_DEFAULT);
-    }
-
-    #[test]
-    fn uninstall_inputs_use_explicit_name() {
-        let inputs = UninstallInputs {
-            name: Some("RustyImapMcpTest".to_owned()),
-        };
-        assert_eq!(resolved_uninstall_name(&inputs), "RustyImapMcpTest");
-    }
 }
 
 /// Internal helper: resolve the effective service name.
@@ -189,26 +175,16 @@ fn map_access_denied(e: windows_service::Error) -> anyhow::Error {
     anyhow::Error::from(e)
 }
 
-/// Inputs to [`uninstall`].
-#[derive(Debug)]
-pub struct UninstallInputs {
-    /// Service name. Defaults to [`SERVICE_NAME_DEFAULT`] when `None`.
-    pub name: Option<String>,
-}
-
-fn resolved_uninstall_name(inputs: &UninstallInputs) -> &str {
-    inputs.name.as_deref().unwrap_or(SERVICE_NAME_DEFAULT)
-}
-
 /// Remove the User Service Template registration. Idempotent: a missing
-/// service is treated as success.
+/// service is treated as success. Defaults to [`SERVICE_NAME_DEFAULT`]
+/// when `name` is `None`.
 ///
 /// # Errors
 /// Returns an error wrapping the underlying `windows-service` error,
 /// except for "service does not exist" which is logged and swallowed.
 /// `ERROR_ACCESS_DENIED` is re-emitted with the elevated-shell hint.
-pub fn uninstall(inputs: &UninstallInputs) -> anyhow::Result<()> {
-    let name = resolved_uninstall_name(inputs);
+pub fn uninstall(name: Option<&str>) -> anyhow::Result<()> {
+    let name = name.unwrap_or(SERVICE_NAME_DEFAULT);
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(map_access_denied)
         .context("opening Service Control Manager")?;

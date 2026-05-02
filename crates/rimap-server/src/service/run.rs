@@ -46,37 +46,40 @@ pub(crate) trait StatusReporter: Send + Sync + 'static {
 #[derive(Clone)]
 pub(crate) struct ScmReporter {
     handle: ServiceStatusHandle,
-    /// Cached `ServiceType` value used in every status update.
-    service_type: ServiceType,
 }
 
 impl ScmReporter {
-    pub(crate) fn new(handle: ServiceStatusHandle, service_type: ServiceType) -> Self {
-        Self {
-            handle,
-            service_type,
+    pub(crate) fn new(handle: ServiceStatusHandle) -> Self {
+        Self { handle }
+    }
+
+    /// Build and emit a `ServiceStatus`. `controls_accepted` is derived
+    /// from `state` (only `Running` accepts controls). All callers in
+    /// this module go through here.
+    fn set(&self, state: ServiceState, exit_code: WsExitCode, wait_hint: Duration) {
+        let controls_accepted = if state == ServiceState::Running {
+            ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN
+        } else {
+            ServiceControlAccept::empty()
+        };
+        let status = ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: state,
+            controls_accepted,
+            exit_code,
+            checkpoint: 0,
+            wait_hint,
+            process_id: None,
+        };
+        if let Err(e) = self.handle.set_service_status(status) {
+            tracing::error!(error = %e, ?state, "set_service_status failed");
         }
     }
 }
 
 impl StatusReporter for ScmReporter {
     fn report(&self, state: ServiceState) {
-        let controls_accepted = match state {
-            ServiceState::Running => ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-            _ => ServiceControlAccept::empty(),
-        };
-        let status = ServiceStatus {
-            service_type: self.service_type,
-            current_state: state,
-            controls_accepted,
-            exit_code: WsExitCode::Win32(0),
-            checkpoint: 0,
-            wait_hint: std::time::Duration::from_secs(5),
-            process_id: None,
-        };
-        if let Err(e) = self.handle.set_service_status(status) {
-            tracing::error!(error = %e, ?state, "set_service_status failed");
-        }
+        self.set(state, WsExitCode::Win32(0), Duration::from_secs(5));
     }
 }
 
@@ -103,10 +106,13 @@ pub(crate) fn make_event_handler<R: StatusReporter + Clone>(
 /// for the given service name. The returned `ScmReporter` shares the
 /// `ServiceStatusHandle` SCM gave us so the caller can drive
 /// `StartPending → Running → StopPending → Stopped` transitions.
+///
+/// The `OnceLock` dance breaks the chicken-and-egg between needing the
+/// handler closure to register and needing the registered handle to
+/// build the production reporter.
 pub(crate) fn register_handler(
     name: &str,
     shutdown: Arc<Notify>,
-    service_type: ServiceType,
 ) -> Result<ScmReporter, windows_service::Error> {
     use std::sync::OnceLock;
 
@@ -124,7 +130,7 @@ pub(crate) fn register_handler(
 
     let handler = make_event_handler(shutdown, DeferredReporter(Arc::clone(&cell)));
     let handle = service_control_handler::register(name, handler)?;
-    let reporter = ScmReporter::new(handle, service_type);
+    let reporter = ScmReporter::new(handle);
     let _ = cell.set(reporter.clone());
     Ok(reporter)
 }
@@ -168,18 +174,14 @@ fn run_service_main() -> anyhow::Result<()> {
     // file cannot be created — under SCM that's lost unless the operator
     // configured `sc.exe failure` redirection, but the SCM exit code path
     // still surfaces the failure class.
+    // The subscriber owns the writer for the process lifetime, and
+    // `tracing-subscriber`'s `MakeWriter` blanket covers `Mutex<W: Write>`,
+    // so no Arc wrapping is needed. Stderr fallback when the file cannot be
+    // created — under SCM that's lost unless the operator configured
+    // `sc.exe failure` redirection, but the SCM exit code path still
+    // surfaces the failure class.
     match crate::service::tracing_sink::open_log_file() {
-        Ok(file) => {
-            // `tracing-subscriber` has `impl MakeWriter for Mutex<W: Write>`
-            // and the subscriber owns the writer for the process lifetime,
-            // so no Arc wrapping is needed. (The `Arc<W>` blanket impl
-            // requires `&W: Write`, which `Mutex` does not satisfy, so
-            // `Arc<Mutex<File>>` would not type-check — use `Mutex<File>`
-            // directly. `Mutex<File>` is already `Send + Sync + 'static`,
-            // satisfying `init_to_writer`'s bound.)
-            let writer = std::sync::Mutex::new(file);
-            crate::boot::logging::init_to_writer(writer);
-        }
+        Ok(file) => crate::boot::logging::init_to_writer(std::sync::Mutex::new(file)),
         Err(e) => {
             crate::boot::logging::init();
             tracing::warn!(error = %e, "could not open daemon log file; falling back to stderr");
@@ -187,27 +189,20 @@ fn run_service_main() -> anyhow::Result<()> {
     }
 
     let shutdown = Arc::new(Notify::new());
-    let reporter = register_handler(
-        crate::service::SERVICE_NAME_DEFAULT,
-        Arc::clone(&shutdown),
-        SERVICE_TYPE,
-    )
-    .map_err(|e| anyhow::anyhow!("registering service control handler: {e}"))?;
+    let reporter = register_handler(crate::service::SERVICE_NAME_DEFAULT, Arc::clone(&shutdown))
+        .map_err(|e| anyhow::anyhow!("registering service control handler: {e}"))?;
 
     // StartPending while we boot the runtime + bind the listener.
-    set_status(
-        &reporter,
+    reporter.set(
         ServiceState::StartPending,
-        0,
+        WsExitCode::Win32(0),
         Duration::from_secs(5),
     );
 
-    // Current-thread runtime so we don't need `run_with_shutdown`'s
-    // returned future to be `Send`. `boot::registry::build` has a known
-    // rustc HRTB rough edge that prevents `tokio::spawn`'ing this future
-    // on a multi-thread runtime; driving it directly via `block_on` on a
-    // current-thread runtime sidesteps the issue cleanly. See plan
-    // commit history for the empirical verification.
+    // Current-thread runtime so `run_with_shutdown`'s returned future does
+    // not need to be `Send`. `boot::registry::build` has a rustc HRTB rough
+    // edge that prevents `tokio::spawn`'ing it on a multi-thread runtime;
+    // driving it directly via `block_on` here sidesteps the issue.
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -224,31 +219,26 @@ fn run_service_main() -> anyhow::Result<()> {
         // generous deadline. `biased` prevents an instant-error daemon
         // boot from being missed in favor of started_rx (which would
         // never fire in that case).
-        let bind_outcome: BindResult = tokio::select! {
+        let bind_ready: bool = tokio::select! {
             biased;
-            join = &mut daemon_fut => {
-                // Daemon exited before firing started_tx — boot error.
-                return join;
+            join = &mut daemon_fut => return join,
+            r = started_rx => r.is_ok(),
+            () = tokio::time::sleep(BIND_DEADLINE) => {
+                tracing::warn!(
+                    deadline_secs = BIND_DEADLINE.as_secs(),
+                    "bind-ready signal did not fire before deadline; awaiting daemon completion",
+                );
+                false
             }
-            r = started_rx => match r {
-                Ok(()) => BindResult::Ready,
-                Err(_) => BindResult::SenderDropped,
-            },
-            () = tokio::time::sleep(Duration::from_secs(30)) => BindResult::Timeout,
         };
 
-        if matches!(bind_outcome, BindResult::Ready) {
-            // Listener is bound; report Running and let the daemon serve.
-            set_status(
-                &reporter_for_async,
+        if bind_ready {
+            reporter_for_async.set(
                 ServiceState::Running,
-                0,
+                WsExitCode::Win32(0),
                 Duration::from_secs(0),
             );
         }
-        // SenderDropped / Timeout: still drive the daemon future to
-        // completion so we can surface its actual error in `result`.
-        // Ready: same path; we just also reported Running first.
         daemon_fut.await
     });
 
@@ -256,59 +246,15 @@ fn run_service_main() -> anyhow::Result<()> {
         Ok(()) => WsExitCode::Win32(0),
         Err(e) => classify_boot_error(e),
     };
-    report_stopped(&reporter, exit);
+    reporter.set(ServiceState::Stopped, exit, Duration::from_secs(0));
 
     Ok(())
 }
 
-/// Internal: emit a `ServiceStatus` snapshot via the reporter. Wraps the
-/// repetitive `controls_accepted`/`exit_code` boilerplate the SCM API
-/// requires for every transition.
-fn set_status(reporter: &ScmReporter, state: ServiceState, checkpoint: u32, wait_hint: Duration) {
-    let status = ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: state,
-        controls_accepted: match state {
-            ServiceState::Running => ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
-            _ => ServiceControlAccept::empty(),
-        },
-        exit_code: WsExitCode::Win32(0),
-        checkpoint,
-        wait_hint,
-        process_id: None,
-    };
-    if let Err(e) = reporter.handle.set_service_status(status) {
-        tracing::error!(error = %e, ?state, "set_service_status failed");
-    }
-}
-
-/// Internal: report `Stopped` with the supplied SCM exit code.
-fn report_stopped(reporter: &ScmReporter, exit_code: WsExitCode) {
-    let status = ServiceStatus {
-        service_type: SERVICE_TYPE,
-        current_state: ServiceState::Stopped,
-        controls_accepted: ServiceControlAccept::empty(),
-        exit_code,
-        checkpoint: 0,
-        wait_hint: Duration::from_secs(0),
-        process_id: None,
-    };
-    if let Err(e) = reporter.handle.set_service_status(status) {
-        tracing::error!(error = %e, "set_service_status(Stopped) failed");
-    }
-}
-
-/// Outcome of awaiting the listener-bound signal.
-#[derive(Debug)]
-enum BindResult {
-    /// `started_tx` fired — listener bound, ready to accept.
-    Ready,
-    /// `started_tx` was dropped without sending. The daemon future
-    /// errored before reaching the bind step.
-    SenderDropped,
-    /// 30s deadline elapsed without the daemon firing `started_tx`.
-    Timeout,
-}
+/// Maximum time we wait for `run_with_shutdown` to fire its bind-ready
+/// signal before reporting `Running` regardless. SCM grants ~30 s for a
+/// state transition before considering the service hung.
+const BIND_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Inspect a daemon-future error and return the matching SCM exit code.
 /// This is the boot-failure mapping the spec calls out.
@@ -330,11 +276,13 @@ fn classify_boot_error(e: &anyhow::Error) -> WsExitCode {
     }
 }
 
-/// Resolve the config path the service should use. Mirrors the daemon
-/// path's resolution but without taking a CLI override (SCM passes a
-/// fully-baked command line so the override is the registered config).
+/// Resolve the config path the service should use. SCM passes a
+/// fully-baked command line, so we don't take a CLI override here; the
+/// install step's `--config` is what landed in the registered command
+/// line. Falling back to the env-var / platform-default chain keeps a
+/// misconfigured registration on a best-effort start path.
 fn resolve_service_config_path() -> anyhow::Result<PathBuf> {
-    rimap_config::loader::resolve_config_path(None).ok_or_else(|| {
+    crate::boot::config_path::resolve(None).map_err(|_| {
         anyhow::anyhow!(
             "no config path resolvable from env / platform default; \
              reinstall the service with `rusty-imap-mcp service install --config <path>`"

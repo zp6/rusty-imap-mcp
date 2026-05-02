@@ -2,6 +2,7 @@
 
 pub mod account_state;
 pub mod audit_init;
+pub mod config_path;
 pub mod discovery;
 pub(crate) mod download_dir;
 pub mod logging;

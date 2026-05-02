@@ -4,7 +4,7 @@
 
 mod cli;
 
-use rimap_server::boot::logging;
+use rimap_server::boot::{config_path, logging};
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,7 +14,6 @@ use anyhow::Context;
 use clap::CommandFactory as _;
 use clap::Parser;
 use rimap_config::credential::KeyringStore;
-use rimap_config::loader::resolve_config_path;
 use rimap_config::login::{run_login, tty_prompt};
 
 use crate::cli::{AuditAction, Cli, Command};
@@ -141,9 +140,9 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     use rimap_server::daemon::run::run_with_shutdown;
     use rimap_server::daemon::shutdown::install_shutdown_handler;
 
-    let config_path = resolve_or_default(config_override)?;
+    let resolved = config_path::resolve(config_override)?;
     let shutdown = install_shutdown_handler();
-    run_with_shutdown(config_path, shutdown, None).await
+    run_with_shutdown(resolved, shutdown, None).await
 }
 
 /// Dispatch the `service <action>` subcommand. Windows-only because the
@@ -151,12 +150,12 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
 /// available on other platforms.
 #[cfg(windows)]
 fn handle_service_action(action: crate::cli::ServiceAction) -> anyhow::Result<()> {
-    use rimap_server::service::install::{InstallInputs, UninstallInputs, install, uninstall};
+    use rimap_server::service::install::{InstallInputs, install, uninstall};
 
     match action {
         crate::cli::ServiceAction::Install { name, config } => {
             let binary_path = std::env::current_exe().context("resolving current binary path")?;
-            let config_path = resolve_or_default(config)?;
+            let config_path = config_path::resolve(config)?;
             install(&InstallInputs {
                 name,
                 binary_path,
@@ -167,54 +166,35 @@ fn handle_service_action(action: crate::cli::ServiceAction) -> anyhow::Result<()
             Ok(())
         }
         crate::cli::ServiceAction::Uninstall { name } => {
-            uninstall(&UninstallInputs { name })?;
+            uninstall(name.as_deref())?;
             let mut stdout = std::io::stdout().lock();
             writeln!(stdout, "service uninstalled")?;
             Ok(())
         }
-        crate::cli::ServiceAction::Run => {
-            rimap_server::service::run::dispatch(rimap_server::service::SERVICE_NAME_DEFAULT)
-                .map_err(map_dispatch_error)
-        }
+        crate::cli::ServiceAction::Run => rimap_server::service::run::dispatch(
+            rimap_server::service::SERVICE_NAME_DEFAULT,
+        )
+        .map_err(|e| {
+            // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT (1063): SCM rejects
+            // a connect attempt from a non-service process. Translate the
+            // opaque Win32 error into a hint that points at the daemon
+            // verb instead.
+            if matches!(&e, windows_service::Error::Winapi(io) if io.raw_os_error() == Some(1063)) {
+                anyhow::anyhow!(
+                    "this verb is for the Service Control Manager — \
+                     see `rusty-imap-mcp daemon` for foreground use"
+                )
+            } else {
+                anyhow::Error::from(e)
+            }
+        }),
     }
-}
-
-/// Translate `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` (Win32 1063) — the
-/// error SCM raises when `service run` is invoked interactively rather
-/// than from the Service Control Manager — into a friendly hint pointing
-/// at the foreground `daemon` verb. Other dispatcher errors pass through.
-#[cfg(windows)]
-fn map_dispatch_error(e: windows_service::Error) -> anyhow::Error {
-    /// `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT`: SCM rejects a connect
-    /// attempt from a non-service process.
-    const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: i32 = 1063;
-    if let windows_service::Error::Winapi(io) = &e {
-        if io.raw_os_error() == Some(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
-            return anyhow::anyhow!(
-                "this verb is for the Service Control Manager — \
-                 see `rusty-imap-mcp daemon` for foreground use"
-            );
-        }
-    }
-    anyhow::Error::from(e)
-}
-
-/// Resolve a config-file path from an explicit `--config` override, falling
-/// back to the `RUSTY_IMAP_MCP_CONFIG` environment variable via
-/// [`resolve_config_path`]. Errors with the same "no config path" message
-/// used by the previous inline implementations.
-fn resolve_or_default(override_: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    override_
-        .or_else(|| resolve_config_path(None))
-        .ok_or_else(|| {
-            anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
-        })
 }
 
 /// Resolve the config file path from `--config` or the
 /// `RUSTY_IMAP_MCP_CONFIG` environment variable, erroring if neither is set.
 fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
-    resolve_or_default(cli.config.clone())
+    config_path::resolve(cli.config.clone())
 }
 
 /// Handle the `migrate-keyring` subcommand.
@@ -234,37 +214,4 @@ fn run_migrate_keyring(account: &str, username: &str, host: &str) -> anyhow::Res
         )?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests")]
-mod resolve_or_default_tests {
-    use super::resolve_or_default;
-    use std::path::PathBuf;
-
-    #[test]
-    fn override_path_wins_over_env() {
-        let explicit = PathBuf::from("/tmp/custom.toml");
-        let got = resolve_or_default(Some(explicit.clone())).unwrap();
-        assert_eq!(got, explicit);
-    }
-
-    #[test]
-    fn no_override_no_env_error_message_is_actionable() {
-        // We cannot force resolve_config_path to return None on a host where
-        // ProjectDirs::from succeeds — on Linux it falls back to /etc/passwd
-        // via getpwuid when HOME is unset, so there's no env-var combo that
-        // disables it. When it *does* return None (headless / unusual passwd
-        // configs), the error surface must name the fix the user should take.
-        temp_env::with_var("RUSTY_IMAP_MCP_CONFIG", None::<&str>, || {
-            if let Err(e) = resolve_or_default(None) {
-                let msg = e.to_string();
-                assert!(msg.contains("--config"), "error lacks --config hint: {msg}");
-                assert!(
-                    msg.contains("RUSTY_IMAP_MCP_CONFIG"),
-                    "error lacks env-var hint: {msg}",
-                );
-            }
-        });
-    }
 }
