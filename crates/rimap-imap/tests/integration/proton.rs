@@ -1,5 +1,9 @@
 //! Proton Bridge integration tests. Local only — never runs in CI.
+//!
+//! Unix-only (Proton Bridge target is macOS / Linux); the audit-writer
+//! tempdir-mode helper uses `PermissionsExt::from_mode` directly.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::expect_used, reason = "tests")]
 
