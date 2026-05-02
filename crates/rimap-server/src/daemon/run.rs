@@ -53,7 +53,7 @@ pub async fn run_with_shutdown(
 
     let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
     let download_dir: Arc<std::path::Path> =
-        Arc::from(crate::resolve_download_dir_multi(&multi)?.into_boxed_path());
+        Arc::from(crate::boot::download_dir::resolve(&multi)?.into_boxed_path());
 
     let registry = registry::build(&multi, &audit, &credentials, &download_dir)
         .await
