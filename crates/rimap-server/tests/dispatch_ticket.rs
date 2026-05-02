@@ -9,6 +9,7 @@
 //! `run_with_audit_envelope`, these records are absent and the test
 //! fails.
 
+#![cfg(unix)]
 #![expect(clippy::expect_used, reason = "tests")]
 
 use std::collections::BTreeMap;

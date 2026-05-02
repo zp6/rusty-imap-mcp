@@ -4,27 +4,41 @@
 
 mod cli;
 
-use rimap_server::boot::{audit_init, logging, registry};
+use rimap_server::boot::{config_path, logging};
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use anyhow::Context;
-use clap::Parser;
-use rimap_config::credential::{CredentialStore, KeyringStore};
-use rimap_config::loader::{load_and_validate, resolve_config_path};
-use rimap_config::login::{run_login, tty_prompt};
-
 use clap::CommandFactory as _;
+use clap::Parser;
+use rimap_config::credential::KeyringStore;
+use rimap_config::login::{run_login, tty_prompt};
 
 use crate::cli::{AuditAction, Cli, Command};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    logging::init();
     let cli = Cli::parse();
+
+    // The SCM service-run path installs its own subscriber pointed at the
+    // daemon log file inside `service_main_impl`; installing the global
+    // subscriber here would lose those redirected events. Every other
+    // command uses the standard stderr subscriber.
+    #[cfg(windows)]
+    let defer_logging = matches!(
+        cli.command,
+        Some(Command::Service {
+            action: crate::cli::ServiceAction::Run,
+        }),
+    );
+    #[cfg(not(windows))]
+    let defer_logging = false;
+
+    if !defer_logging {
+        logging::init();
+    }
 
     // Shim is special: it manages its own exit code rather than fitting the
     // anyhow::Result pattern. Handle it here before entering `run`.
@@ -35,7 +49,14 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!("{e:#}");
+            // When logging was deferred but the dispatcher errored before
+            // `service_main_impl` installed its own subscriber, fall back
+            // to a plain stderr write so the operator sees the cause.
+            if defer_logging {
+                let _ = writeln!(std::io::stderr().lock(), "{e:#}");
+            } else {
+                tracing::error!("{e:#}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -103,6 +124,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         return daemon_main(cli.config).await;
     }
 
+    #[cfg(windows)]
+    if let Some(Command::Service { action }) = cli.command {
+        return handle_service_action(action);
+    }
+
     // No subcommand and not --dry-run: print help and bail.
     // Shim is handled earlier in main() before this function is called.
     Cli::command().print_help().context("print help")?;
@@ -111,155 +137,64 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
-    use rimap_server::daemon::run::run;
+    use rimap_server::daemon::run::run_with_shutdown;
     use rimap_server::daemon::shutdown::install_shutdown_handler;
-    use rimap_server::daemon::socket_path;
-    use rimap_server::daemon::state::DaemonState;
-    #[cfg(windows)]
-    use rimap_server::daemon::transport::windows::NamedPipeListener;
-    #[cfg(unix)]
-    use rimap_server::daemon::{hardening, socket_setup, transport::unix::UnixSocketListener};
 
-    // Harden the daemon process before anything reads credentials or
-    // performs network I/O: setrlimit(RLIMIT_CORE,0) + PR_SET_DUMPABLE=0
-    // (Linux) prevent credential bytes from leaking via a crash dump or
-    // a same-UID `/proc/self/mem` / ptrace attach. Review finding I4.
-    #[cfg(unix)]
-    hardening::lock_down_process()
-        .context("daemon startup hardening (rlimit_core / prctl_dumpable)")?;
-
-    let config_path = resolve_or_default(config_override)?;
-    let multi = load_and_validate(&config_path)
-        .with_context(|| format!("loading config {}", config_path.display()))?;
-    let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
-        .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
-
-    let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
-    let download_dir: Arc<std::path::Path> =
-        Arc::from(resolve_download_dir_multi(&multi)?.into_boxed_path());
-
-    let registry = registry::build(&multi, &audit, &credentials, &download_dir)
-        .await
-        .context("building account registry")?;
-
-    let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
-    let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
-
-    #[cfg(unix)]
-    let listener = {
-        let ep = socket_path::resolve();
-        let path = ep
-            .as_path_buf()
-            .ok_or_else(|| anyhow::anyhow!("unix path resolver returned non-path endpoint"))?;
-        let parent = path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
-        let our_uid = rustix::process::geteuid().as_raw();
-        // Defense in depth: hold the verified parent-directory fd across the
-        // `bind` call. `UnixListener::bind(path)` still re-walks the path, so
-        // an ancestor-symlink swap after `prepare_socket_dir` returns could
-        // redirect `bind`. Narrowing the residual window to full bindat-by-fd
-        // is tracked as a follow-up; in the meantime the held fd plus the
-        // leaf-symlink refusal + post-bind mode assertion + umask guard keep
-        // the attack surface bounded.
-        let _parent_fd = socket_setup::prepare_socket_dir(parent, our_uid)
-            .with_context(|| format!("preparing {}", parent.display()))?;
-        UnixSocketListener::bind(&path)
-            .await
-            .with_context(|| format!("binding daemon socket at {}", path.display()))?
-    };
-    #[cfg(windows)]
-    let listener = {
-        let ep = socket_path::resolve().context("resolving daemon pipe name")?;
-        NamedPipeListener::bind(ep.as_str())
-            .with_context(|| format!("creating named pipe {}", ep.as_str()))?
-    };
-
-    let max_sessions =
-        usize::try_from(multi.daemon.max_concurrent_sessions.get()).unwrap_or(usize::MAX);
-    let session_permits = Arc::new(tokio::sync::Semaphore::new(max_sessions));
-
-    let state = Arc::new(DaemonState::new(
-        Arc::new(registry),
-        audit.clone(),
-        cancellation_tx,
-        session_permits,
-    ));
-
+    let resolved = config_path::resolve(config_override)?;
     let shutdown = install_shutdown_handler();
-    let mcp_result = run(state.clone(), listener, shutdown).await;
-
-    let reason = match &mcp_result {
-        Ok(()) => rimap_audit::ProcessEndReason::Eof,
-        Err(_) => rimap_audit::ProcessEndReason::Error,
-    };
-    if let Err(e) = drainer_handle.await {
-        tracing::error!(error = %e, "cancellation drainer join error");
-    }
-    let total_tool_calls = state.total_tool_calls();
-    if let Err(e) = audit.log_process_end(rimap_audit::ProcessEnd {
-        reason,
-        total_tool_calls,
-    }) {
-        tracing::error!(error = %e, "failed to write process_end");
-    }
-    mcp_result
+    run_with_shutdown(resolved, shutdown, None).await
 }
 
-/// Resolve a config-file path from an explicit `--config` override, falling
-/// back to the `RUSTY_IMAP_MCP_CONFIG` environment variable via
-/// [`resolve_config_path`]. Errors with the same "no config path" message
-/// used by the previous inline implementations.
-fn resolve_or_default(override_: Option<PathBuf>) -> anyhow::Result<PathBuf> {
-    override_
-        .or_else(|| resolve_config_path(None))
-        .ok_or_else(|| {
-            anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
-        })
+/// Dispatch the `service <action>` subcommand. Windows-only because the
+/// underlying `windows-service` types and the SCM dispatcher are not
+/// available on other platforms.
+#[cfg(windows)]
+fn handle_service_action(action: crate::cli::ServiceAction) -> anyhow::Result<()> {
+    use rimap_server::service::install::{InstallInputs, install, uninstall};
+
+    match action {
+        crate::cli::ServiceAction::Install { name, config } => {
+            let binary_path = std::env::current_exe().context("resolving current binary path")?;
+            let config_path = config_path::resolve(config)?;
+            install(&InstallInputs {
+                name,
+                binary_path,
+                config_path,
+            })?;
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "service installed")?;
+            Ok(())
+        }
+        crate::cli::ServiceAction::Uninstall { name } => {
+            uninstall(name.as_deref())?;
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "service uninstalled")?;
+            Ok(())
+        }
+        crate::cli::ServiceAction::Run => rimap_server::service::run::dispatch(
+            rimap_server::service::SERVICE_NAME_DEFAULT,
+        )
+        .map_err(|e| {
+            // ERROR_FAILED_SERVICE_CONTROLLER_CONNECT (1063): SCM rejects
+            // a connect attempt from a non-service process. Translate the
+            // opaque Win32 error into a hint that points at the daemon
+            // verb instead.
+            if matches!(&e, windows_service::Error::Winapi(io) if io.raw_os_error() == Some(1063)) {
+                anyhow::anyhow!(
+                    "this verb is for the Service Control Manager — \
+                     see `rusty-imap-mcp daemon` for foreground use"
+                )
+            } else {
+                anyhow::Error::from(e)
+            }
+        }),
+    }
 }
 
 /// Resolve the config file path from `--config` or the
 /// `RUSTY_IMAP_MCP_CONFIG` environment variable, erroring if neither is set.
 fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
-    resolve_or_default(cli.config.clone())
-}
-
-/// Resolve the attachment download directory from a multi-account config.
-///
-/// If `attachments.download_dir` is set, the path is created (if needed) and
-/// locked down to 0700 on Unix. Otherwise a per-process tempdir is created
-/// via `tempfile` (TOCTOU-safe) and then locked down to 0700 on Unix. The
-/// per-process dir is intentionally leaked (no automatic cleanup) so that
-/// downloaded attachments remain readable for the server's lifetime.
-fn resolve_download_dir_multi(
-    multi: &rimap_config::validate::ValidatedMultiConfig,
-) -> anyhow::Result<PathBuf> {
-    let dir_str = &multi.attachments.download_dir;
-    if !dir_str.is_empty() {
-        let dir = PathBuf::from(dir_str);
-        std::fs::create_dir_all(&dir)
-            .with_context(|| format!("creating attachment download_dir at {}", dir.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-                .with_context(|| format!("setting 0700 perms on {}", dir.display()))?;
-        }
-        return Ok(dir);
-    }
-
-    let dir = tempfile::Builder::new()
-        .prefix("rusty-imap-mcp-")
-        .tempdir()
-        .context("creating per-process tempdir for attachments")?
-        .keep();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("setting 0700 perms on {}", dir.display()))?;
-    }
-    Ok(dir)
+    config_path::resolve(cli.config.clone())
 }
 
 /// Handle the `migrate-keyring` subcommand.
@@ -279,91 +214,4 @@ fn run_migrate_keyring(account: &str, username: &str, host: &str) -> anyhow::Res
         )?;
     }
     Ok(())
-}
-
-#[cfg(all(test, unix))]
-#[expect(clippy::expect_used, reason = "tests")]
-mod resolve_download_dir_tests {
-    use super::resolve_download_dir_multi;
-    use rimap_config::model::{AttachmentsConfig, AuditConfig, DaemonConfig};
-    use rimap_config::validate::ValidatedMultiConfig;
-    use std::collections::BTreeMap;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-
-    fn minimal_multi(download_dir: String) -> ValidatedMultiConfig {
-        ValidatedMultiConfig {
-            accounts: BTreeMap::new(),
-            audit: AuditConfig {
-                path: PathBuf::from("/tmp/unused-audit.log"),
-                rotate_bytes: 10_485_760,
-                rotate_keep: 5,
-                retention_seconds: None,
-                provenance_window_seconds: 60,
-                fail_open: false,
-                allowed_base_dir: None,
-            },
-            attachments: AttachmentsConfig { download_dir },
-            daemon: DaemonConfig::default(),
-        }
-    }
-
-    #[test]
-    fn default_tempdir_has_0700_perms() {
-        let multi = minimal_multi(String::new());
-        let dir = resolve_download_dir_multi(&multi).expect("resolve ok");
-        let meta = std::fs::metadata(&dir).expect("metadata");
-        assert!(meta.is_dir(), "expected a directory at {}", dir.display());
-        let mode = meta.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn configured_dir_is_locked_down_to_0700() {
-        let base = tempfile::tempdir().expect("tempdir");
-        let target = base.path().join("attachments");
-        let multi = minimal_multi(target.to_string_lossy().into_owned());
-        let dir = resolve_download_dir_multi(&multi).expect("resolve ok");
-        assert_eq!(dir, target);
-        let mode = std::fs::metadata(&dir)
-            .expect("metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
-    }
-}
-
-#[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests")]
-mod resolve_or_default_tests {
-    use super::resolve_or_default;
-    use std::path::PathBuf;
-
-    #[test]
-    fn override_path_wins_over_env() {
-        let explicit = PathBuf::from("/tmp/custom.toml");
-        let got = resolve_or_default(Some(explicit.clone())).unwrap();
-        assert_eq!(got, explicit);
-    }
-
-    #[test]
-    fn no_override_no_env_error_message_is_actionable() {
-        // We cannot force resolve_config_path to return None on a host where
-        // ProjectDirs::from succeeds — on Linux it falls back to /etc/passwd
-        // via getpwuid when HOME is unset, so there's no env-var combo that
-        // disables it. When it *does* return None (headless / unusual passwd
-        // configs), the error surface must name the fix the user should take.
-        temp_env::with_var("RUSTY_IMAP_MCP_CONFIG", None::<&str>, || {
-            if let Err(e) = resolve_or_default(None) {
-                let msg = e.to_string();
-                assert!(msg.contains("--config"), "error lacks --config hint: {msg}");
-                assert!(
-                    msg.contains("RUSTY_IMAP_MCP_CONFIG"),
-                    "error lacks env-var hint: {msg}",
-                );
-            }
-        });
-    }
 }

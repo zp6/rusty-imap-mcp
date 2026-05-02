@@ -275,7 +275,9 @@ pub(crate) fn set_file_mode_0600(file: &File) {
 #[cfg(not(unix))]
 pub(crate) fn set_file_mode_0600(_file: &File) {}
 
-#[cfg(test)]
+// Unix-only: tests use `PermissionsExt::from_mode` for the audit-writer
+// parent-mode check (#147). Cross-platform helper tracked in #219.
+#[cfg(all(test, unix))]
 #[expect(clippy::unwrap_used, clippy::panic, reason = "tests")]
 mod tests {
     use tempfile::TempDir;

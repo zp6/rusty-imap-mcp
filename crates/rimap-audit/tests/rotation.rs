@@ -1,7 +1,12 @@
 //! Integration test for rotation-under-lock. Crosses the rotation boundary
 //! multiple times and asserts no record loss, plus that the lock remains
 //! held after each rotation.
+//!
+//! Unix-only because the tempdir-mode helper uses `PermissionsExt::from_mode`.
+//! Rotation under lock works on every platform; Windows lock coverage lives
+//! in cross-platform tests elsewhere in this crate.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::panic, reason = "tests")]
 

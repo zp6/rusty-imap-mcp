@@ -56,14 +56,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clients on the same user can now coexist without fighting for the audit lock.
 - New audit record kinds `session_start` and `session_end`; `tool_start` /
   `tool_end` / `auth` gain `session_id` where session-scoped.
-- Packaging: systemd user unit, macOS launchd plist, Windows Task Scheduler
-  script under `scripts/packaging/`.
+- Packaging: systemd user unit and macOS launchd plist under
+  `scripts/packaging/`. Windows uses the built-in
+  `rusty-imap-mcp service install` subcommand (registers a User Service
+  Template via SCM; requires Administrator).
 
 ### Migration
 
-Start the daemon once (systemd/launchd/Task Scheduler per your platform —
-see `README.md`'s "Running the daemon" section), then update every MCP
-client's config to invoke the shim. No config-file changes required.
+Start the daemon once (systemd/launchd on Linux/macOS,
+`rusty-imap-mcp service install` on Windows — see `README.md`'s
+"Running the daemon" section), then update every MCP client's config
+to invoke the shim. No config-file changes required.
 
 ## [1.0.0] - 2026-04-13
 

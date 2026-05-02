@@ -173,7 +173,10 @@ pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
+// Unix-only: tests use `PermissionsExt::from_mode` to satisfy the audit
+// writer's parent-mode check (post-#147). Tracked for cross-platform
+// generalisation in #219.
+#[cfg(all(test, unix))]
 #[expect(clippy::unwrap_used, reason = "tests")]
 mod tests {
     use std::path::PathBuf;

@@ -180,6 +180,11 @@ rmcp = { version = "1.4", features = ["server", "macros", "transport-io"] }
 schemars = "1.0"
 infer = "0.19"
 
+# Windows Service Control Manager integration (issue #129).
+# Safe wrappers around StartServiceCtrlDispatcher / SetServiceStatus /
+# ServiceManager — lets us keep `unsafe_code = "forbid"` workspace-wide.
+windows-service = "0.8.0"
+
 # Dev dependencies shared across crates
 assert_cmd = "2.0"
 predicates = "3.1"

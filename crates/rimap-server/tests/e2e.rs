@@ -21,6 +21,7 @@
 //! and `tools::fetch_by_uid::tests` for the input-validation and
 //! empty-result branches that used to rely on this e2e for coverage.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::expect_used, reason = "tests")]
 

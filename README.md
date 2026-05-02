@@ -175,11 +175,11 @@ cp scripts/packaging/com.rusty-imap-mcp.plist ~/Library/LaunchAgents/
 launchctl load -w ~/Library/LaunchAgents/com.rusty-imap-mcp.plist
 ```
 
-**Windows (Task Scheduler):**
+**Windows (Service Control Manager, run from an elevated shell):**
 
 ```powershell
-pwsh scripts/packaging/register-task.ps1
-Start-ScheduledTask -TaskName "rusty-imap-mcp"
+rusty-imap-mcp service install
+Start-Service RustyImapMcp
 ```
 
 Then configure each MCP client to invoke `rusty-imap-mcp shim` (see below).

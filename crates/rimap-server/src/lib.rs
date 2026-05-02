@@ -27,6 +27,9 @@ pub mod daemon;
 #[doc(hidden)]
 pub mod mcp;
 #[doc(hidden)]
+#[cfg(windows)]
+pub mod service;
+#[doc(hidden)]
 pub mod shim;
 #[doc(hidden)]
 pub mod tools;

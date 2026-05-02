@@ -283,7 +283,9 @@ pub struct ProcessStartInputs {
     pub current_inode: u64,
 }
 
-#[cfg(test)]
+// Unix-only: tests use `PermissionsExt::from_mode` for the audit-writer
+// parent-mode check (#147). Cross-platform helper tracked in #219.
+#[cfg(all(test, unix))]
 #[expect(clippy::expect_used, reason = "tests")]
 mod session_writer_tests {
     use crate::record::{PeerIdentity, SessionEndReason};
