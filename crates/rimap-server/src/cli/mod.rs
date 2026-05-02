@@ -81,6 +81,15 @@ pub enum Command {
     Daemon,
     /// Run the stdio↔socket shim (connects to a running daemon).
     Shim,
+    /// Windows Service Control Manager integration (issue #129).
+    /// Install / uninstall the User Service Template, or enter the
+    /// SCM-driven service entry point. Windows-only.
+    #[cfg(windows)]
+    Service {
+        /// Service-management action.
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
 }
 
 /// Actions under `rusty-imap-mcp audit <action>`.
@@ -112,6 +121,34 @@ pub enum AuditAction {
     },
 }
 
+/// Actions under `rusty-imap-mcp service <action>`. Windows-only.
+#[cfg(windows)]
+#[derive(Debug, Subcommand)]
+pub enum ServiceAction {
+    /// Register the daemon as a User Service Template. Requires Administrator.
+    Install {
+        /// Service name (default: `RustyImapMcp`).
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+        /// Config file path baked into the registered command line. If
+        /// omitted, falls back to `RUSTY_IMAP_MCP_CONFIG` / the platform
+        /// default at install time.
+        #[arg(long, value_name = "PATH")]
+        config: Option<std::path::PathBuf>,
+    },
+    /// Remove the User Service Template registration. Idempotent.
+    /// Requires Administrator.
+    Uninstall {
+        /// Service name (default: `RustyImapMcp`).
+        #[arg(long, value_name = "NAME")]
+        name: Option<String>,
+    },
+    /// SCM-only entry point. Invoked by the Service Control Manager;
+    /// not for interactive use. See `rusty-imap-mcp daemon` for the
+    /// foreground equivalent.
+    Run,
+}
+
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
 #[expect(clippy::panic, reason = "tests")]
@@ -119,6 +156,8 @@ mod tests {
     use clap::Parser;
     use rimap_core::account::DEFAULT_ACCOUNT_NAME;
 
+    #[cfg(windows)]
+    use crate::cli::ServiceAction;
     use crate::cli::{Cli, Command};
 
     #[test]
@@ -235,6 +274,57 @@ mod tests {
                 assert_eq!(account.as_deref(), Some("work"));
             }
             other => panic!("expected Audit::Merge, got {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_service_install_with_all_flags() {
+        let cli = Cli::try_parse_from([
+            "rusty-imap-mcp",
+            "service",
+            "install",
+            "--name",
+            "RustyImapMcpTest",
+            "--config",
+            r"C:\rusty.toml",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Service { action }) => match action {
+                ServiceAction::Install { name, config } => {
+                    assert_eq!(name.as_deref(), Some("RustyImapMcpTest"));
+                    assert_eq!(config, Some(std::path::PathBuf::from(r"C:\rusty.toml")));
+                }
+                other => panic!("expected Install, got {other:?}"),
+            },
+            other => panic!("expected Service, got {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_service_uninstall_with_default_name() {
+        let cli = Cli::try_parse_from(["rusty-imap-mcp", "service", "uninstall"]).unwrap();
+        match cli.command {
+            Some(Command::Service { action }) => match action {
+                ServiceAction::Uninstall { name } => assert!(name.is_none()),
+                other => panic!("expected Uninstall, got {other:?}"),
+            },
+            other => panic!("expected Service, got {other:?}"),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn parses_service_run() {
+        let cli = Cli::try_parse_from(["rusty-imap-mcp", "service", "run"]).unwrap();
+        match cli.command {
+            Some(Command::Service { action }) => match action {
+                ServiceAction::Run => {}
+                other => panic!("expected Run, got {other:?}"),
+            },
+            other => panic!("expected Service, got {other:?}"),
         }
     }
 }
