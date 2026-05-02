@@ -223,7 +223,9 @@ impl ImapMcpServer {
     }
 }
 
-#[cfg(test)]
+// Unix-only: tests use `PermissionsExt::from_mode` for the audit-writer
+// parent-mode check (#147). Cross-platform helper tracked in #219.
+#[cfg(all(test, unix))]
 #[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rimap_core::tool::ToolName;
