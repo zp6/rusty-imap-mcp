@@ -1,16 +1,126 @@
 //! Daemon entry point: accept loop, per-session spawn, graceful shutdown.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rimap_audit::record::PeerIdentity;
+use rimap_audit::{ProcessEnd, ProcessEndReason};
+use rimap_config::credential::{CredentialStore, KeyringStore};
+use rimap_config::loader::load_and_validate;
 use rimap_core::SessionId;
 use tokio::sync::{Mutex, Notify, OwnedSemaphorePermit};
 use tokio::task::JoinSet;
 
+use crate::boot::{audit_init, registry};
 use crate::daemon::state::{DaemonState, SessionState};
 use crate::daemon::transport::{AcceptedConnection, PlatformListener};
 use crate::mcp::server::ImapMcpServer;
+
+/// Run the daemon end-to-end: load config, build the registry, bind the
+/// listener, spawn the cancellation drainer, run the accept loop until
+/// `shutdown` is signalled, drain in-flight sessions, and emit
+/// `process_end`.
+///
+/// `started` is fired once the listener has been bound and the daemon is
+/// about to enter the accept loop. The signal-driven `daemon_main` path
+/// passes `None`; the SCM service path passes `Some(tx)` to drive the
+/// `StartPending → Running` transition.
+///
+/// # Errors
+///
+/// Returns any fatal error encountered during boot or the accept-loop
+/// run. Per-session errors are logged and never bubble up.
+pub async fn run_with_shutdown(
+    config_path: PathBuf,
+    shutdown: Arc<Notify>,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+
+    #[cfg(unix)]
+    crate::daemon::hardening::lock_down_process()
+        .context("daemon startup hardening (rlimit_core / prctl_dumpable)")?;
+
+    let multi = load_and_validate(&config_path)
+        .with_context(|| format!("loading config {}", config_path.display()))?;
+    let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
+        .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
+
+    let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
+    let download_dir: Arc<std::path::Path> =
+        Arc::from(crate::resolve_download_dir_multi(&multi)?.into_boxed_path());
+
+    let registry = registry::build(&multi, &audit, &credentials, &download_dir)
+        .await
+        .context("building account registry")?;
+
+    let (cancellation_tx, cancellation_rx) = rimap_audit::cancellation_channel();
+    let drainer_handle = rimap_audit::spawn_drainer(cancellation_rx, audit.clone());
+
+    #[cfg(unix)]
+    let listener = {
+        use crate::daemon::socket_path;
+        use crate::daemon::socket_setup;
+        use crate::daemon::transport::unix::UnixSocketListener;
+        let ep = socket_path::resolve();
+        let path = ep
+            .as_path_buf()
+            .ok_or_else(|| anyhow::anyhow!("unix path resolver returned non-path endpoint"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
+        let our_uid = rustix::process::geteuid().as_raw();
+        let _parent_fd = socket_setup::prepare_socket_dir(parent, our_uid)
+            .with_context(|| format!("preparing {}", parent.display()))?;
+        UnixSocketListener::bind(&path)
+            .await
+            .with_context(|| format!("binding daemon socket at {}", path.display()))?
+    };
+    #[cfg(windows)]
+    let listener = {
+        use crate::daemon::socket_path;
+        use crate::daemon::transport::windows::NamedPipeListener;
+        let ep = socket_path::resolve().context("resolving daemon pipe name")?;
+        NamedPipeListener::bind(ep.as_str())
+            .with_context(|| format!("creating named pipe {}", ep.as_str()))?
+    };
+
+    let max_sessions =
+        usize::try_from(multi.daemon.max_concurrent_sessions.get()).unwrap_or(usize::MAX);
+    let session_permits = Arc::new(tokio::sync::Semaphore::new(max_sessions));
+
+    let state = Arc::new(DaemonState::new(
+        Arc::new(registry),
+        audit.clone(),
+        cancellation_tx,
+        session_permits,
+    ));
+
+    if let Some(tx) = started {
+        // Receiver may have been dropped if the caller gave up waiting;
+        // ignore the send error in that case.
+        let _ = tx.send(());
+    }
+
+    let mcp_result = run(state.clone(), listener, shutdown).await;
+
+    let reason = match &mcp_result {
+        Ok(()) => ProcessEndReason::Eof,
+        Err(_) => ProcessEndReason::Error,
+    };
+    if let Err(e) = drainer_handle.await {
+        tracing::error!(error = %e, "cancellation drainer join error");
+    }
+    let total_tool_calls = state.total_tool_calls();
+    if let Err(e) = audit.log_process_end(ProcessEnd {
+        reason,
+        total_tool_calls,
+    }) {
+        tracing::error!(error = %e, "failed to write process_end");
+    }
+    mcp_result
+}
 
 /// Side table of in-flight sessions, keyed by `SessionId`. Used by the
 /// graceful-shutdown drain to synthesize `session_end(DaemonShutdown)`
@@ -535,5 +645,44 @@ mod live_sessions_tests {
             7,
             "drained Arc must point to the same SessionState as the inserted Arc",
         );
+    }
+}
+
+/// Pin the public signature of `run_with_shutdown` so the service-path
+/// caller and the existing `daemon_main` shim both build against the
+/// same contract. A compile-only check is enough — the integration
+/// behavior is exercised by the full daemon-spawn tests under
+/// `tests/`.
+///
+/// All parameters are owned (`PathBuf`, `Arc<Notify>`,
+/// `Option<oneshot::Sender<()>>`); the returned future is
+/// `Future<Output = anyhow::Result<()>>`. We pin the parameter list
+/// by coercing the function item to a matching `fn` pointer (the
+/// trailing `_` matches the opaque return type), and pin the output
+/// type with `assert_anyhow_future`. If either drifts, this fails to
+/// compile.
+#[cfg(test)]
+mod run_with_shutdown_signature {
+    fn assert_anyhow_future<F>(_f: &F)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>>,
+    {
+    }
+
+    #[test]
+    fn signature_is_stable() {
+        let coerce: fn(
+            std::path::PathBuf,
+            std::sync::Arc<tokio::sync::Notify>,
+            Option<tokio::sync::oneshot::Sender<()>>,
+        ) -> _ = super::run_with_shutdown;
+        let fut = coerce(
+            std::path::PathBuf::new(),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+            None,
+        );
+        assert_anyhow_future(&fut);
+        // Drop without polling — we only care about compile-time shape.
+        drop(fut);
     }
 }
