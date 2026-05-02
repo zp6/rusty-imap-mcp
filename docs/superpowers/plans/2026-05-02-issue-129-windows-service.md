@@ -1747,50 +1747,62 @@ fn run_service_main() -> anyhow::Result<()> {
     // StartPending while we boot the runtime + bind the listener.
     set_status(&reporter, ServiceState::StartPending, 0, Duration::from_secs(5));
 
-    let runtime = tokio::runtime::Builder::new_multi_thread()
+    // Current-thread runtime so we don't need `run_with_shutdown`'s
+    // returned future to be `Send`. `boot::registry::build` has a known
+    // rustc HRTB rough edge that prevents `tokio::spawn`'ing this future
+    // on a multi-thread runtime; driving it directly via `block_on` on a
+    // current-thread runtime sidesteps the issue cleanly. See plan
+    // commit history for the empirical verification.
+    let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| anyhow::anyhow!("building tokio runtime: {e}"))?;
 
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-    let daemon_shutdown = std::sync::Arc::clone(&shutdown);
-    let daemon_future = runtime.spawn(async move {
-        crate::daemon::run::run_with_shutdown(config_path, daemon_shutdown, Some(started_tx)).await
-    });
+    let reporter_for_async = reporter.clone();
+    let result: anyhow::Result<()> = runtime.block_on(async move {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let daemon_fut = crate::daemon::run::run_with_shutdown(
+            config_path,
+            shutdown,
+            Some(started_tx),
+        );
+        tokio::pin!(daemon_fut);
 
-    // Wait for the bind-ready signal, the daemon future to fail before
-    // binding, or a generous deadline. The deadline guards against a
-    // future that hangs without ever firing the started_tx.
-    let bind_result = runtime.block_on(async {
-        tokio::select! {
+        // Race the daemon future against the bind-ready signal and a
+        // generous deadline. `biased` prevents an instant-error daemon
+        // boot from being missed in favor of started_rx (which would
+        // never fire in that case).
+        let bind_outcome: BindResult = tokio::select! {
+            biased;
+            join = &mut daemon_fut => {
+                // Daemon exited before firing started_tx — boot error.
+                return join;
+            }
             r = started_rx => match r {
                 Ok(()) => BindResult::Ready,
                 Err(_) => BindResult::SenderDropped,
             },
             () = tokio::time::sleep(Duration::from_secs(30)) => BindResult::Timeout,
+        };
+
+        if matches!(bind_outcome, BindResult::Ready) {
+            // Listener is bound; report Running and let the daemon serve.
+            set_status(
+                &reporter_for_async,
+                ServiceState::Running,
+                0,
+                Duration::from_secs(0),
+            );
         }
+        // SenderDropped / Timeout: still drive the daemon future to
+        // completion so we can surface its actual error in `result`.
+        // Ready: same path; we just also reported Running first.
+        daemon_fut.await
     });
 
-    if !matches!(bind_result, BindResult::Ready) {
-        // started_tx was dropped without sending, OR the deadline elapsed —
-        // either way drive the daemon future to completion to harvest its
-        // real error and map it onto an SCM exit code.
-        let join = runtime.block_on(daemon_future);
-        let exit = classify_boot_error(&join);
-        report_stopped(&reporter, exit);
-        return Ok(());
-    }
-
-    // Listener is bound; report Running.
-    set_status(&reporter, ServiceState::Running, 0, Duration::from_secs(0));
-
-    // Drive the daemon to completion. SCM's stop control will fire the
-    // shutdown Notify; the future returns when the drain finishes.
-    let join = runtime.block_on(daemon_future);
-
-    let exit = match &join {
-        Ok(Ok(())) => ScmExitCode::Win32(0),
-        Ok(Err(_)) | Err(_) => classify_boot_error(&join),
+    let exit = match &result {
+        Ok(()) => ScmExitCode::Win32(0),
+        Err(e) => classify_boot_error(e),
     };
     report_stopped(&reporter, exit);
 
@@ -1854,31 +1866,23 @@ enum BindResult {
     Timeout,
 }
 
-/// Inspect a daemon-future join result and return the matching SCM exit
-/// code. This is the boot-failure mapping the spec calls out.
-fn classify_boot_error(
-    join: &Result<anyhow::Result<()>, tokio::task::JoinError>,
-) -> ScmExitCode {
-    match join {
-        Ok(Ok(())) => ScmExitCode::Win32(0),
-        Ok(Err(e)) => {
-            // Match by error chain context. `with_context(|| "loading config …")`
-            // and similar contexts emitted by `run_with_shutdown` surface in
-            // `format!("{e:#}")` — match substrings.
-            let s = format!("{e:#}");
-            if s.contains("loading config") {
-                ScmExitCode::ServiceSpecific(ServiceExitCode::ConfigLoad as u32)
-            } else if s.contains("opening audit log") {
-                ScmExitCode::ServiceSpecific(ServiceExitCode::AuditOpen as u32)
-            } else if s.contains("building account registry") {
-                ScmExitCode::ServiceSpecific(ServiceExitCode::RegistryBuild as u32)
-            } else if s.contains("creating named pipe") || s.contains("binding daemon socket") {
-                ScmExitCode::ServiceSpecific(ServiceExitCode::ListenerBind as u32)
-            } else {
-                ScmExitCode::ServiceSpecific(ServiceExitCode::RuntimeFailure as u32)
-            }
-        }
-        Err(_) => ScmExitCode::ServiceSpecific(ServiceExitCode::RuntimeFailure as u32),
+/// Inspect a daemon-future error and return the matching SCM exit code.
+/// This is the boot-failure mapping the spec calls out.
+fn classify_boot_error(e: &anyhow::Error) -> ScmExitCode {
+    // Match by error chain context. `with_context(|| "loading config …")`
+    // and similar contexts emitted by `run_with_shutdown` surface in
+    // `format!("{e:#}")` — match substrings.
+    let s = format!("{e:#}");
+    if s.contains("loading config") {
+        ScmExitCode::ServiceSpecific(ServiceExitCode::ConfigLoad as u32)
+    } else if s.contains("opening audit log") {
+        ScmExitCode::ServiceSpecific(ServiceExitCode::AuditOpen as u32)
+    } else if s.contains("building account registry") {
+        ScmExitCode::ServiceSpecific(ServiceExitCode::RegistryBuild as u32)
+    } else if s.contains("creating named pipe") || s.contains("binding daemon socket") {
+        ScmExitCode::ServiceSpecific(ServiceExitCode::ListenerBind as u32)
+    } else {
+        ScmExitCode::ServiceSpecific(ServiceExitCode::RuntimeFailure as u32)
     }
 }
 
@@ -1902,14 +1906,14 @@ Append to `service/run.rs`:
 ```rust
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 mod classify_boot_error_tests {
     use super::*;
 
     #[test]
     fn config_load_error_maps_to_config_load_exit() {
-        let err: anyhow::Result<()> = Err(anyhow::anyhow!("loading config /missing/path"));
-        let join: Result<anyhow::Result<()>, tokio::task::JoinError> = Ok(err);
-        match classify_boot_error(&join) {
+        let err = anyhow::anyhow!("loading config /missing/path");
+        match classify_boot_error(&err) {
             ScmExitCode::ServiceSpecific(c) => {
                 assert_eq!(c, ServiceExitCode::ConfigLoad as u32);
             }
@@ -1919,9 +1923,8 @@ mod classify_boot_error_tests {
 
     #[test]
     fn audit_open_error_maps_to_audit_open_exit() {
-        let err: anyhow::Result<()> = Err(anyhow::anyhow!("opening audit log at /x"));
-        let join: Result<anyhow::Result<()>, tokio::task::JoinError> = Ok(err);
-        match classify_boot_error(&join) {
+        let err = anyhow::anyhow!("opening audit log at /x");
+        match classify_boot_error(&err) {
             ScmExitCode::ServiceSpecific(c) => {
                 assert_eq!(c, ServiceExitCode::AuditOpen as u32);
             }
@@ -1931,9 +1934,8 @@ mod classify_boot_error_tests {
 
     #[test]
     fn unknown_error_maps_to_runtime_failure_exit() {
-        let err: anyhow::Result<()> = Err(anyhow::anyhow!("something we did not categorize"));
-        let join: Result<anyhow::Result<()>, tokio::task::JoinError> = Ok(err);
-        match classify_boot_error(&join) {
+        let err = anyhow::anyhow!("something we did not categorize");
+        match classify_boot_error(&err) {
             ScmExitCode::ServiceSpecific(c) => {
                 assert_eq!(c, ServiceExitCode::RuntimeFailure as u32);
             }
