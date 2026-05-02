@@ -29,6 +29,9 @@ extend-exclude = [
     # Fuzz seed corpus mirrors the adversarial injection-corpus fixtures.
     # Same rationale: deliberately-malformed content trips the typos checker.
     "fuzz/corpus/",
+    # Upstream bug-report drafts embed raw crash bytes as base64. The base64
+    # alphabet produces sequences that typos misreads as misspellings.
+    "docs/superpowers/notes/",
     # Vendored Unicode 16 TR39 confusables table. CJK codepoint names and
     # hex codepoint columns trip the typos auto-fixer.
     "crates/rimap-content/data/confusables.txt",
