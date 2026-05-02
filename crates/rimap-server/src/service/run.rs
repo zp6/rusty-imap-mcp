@@ -135,9 +135,8 @@ pub(crate) fn register_handler(
     Ok(reporter)
 }
 
-/// `windows_service::define_windows_service!` expands to the FFI-callable
-/// shim SCM jumps to. The shim hands control to `service_main_impl`
-/// (defined below) which carries the actual logic.
+// `define_windows_service!` expands to `ffi_service_main` — the FFI shim
+// SCM jumps to. The shim trampolines into `service_main_impl` below.
 windows_service::define_windows_service!(ffi_service_main, service_main_impl);
 
 /// Service type used in every status update.
