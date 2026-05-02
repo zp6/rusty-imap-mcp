@@ -21,8 +21,25 @@ use crate::cli::{AuditAction, Cli, Command};
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    logging::init();
     let cli = Cli::parse();
+
+    // The SCM service-run path installs its own subscriber pointed at the
+    // daemon log file inside `service_main_impl`; installing the global
+    // subscriber here would lose those redirected events. Every other
+    // command uses the standard stderr subscriber.
+    #[cfg(windows)]
+    let defer_logging = matches!(
+        cli.command,
+        Some(Command::Service {
+            action: crate::cli::ServiceAction::Run,
+        }),
+    );
+    #[cfg(not(windows))]
+    let defer_logging = false;
+
+    if !defer_logging {
+        logging::init();
+    }
 
     // Shim is special: it manages its own exit code rather than fitting the
     // anyhow::Result pattern. Handle it here before entering `run`.
@@ -33,7 +50,14 @@ async fn main() -> ExitCode {
     match run(cli).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            tracing::error!("{e:#}");
+            // When logging was deferred but the dispatcher errored before
+            // `service_main_impl` installed its own subscriber, fall back
+            // to a plain stderr write so the operator sees the cause.
+            if defer_logging {
+                let _ = writeln!(std::io::stderr().lock(), "{e:#}");
+            } else {
+                tracing::error!("{e:#}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -101,6 +125,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         return daemon_main(cli.config).await;
     }
 
+    #[cfg(windows)]
+    if let Some(Command::Service { action }) = cli.command {
+        return handle_service_action(action);
+    }
+
     // No subcommand and not --dry-run: print help and bail.
     // Shim is handled earlier in main() before this function is called.
     Cli::command().print_help().context("print help")?;
@@ -115,6 +144,59 @@ async fn daemon_main(config_override: Option<PathBuf>) -> anyhow::Result<()> {
     let config_path = resolve_or_default(config_override)?;
     let shutdown = install_shutdown_handler();
     run_with_shutdown(config_path, shutdown, None).await
+}
+
+/// Dispatch the `service <action>` subcommand. Windows-only because the
+/// underlying `windows-service` types and the SCM dispatcher are not
+/// available on other platforms.
+#[cfg(windows)]
+fn handle_service_action(action: crate::cli::ServiceAction) -> anyhow::Result<()> {
+    use rimap_server::service::install::{InstallInputs, UninstallInputs, install, uninstall};
+
+    match action {
+        crate::cli::ServiceAction::Install { name, config } => {
+            let binary_path = std::env::current_exe().context("resolving current binary path")?;
+            let config_path = resolve_or_default(config)?;
+            install(&InstallInputs {
+                name,
+                binary_path,
+                config_path,
+            })?;
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "service installed")?;
+            Ok(())
+        }
+        crate::cli::ServiceAction::Uninstall { name } => {
+            uninstall(&UninstallInputs { name })?;
+            let mut stdout = std::io::stdout().lock();
+            writeln!(stdout, "service uninstalled")?;
+            Ok(())
+        }
+        crate::cli::ServiceAction::Run => {
+            rimap_server::service::run::dispatch(rimap_server::service::SERVICE_NAME_DEFAULT)
+                .map_err(map_dispatch_error)
+        }
+    }
+}
+
+/// Translate `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT` (Win32 1063) — the
+/// error SCM raises when `service run` is invoked interactively rather
+/// than from the Service Control Manager — into a friendly hint pointing
+/// at the foreground `daemon` verb. Other dispatcher errors pass through.
+#[cfg(windows)]
+fn map_dispatch_error(e: windows_service::Error) -> anyhow::Error {
+    /// `ERROR_FAILED_SERVICE_CONTROLLER_CONNECT`: SCM rejects a connect
+    /// attempt from a non-service process.
+    const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: i32 = 1063;
+    if let windows_service::Error::Winapi(io) = &e {
+        if io.raw_os_error() == Some(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+            return anyhow::anyhow!(
+                "this verb is for the Service Control Manager — \
+                 see `rusty-imap-mcp daemon` for foreground use"
+            );
+        }
+    }
+    anyhow::Error::from(e)
 }
 
 /// Resolve a config-file path from an explicit `--config` override, falling
