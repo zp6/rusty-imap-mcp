@@ -38,6 +38,10 @@ pub async fn run_with_shutdown(
 ) -> anyhow::Result<()> {
     use anyhow::Context as _;
 
+    // Harden the daemon process before anything reads credentials or
+    // performs network I/O: setrlimit(RLIMIT_CORE,0) + PR_SET_DUMPABLE=0
+    // (Linux) prevent credential bytes from leaking via a crash dump or
+    // a same-UID `/proc/self/mem` / ptrace attach. Review finding I4.
     #[cfg(unix)]
     crate::daemon::hardening::lock_down_process()
         .context("daemon startup hardening (rlimit_core / prctl_dumpable)")?;
@@ -71,6 +75,13 @@ pub async fn run_with_shutdown(
             .parent()
             .ok_or_else(|| anyhow::anyhow!("socket path has no parent: {}", path.display()))?;
         let our_uid = rustix::process::geteuid().as_raw();
+        // Defense in depth: hold the verified parent-directory fd across the
+        // `bind` call. `UnixListener::bind(path)` still re-walks the path, so
+        // an ancestor-symlink swap after `prepare_socket_dir` returns could
+        // redirect `bind`. Narrowing the residual window to full bindat-by-fd
+        // is tracked as a follow-up; in the meantime the held fd plus the
+        // leaf-symlink refusal + post-bind mode assertion + umask guard keep
+        // the attack surface bounded.
         let _parent_fd = socket_setup::prepare_socket_dir(parent, our_uid)
             .with_context(|| format!("preparing {}", parent.display()))?;
         UnixSocketListener::bind(&path)
