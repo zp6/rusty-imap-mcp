@@ -5,6 +5,7 @@
 //!
 //! Issue: #72.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq, ToolStartInputs};

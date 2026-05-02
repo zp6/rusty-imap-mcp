@@ -1,6 +1,11 @@
 //! Integration test: a second `AuditWriter` against the same path fails with
 //! `AuditError::Locked`, matching the Sprint 2 exit criterion.
+//!
+//! Unix-only because the tempdir-mode setup uses `PermissionsExt::from_mode`.
+//! The locking semantics themselves work on every platform; Windows lock
+//! coverage lives in cross-platform tests elsewhere in this crate.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::panic, reason = "tests")]
 

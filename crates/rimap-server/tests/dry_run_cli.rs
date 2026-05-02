@@ -1,6 +1,10 @@
 //! End-to-end CLI test: invoke the compiled binary with `--dry-run` against a
 //! temp-file config and assert exit code + stdout contents.
+//!
+//! Unix-only: tempdir-mode helper uses `PermissionsExt::from_mode`. Windows
+//! coverage of the dry-run CLI is tracked separately.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 
 use assert_cmd::Command;

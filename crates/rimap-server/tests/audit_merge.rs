@@ -1,7 +1,12 @@
 //! End-to-end test: write a synthetic audit log via `AuditWriter`, invoke
 //! the compiled `rusty-imap-mcp audit merge` binary, parse its stdout, and
 //! verify every record is present in order.
+//!
+//! Unix-only: the tempdir-mode helper uses `PermissionsExt::from_mode` to
+//! satisfy the audit writer's parent-permission check. Windows coverage is
+//! tracked separately.
 
+#![cfg(unix)]
 #![expect(clippy::unwrap_used, reason = "tests")]
 
 use std::collections::BTreeSet;
