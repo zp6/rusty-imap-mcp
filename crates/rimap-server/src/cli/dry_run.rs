@@ -61,12 +61,12 @@ fn write_fingerprint_section<W: Write>(
 ) -> std::io::Result<()> {
     match (result, pinned) {
         (Ok(info), None) => {
+            let fp = info.tls_fingerprint.to_hex();
             writeln!(out, "TLS fingerprint (sha256):")?;
-            writeln!(out, "  {}", info.tls_fingerprint)?;
+            writeln!(out, "  {fp}")?;
             writeln!(
                 out,
-                "  (add `tls_fingerprint_sha256 = \"{}\"` under [imap] in config.toml to pin)",
-                info.tls_fingerprint
+                "  (add `tls_fingerprint_sha256 = \"{fp}\"` under [imap] in config.toml to pin)"
             )?;
         }
         (Ok(info), Some(pin)) if info.tls_fingerprint == pin => {
@@ -147,10 +147,9 @@ pub async fn run<W: Write>(path: &Path, out: &mut W) -> anyhow::Result<()> {
             writeln!(out, "  [ok ] {tool}")?;
         }
 
-        // TLS + CAPABILITY preflight per account (#117). Errors are
-        // reported inline but do not abort the dry-run — a multi-account
-        // config may have one unreachable host and still want to print
-        // the matrix for the others.
+        // Errors are reported inline but do not abort the dry-run — a
+        // multi-account config may have one unreachable host and still
+        // want to print the matrix for the others.
         let conn_cfg = rimap_server::boot::registry::build_account_connection(id, acfg);
         let preflight_result = rimap_imap::preflight::probe_preflight(&conn_cfg).await;
         match &preflight_result {
