@@ -47,6 +47,12 @@ username = "you@gmail.com"
 path = "~/.local/state/rusty-imap-mcp/audit.jsonl"
 ```
 
+If you plan to run multiple MCP clients against this account (e.g.
+two Claude Code windows on different projects, or Claude Code
+alongside Codex), see
+[Running multiple MCP clients](audit-log.md#running-multiple-mcp-clients)
+for the per-client configuration pattern.
+
 Replace `you@gmail.com` with your Gmail address.
 
 ## Step 3: Store your credentials
