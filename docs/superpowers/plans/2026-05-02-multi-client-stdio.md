@@ -315,10 +315,59 @@ grep -n "^## Running multiple MCP clients" docs/audit-log.md
 
 Expected: matches one line.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Add the symmetric docs-anchor test in `rimap-audit`**
+
+Task 1's `locked_message_includes_docs_anchor` test pins one end of the cross-link (the error message). This step pins the other end (the heading in the docs file) so a future heading rename breaks the test rather than silently breaking the user-facing UX.
+
+Create `crates/rimap-audit/tests/docs_anchor.rs` with:
+
+```rust
+//! Pins the cross-link from `AuditError::Locked`'s Display string
+//! (`docs/audit-log.md#running-multiple-mcp-clients`) to the heading that
+//! defines that anchor. If `docs/audit-log.md` is reorganized and the
+//! heading is renamed without a coordinated update to the error message,
+//! this test fails.
+
+use std::path::PathBuf;
+
+#[test]
+fn audit_log_md_defines_running_multiple_mcp_clients_heading() {
+    // CARGO_MANIFEST_DIR points at crates/rimap-audit/. Walk up two levels
+    // to reach the workspace root, then read docs/audit-log.md.
+    let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("workspace root must exist two levels above crate dir")
+        .to_path_buf();
+    let docs_path = workspace_root.join("docs").join("audit-log.md");
+
+    let content = std::fs::read_to_string(&docs_path).unwrap_or_else(|err| {
+        panic!("failed to read {}: {err}", docs_path.display());
+    });
+
+    assert!(
+        content.contains("\n## Running multiple MCP clients\n"),
+        "docs/audit-log.md must define the `## Running multiple MCP clients` \
+         heading referenced by AuditError::Locked. Did the heading get renamed?",
+    );
+}
+```
+
+- [ ] **Step 5: Run the new test to confirm it passes**
+
+Run:
 
 ```bash
-git add docs/audit-log.md
+cargo test -p rimap-audit --test docs_anchor
+```
+
+Expected: PASS (the heading was inserted in Step 2). If it fails with "missing heading", re-check Step 2 — the heading text must be exactly `## Running multiple MCP clients` on its own line, surrounded by blank lines.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add docs/audit-log.md crates/rimap-audit/tests/docs_anchor.rs \
+  docs/superpowers/plans/2026-05-02-multi-client-stdio.md
 git commit -m "$(cat <<'EOF'
 docs(audit-log): add "Running multiple MCP clients" section
 
@@ -328,6 +377,10 @@ Document the supported multi-client configuration patterns
 config snippets for Claude Code (~/.claude.json + project-scope
 .mcp.json) and Codex. Anchor target for the rewritten
 AuditError::Locked message.
+
+Adds a symmetric `crates/rimap-audit/tests/docs_anchor.rs`
+integration test that fails if the new heading is renamed without
+a coordinated update to AuditError::Locked. Plan updated in lockstep.
 EOF
 )"
 ```
@@ -529,20 +582,25 @@ Expected: clean.
 Confirm all cross-links resolve to a defined anchor:
 
 ```bash
-echo "--- references ---"
+echo "--- slugified references ---"
 grep -rn "running-multiple-mcp-clients" \
-  README.md docs/ crates/rimap-audit/src/record/error.rs
-echo "--- definition ---"
+  README.md docs/ crates/rimap-audit/
+echo "--- heading definition ---"
 grep -n "^## Running multiple MCP clients" docs/audit-log.md
+echo "--- symmetric test heading literal ---"
+grep -n "Running multiple MCP clients" crates/rimap-audit/tests/docs_anchor.rs
 ```
 
-Expected references (5 total, exactly):
+Expected slugified references (6 total, exactly):
 - `README.md` — 1 hit (Task 5 troubleshooting bullet)
 - `docs/quickstart-gmail.md` — 1 hit (Task 3)
 - `docs/quickstart-proton-bridge.md` — 1 hit (Task 4)
 - `crates/rimap-audit/src/record/error.rs` — 2 hits (the `#[error]` string literal in Task 1 Step 4, and the test assertion in Task 1 Step 2)
+- `crates/rimap-audit/tests/docs_anchor.rs` — 1 hit (the doc comment naming the cross-link)
 
-Expected definition: 1 hit on the heading line in `docs/audit-log.md` (Task 2).
+Expected heading definition: 1 hit on the heading line in `docs/audit-log.md` (Task 2).
+
+Expected symmetric test heading literal: at least 2 hits in `crates/rimap-audit/tests/docs_anchor.rs` (the assertion's expected substring and its failure message).
 
 If any reference appears without a matching definition (or vice versa), an anchor name has drifted — fix before proceeding.
 
