@@ -162,12 +162,18 @@ mod tests {
     #[test]
     fn resolve_dest_dir_accepts_valid_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let sub = tmp.path().join("sub");
+        // Canonicalize once so the assertion below sees the same prefix
+        // form `resolve_dest_dir` produces internally. On macOS,
+        // `tempfile::tempdir()` returns `/var/folders/.../T/...` which
+        // canonicalize()s to `/private/var/folders/.../T/...`; without
+        // this, `result.starts_with(allowed)` compares the two forms
+        // and fails despite the path being legitimately inside.
+        let allowed = tmp.path().canonicalize().unwrap();
+        let sub = allowed.join("sub");
         std::fs::create_dir_all(&sub).unwrap();
-        let allowed = tmp.path();
-        let fallback = tmp.path();
-        let result = resolve_dest_dir(Some(sub.to_str().unwrap()), allowed, fallback).unwrap();
-        assert!(result.starts_with(allowed));
+        let fallback = allowed.clone();
+        let result = resolve_dest_dir(Some(sub.to_str().unwrap()), &allowed, &fallback).unwrap();
+        assert!(result.starts_with(&allowed));
     }
 
     #[test]
