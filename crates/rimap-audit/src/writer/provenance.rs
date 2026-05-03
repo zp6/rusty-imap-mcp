@@ -18,6 +18,7 @@
 use std::collections::VecDeque;
 
 use time::OffsetDateTime;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Maximum byte length of a Message-ID stored in the buffer. Values longer
 /// than this are truncated with a `…[truncated]` suffix. The cap is RFC 5322
@@ -69,12 +70,7 @@ impl ProvenanceBuffer {
 
         let mut message_id = message_id.into();
         if message_id.len() > MAX_MESSAGE_ID_LEN {
-            // Truncate at a char boundary, not mid-codepoint.
-            let mut end = MAX_MESSAGE_ID_LEN;
-            while !message_id.is_char_boundary(end) {
-                end -= 1;
-            }
-            message_id.truncate(end);
+            truncate_at_grapheme_boundary(&mut message_id, MAX_MESSAGE_ID_LEN);
             message_id.push_str("\u{2026}[truncated]");
         }
 
@@ -130,6 +126,27 @@ impl ProvenanceBuffer {
             }
         }
     }
+}
+
+/// Truncate `s` in-place to the largest prefix that ends at a grapheme
+/// cluster boundary and has byte length <= `max_bytes`.
+///
+/// This is a module-local copy of `rimap_content::unicode::truncate_graphemes_in_place`
+/// (the canonical reference). It is duplicated here to avoid pulling the
+/// full `rimap-content` API surface (mail-parser, scraper, ammonia, idna)
+/// into `rimap-audit` for one helper.
+fn truncate_at_grapheme_boundary(s: &mut String, max_bytes: usize) {
+    if s.len() <= max_bytes {
+        return;
+    }
+    let mut cut = 0;
+    for (idx, cluster) in s.grapheme_indices(true) {
+        if idx + cluster.len() > max_bytes {
+            break;
+        }
+        cut = idx + cluster.len();
+    }
+    s.truncate(cut);
 }
 
 #[cfg(test)]
@@ -197,6 +214,34 @@ mod tests {
         let stored = &snap[0];
         assert!(stored.ends_with("\u{2026}[truncated]"));
         assert!(stored.len() < 2000);
+    }
+
+    #[test]
+    fn oversize_multibyte_message_id_truncates_at_grapheme_boundary() {
+        // Regression: a Message-ID that exceeds MAX_MESSAGE_ID_LEN with
+        // a multi-byte grapheme cluster straddling the cap byte must
+        // not panic and must yield a valid UTF-8 prefix + the
+        // "…[truncated]" suffix.
+        //
+        // Construction: 997 ASCII 'a' + 'é' (2 bytes) + 100 'b'.
+        // MAX_MESSAGE_ID_LEN is 998, so the cap lands inside 'é'; the
+        // cluster must be dropped entirely, leaving exactly 997 'a's
+        // plus the suffix.
+        let mut b = ProvenanceBuffer::new(60);
+        let mut huge = "a".repeat(997);
+        huge.push('é');
+        huge.push_str(&"b".repeat(100));
+        b.record_at(huge, at(0));
+        let snap = b.snapshot_at(at(1));
+        assert_eq!(snap.len(), 1);
+        let stored = &snap[0];
+        assert!(
+            stored.ends_with("\u{2026}[truncated]"),
+            "missing truncation suffix in {stored:?}"
+        );
+        let suffix = "\u{2026}[truncated]";
+        let prefix_len = stored.len() - suffix.len();
+        assert_eq!(prefix_len, 997, "expected 997-byte prefix in {stored:?}");
     }
 
     #[test]
