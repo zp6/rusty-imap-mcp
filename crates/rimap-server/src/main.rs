@@ -23,7 +23,7 @@ use rimap_config::credential::{CredentialStore, KeyringStore};
 use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
 use rimap_config::validate::ValidatedAccountConfig;
-use rimap_imap::{Connection, ConnectionConfig};
+use rimap_imap::Connection;
 use secrecy::ExposeSecret;
 
 use crate::cli::{AuditAction, Cli, Command};
@@ -95,7 +95,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     if cli.dry_run {
         let path = resolve_cli_config_path(&cli)?;
         let mut stdout = std::io::stdout().lock();
-        return cli::dry_run::run(&path, &mut stdout);
+        let rt = tokio::runtime::Runtime::new().context("creating tokio runtime")?;
+        return rt.block_on(cli::dry_run::run(&path, &mut stdout));
     }
 
     // Server mode: load config, build subsystems, run MCP transport.
@@ -182,7 +183,7 @@ async fn build_registry(
     let auth_sink: Arc<dyn rimap_core::auth_sink::AuthEventSink> = Arc::new(audit.clone());
     for (id, acfg) in &multi.accounts {
         let guard = build_account_guard(acfg).context("building dispatch guard")?;
-        let conn_cfg = build_account_connection(id, acfg);
+        let conn_cfg = registry::build_account_connection(id, acfg);
         let resolver: Arc<dyn rimap_core::CredentialResolver> =
             Arc::new(rimap_config::credential::KeyringCredentialResolver::new(
                 credentials.clone(),
@@ -270,34 +271,6 @@ fn build_account_guard(
     )
     .map_err(|e| anyhow::anyhow!("governor: {e}"))?;
     Ok(DispatchGuard::new(matrix, breaker, governor))
-}
-
-/// Map a per-account config to a `ConnectionConfig`.
-fn build_account_connection(
-    id: &rimap_core::account::AccountId,
-    acfg: &ValidatedAccountConfig,
-) -> ConnectionConfig {
-    let account = if id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
-        None
-    } else {
-        Some(id.as_str().to_string())
-    };
-    ConnectionConfig {
-        account,
-        account_id: id.clone(),
-        host: acfg.imap.host.clone(),
-        port: acfg.imap.port,
-        encryption: match acfg.imap.encryption {
-            rimap_config::model::ImapEncryption::Tls => rimap_imap::ImapEncryption::Tls,
-            rimap_config::model::ImapEncryption::Starttls => rimap_imap::ImapEncryption::Starttls,
-        },
-        username: acfg.imap.username.clone(),
-        pinned_fingerprint: acfg.tls_fingerprint,
-        connect_timeout: Duration::from_secs(u64::from(acfg.imap.connect_timeout_seconds)),
-        command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
-        max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
-        max_append_bytes: acfg.limits.max_append_bytes,
-    }
 }
 
 /// Resolve the attachment download directory from a multi-account config.

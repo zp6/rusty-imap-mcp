@@ -102,7 +102,7 @@ single-account format).
 | `port` | u16 | (required) | IMAP server port (993 for implicit TLS, 143 or 1143 for STARTTLS) |
 | `encryption` | string | `"tls"` | `"tls"` (implicit TLS/IMAPS) or `"starttls"` (STARTTLS upgrade). See below. |
 | `username` | string | (required) | IMAP login identity |
-| `tls_fingerprint_sha256` | string | (none) | Pinned TLS certificate SHA-256 fingerprint. Hex, colons optional. Required for self-signed certs (e.g. Proton Bridge). Omit to use the system trust store. |
+| `tls_fingerprint_sha256` | string | (none) | Pinned TLS certificate SHA-256 fingerprint. Hex, colons optional. Required for self-signed certs (e.g. Proton Bridge). Omit to use the system trust store. Run `--dry-run` to print the observed fingerprint for copy-paste pinning. |
 | `command_timeout_seconds` | u32 | 30 | Per-command timeout for IMAP operations |
 | `connect_timeout_seconds` | u32 | 10 | TCP + TLS handshake + greeting + CAPABILITY probe deadline |
 

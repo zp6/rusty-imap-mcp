@@ -8,6 +8,7 @@ pub(crate) mod auth;
 pub mod connection;
 pub mod error;
 pub mod ops;
+pub mod preflight;
 pub mod special_use;
 pub mod time;
 pub mod tls;
