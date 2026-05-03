@@ -187,7 +187,8 @@ mod tests {
 
     /// Build a `TempDir` whose mode is 0o700. The audit-writer requires tight
     /// modes after #147 and `tempfile::TempDir::new()` may inherit the system
-    /// `umask` (often 0755).
+    /// `umask` (often 0755). Unix-only because `PermissionsExt::from_mode` is.
+    #[cfg(unix)]
     fn tight_tempdir() -> TempDir {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = TempDir::new().unwrap();
@@ -470,6 +471,7 @@ allowed_base_dir = "{base}"
         config_path
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn dry_run_single_account_omits_account_header() {
         // With exactly one account the "Account: <name>" header should be
@@ -485,6 +487,7 @@ allowed_base_dir = "{base}"
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn dry_run_multi_account_prints_account_headers() {
         // With two accounts each section must be prefixed with
