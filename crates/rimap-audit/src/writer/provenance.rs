@@ -21,13 +21,17 @@ use time::OffsetDateTime;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Maximum byte length of a Message-ID stored in the buffer. Values longer
-/// than this are truncated with a `…[truncated]` suffix. The cap is RFC 5322
-/// line length.
+/// than this are truncated with [`TRUNCATED_SUFFIX`] appended. The cap is
+/// RFC 5322 line length.
 const MAX_MESSAGE_ID_LEN: usize = 998;
 
 /// Hard cap on entry count. When the buffer is at capacity, the oldest entry
 /// is evicted regardless of the time window.
 const MAX_BUFFER_ENTRIES: usize = 1024;
+
+/// Marker appended to a Message-ID whose original byte length exceeded
+/// [`MAX_MESSAGE_ID_LEN`]. Tests assert against this exact string.
+const TRUNCATED_SUFFIX: &str = "\u{2026}[truncated]";
 
 /// Ring buffer of observed Message-IDs with timestamps. Not thread-safe on
 /// its own; the caller holds a `Mutex<ProvenanceBuffer>` if needed.
@@ -71,7 +75,7 @@ impl ProvenanceBuffer {
         let mut message_id = message_id.into();
         if message_id.len() > MAX_MESSAGE_ID_LEN {
             truncate_at_grapheme_boundary(&mut message_id, MAX_MESSAGE_ID_LEN);
-            message_id.push_str("\u{2026}[truncated]");
+            message_id.push_str(TRUNCATED_SUFFIX);
         }
 
         if self.entries.len() >= MAX_BUFFER_ENTRIES {
@@ -154,6 +158,7 @@ fn truncate_at_grapheme_boundary(s: &mut String, max_bytes: usize) {
 mod tests {
     use time::OffsetDateTime;
 
+    use super::TRUNCATED_SUFFIX;
     use crate::writer::provenance::ProvenanceBuffer;
 
     fn at(secs: i64) -> OffsetDateTime {
@@ -212,7 +217,7 @@ mod tests {
         let snap = b.snapshot_at(at(1));
         assert_eq!(snap.len(), 1);
         let stored = &snap[0];
-        assert!(stored.ends_with("\u{2026}[truncated]"));
+        assert!(stored.ends_with(TRUNCATED_SUFFIX));
         assert!(stored.len() < 2000);
     }
 
@@ -236,11 +241,10 @@ mod tests {
         assert_eq!(snap.len(), 1);
         let stored = &snap[0];
         assert!(
-            stored.ends_with("\u{2026}[truncated]"),
+            stored.ends_with(TRUNCATED_SUFFIX),
             "missing truncation suffix in {stored:?}"
         );
-        let suffix = "\u{2026}[truncated]";
-        let prefix_len = stored.len() - suffix.len();
+        let prefix_len = stored.len() - TRUNCATED_SUFFIX.len();
         assert_eq!(prefix_len, 997, "expected 997-byte prefix in {stored:?}");
     }
 

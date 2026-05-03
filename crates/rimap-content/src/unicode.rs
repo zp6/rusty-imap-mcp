@@ -153,7 +153,10 @@ pub fn normalize_line_endings(input: &str) -> String {
 /// Find the largest byte offset `cut <= max_bytes` such that
 /// `input[..cut]` ends at a grapheme-cluster boundary. Returns
 /// `input.len()` when `input` already fits.
-fn grapheme_cut(input: &str, max_bytes: usize) -> usize {
+///
+/// Exposed `pub(crate)` so callers that already hold a `&str` can
+/// slice `&input[..cut]` without allocating (see `lookalike::scan_body_urls`).
+pub(crate) fn grapheme_cut(input: &str, max_bytes: usize) -> usize {
     if input.len() <= max_bytes {
         return input.len();
     }

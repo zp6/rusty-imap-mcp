@@ -179,9 +179,10 @@ fn scan_anchor_hrefs(hrefs: &[String], out: &mut Vec<SecurityWarning>) {
 /// Pass 3: linkify the first `MAX_LINKIFY_SCAN_BYTES` of `body_text`
 /// (cut at a grapheme-cluster boundary) and classify each URL.
 fn scan_body_urls(body_text: &str, out: &mut Vec<SecurityWarning>) {
-    let scan_slice = crate::unicode::truncate_graphemes(body_text, MAX_LINKIFY_SCAN_BYTES);
+    let cut = crate::unicode::grapheme_cut(body_text, MAX_LINKIFY_SCAN_BYTES);
+    let scan_slice = &body_text[..cut];
     let finder = LinkFinder::new();
-    for link in finder.links(&scan_slice) {
+    for link in finder.links(scan_slice) {
         if link.kind() != &LinkKind::Url {
             continue;
         }
