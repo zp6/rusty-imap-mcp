@@ -30,8 +30,9 @@ pub enum AuditError {
     },
     /// The audit file is already locked by another process.
     #[error(
-        "audit file `{path}` is already locked by another rusty-imap-mcp process; \
-         only one instance may run against a given audit path"
+        "audit file `{path}` is already locked by another rusty-imap-mcp process. \
+         Each MCP client must use a distinct `[audit].path`; \
+         see docs/audit-log.md#running-multiple-mcp-clients"
     )]
     Locked {
         /// Path that could not be locked.
@@ -154,8 +155,27 @@ mod tests {
             path: PathBuf::from("/tmp/a.jsonl"),
         };
         let msg = err.to_string();
-        assert!(msg.contains("/tmp/a.jsonl"));
-        assert!(msg.contains("another rusty-imap-mcp process"));
+        assert!(msg.contains("/tmp/a.jsonl"), "got: {msg}");
+        assert!(msg.contains("another rusty-imap-mcp process"), "got: {msg}");
+        assert!(
+            msg.contains("distinct `[audit].path`"),
+            "message must name the resolution; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn locked_message_includes_docs_anchor() {
+        // The error string is the canonical entry-point users see when the
+        // lock collides. It must point at the docs anchor so the cross-link
+        // does not silently rot when docs/audit-log.md is edited.
+        let err = AuditError::Locked {
+            path: PathBuf::from("/tmp/a.jsonl"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("docs/audit-log.md#running-multiple-mcp-clients"),
+            "got: {msg}"
+        );
     }
 
     #[test]

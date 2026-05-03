@@ -161,6 +161,14 @@ Binaries are published for five targets on each
 - [Audit log format](docs/audit-log.md)
 - [Full documentation index](docs/INDEX.md)
 
+## Troubleshooting
+
+- **`rusty-imap-mcp` exits at startup with `audit file ... is already locked`** —
+  another `rusty-imap-mcp` process holds the audit lock. Each MCP
+  client must use a distinct `[audit].path`; see
+  [Running multiple MCP clients](docs/audit-log.md#running-multiple-mcp-clients)
+  for the configuration pattern.
+
 ## License
 
 Dual-licensed under MIT OR Apache-2.0. See `LICENSE-MIT` and

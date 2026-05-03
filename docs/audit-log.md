@@ -123,6 +123,130 @@ Config-related event. Declared for future use.
   default. Set `audit.fail_open = true` to suppress write failures
   and continue (not recommended -- audit records will be lost).
 
+## Running multiple MCP clients
+
+`rusty-imap-mcp` holds an exclusive lock on its configured `[audit].path`
+for the lifetime of the process. A second process against the same path
+fails immediately with `ERR_CONFIG`. The lock guards append atomicity,
+the per-process `seq` allocator, the inode tamper chain, and the
+in-memory provenance ring — all forensic invariants that depend on a
+single writer.
+
+To run multiple MCP clients on the same machine — for example, two
+Claude Code windows on different projects, or Claude Code alongside
+Codex — give each MCP client its own `rusty-imap-mcp` config file with
+a distinct `[audit].path`.
+
+### Supported scenarios
+
+#### Single MCP client
+
+The default. Nothing to configure beyond the standard setup. One
+`[audit].path`, one `rusty-imap-mcp` PID, one audit file.
+
+#### Cross-application: Claude Code + Codex
+
+Each host application has its own MCP config; point each at a
+different `rusty-imap-mcp` config file with its own audit path.
+
+`~/.claude.json` (Claude Code, user-scope):
+
+```json
+{
+  "mcpServers": {
+    "rusty-imap": {
+      "command": "/usr/local/bin/rusty-imap-mcp",
+      "args": ["--config", "/home/dave/.config/rusty-imap-mcp/claude.toml"]
+    }
+  }
+}
+```
+
+`~/.codex/config.toml` (Codex):
+
+```toml
+[mcp_servers.rusty-imap]
+command = "/usr/local/bin/rusty-imap-mcp"
+args = ["--config", "/home/dave/.config/rusty-imap-mcp/codex.toml"]
+```
+
+`~/.config/rusty-imap-mcp/claude.toml`:
+
+```toml
+[audit]
+path = "~/.local/state/rusty-imap-mcp/audit-claude.jsonl"
+# ... rest of config identical between the two
+```
+
+`~/.config/rusty-imap-mcp/codex.toml`:
+
+```toml
+[audit]
+path = "~/.local/state/rusty-imap-mcp/audit-codex.jsonl"
+# ...
+```
+
+#### Cross-project: per-project `.mcp.json`
+
+For users whose MCP usage is tied to a specific repository, register
+`rusty-imap-mcp` at project scope rather than user scope. Each project
+gets its own `.mcp.json` and its own audit path.
+
+```bash
+cd /home/dave/src/work-project
+claude mcp add --scope project rusty-imap /usr/local/bin/rusty-imap-mcp \
+  -- --config /home/dave/.config/rusty-imap-mcp/work.toml
+```
+
+This writes `/home/dave/src/work-project/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rusty-imap": {
+      "command": "/usr/local/bin/rusty-imap-mcp",
+      "args": ["--config", "/home/dave/.config/rusty-imap-mcp/work.toml"]
+    }
+  }
+}
+```
+
+A second project gets the same treatment with its own paths. Each
+Claude Code window opened in a project loads that project's
+`.mcp.json` and spawns its own `rusty-imap-mcp` child against that
+project's audit file.
+
+### Unsupported: same MCP-client config across multiple windows
+
+If you have one `rusty-imap-mcp` entry in `~/.claude.json` (user
+scope) and open two Claude Code windows, both windows spawn their own
+child against the same audit path. The second child fails to acquire
+the lock and exits with `ERR_CONFIG`.
+
+Two options:
+
+1. Move the entry to project scope (`.mcp.json`) so each project gets
+   its own audit path, as in the cross-project example above.
+2. Accept that one window will lose its `rusty-imap-mcp` MCP server.
+   The other features of that Claude Code window are unaffected; only
+   the rusty-imap-mcp tools are unavailable in the losing window
+   until the holding window exits.
+
+A future database-backed audit store will remove this constraint by
+sharing the audit log across processes; until then, distinct
+`[audit].path` values per concurrent MCP client are the supported
+pattern.
+
+### Per-account rate limits and circuit breakers
+
+Each `rusty-imap-mcp` process maintains its own per-account
+`Governor` (rate limiter) and `CircuitBreaker`. With multiple
+concurrent MCP clients on the same IMAP account, each client's
+budget is independent. Operators who need a single per-account
+ceiling enforced across all local clients should track the future
+database-backed audit store, which will share this state by
+construction.
+
 ## Rotation
 
 When the active file exceeds `audit.rotate_bytes` (default 10 MiB),
