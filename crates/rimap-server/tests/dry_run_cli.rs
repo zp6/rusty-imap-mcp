@@ -44,7 +44,8 @@ fn dry_run_exits_zero_and_prints_matrix() {
         .success()
         .stdout(predicate::str::contains("readonly"))
         .stdout(predicate::str::contains("[ok ] list_folders"))
-        .stdout(predicate::str::contains("[deny] create_draft"));
+        .stdout(predicate::str::contains("[deny] create_draft"))
+        .stdout(predicate::str::contains("Capabilities"));
 }
 
 #[test]

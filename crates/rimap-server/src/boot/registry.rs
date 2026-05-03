@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
 use governor::NotUntil;
@@ -15,10 +16,11 @@ use governor::{Quota, RateLimiter};
 use rimap_authz::breaker::SystemClock;
 use rimap_authz::rate_limit::{DefaultInstant, retry_after_ms};
 use rimap_authz::{DispatchGuard, FolderGuard};
+use rimap_config::validate::ValidatedAccountConfig;
 use rimap_core::RimapError;
 use rimap_core::account::AccountId;
 use rimap_core::error::ErrorCode;
-use rimap_imap::{Connection, SpecialUseMap};
+use rimap_imap::{Connection, ConnectionConfig, SpecialUseMap};
 use rimap_smtp::SmtpClient;
 
 /// In-memory, unkeyed governor limiter used for infrastructure tools.
@@ -209,6 +211,35 @@ impl AccountRegistry {
     fn find_by_name(&self, name: &str) -> Option<&AccountState> {
         let id = AccountId::new(name).ok()?;
         self.accounts.get(&id)
+    }
+}
+
+/// Map a per-account config to a `ConnectionConfig`.
+#[must_use]
+pub fn build_account_connection(
+    id: &rimap_core::account::AccountId,
+    acfg: &ValidatedAccountConfig,
+) -> ConnectionConfig {
+    let account = if id.as_str() == rimap_core::account::DEFAULT_ACCOUNT_NAME {
+        None
+    } else {
+        Some(id.as_str().to_string())
+    };
+    ConnectionConfig {
+        account,
+        account_id: id.clone(),
+        host: acfg.imap.host.clone(),
+        port: acfg.imap.port,
+        encryption: match acfg.imap.encryption {
+            rimap_config::model::ImapEncryption::Tls => rimap_imap::ImapEncryption::Tls,
+            rimap_config::model::ImapEncryption::Starttls => rimap_imap::ImapEncryption::Starttls,
+        },
+        username: acfg.imap.username.clone(),
+        pinned_fingerprint: acfg.tls_fingerprint,
+        connect_timeout: Duration::from_secs(u64::from(acfg.imap.connect_timeout_seconds)),
+        command_timeout: Duration::from_secs(u64::from(acfg.imap.command_timeout_seconds)),
+        max_fetch_body_bytes: acfg.limits.max_fetch_body_bytes,
+        max_append_bytes: acfg.limits.max_append_bytes,
     }
 }
 
