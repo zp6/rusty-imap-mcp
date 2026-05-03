@@ -6,8 +6,6 @@
 //! routes every extracted string through [`crate::unicode::sanitize`]
 //! so downstream consumers see only Unicode-clean text.
 
-use mail_parser::MessageParser;
-
 use crate::error::ContentError;
 use crate::lookalike;
 use crate::output::{Content, SecurityWarning, Untrusted};
@@ -18,6 +16,7 @@ mod filename;
 mod headers;
 mod meta;
 mod mime_scrub;
+pub(crate) mod safe_parser;
 mod sniff;
 
 use crate::parse::bodies::extract_bodies;
@@ -71,12 +70,11 @@ pub fn parse_message(raw: &[u8]) -> Result<Content, ContentError> {
     let mut warnings: Vec<SecurityWarning> = Vec::new();
     let scrubbed = scrub_header_smuggling(raw, &mut warnings);
 
-    let message =
-        MessageParser::default()
-            .parse(&scrubbed)
-            .ok_or_else(|| ContentError::Malformed {
-                reason: "mail-parser rejected byte stream".to_string(),
-            })?;
+    let message = safe_parser::safe_parse(&scrubbed)
+        .map_err(|_| ContentError::ParserPanic)?
+        .ok_or_else(|| ContentError::Malformed {
+            reason: "mail-parser rejected byte stream".to_string(),
+        })?;
 
     enforce_header_count(&message, &mut warnings)?;
 
