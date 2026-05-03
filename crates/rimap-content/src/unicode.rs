@@ -150,25 +150,45 @@ pub fn normalize_line_endings(input: &str) -> String {
     crlf_collapsed.replace('\r', "\n")
 }
 
+/// Find the largest byte offset `cut <= max_bytes` such that
+/// `input[..cut]` ends at a grapheme-cluster boundary. Returns
+/// `input.len()` when `input` already fits.
+///
+/// Exposed `pub(crate)` so callers that already hold a `&str` can
+/// slice `&input[..cut]` without allocating (see `lookalike::scan_body_urls`).
+pub(crate) fn grapheme_cut(input: &str, max_bytes: usize) -> usize {
+    if input.len() <= max_bytes {
+        return input.len();
+    }
+    let mut cut = 0;
+    for (idx, cluster) in input.grapheme_indices(true) {
+        if idx + cluster.len() > max_bytes {
+            break;
+        }
+        cut = idx + cluster.len();
+    }
+    cut
+}
+
 /// Truncate `input` to at most `max_bytes` bytes, cutting at a
 /// grapheme-cluster boundary. Returns an owned `String` that is
 /// always a prefix of `input` (byte-wise).
 ///
 /// If `input` is already ≤ `max_bytes`, returns a clone. If
-/// `max_bytes == 0`, returns an empty string.
+/// `max_bytes == 0`, returns an empty string. Allocates; prefer
+/// [`truncate_graphemes_in_place`] when you already own the string.
 #[must_use]
 pub fn truncate_graphemes(input: &str, max_bytes: usize) -> String {
-    if input.len() <= max_bytes {
-        return input.to_string();
-    }
-    let mut out = String::with_capacity(max_bytes);
-    for cluster in input.graphemes(true) {
-        if out.len() + cluster.len() > max_bytes {
-            break;
-        }
-        out.push_str(cluster);
-    }
-    out
+    let cut = grapheme_cut(input, max_bytes);
+    input[..cut].to_string()
+}
+
+/// Truncate `s` in-place to the largest prefix that ends at a
+/// grapheme-cluster boundary and has byte length ≤ `max_bytes`.
+/// No allocation: only `String::truncate` is called.
+pub fn truncate_graphemes_in_place(s: &mut String, max_bytes: usize) {
+    let cut = grapheme_cut(s, max_bytes);
+    s.truncate(cut);
 }
 
 /// Run the full sanitization pipeline on `bytes`: decode with the
@@ -386,6 +406,41 @@ mod tests {
     #[test]
     fn truncate_zero_max_bytes_returns_empty() {
         assert_eq!(truncate_graphemes("hello", 0), "");
+    }
+
+    #[test]
+    fn truncate_keeps_full_multibyte_cluster_when_exactly_fits() {
+        // Regression: "中" is 3 bytes in UTF-8. "ab中cd" with max=5
+        // must yield "ab中" — the trailing cluster ends exactly at
+        // byte 5, a grapheme boundary that fits within the cap.
+        // Guards against a `> vs >=` mutation on the cluster-fits
+        // check inside `truncate_graphemes`.
+        assert_eq!(truncate_graphemes("ab中cd", 5), "ab中");
+    }
+
+    #[test]
+    fn truncate_in_place_matches_owned_variant() {
+        // Cross-check the in-place and owned helpers on inputs that
+        // exercise each branch of `grapheme_cut`: under-limit, exact
+        // limit, ASCII cut, mid-cluster drop, exact-fit interior cut,
+        // and zero cap.
+        let cases: &[(&str, usize)] = &[
+            ("hello", 10),      // under-limit passthrough
+            ("hello", 5),       // exact-limit whole string
+            ("hello world", 5), // ASCII cut
+            ("ae\u{0301}b", 2), // grapheme cluster dropped
+            ("ab中cd", 5),      // multi-byte cluster fits exactly
+            ("hello", 0),       // zero cap
+        ];
+        for (input, max) in cases {
+            let mut owned = (*input).to_string();
+            truncate_graphemes_in_place(&mut owned, *max);
+            assert_eq!(
+                owned,
+                truncate_graphemes(input, *max),
+                "in-place vs owned diverged on ({input:?}, {max})",
+            );
+        }
     }
 
     #[test]
