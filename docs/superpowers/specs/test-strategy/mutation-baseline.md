@@ -20,9 +20,19 @@ adding a test, not annotated.
 **Last refresh:** 2026-05-04.
 **Surviving mutants in non-`bin/` code:** 14.
 
-Run summary (652 mutants total): 563 caught, 19 missed (14 outside
-`src/bin/`, 5 inside), 6 timeout, 64 unviable. Every survivor
-outside `src/bin/` is a mathematically equivalent mutation
+Run summary (652 mutants total, 2026-05-04 full single-threaded run
+via `just mutants --package rimap-content`): 566 caught, 16 missed, 6
+timeout, 64 unviable in 40 minutes wall clock. Three of the 19
+known-equivalent rows below report "caught" in this run only because
+a flaky callsite-cache interaction in
+`parse::safe_parser::tests::log_parser_panic_emits_structured_tracing_event`
+([#239](https://github.com/randomparity/rusty-imap-mcp/issues/239))
+fails the per-mutant runs for `lookalike.rs:220` (`< with <=`),
+`lookalike.rs:228` (`+ with *`), and `bin/epvme_runner.rs:189`
+(`"xyzzy".into()`); the mutations themselves remain genuinely
+mathematically equivalent. Counting all 19 the deterministic
+survivor floor is 14 outside `src/bin/` and 5 inside. Every
+non-`bin/` survivor is a mathematically equivalent mutation
 documented in the table below; the 5 `src/bin/epvme_runner.rs`
 survivors are documented in the `### bin/epvme_runner.rs` subsection
 below (issue #193 took the original 16 to 5 by killing 11 with tests
@@ -74,8 +84,8 @@ summary lines, diagnostic-only counter ordering) is annotated as
 
 | File:line | Mutation | Reason kept | Annotation site |
 |---|---|---|---|
-| `bin/epvme_runner.rs:188` | `replace usage -> String with String::new()` | usage() output is consumed only as stderr text; no test or production caller asserts its content. Mutation leaves exit codes and JSON schema unchanged. | `bin/epvme_runner.rs:185` |
-| `bin/epvme_runner.rs:188` | `replace usage -> String with "xyzzy".into()` | Same rationale as the String::new mutation — stderr-only diagnostic text. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:189` | `replace usage -> String with String::new()` | usage() output is consumed only as stderr text; no test or production caller asserts its content. Mutation leaves exit codes and JSON schema unchanged. | `bin/epvme_runner.rs:185` |
+| `bin/epvme_runner.rs:189` | `replace usage -> String with "xyzzy".into()` | Same rationale as the String::new mutation — stderr-only diagnostic text. | `bin/epvme_runner.rs:185` |
 | `bin/epvme_runner.rs:381` | `delete ! in print_summary` (`if !summary.parse_error_counts.is_empty()` guard) | Guard inversion would print "Parse error kinds:" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:377` |
 | `bin/epvme_runner.rs:392` | `delete ! in print_summary` (`if !summary.warning_counts.is_empty()` guard) | Guard inversion would print "Warning counts:" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:388` |
 | `bin/epvme_runner.rs:403` | `delete ! in print_summary` (`if !summary.recorded_failures.is_empty()` guard) | Guard inversion would print "Recorded failures (showing up to 50):" header with zero rows; stdout phrasing only, JSON schema unaffected. | `bin/epvme_runner.rs:399` |
