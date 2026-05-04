@@ -65,6 +65,12 @@ fn parse_translate_px(val: &str) -> Option<f64> {
         let trimmed = part.trim();
         if let Some(px_val) = parse_px(trimmed) {
             match min {
+                // cargo-mutants: known-equivalent — `<=` here is observably
+                // identical to `<`. The two predicates differ only when
+                // `px_val == current`, in which case both arms set
+                // `min = Some(px_val)` to a value already equal to the
+                // current minimum. The `Some(_)` arm below covers both
+                // "not new minimum" cases identically.
                 Some(current) if px_val < current => min = Some(px_val),
                 None => min = Some(px_val),
                 Some(_) => {}
@@ -153,4 +159,83 @@ pub(super) fn classify_inline_style(style: &str) -> Option<HiddenMethod> {
         return Some(HiddenMethod::ColorMatch);
     }
     None
+}
+
+#[cfg(test)]
+mod style_parse_tests {
+    use super::{HiddenMethod, classify_inline_style, parse_translate_px};
+
+    #[test]
+    fn parse_inline_style_drops_empty_values() {
+        // Kills `|| with &&` on the prop/val empty-skip guard. Under `&&`,
+        // declarations with an empty value would survive into the pairs
+        // vector, and `record` would store them in StyleHints. Pairing
+        // empty `color:` and `background-color:` would then trip
+        // `is_color_match` (Some("") == Some("")) and the classifier
+        // would falsely return ColorMatch.
+        assert_eq!(
+            classify_inline_style("color:; background-color:"),
+            None,
+            "empty-value declarations must not feed StyleHints",
+        );
+    }
+
+    #[test]
+    fn parse_translate_px_picks_most_negative_offset() {
+        // Kills both `< with false` and `< with ==` mutations on the
+        // match guard `px_val < current`. With `false`, the guard
+        // never fires after the first Some-match — first-wins instead
+        // of min-wins. With `==`, the guard only fires on equal values,
+        // which is the same first-wins outcome for distinct values.
+        let out = parse_translate_px("(-50px, -200px)");
+        assert_eq!(
+            out,
+            Some(-200.0),
+            "expected the more-negative offset to win, got {out:?}",
+        );
+    }
+
+    /// Build an inline style of `position: absolute; <prop>: <val>` and
+    /// return the classifier's result.
+    fn classify_with_positioned(prop: &str, val: &str) -> Option<HiddenMethod> {
+        let style = format!("position: absolute; {prop}: {val}");
+        classify_inline_style(&style)
+    }
+
+    #[test]
+    fn is_offscreen_left_does_not_fire_at_minus_100px() {
+        // Kills `< with <=` at line 110:55 (left_px boundary). With `<=`,
+        // left = -100px is treated as off-screen (returns OffScreen);
+        // the original `<` keeps it on-screen.
+        let result = classify_with_positioned("left", "-100px");
+        assert_ne!(result, Some(HiddenMethod::OffScreen));
+    }
+
+    #[test]
+    fn is_offscreen_top_does_not_fire_at_minus_100px() {
+        // Kills `< with <=` at line 111:53 (top_px boundary).
+        let result = classify_with_positioned("top", "-100px");
+        assert_ne!(result, Some(HiddenMethod::OffScreen));
+    }
+
+    #[test]
+    fn is_offscreen_top_threshold_is_negative_one_hundred_px() {
+        // Kills `delete -` at line 111:55 (the threshold's negative sign
+        // on `-100.0`). With the `-` deleted, the threshold becomes
+        // +100, and any negative top — including a clearly-on-screen
+        // -50 — is reported as OffScreen.
+        let result = classify_with_positioned("top", "-50px");
+        assert_ne!(
+            result,
+            Some(HiddenMethod::OffScreen),
+            "top: -50px must not classify as off-screen under the -100 threshold",
+        );
+    }
+
+    #[test]
+    fn is_offscreen_transform_does_not_fire_at_minus_100px() {
+        // Kills `< with <=` at line 112:72 (transform_offset_px boundary).
+        let result = classify_with_positioned("transform", "translate(-100px)");
+        assert_ne!(result, Some(HiddenMethod::OffScreen));
+    }
 }

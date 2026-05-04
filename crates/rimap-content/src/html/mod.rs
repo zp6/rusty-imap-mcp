@@ -203,6 +203,84 @@ mod tests {
     }
 
     #[test]
+    fn process_accepts_input_at_max_html_bytes() {
+        // Kills `> with >=` on `raw.len() > MAX_HTML_BYTES`. With `>=`,
+        // a 1 MiB body errors immediately with html_body kind; the
+        // original passes the check and proceeds (may emit body
+        // truncation warnings later, but kind != html_body).
+        let body = vec![b'a'; MAX_HTML_BYTES];
+        let result = process(&body, None);
+        match result {
+            Ok(_) => (),
+            Err(ContentError::LimitExceeded { kind, .. }) => {
+                assert_ne!(
+                    kind, HTML_BODY_LIMIT_KIND,
+                    "must not error with html_body kind at exactly MAX_HTML_BYTES",
+                );
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn process_emits_mismatch_summary_warning_when_overflow_positive() {
+        // Kills `> with <` on `if mismatch_overflow > 0`. With `<`,
+        // mismatch_overflow (a usize) can never satisfy `< 0`, so the
+        // summary warning is never emitted regardless of overflow.
+        // Construct MAX_MISMATCH_HITS + 3 distinct mismatched anchors;
+        // expect a warning whose detail mentions the overflow count.
+        use std::fmt::Write as _;
+        let mut body = String::new();
+        for i in 0..(MAX_MISMATCH_HITS + 3) {
+            write!(
+                body,
+                "<a href=\"https://actual.com\">https://evil-{i}.example</a>",
+            )
+            .expect("write! into String never fails");
+        }
+        let html = format!("<html><body>{body}</body></html>");
+        let result = process(html.as_bytes(), None).expect("sanitize must succeed");
+        let summary_count = result
+            .warnings
+            .iter()
+            .filter(|w| {
+                w.code == crate::output::WarningCode::HtmlLinkTextHrefMismatch
+                    && w.detail
+                        .as_deref()
+                        .is_some_and(|d| d.contains("additional_hits="))
+            })
+            .count();
+        assert_eq!(
+            summary_count, 1,
+            "expected exactly one mismatch summary warning, got {summary_count}",
+        );
+    }
+
+    #[test]
+    fn process_scans_anchor_text_up_to_max_anchor_text_scan() {
+        // Kills `* with +` on `MAX_ANCHOR_TEXT_SCAN = 4 * 1024`. The
+        // mutant flips the constant to 4 + 1024 = 1028, well below 4 KiB.
+        // An anchor whose mismatched URL sits at byte offset ~2000
+        // (within 4 KiB but past 1 KiB) round-trips a mismatch warning
+        // under the original cap and silently drops it under the mutant.
+        let padding = "x".repeat(2000);
+        let html = format!(
+            "<html><body><a href=\"https://actual.com\">{padding} https://evil.example</a></body></html>",
+        );
+        let result = process(html.as_bytes(), None).expect("sanitize must succeed");
+        let mismatch_seen = result.warnings.iter().any(|w| {
+            w.code == crate::output::WarningCode::HtmlLinkTextHrefMismatch
+                && w.detail
+                    .as_deref()
+                    .is_some_and(|d| d.contains("text_domain=evil.example"))
+        });
+        assert!(
+            mismatch_seen,
+            "expected a mismatch warning for the URL at byte ~2000 within MAX_ANCHOR_TEXT_SCAN=4096",
+        );
+    }
+
+    #[test]
     fn process_empty_input_returns_empty_result() {
         let result = process(b"", None).expect("empty input is valid");
         assert!(result.body_text.is_empty());

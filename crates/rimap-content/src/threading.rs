@@ -140,4 +140,39 @@ mod tests {
             assert!(!mid.contains('\r') && !mid.contains('\n'));
         }
     }
+
+    // `sanitize_msg_id` is exercised by the `extract_threading_headers`
+    // flow but `mail_parser` typically sanitizes the input string before
+    // our function sees it; these direct-call tests pin behaviour for
+    // each character class the filter is supposed to drop. Each test
+    // kills one of the four `&& with ||` mutations on the filter
+    // chain (`*c != '\r' && *c != '\n' && *c != '\0' && *c != '<' &&
+    // *c != '>'`), because under any single `&& -> ||` the chain
+    // short-circuits to `true` for an input containing any one of the
+    // special characters — which means the char is kept instead of
+    // dropped.
+    #[test]
+    fn sanitize_msg_id_strips_carriage_return() {
+        assert_eq!(sanitize_msg_id("id\rwith-cr", "test"), "idwith-cr");
+    }
+
+    #[test]
+    fn sanitize_msg_id_strips_line_feed() {
+        assert_eq!(sanitize_msg_id("id\nwith-lf", "test"), "idwith-lf");
+    }
+
+    #[test]
+    fn sanitize_msg_id_strips_nul() {
+        assert_eq!(sanitize_msg_id("id\0with-nul", "test"), "idwith-nul");
+    }
+
+    #[test]
+    fn sanitize_msg_id_strips_left_angle_bracket() {
+        assert_eq!(sanitize_msg_id("<id", "test"), "id");
+    }
+
+    #[test]
+    fn sanitize_msg_id_strips_right_angle_bracket() {
+        assert_eq!(sanitize_msg_id("id>", "test"), "id");
+    }
 }

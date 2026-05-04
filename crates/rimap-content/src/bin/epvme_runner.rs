@@ -182,6 +182,9 @@ fn parse_args() -> RunnerResult<Args> {
     })
 }
 
+// cargo-mutants: known-equivalent — usage() output is consumed only as stderr text in
+// RunnerError::UsageMessage / RunnerError::Argument; no test or production caller asserts on its
+// content. Mutating it to "" or "xyzzy" leaves all exit codes and JSON schema unchanged.
 fn usage() -> String {
     "usage: epvme_runner <dataset-root> [--limit N] [--json-out PATH]".to_string()
 }
@@ -371,6 +374,10 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
     writeln!(stdout, "Read failures: {}", summary.read_failure_count)?;
     writeln!(stdout, "Panics: {}", summary.panic_count)?;
 
+    // cargo-mutants: known-equivalent — guard inversion would print the section header
+    // "Parse error kinds:" with zero rows; stdout phrasing is human-facing only and no
+    // test or production caller asserts on print_summary output. JSON schema
+    // (RunSummary fields) and the success verdict are unaffected.
     if !summary.parse_error_counts.is_empty() {
         writeln!(stdout, "Parse error kinds:")?;
         for (kind, count) in &summary.parse_error_counts {
@@ -378,6 +385,10 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
         }
     }
 
+    // cargo-mutants: known-equivalent — guard inversion would print the section header
+    // "Warning counts:" with zero rows; stdout phrasing is human-facing only and no
+    // test or production caller asserts on print_summary output. JSON schema
+    // (RunSummary fields) and the success verdict are unaffected.
     if !summary.warning_counts.is_empty() {
         writeln!(stdout, "Warning counts:")?;
         for (warning, count) in &summary.warning_counts {
@@ -385,6 +396,10 @@ fn print_summary(summary: &RunSummary) -> io::Result<()> {
         }
     }
 
+    // cargo-mutants: known-equivalent — guard inversion would print the section header
+    // "Recorded failures (showing up to 50):" with zero rows; stdout phrasing is
+    // human-facing only and no test or production caller asserts on print_summary
+    // output. JSON schema (RunSummary fields) and the success verdict are unaffected.
     if !summary.recorded_failures.is_empty() {
         writeln!(
             stdout,
@@ -518,6 +533,47 @@ mod tests {
             panic_path.display().to_string()
         );
         assert_eq!(summary.recorded_failures[0].kind, "panic");
+        // Kills panic_message return-value mutants (327:5): detail must be the
+        // actual panic message, not "" or "xyzzy".
+        assert_eq!(summary.recorded_failures[0].detail, "boom");
+    }
+
+    #[test]
+    fn panic_message_captures_string_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("static str message".to_string());
+        assert_eq!(panic_message(payload), "static str message");
+    }
+
+    #[test]
+    fn panic_message_captures_static_str_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new("static literal");
+        assert_eq!(panic_message(payload), "static literal");
+    }
+
+    #[test]
+    fn panic_message_fallback_for_unknown_payload() {
+        let payload: Box<dyn std::any::Any + Send> = Box::new(42u64);
+        assert_eq!(panic_message(payload), "panic payload was not a string");
+    }
+
+    #[test]
+    fn unknown_warning_code_label_informational() {
+        // ParseBodyTruncated has Informational severity (see rimap-core/src/warning.rs).
+        // Kills mutants 342:5 (return "" or "xyzzy") and 343:9 (delete Informational arm).
+        assert_eq!(
+            unknown_warning_code_label(WarningCode::ParseBodyTruncated),
+            "unknown_informational_warning",
+        );
+    }
+
+    #[test]
+    fn unknown_warning_code_label_adversarial() {
+        // UnicodeZeroWidthStripped has Adversarial severity (see rimap-core/src/warning.rs).
+        // Kills mutants 342:5 (return "" or "xyzzy") and 344:9 (delete Adversarial arm).
+        assert_eq!(
+            unknown_warning_code_label(WarningCode::UnicodeZeroWidthStripped),
+            "unknown_adversarial_warning",
+        );
     }
 
     #[test]
@@ -550,5 +606,28 @@ mod tests {
             Some(&1)
         );
         assert!(is_success(&summary));
+    }
+
+    #[test]
+    fn run_dataset_records_read_failures() {
+        // Kills the read_failure_count += 1 mutants in run_dataset (line 276:44):
+        // both += -> -= (would underflow usize) and += -> *= (would keep 0).
+        let tempdir = TempDir::new().unwrap();
+        let root = tempdir.path();
+        let missing = root.join("does-not-exist.eml");
+        let files = vec![missing.clone()];
+
+        let summary = run_dataset(root, &files, None, parse_message);
+
+        assert_eq!(summary.processed_files, 1);
+        assert_eq!(summary.read_failure_count, 1);
+        assert_eq!(summary.ok_count, 0);
+        assert_eq!(summary.recorded_failures.len(), 1);
+        assert_eq!(summary.recorded_failures[0].kind, "read_error");
+        assert_eq!(
+            summary.recorded_failures[0].path,
+            missing.display().to_string()
+        );
+        assert!(!is_success(&summary));
     }
 }

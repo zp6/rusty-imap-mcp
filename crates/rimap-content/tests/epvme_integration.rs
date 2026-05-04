@@ -150,11 +150,85 @@ fn json_out_writes_valid_json() {
 }
 
 #[test]
+fn json_out_creates_missing_parent_dir_kills_mutant_delete_empty_parent_guard() {
+    let tmp = TempDir::new().unwrap();
+    write_eml(tmp.path(), "sample.eml", "JSON nested-dir test");
+
+    // Path whose parent directory does not yet exist — write_json_report must
+    // create it. The `!parent.as_os_str().is_empty()` guard exists to skip
+    // create_dir_all for bare filenames whose path.parent() returns Some(""),
+    // not to skip directory creation in the normal nested-path case.
+    let json_path = tmp
+        .path()
+        .join("reports")
+        .join("nightly")
+        .join("report.json");
+    assert!(!json_path.parent().unwrap().exists());
+
+    let output = Command::new(cargo_bin())
+        .args([
+            tmp.path().as_os_str(),
+            "--json-out".as_ref(),
+            json_path.as_os_str(),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected exit 0 with nested --json-out path, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(
+        json_path.exists(),
+        "JSON report file should exist at the nested path",
+    );
+}
+
+#[test]
 fn no_args_exits_nonzero() {
     let output = Command::new(cargo_bin()).output().unwrap();
 
     assert!(
         !output.status.success(),
         "expected non-zero exit with no arguments",
+    );
+}
+
+#[test]
+fn help_flag_exits_zero_kills_mutant_delete_help_arm() {
+    let output = Command::new(cargo_bin()).arg("--help").output().unwrap();
+    assert!(
+        output.status.success(),
+        "expected exit 0 for --help, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn short_help_flag_exits_zero_kills_mutant_delete_help_arm() {
+    let output = Command::new(cargo_bin()).arg("-h").output().unwrap();
+    assert!(
+        output.status.success(),
+        "expected exit 0 for -h, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn unknown_flag_exits_nonzero_with_message_kills_mutant_flag_guard() {
+    let output = Command::new(cargo_bin()).arg("--bogus").output().unwrap();
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for unknown flag --bogus, got {:?}",
+        output.status.code(),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown flag: --bogus"),
+        "stderr should contain 'unknown flag: --bogus':\n{stderr}",
     );
 }

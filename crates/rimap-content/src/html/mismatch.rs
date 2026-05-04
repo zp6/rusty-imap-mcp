@@ -40,6 +40,14 @@ pub(super) fn extract_registrable_domain(url_or_host: &str) -> Option<String> {
         .unwrap_or("")
         .trim_start_matches("www.");
     let host = host.split(':').next().unwrap_or(host);
+    // cargo-mutants: known-equivalent — `||` vs `&&` here is observably
+    // identical given that `host.is_empty()` implies `!host.contains('.')`.
+    // The only case the operators differ on is `is_empty=false &&
+    // !contains('.')=true` (a non-empty single-label host); both `||`
+    // and `&&` then send control through the idna+addr lookup, which
+    // returns `None` for any single-label host (no registrable domain
+    // exists above a TLD). `is_empty=true && !contains('.')=false` is
+    // unreachable: an empty string contains no `.`.
     if host.is_empty() || !host.contains('.') {
         return None;
     }
@@ -127,4 +135,85 @@ pub(super) fn detect_mismatches(
         }
     }
     (hits, overflow, unparsable_hrefs)
+}
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+mod mismatch_tests {
+    use scraper::Html;
+
+    use super::{detect_mismatches, extract_registrable_domain};
+    use crate::html::MAX_MISMATCH_HITS;
+
+    #[test]
+    fn extract_registrable_domain_rejects_mailto_scheme() {
+        // Kills `|| with &&` mutation at line 42 (the `||` joining the
+        // mailto: check to the rest of the chain). Under `&&`, only an
+        // input that satisfies all four `starts_with` checks
+        // simultaneously would early-return — no real input matches
+        // every scheme — so a `mailto://example.com` payload falls
+        // through and resolves to a registrable domain.
+        assert_eq!(
+            extract_registrable_domain("mailto://example.com"),
+            None,
+            "mailto:// must short-circuit even when the URL form has //",
+        );
+    }
+
+    #[test]
+    fn extract_registrable_domain_rejects_tel_scheme() {
+        // Kills `|| with &&` mutation at line 43.
+        assert_eq!(extract_registrable_domain("tel://example.com"), None);
+    }
+
+    #[test]
+    fn extract_registrable_domain_rejects_javascript_scheme() {
+        // Kills `|| with &&` mutation at line 44.
+        assert_eq!(extract_registrable_domain("javascript://example.com"), None,);
+    }
+
+    #[test]
+    fn extract_registrable_domain_rejects_data_scheme() {
+        // The `data:` line itself does not have a `||` mutation, but
+        // this anchor pins the scheme list and prevents future drift.
+        assert_eq!(extract_registrable_domain("data://example.com"), None);
+    }
+
+    /// Build an HTML document with `count` distinct mismatched anchors:
+    /// each anchor's href and text resolve to different registrable
+    /// domains so each one becomes an entry in `detect_mismatches`'s
+    /// hits list.
+    fn build_n_mismatched_anchors(count: usize) -> Html {
+        let mut body = String::new();
+        for i in 0..count {
+            // text says `evil-{i}.example`; href points at `actual.com`.
+            use std::fmt::Write as _;
+            write!(
+                body,
+                "<a href=\"https://actual.com\">https://evil-{i}.example</a>",
+            )
+            .unwrap();
+        }
+        Html::parse_document(&format!("<html><body>{body}</body></html>"))
+    }
+
+    #[test]
+    fn detect_mismatches_caps_hits_at_max_and_counts_overflow() {
+        // Construct MAX+2 distinct mismatches.
+        // Original: hits.len()=MAX, overflow=2.
+        // Kills `< with <=` (line 128): under `<=`, hits.len()=MAX+1
+        //   and overflow=1.
+        // Kills `+= with -=` (line 134): underflow on `overflow`
+        //   panics in debug; the test fails before assert.
+        // Kills `+= with *=` (line 134): overflow stays 0.
+        let document = build_n_mismatched_anchors(MAX_MISMATCH_HITS + 2);
+        let (hits, overflow, _) = detect_mismatches(&document);
+        assert_eq!(
+            hits.len(),
+            MAX_MISMATCH_HITS,
+            "hits cap should fire at MAX_MISMATCH_HITS, got {}",
+            hits.len(),
+        );
+        assert_eq!(overflow, 2, "overflow must count the post-cap mismatches");
+    }
 }
