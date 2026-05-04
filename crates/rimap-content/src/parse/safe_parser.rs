@@ -113,7 +113,7 @@ mod tests {
     #[test]
     #[expect(
         clippy::unwrap_used,
-        reason = "test asserts side-effect of log_parser_panic via captured tracing events"
+        reason = "Mutex::lock() poison-propagation in test-only event-capture layer"
     )]
     fn log_parser_panic_emits_structured_tracing_event() {
         // Kills `replace log_parser_panic with ()` mutation. The function

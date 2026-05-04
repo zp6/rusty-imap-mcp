@@ -153,7 +153,7 @@ mod mismatch_tests {
     use scraper::Html;
 
     use super::{detect_mismatches, extract_registrable_domain};
-    use crate::html::MAX_MISMATCH_HITS;
+    use crate::html::{MAX_ANCHOR_TEXT_SCAN, MAX_MISMATCH_HITS};
 
     #[test]
     fn extract_registrable_domain_rejects_mailto_scheme() {
@@ -207,20 +207,25 @@ mod mismatch_tests {
         Html::parse_document(&format!("<html><body>{body}</body></html>"))
     }
 
+    /// Build an anchor document whose text is `MAX_ANCHOR_TEXT_SCAN + 1`
+    /// padding bytes followed by `https://evil.example` — i.e. the URL
+    /// sits past the truncation cap. Used to exercise both
+    /// `detect_mismatches` truncation guards (parsable + unparsable href
+    /// branches): the original truncates and linkify finds no URL; the
+    /// `< with` and `> with ==` mutations skip truncation and linkify
+    /// then sees the post-cap URL.
+    fn build_anchor_with_url_past_cap(href: &str) -> Html {
+        let padding = "x".repeat(MAX_ANCHOR_TEXT_SCAN + 1);
+        Html::parse_document(&format!(
+            "<html><body><a href=\"{href}\">{padding} https://evil.example</a></body></html>",
+        ))
+    }
+
     #[test]
     fn detect_mismatches_truncates_anchor_text_for_parsable_href() {
         // Kills `> with <` and `> with ==` on the parsable-href branch
-        // truncation guard. Construct an anchor whose text is well past
-        // MAX_ANCHOR_TEXT_SCAN with a mismatched URL placed *beyond*
-        // the truncation point. Original truncates -> linkify finds no
-        // URL -> no mismatch hit. Mutation `<` or `==` skips truncation
-        // -> linkify finds the post-cap URL -> mismatch hit added.
-        use crate::html::MAX_ANCHOR_TEXT_SCAN;
-        let padding = "x".repeat(MAX_ANCHOR_TEXT_SCAN + 1);
-        let html = format!(
-            "<html><body><a href=\"https://actual.com\">{padding} https://evil.example</a></body></html>",
-        );
-        let document = Html::parse_document(&html);
+        // truncation guard.
+        let document = build_anchor_with_url_past_cap("https://actual.com");
         let (hits, _overflow, _unparsable) = detect_mismatches(&document);
         assert!(
             hits.is_empty(),
@@ -231,17 +236,9 @@ mod mismatch_tests {
     #[test]
     fn detect_mismatches_truncates_anchor_text_for_unparsable_href() {
         // Kills `> with <` and `> with ==` on the unparsable-href branch
-        // truncation guard. Same shape as the parsable-href test above,
-        // but with a single-label `href` that PSL rejects so control
-        // takes the unparsable branch. Original truncates -> no URL in
-        // text -> unparsable_hrefs stays empty. Mutation `<` or `==`
-        // skips truncation -> URL detected -> entry pushed.
-        use crate::html::MAX_ANCHOR_TEXT_SCAN;
-        let padding = "x".repeat(MAX_ANCHOR_TEXT_SCAN + 1);
-        let html = format!(
-            "<html><body><a href=\"https://noserver/path\">{padding} https://evil.example</a></body></html>",
-        );
-        let document = Html::parse_document(&html);
+        // truncation guard. The single-label host fails PSL parsing so
+        // control takes the unparsable branch.
+        let document = build_anchor_with_url_past_cap("https://noserver/path");
         let (_hits, _overflow, unparsable) = detect_mismatches(&document);
         assert!(
             unparsable.is_empty(),
