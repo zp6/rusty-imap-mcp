@@ -670,6 +670,44 @@ mod tests {
     }
 
     #[test]
+    fn parse_accepts_message_at_max_message_bytes() {
+        // Kills `> with >=` on `raw.len() > MAX_MESSAGE_BYTES`. With `>`,
+        // a 25 MiB raw is below-or-equal and proceeds to parse (may
+        // produce non-fatal warnings or a body LimitExceeded later); the
+        // `>=` mutant errors immediately with `kind = "message_bytes"`.
+        let mut raw = Vec::from(&b"From: a@example\r\nContent-Type: text/plain\r\n\r\n"[..]);
+        raw.resize(MAX_MESSAGE_BYTES, b'x');
+        let result = parse_message(&raw);
+        match result {
+            Ok(_) => (),
+            Err(ContentError::LimitExceeded { kind, .. }) => {
+                assert_ne!(
+                    kind, "message_bytes",
+                    "must not error with kind=message_bytes at exactly MAX_MESSAGE_BYTES",
+                );
+            }
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_keeps_long_subject_within_max_header_bytes() {
+        // Kills `* with +` on `MAX_HEADER_BYTES = 8 * 1024`. The mutant
+        // flips the constant to 8 + 1024 = 1032, well below 8 KiB. A
+        // Subject of 5000 ASCII bytes round-trips intact under the
+        // 8 KiB cap but gets sliced to ~1032 bytes under the mutant.
+        let long = "a".repeat(5000);
+        let raw = format!("From: a@example\r\nSubject: {long}\r\n\r\nbody");
+        let content = parse_message(raw.as_bytes()).unwrap();
+        let subject = content.meta.subject.unwrap();
+        assert!(
+            subject.len() >= 5000,
+            "subject must round-trip ~5000 bytes under MAX_HEADER_BYTES=8192, got {} bytes",
+            subject.len(),
+        );
+    }
+
+    #[test]
     fn parse_rejects_mime_depth_bomb() {
         // Build 12 properly nested multipart containers. Each level's
         // boundary opens a child whose own Content-Type declares the

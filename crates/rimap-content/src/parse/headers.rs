@@ -204,3 +204,113 @@ pub(super) fn audit_addr_domain_bidi(
     };
     audit_domain_bidi_prestrip(domain, location, warnings);
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests may unwrap on constructed values")]
+#[expect(clippy::expect_used, reason = "tests may expect on constructed values")]
+#[expect(clippy::panic, reason = "test failure paths")]
+mod headers_tests {
+    use crate::error::ContentError;
+    use crate::parse::{MAX_HEADER_COUNT, parse_message};
+
+    fn build_message_with_n_headers(n: usize) -> Vec<u8> {
+        let mut raw = Vec::from(&b"From: a@example\r\n"[..]);
+        for i in 0..n {
+            raw.extend_from_slice(format!("X-Pad-{i}: x\r\n").as_bytes());
+        }
+        raw.extend_from_slice(b"\r\nbody");
+        raw
+    }
+
+    #[test]
+    fn parse_rejects_header_count_above_max() {
+        // 1 (From) + 300 (X-Pad-*) = 301 headers, well above MAX_HEADER_COUNT=256.
+        // Kills: enforce_header_count -> Ok(()), and `> with ==` (since count != MAX).
+        let raw = build_message_with_n_headers(300);
+        let err = parse_message(&raw).unwrap_err();
+        match err {
+            ContentError::LimitExceeded { kind, limit } => {
+                assert_eq!(kind, "header_count");
+                assert_eq!(limit, MAX_HEADER_COUNT);
+            }
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_accepts_header_count_at_max() {
+        // From + 255 X-Pad headers = exactly 256 = MAX_HEADER_COUNT.
+        // Kills: `> with >=` (with `>=`, 256 >= 256 errors; with `>`, 256 > 256 is false).
+        let raw = build_message_with_n_headers(MAX_HEADER_COUNT - 1);
+        let content = parse_message(&raw).expect("256 headers must parse cleanly");
+        // Sanity: no LimitExceeded warning was attached either.
+        assert!(
+            !content
+                .security_warnings
+                .iter()
+                .any(|w| matches!(w.code, crate::output::WarningCode::ParseHeaderCountExceeded)),
+            "no ParseHeaderCountExceeded at the limit boundary",
+        );
+    }
+
+    #[test]
+    fn parse_extracts_in_reply_to_header() {
+        // Kills: header_value_first_text -> None (the wholesale stub).
+        let raw = b"From: a@example\r\n\
+                    In-Reply-To: <parent-msgid@example>\r\n\
+                    \r\n\
+                    body";
+        let content = parse_message(raw).unwrap();
+        let in_reply_to = content
+            .meta
+            .in_reply_to
+            .as_deref()
+            .expect("In-Reply-To populates meta.in_reply_to");
+        assert!(
+            in_reply_to.contains("parent-msgid@example"),
+            "in_reply_to should contain the message id, got {in_reply_to:?}",
+        );
+    }
+
+    #[test]
+    fn parse_extracts_references_header_with_multiple_ids() {
+        // Kills: header_value_all_text -> vec![] (the wholesale stub).
+        let raw = b"From: a@example\r\n\
+                    References: <one@example> <two@example> <three@example>\r\n\
+                    \r\n\
+                    body";
+        let content = parse_message(raw).unwrap();
+        assert!(
+            !content.meta.references.is_empty(),
+            "References must populate meta.references with at least one id",
+        );
+        let joined = content.meta.references.join(" ");
+        assert!(joined.contains("one@example"), "missing first id");
+        assert!(joined.contains("three@example"), "missing last id");
+    }
+
+    #[test]
+    fn parse_extracts_mailing_list_with_only_list_id() {
+        // Kills both `&& with ||` mutations in extract_mailing_list's
+        // is_none-AND-is_none-AND-is_none guard. With only list_id set, the
+        // original `false && true && true` is false (returns Some); both
+        // `||` mutants flip to true (return None).
+        let raw = b"From: a@example\r\n\
+                    List-ID: <only-id@example>\r\n\
+                    \r\n\
+                    body";
+        let content = parse_message(raw).unwrap();
+        let ml = content
+            .meta
+            .mailing_list
+            .expect("List-ID alone must produce Some(MailingListInfo)");
+        assert!(
+            ml.list_id
+                .as_deref()
+                .unwrap_or("")
+                .contains("only-id@example"),
+        );
+        assert!(ml.list_unsubscribe.is_none());
+        assert!(ml.list_post.is_none());
+    }
+}

@@ -495,4 +495,23 @@ mod tests {
         assert_eq!(text, "こんにちは");
         assert!(warnings.is_empty());
     }
+
+    #[test]
+    fn filter_codepoints_strips_unicode_tag() {
+        // Kills `is_unicode_tag -> bool with false`. With `false`, a
+        // Unicode Tag char (U+E0001 LANGUAGE TAG) bypasses the
+        // zero-width-class filter and gets pushed into the output.
+        // Original: stripped via the same arm as ZERO_WIDTH chars,
+        // counted in `zero_width_stripped`.
+        let input = "ab\u{E0001}cd";
+        let result = filter_codepoints(input);
+        assert_eq!(
+            result.text, "abcd",
+            "Unicode Tag char must be stripped from output",
+        );
+        assert!(
+            result.zero_width_stripped >= 1,
+            "Unicode Tag char must increment zero_width_stripped, got {result:?}",
+        );
+    }
 }
