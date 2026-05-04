@@ -42,6 +42,32 @@ forwarded verbatim.
   language server for the run or expect noisy diagnostics while the
   tree is briefly mutated.
 
+## Why not just downgrade to 25.x?
+
+cargo-mutants 25.x predates the reflink path and so does not hit the
+macOS `dirhelper` race at all. It would also unlock `--jobs N` on
+macOS, taking a workspace survey from ~3.5 hours to ~50 minutes. We
+chose `--in-place` over the downgrade for four reasons:
+
+- The project has a documented RAM ceiling on the development host
+  (see `feedback_cargo_mutants_jobs_cap.md`); high `--jobs` settings
+  freeze the box. `--in-place` forces `--jobs 1`, which neutralises
+  that hazard for free.
+- 25.x is roughly 18 months of missed mutant operators and bug fixes;
+  the survey would catch a strictly smaller (and different) set of
+  mutants than 26+.
+- We do not pin cargo-mutants in this repo (it is `cargo install`-ed
+  by `just setup`). Pinning to `=25.x` adds a maintenance step on
+  every contributor box and a re-test when we eventually unpin.
+- Cleanup when upstream lands a fix is one line (drop `--in-place`
+  from the recipe). A version pin would mean an unpin + a fresh
+  version-bump retest.
+
+If wall-clock time on macOS becomes the binding constraint before
+upstream fixes [#611](https://github.com/sourcefrog/cargo-mutants/issues/611),
+the right move is to revisit this — but defaulting to 25.x today
+trades a short-lived problem for a long-lived one.
+
 ## The bug, in detail
 
 Symptom (from [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235),
