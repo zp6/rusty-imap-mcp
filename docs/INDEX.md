@@ -23,6 +23,7 @@
 | [Security model](security-model.md) | Threat model, content pipeline, defense layers |
 | [SECURITY.md](../SECURITY.md) | Vulnerability disclosure policy, supported versions |
 | [Supply-chain watchlist](security/supply-chain-watchlist.md) | Dependency risk tracking |
+| [cargo-mutants runbook](security/cargo-mutants-runbook.md) | macOS workaround for sourcefrog/cargo-mutants#611 |
 
 ## Architecture (for contributors)
 
