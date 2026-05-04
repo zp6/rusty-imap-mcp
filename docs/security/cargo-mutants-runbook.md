@@ -1,21 +1,14 @@
 # cargo-mutants runbook
 
-## Why this exists
-
-cargo-mutants 27.0.0 has a temp-tree handling bug that strands worker
-copies missing source files mid-run, surfacing as `Worker thread failed:
-"<file>" is not a file` even when the named file is a regular UTF-8
-source on disk. The project-default workaround is `--in-place`, which
-operates on the live source tree and sidesteps the temp-copy path
-entirely. This runbook is the canonical source for invocations,
-caveats, and the cleanup checklist for when upstream lands a fix. See
-[issue #235](https://github.com/randomparity/rusty-imap-mcp/issues/235)
-and upstream [`sourcefrog/cargo-mutants#611`](https://github.com/sourcefrog/cargo-mutants/issues/611).
+cargo-mutants 27.0.0 hits a macOS-specific temp-tree bug
+([sourcefrog/cargo-mutants#611](https://github.com/sourcefrog/cargo-mutants/issues/611),
+project tracker [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235))
+that strands worker copies missing source files mid-run. The
+project-default workaround is `--in-place`, which sidesteps the
+temp-copy path entirely. See "The bug, in detail" below for the
+mechanism.
 
 ## Blessed invocations
-
-All commands assume a clean working tree (`git status` shows nothing).
-`--in-place` mutates the live tree, so any local edits will collide.
 
 | Situation | Command |
 |---|---|
@@ -30,8 +23,10 @@ forwarded verbatim.
 ## What `--in-place` costs you
 
 - **Locked to `--jobs 1`.** cargo-mutants refuses parallel jobs in
-  `--in-place` mode because they would race on the same files. Survey
-  runs are correspondingly slower.
+  `--in-place` mode because they would race on the same files. A
+  workspace survey at `--jobs 1` runs in roughly 3.5 hours on the
+  reference dev host (compare ~50 minutes if the temp-copy path were
+  usable with `--jobs 4`).
 - **Mutates the live tree.** A `Ctrl-C` mid-run can leave a mutated
   source file in place. Recover with `git restore <file>` (or
   `git restore .` if you do not know which file).
@@ -46,13 +41,13 @@ forwarded verbatim.
 
 cargo-mutants 25.x predates the reflink path and so does not hit the
 macOS `dirhelper` race at all. It would also unlock `--jobs N` on
-macOS, taking a workspace survey from ~3.5 hours to ~50 minutes. We
-chose `--in-place` over the downgrade for four reasons:
+macOS, recovering most of the wall-clock cost above. We chose
+`--in-place` for four reasons:
 
-- The project has a documented RAM ceiling on the development host
-  (see `feedback_cargo_mutants_jobs_cap.md`); high `--jobs` settings
-  freeze the box. `--in-place` forces `--jobs 1`, which neutralises
-  that hazard for free.
+- The development host has a documented RAM ceiling that high
+  `--jobs` settings push past, freezing the box.
+  `--in-place` forces `--jobs 1`, which neutralises that hazard for
+  free.
 - 25.x is roughly 18 months of missed mutant operators and bug fixes;
   the survey would catch a strictly smaller (and different) set of
   mutants than 26+.
@@ -64,14 +59,13 @@ chose `--in-place` over the downgrade for four reasons:
   version-bump retest.
 
 If wall-clock time on macOS becomes the binding constraint before
-upstream fixes [#611](https://github.com/sourcefrog/cargo-mutants/issues/611),
-the right move is to revisit this — but defaulting to 25.x today
-trades a short-lived problem for a long-lived one.
+[#611](https://github.com/sourcefrog/cargo-mutants/issues/611) is
+fixed, revisit this.
 
 ## The bug, in detail
 
-Symptom (from [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235),
-verbatim):
+Symptom (verbatim from
+[#235](https://github.com/randomparity/rusty-imap-mcp/issues/235)):
 
 ```
 ERROR Worker thread failed: ".../cargo-mutants-rusty-imap-mcp-XXXXXX.tmp/crates/rimap-content/src/parse/sniff.rs" is not a file
@@ -79,35 +73,42 @@ Error: ".../crates/rimap-content/src/parse/sniff.rs" is not a file
 ```
 
 `crates/rimap-content/src/parse/sniff.rs` is a regular UTF-8 source
-file declared by `mod sniff;` in `parse/mod.rs` with no `#[path]`
-attribute, no symlinks, and no sibling subdirectories. The bug is in
+file declared by `mod sniff;` in `parse/mod.rs` with no `#[path]`,
+no symlinks, and no sibling subdirectories. The bug is in
 cargo-mutants' temp-tree handling on macOS: a worker's per-mutant
 scratch tree is missing `sniff.rs` (and other files — multiple vanish
 silently) even though the source has them. Per the upstream
-investigation in [#611](https://github.com/sourcefrog/cargo-mutants/issues/611),
-the macOS `dirhelper` background process unlinks the reflink copies
-that [#557](https://github.com/sourcefrog/cargo-mutants/pull/557)
-(landed in 26.0.0) introduced. Linux/btrfs, which also supports
-reflinks, does not reproduce — so this is macOS-specific, not generic
-to reflinks.
+investigation in
+[#611](https://github.com/sourcefrog/cargo-mutants/issues/611), the
+macOS `dirhelper` background process unlinks the reflink copies that
+[#557](https://github.com/sourcefrog/cargo-mutants/pull/557) (landed
+in 26.0.0) introduced. Linux/btrfs, which also supports reflinks,
+does not reproduce — so this is macOS-specific, not generic to
+reflinks.
 
-Diagnostic capture procedure (run from a clean tree):
+Diagnostic capture procedure (run from a clean tree; produces a log
+plus a `diff` of source vs. leaked tempdir):
 
 ```bash
+set -euo pipefail
 mkdir -p /tmp/issue-235
 cargo mutants --package rimap-content --jobs 1 --leak-dirs \
   2>&1 | tee /tmp/issue-235/repro-temp-copy.log
 
-# If the bug fires, the leaked tempdir survives for inspection:
-LEAKED=$(rg -o 'cargo-mutants-rusty-imap-mcp-[A-Za-z0-9]+\.tmp' \
+LEAKED=$(rg -o 'cargo-mutants-[A-Za-z0-9-]+\.tmp' \
   /tmp/issue-235/repro-temp-copy.log | head -1)
+[ -n "$LEAKED" ] || { echo "no leaked tempdir found in log" >&2; exit 1; }
 ls -la "/tmp/$LEAKED/crates/rimap-content/src/parse/"
 diff <(ls crates/rimap-content/src/parse/) \
      <(ls "/tmp/$LEAKED/crates/rimap-content/src/parse/")
+
+# Tempdirs are workspace-sized; delete once you have what you need.
+# trash "/tmp/$LEAKED"   # if you have trash-cli
+# rm -r "/tmp/$LEAKED"   # otherwise
 ```
 
-The diff identifies which files the worker is missing. Attach this to
-any upstream report.
+The diff identifies which files the worker is missing. Attach to any
+upstream report.
 
 ## Troubleshooting
 
@@ -125,7 +126,8 @@ any upstream report.
 
 ## When the upstream fix lands
 
-Cleanup checklist (do all in one PR, close [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235)):
+Cleanup checklist (do all in one PR, close
+[#235](https://github.com/randomparity/rusty-imap-mcp/issues/235)):
 
 1. Bump cargo-mutants in any pinned tooling and confirm the bare
    `cargo mutants --package rimap-content` command runs to completion.
@@ -133,11 +135,16 @@ Cleanup checklist (do all in one PR, close [#235](https://github.com/randomparit
    delete the recipe and document the bare command if no other
    wrapping is needed).
 3. Remove the `#611` workaround comment block from
-   `.cargo/mutants.toml`. Decide whether the remaining
-   `minimum_test_timeout` / `timeout_multiplier` entries are still
-   load-bearing; delete the file if not.
+   `.cargo/mutants.toml` (and the cross-link to this runbook in that
+   comment). Decide whether the remaining `minimum_test_timeout` /
+   `timeout_multiplier` entries are still load-bearing; delete the
+   file if not.
 4. Strike the "Known issue" subsection from
-   `docs/security/fuzzing-coverage.md`.
-5. Delete this runbook.
-6. Comment on [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235)
+   `docs/security/fuzzing-coverage.md`, restore the bare
+   `cargo mutants` survey command.
+5. Delete this runbook (the "Why not downgrade to 25.x?" subsection
+   and the diagnostic capture procedure go with it).
+6. Remove the runbook row from `docs/INDEX.md`.
+7. Comment on
+   [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235)
    with the upstream fix release tag, then close.

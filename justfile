@@ -185,7 +185,7 @@ test-msrv:
     cargo +{{MSRV}} check --workspace --all-targets --all-features --locked
     cargo +{{MSRV}} nextest run --workspace --locked --no-tests=pass
 
-# Cargo-mutants survey (in-place; see docs/security/cargo-mutants-runbook.md for #235 context).
+# Cargo-mutants survey. In-place is required on macOS; see docs/security/cargo-mutants-runbook.md.
 mutants *args:
     cargo mutants --in-place {{args}}
 
