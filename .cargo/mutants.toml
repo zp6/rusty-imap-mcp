@@ -6,7 +6,7 @@
 # key). The `just mutants` recipe wraps the correct invocation. See:
 #   - docs/security/cargo-mutants-runbook.md
 #   - https://github.com/randomparity/rusty-imap-mcp/issues/235
-#   - upstream sourcefrog/cargo-mutants#<UPSTREAM_NUMBER>
+#   - upstream sourcefrog/cargo-mutants#611
 #
 # Keep this comment block until #235 is closed and `--in-place` is no
 # longer load-bearing. cargo-mutants reads this file from

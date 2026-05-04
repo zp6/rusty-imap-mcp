@@ -46,9 +46,11 @@ changed by more than 5%.
 
 ### Known issue (cargo-mutants 27.0.0)
 
-Worker-tree corruption causes `<file> is not a file` mid-run when the
-temp-copy mode is used. The `--in-place` flag baked into `just mutants`
-is required, not optional, until upstream fix lands. See the
+Worker-tree corruption causes `<file> is not a file` mid-run on
+macOS when the temp-copy mode is used (macOS `dirhelper` unlinks the
+reflink copies introduced in cargo-mutants 26.0.0). The `--in-place`
+flag baked into `just mutants` is required, not optional, until
+upstream fix lands. See the
 [cargo-mutants runbook](cargo-mutants-runbook.md). Tracking issues:
 [#235](https://github.com/randomparity/rusty-imap-mcp/issues/235),
-upstream `sourcefrog/cargo-mutants#<UPSTREAM_NUMBER>`.
+upstream [`sourcefrog/cargo-mutants#611`](https://github.com/sourcefrog/cargo-mutants/issues/611).

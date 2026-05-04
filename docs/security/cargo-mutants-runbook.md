@@ -10,7 +10,7 @@ operates on the live source tree and sidesteps the temp-copy path
 entirely. This runbook is the canonical source for invocations,
 caveats, and the cleanup checklist for when upstream lands a fix. See
 [issue #235](https://github.com/randomparity/rusty-imap-mcp/issues/235)
-and upstream `sourcefrog/cargo-mutants#<UPSTREAM_NUMBER>`.
+and upstream [`sourcefrog/cargo-mutants#611`](https://github.com/sourcefrog/cargo-mutants/issues/611).
 
 ## Blessed invocations
 
@@ -55,12 +55,15 @@ Error: ".../crates/rimap-content/src/parse/sniff.rs" is not a file
 `crates/rimap-content/src/parse/sniff.rs` is a regular UTF-8 source
 file declared by `mod sniff;` in `parse/mod.rs` with no `#[path]`
 attribute, no symlinks, and no sibling subdirectories. The bug is in
-cargo-mutants' temp-tree handling: a worker's per-mutant scratch tree
-is missing `sniff.rs` even though the source has it. Three runs on
-macOS 25.4.0 / APFS stop deterministically at the same mutant index;
-`--jobs 1` and `--jobs 2` both fail. The 26.0.0 release notes
-introduced reflink-based copying, which is the leading hypothesis for
-the regression.
+cargo-mutants' temp-tree handling on macOS: a worker's per-mutant
+scratch tree is missing `sniff.rs` (and other files — multiple vanish
+silently) even though the source has them. Per the upstream
+investigation in [#611](https://github.com/sourcefrog/cargo-mutants/issues/611),
+the macOS `dirhelper` background process unlinks the reflink copies
+that [#557](https://github.com/sourcefrog/cargo-mutants/pull/557)
+(landed in 26.0.0) introduced. Linux/btrfs, which also supports
+reflinks, does not reproduce — so this is macOS-specific, not generic
+to reflinks.
 
 Diagnostic capture procedure (run from a clean tree):
 
@@ -103,7 +106,7 @@ Cleanup checklist (do all in one PR, close [#235](https://github.com/randomparit
 2. Drop `--in-place` from the `mutants` recipe in `justfile` (or
    delete the recipe and document the bare command if no other
    wrapping is needed).
-3. Remove the `<UPSTREAM_NUMBER>` workaround comment block from
+3. Remove the `#611` workaround comment block from
    `.cargo/mutants.toml`. Decide whether the remaining
    `minimum_test_timeout` / `timeout_multiplier` entries are still
    load-bearing; delete the file if not.
