@@ -54,6 +54,7 @@ required-features = ["test-util"]
 proptest = { workspace = true }
 insta = { workspace = true }
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [dev-dependencies.rimap-content]
 path = "."

@@ -1,7 +1,7 @@
 # Mutation-baseline — Targeted-trust-boundary survivor inventory
 
-**Updated:** 2026-05-01
-**Tool:** `cargo-mutants` (run via `just mutants-crate <name>`)
+**Updated:** 2026-05-04
+**Tool:** `cargo-mutants` (run via `just mutants --package <name>`)
 **Scope:** Five trust-boundary crates — `rimap-content`, `rimap-authz`,
 `rimap-audit`, `rimap-server`, `rimap-imap`. Other workspace crates are
 out of scope per spec
@@ -17,16 +17,19 @@ adding a test, not annotated.
 
 ## `rimap-content`
 
-**Last refresh:** 2026-05-01.
-**Surviving mutants in non-`bin/` code:** 15.
+**Last refresh:** 2026-05-04.
+**Surviving mutants in non-`bin/` code:** 14.
 
-Run summary (644 mutants total): 550 caught, 20 missed (15 outside
-`src/bin/`, 5 inside), 10 timeout, 64 unviable. Every survivor
+Run summary (652 mutants total): 563 caught, 19 missed (14 outside
+`src/bin/`, 5 inside), 6 timeout, 64 unviable. Every survivor
 outside `src/bin/` is a mathematically equivalent mutation
 documented in the table below; the 5 `src/bin/epvme_runner.rs`
 survivors are documented in the `### bin/epvme_runner.rs` subsection
 below (issue #193 took the original 16 to 5 by killing 11 with tests
-and annotating the rest).
+and annotating the rest). Issue #236 killed three post-archive
+survivors in `testutil.rs` and `parse/mime_scrub.rs` and added two
+new known-equivalent rows for the `> with >=` mutations on the
+`MAX_ANCHOR_TEXT_SCAN` truncation guards in `html/mismatch.rs`.
 
 The follow-up plan
 [`archive: 2026-04-30-rimap-content-mutation-cleanup-followup.md`](https://github.com/randomparity/rusty-imap-mcp/blob/archive/daemon-experiment/docs/superpowers/plans/2026-04-30-rimap-content-mutation-cleanup-followup.md)
@@ -43,6 +46,8 @@ not appear here.
 | `parse/mime_scrub.rs:187` | `replace < with > in split_header_lines` (`if line_start < headers.len()`) | The inner loop's only exit invariant is `line_start == headers.len()` — the `None` branch of the `\n` search sets `line_end = headers.len()` and the subsequent push sets `line_start = line_end`. On exit, the predicate is false under both `<` and `>`; the trailing push is defensive dead code in current usage. | `parse/mime_scrub.rs:180` |
 | `html/style_parse.rs:74` | `replace < with <= in parse_translate_px` (`if px_val < current`) | The `<` and `<=` predicates differ only when `px_val == current`; in that case both arms set `min = Some(px_val)` to a value already equal to `current`, leaving the running minimum unchanged. Distinct values pick the same minimum under either operator. | `html/style_parse.rs:68` |
 | `html/mismatch.rs:51` | `replace || with && in extract_registrable_domain` (`if host.is_empty() || !host.contains('.')`) | The `||` and `&&` predicates differ only when `host.is_empty()=false && !host.contains('.')=true` — a non-empty single-label host. Both branches then route control through the idna+addr lookup, which returns `None` for any single-label host (no registrable domain exists above a TLD). The opposite case (`is_empty=true && !contains('.')=false`) is unreachable: an empty string contains no `.`. | `html/mismatch.rs:43` |
+| `html/mismatch.rs:107` | `replace > with >= in detect_mismatches` (unparsable-href branch `if text.len() > MAX_ANCHOR_TEXT_SCAN`) | `>` and `>=` differ only at `text.len() == MAX_ANCHOR_TEXT_SCAN`. In that case, `String::truncate(MAX_ANCHOR_TEXT_SCAN)` is a documented no-op (does nothing when `new_len >= len`), so the predicate flip produces no observable change in `text` or in the downstream linkify scan. | `html/mismatch.rs:101` |
+| `html/mismatch.rs:123` | `replace > with >= in detect_mismatches` (parsable-href branch `if text.len() > MAX_ANCHOR_TEXT_SCAN`) | Same reasoning as the unparsable-branch row above: `truncate(MAX_ANCHOR_TEXT_SCAN)` is a no-op at the boundary value, so the operator flip is observably equivalent. | `html/mismatch.rs:119` |
 | `lookalike.rs:110` | `replace || with && in label_mixes_scripts` (the first `||` between `is_ascii_digit()` and `c == '-'`) | Each char that the original `continue`s past — ASCII digits, `-`, `_` — has `Script::Common`, which the match below treats as a no-op. Whether the loop short-circuits via `continue` or runs through to the match, the `scripts` set membership is unchanged. | `lookalike.rs:103` |
 | `lookalike.rs:110` | `replace || with && in label_mixes_scripts` (the second `||` between `c == '-'` and `c == '_'`) | Same reasoning as the first `||` mutation: the chars that the guard short-circuits on all classify as `Script::Common`, ignored by the match arm. | `lookalike.rs:103` |
 | `lookalike.rs:220` | `replace < with <= in extract_domain_from_address` (`lt < gt`) | `lt == gt` is unreachable when both `rfind` results are `Some`: a single byte cannot be both `<` and `>`. Distinct positions exercise the same arm under either operator. | `lookalike.rs:214` |

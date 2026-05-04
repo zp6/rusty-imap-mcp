@@ -109,4 +109,78 @@ mod tests {
         // updates is a well-defined hash of the empty string.
         log_parser_panic(b"");
     }
+
+    #[test]
+    #[expect(
+        clippy::unwrap_used,
+        reason = "test asserts side-effect of log_parser_panic via captured tracing events"
+    )]
+    fn log_parser_panic_emits_structured_tracing_event() {
+        // Kills `replace log_parser_panic with ()` mutation. The function
+        // is pure side-effect: its only observable behavior is the
+        // structured tracing event. Install a thread-local Layer that
+        // records every event's target and field values, then assert the
+        // expected target and required fields appear.
+        use std::fmt::Write as _;
+        use std::sync::{Arc, Mutex};
+        use tracing::Subscriber;
+        use tracing::field::{Field, Visit};
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::registry::Registry;
+
+        struct Capture {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+        struct V<'a>(&'a mut String);
+        impl Visit for V<'_> {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                write!(self.0, " {}={value:?}", field.name()).ok();
+            }
+            fn record_u64(&mut self, field: &Field, value: u64) {
+                write!(self.0, " {}={value}", field.name()).ok();
+            }
+            fn record_str(&mut self, field: &Field, value: &str) {
+                write!(self.0, " {}={value}", field.name()).ok();
+            }
+        }
+        impl<S: Subscriber> Layer<S> for Capture {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                let mut record = format!("target={}", event.metadata().target());
+                event.record(&mut V(&mut record));
+                self.events.lock().unwrap().push(record);
+            }
+        }
+
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let layer = Capture {
+            events: Arc::clone(&events),
+        };
+        let subscriber = Registry::default().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            log_parser_panic(b"abc");
+        });
+
+        let captured = events.lock().unwrap();
+        assert_eq!(
+            captured.len(),
+            1,
+            "expected exactly one event, got {captured:?}"
+        );
+        let record = &captured[0];
+        assert!(
+            record.contains("target=rimap_content::parser_panic"),
+            "expected target in event record, got: {record:?}",
+        );
+        assert!(
+            record.contains("input_len=3"),
+            "expected input_len=3 field, got: {record:?}",
+        );
+        assert!(
+            record.contains("input_sha256_prefix="),
+            "expected input_sha256_prefix field, got: {record:?}",
+        );
+    }
 }
