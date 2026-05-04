@@ -2166,6 +2166,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tracing",
+ "tracing-subscriber",
  "unicode-normalization",
  "unicode-script",
  "unicode-segmentation",

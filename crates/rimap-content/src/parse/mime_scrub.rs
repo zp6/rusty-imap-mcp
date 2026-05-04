@@ -259,6 +259,40 @@ mod mime_scrub_tests {
     }
 
     #[test]
+    fn detect_smuggling_uses_addition_for_start_pos() {
+        // Kills `+ with *` on `start_pos = search_start + rel`. With `*`,
+        // the second-pass search after the first encoded-word closes
+        // computes start_pos = search_start * rel — wildly larger than
+        // the additive offset — and overshoots the end of the header,
+        // so locate_encoded_word_end returns Missing and flags the
+        // line. The original adds and finds the second closer cleanly.
+        let logical: Vec<&[u8]> = vec![b"X: =?u?B?p?= q =?v?B?r?=\r\n"];
+        let mask = detect_smuggling_spans(&logical);
+        assert_eq!(
+            mask,
+            vec![false],
+            "two complete inline encoded-words are not smuggling",
+        );
+    }
+
+    #[test]
+    fn detect_smuggling_locates_encoded_word_end_using_addition() {
+        // Kills `+ with -` on `start_pos + 2` in the call to
+        // locate_encoded_word_end. With `-`, the closer search starts
+        // four bytes earlier and picks up a stray `?=` immediately
+        // before the genuine `=?` opener — classifying the dangling
+        // encoded-word as SameHeader rather than Missing, and flipping
+        // mask[0] from true to false.
+        let logical: Vec<&[u8]> = vec![b"X: a?=?garbage\r\n"];
+        let mask = detect_smuggling_spans(&logical);
+        assert_eq!(
+            mask,
+            vec![true],
+            "dangling `=?` opener with no `?=` after it must be flagged",
+        );
+    }
+
+    #[test]
     fn detect_smuggling_skips_logical_end_idx_after_later_header() {
         // Kills `+ with *` on `idx = end_idx + 1`. With `*`, idx stays at
         // end_idx and re-scans logical[end_idx]. If logical[end_idx]
