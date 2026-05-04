@@ -154,9 +154,28 @@ mod tests {
 
     #[test]
     fn error_kind_label_stable_for_known_variants() {
-        let malformed = ContentError::Malformed {
-            reason: "x".to_string(),
-        };
-        assert_eq!(error_kind_label(&malformed), Some("Malformed"));
+        let cases: &[(ContentError, &str)] = &[
+            (
+                ContentError::Malformed {
+                    reason: "x".to_string(),
+                },
+                "Malformed",
+            ),
+            (
+                ContentError::LimitExceeded {
+                    kind: "mime_depth",
+                    limit: 8,
+                },
+                "LimitExceeded",
+            ),
+            (ContentError::ParserPanic, "ParserPanic"),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(
+                error_kind_label(err),
+                Some(*expected),
+                "label for {err:?} changed",
+            );
+        }
     }
 }
