@@ -185,6 +185,10 @@ test-msrv:
     cargo +{{MSRV}} check --workspace --all-targets --all-features --locked
     cargo +{{MSRV}} nextest run --workspace --locked --no-tests=pass
 
+# Cargo-mutants survey (in-place; see docs/security/cargo-mutants-runbook.md for #235 context).
+mutants *args:
+    cargo mutants --in-place {{args}}
+
 # Proton Bridge integration suite (gated on PROTON_BRIDGE_TEST=1).
 test-integration:
     #!/usr/bin/env bash

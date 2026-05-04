@@ -39,7 +39,16 @@ hard to track manually.
 
 Once a quarter, run:
 
-    cargo mutants --in-place --workspace --timeout 60 -- --test-threads 1
+    just mutants --workspace --timeout 60 -- --test-threads 1
 
 and update the "Last survey" column for any module whose mutation score
 changed by more than 5%.
+
+### Known issue (cargo-mutants 27.0.0)
+
+Worker-tree corruption causes `<file> is not a file` mid-run when the
+temp-copy mode is used. The `--in-place` flag baked into `just mutants`
+is required, not optional, until upstream fix lands. See the
+[cargo-mutants runbook](cargo-mutants-runbook.md). Tracking issues:
+[#235](https://github.com/randomparity/rusty-imap-mcp/issues/235),
+upstream `sourcefrog/cargo-mutants#<UPSTREAM_NUMBER>`.
