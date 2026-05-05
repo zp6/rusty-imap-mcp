@@ -49,7 +49,8 @@ fn apply_unix_write_flags(_opts: &mut OpenOptions) {}
 fn apply_unix_read_flags(_opts: &mut OpenOptions) {}
 
 #[cfg(all(test, unix))]
-#[expect(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
+#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use tempfile::TempDir;
 

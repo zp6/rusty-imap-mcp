@@ -4,14 +4,10 @@ use libfuzzer_sys::fuzz_target;
 use rimap_audit::{RedactionSalt, parse_line, redact};
 
 fuzz_target!(|data: &[u8]| {
-    // Invariant 1: parse_line never panics on any input. Either it
-    // returns Ok(record) or Err(AuditError::Read).
     let Ok(record) = parse_line(data) else {
         return;
     };
 
-    // Invariant 2: redact() on a successfully-parsed record never panics
-    // and returns a record that round-trips through serde.
     let salt = RedactionSalt::from_bytes([0x42_u8; 32]);
     let redacted = redact(&record, &salt);
     let serialized = serde_json::to_vec(&redacted)
@@ -19,7 +15,7 @@ fuzz_target!(|data: &[u8]| {
     let _reparsed: rimap_audit::AuditRecord = serde_json::from_slice(&serialized)
         .expect("redacted record must round-trip through serde_json");
 
-    // Invariant 3: for tool_start payloads, every non-Verbatim string
+    // For tool_start payloads, every non-Verbatim string
     // value in the input's arguments_redacted must be replaced by
     // redact() — i.e., the post-redact value at the same key must not
     // be byte-equal to the input value. This is exactly what redact()

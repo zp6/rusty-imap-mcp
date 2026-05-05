@@ -253,7 +253,8 @@ pub struct ProcessStartInputs {
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, clippy::expect_used, reason = "tests")]
+#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use rimap_core::auth_event::{AuthEvent, AuthResult};
     use rimap_core::auth_sink::AuthEventSink;

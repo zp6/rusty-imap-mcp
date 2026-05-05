@@ -272,12 +272,9 @@ fn set_parent_mode_0700(parent: &Path) {
 fn set_parent_mode_0700(_parent: &Path) {}
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests"
-)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use tempfile::TempDir;
 

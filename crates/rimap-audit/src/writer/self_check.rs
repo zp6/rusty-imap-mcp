@@ -214,12 +214,9 @@ fn inode_of(_meta: &std::fs::Metadata) -> u64 {
 }
 
 #[cfg(test)]
-#[expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "tests"
-)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use std::io::Write;
 

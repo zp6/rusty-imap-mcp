@@ -190,7 +190,7 @@ fn write_under_lock(guard: &mut Inner, bytes: &[u8], path: &Path) -> Result<(), 
     Ok(())
 }
 
-pub(super) fn needs_fsync(payload: &crate::record::Payload) -> bool {
+fn needs_fsync(payload: &crate::record::Payload) -> bool {
     use crate::record::Payload;
     match payload {
         Payload::ProcessStart(_)

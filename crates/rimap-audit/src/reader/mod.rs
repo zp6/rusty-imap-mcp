@@ -223,7 +223,7 @@ where
     if line.is_empty() {
         return Ok(());
     }
-    match serde_json::from_str::<AuditRecord>(line) {
+    match parse_line(line.as_bytes()) {
         Ok(rec) => {
             if filter.matches(&rec) {
                 on_record(&rec)?;
@@ -231,20 +231,21 @@ where
             }
             Ok(())
         }
-        Err(err) if is_trailing => {
+        Err(AuditError::Read { source, .. }) if is_trailing => {
             tracing::warn!(
                 path = %path.display(),
                 line = line_no,
-                error = %err,
+                error = %source,
                 "skipping malformed trailing line in audit file",
             );
             Ok(())
         }
-        Err(err) => Err(AuditError::Read {
+        Err(AuditError::Read { source, .. }) => Err(AuditError::Read {
             path: path.to_path_buf(),
             line: Some(line_no),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
+            source,
         }),
+        Err(other) => Err(other),
     }
 }
 
