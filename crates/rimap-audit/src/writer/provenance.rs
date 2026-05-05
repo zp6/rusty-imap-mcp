@@ -262,4 +262,108 @@ mod tests {
         assert!(!snap.iter().any(|s| s == "<id-0@x>"));
         assert!(snap.iter().any(|s| s == "<id-1999@x>"));
     }
+
+    #[test]
+    fn message_id_at_exactly_max_len_is_not_truncated() {
+        // Pin `> with >=` at the length-cap branch in `record_at`. With `>`,
+        // a Message-ID of exactly MAX_MESSAGE_ID_LEN bytes is stored as-is.
+        // With `>=`, it would be truncated and gain the `…[truncated]`
+        // suffix, ballooning past the 998-byte cap.
+        let mut b = ProvenanceBuffer::new(60);
+        let exact = "x".repeat(super::MAX_MESSAGE_ID_LEN);
+        b.record_at(exact.clone(), at(0));
+        let snap = b.snapshot_at(at(1));
+        assert_eq!(snap.len(), 1);
+        assert_eq!(
+            snap[0], exact,
+            "ID at exactly the cap must be stored verbatim",
+        );
+        assert!(
+            !snap[0].ends_with(TRUNCATED_SUFFIX),
+            "ID at exactly the cap must not gain the truncation suffix",
+        );
+    }
+
+    #[test]
+    fn record_observably_appends_to_buffer() {
+        // Pin `record with ()` mutation: calling `record` must observably
+        // change `len` (it is the only public path to push entries). The
+        // `()` stub would leave the buffer empty.
+        let mut b = ProvenanceBuffer::new(60);
+        assert_eq!(b.len(), 0);
+        b.record("<a@x>");
+        assert_eq!(b.len(), 1);
+        b.record("<b@x>");
+        assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    fn snapshot_returns_actual_recorded_ids() {
+        // Pin `snapshot -> Vec<String>` stub mutations (vec![],
+        // vec![String::new()], vec!["xyzzy".into()]): a snapshot must
+        // contain exactly the recorded IDs in order — no constant stand-in
+        // can match a non-empty buffer of distinct strings.
+        let mut b = ProvenanceBuffer::new(3600);
+        b.record_at("<one@x>", at(0));
+        b.record_at("<two@x>", at(1));
+        b.record_at("<three@x>", at(2));
+        let snap = b.snapshot_at(at(3));
+        assert_eq!(snap, vec!["<one@x>", "<two@x>", "<three@x>"]);
+    }
+
+    #[test]
+    fn len_returns_actual_entry_count() {
+        // Pin `len -> usize with 1`: an empty buffer must report 0, and a
+        // 3-element buffer must report 3 — neither matches the constant 1.
+        let mut b = ProvenanceBuffer::new(60);
+        assert_eq!(b.len(), 0);
+        b.record_at("<a@x>", at(0));
+        b.record_at("<b@x>", at(0));
+        b.record_at("<c@x>", at(0));
+        assert_eq!(b.len(), 3);
+    }
+
+    #[test]
+    fn is_empty_distinguishes_empty_from_populated() {
+        // Pin `is_empty -> bool with true`: a populated buffer must report
+        // false; the constant `true` mutation would lie.
+        let mut b = ProvenanceBuffer::new(60);
+        assert!(b.is_empty());
+        b.record_at("<a@x>", at(0));
+        assert!(
+            !b.is_empty(),
+            "is_empty must return false after a record() call",
+        );
+    }
+
+    #[test]
+    fn truncate_at_grapheme_boundary_fills_to_exact_max_bytes_for_ascii() {
+        // Pin both mutations on the inner truncation helper:
+        //   * `idx + cluster.len() > max_bytes` -> `>=` would break one
+        //     cluster early, leaving 997 bytes instead of 998.
+        //   * `idx + cluster.len() > max_bytes` -> `idx * cluster.len() > ...`
+        //     with `cluster.len() == 1` would never break, leaving the
+        //     full 999 bytes (and the call site would still append the
+        //     suffix because the outer `len() > MAX` test fired).
+        //
+        // We feed an ASCII string of length MAX+1 so the helper definitely
+        // truncates, and assert the resulting prefix is exactly
+        // MAX_MESSAGE_ID_LEN bytes.
+        let mut b = ProvenanceBuffer::new(60);
+        let oversized = "x".repeat(super::MAX_MESSAGE_ID_LEN + 1);
+        b.record_at(oversized, at(0));
+        let snap = b.snapshot_at(at(1));
+        assert_eq!(snap.len(), 1);
+        let stored = &snap[0];
+        assert!(
+            stored.ends_with(TRUNCATED_SUFFIX),
+            "oversize ID must gain the truncation suffix",
+        );
+        let prefix_len = stored.len() - TRUNCATED_SUFFIX.len();
+        assert_eq!(
+            prefix_len,
+            super::MAX_MESSAGE_ID_LEN,
+            "ASCII oversize prefix must fill the byte cap exactly",
+        );
+    }
 }

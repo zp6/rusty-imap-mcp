@@ -184,6 +184,13 @@ fn inode_of(meta: &std::fs::Metadata) -> u64 {
     meta.ino()
 }
 
+// cargo-mutants: known-equivalent — `inode_of -> u64 with 0/1` on the
+// Windows variant is not exercised on this Linux CI (the function is
+// `cfg(windows)` and never compiled here). When it does compile, the
+// fallback already returns `0` for filesystems that don't support file
+// indices (ReFS, FAT32), so the constant-`0` mutant is a real-world
+// no-op, and a constant-`1` would only matter if a test could observe
+// the NTFS file reference number on Windows-CI — none today does.
 #[cfg(windows)]
 fn inode_of(meta: &std::fs::Metadata) -> u64 {
     use std::os::windows::fs::MetadataExt;
@@ -195,13 +202,24 @@ fn inode_of(meta: &std::fs::Metadata) -> u64 {
     meta.file_index().unwrap_or(0)
 }
 
+// cargo-mutants: known-equivalent — `inode_of -> u64 with 1` on the
+// non-{unix,windows} fallback is not compiled on this Linux CI. The
+// fallback's documented contract is "return 0 = unknown", so the
+// constant-`0` from the original is the entire spec; mutating to
+// `1` only matters on hypothetical platforms with no `MetadataExt`
+// at all, where no test exists.
 #[cfg(not(any(unix, windows)))]
 fn inode_of(_meta: &std::fs::Metadata) -> u64 {
     0
 }
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    reason = "tests"
+)]
 mod tests {
     use std::io::Write;
 
@@ -328,5 +346,157 @@ mod tests {
         let path = write_file(&dir, "a.jsonl", body.as_bytes());
         let state = read_trailing_state(&path).unwrap();
         assert_eq!(state.last_recorded_inode, Some(5555));
+    }
+
+    #[test]
+    fn line_just_under_per_line_cap_is_parsed_normally() {
+        // Pin `MAX_LINE_BYTES = 1024 * 1024` against the `* with +`
+        // mutation: under `1024 + 1024 = 2048`, a 100 KiB JSON line (which
+        // is currently fine, well under 1 MiB) would be wrongly skipped.
+        // Compose a single record whose total line length lands in the
+        // 100 KiB range by padding `git_commit`, then assert that it
+        // contributes to the trailing state.
+        let dir = TempDir::new().unwrap();
+        let big_commit = "0".repeat(100 * 1024);
+        let body = format!(
+            "{{\"seq\":7,\"ts\":\"2026-04-07T00:00:00.000Z\",\
+             \"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\
+             \"kind\":\"process_start\",\
+             \"version\":\"0.1.0\",\"git_commit\":\"{big_commit}\",\
+             \"posture\":\"draft-safe\",\
+             \"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\
+             \"previous_last_seq\":null,\"previous_process_id\":null,\
+             \"previous_file_inode\":1357,\"audit_file_inode_changed\":false}}\n",
+        );
+        let path = write_file(&dir, "a.jsonl", body.as_bytes());
+        let state = read_trailing_state(&path).unwrap();
+        assert_eq!(
+            state.last_seq.map(crate::record::ids::Seq::get),
+            Some(7),
+            "a 100 KiB record line is well under the 1 MiB per-line cap",
+        );
+        assert_eq!(state.last_recorded_inode, Some(1357));
+    }
+
+    #[test]
+    fn metadata_error_other_than_not_found_is_propagated() {
+        // Pin `match guard e.kind() == NotFound` against `with true`:
+        // mutating the guard to always-true would turn ANY metadata error
+        // (PermissionDenied, NotADirectory, ...) into `Ok(default state)`.
+        // On Unix, `/dev/null/x` produces `NotADirectory`, which must
+        // surface as `Err(AuditError::Read)`.
+        #[cfg(unix)]
+        {
+            let path = std::path::PathBuf::from("/dev/null/x");
+            let err = read_trailing_state(&path)
+                .expect_err("non-NotFound metadata errors must propagate");
+            match err {
+                crate::AuditError::Read { .. } => {}
+                other => panic!("expected AuditError::Read, got {other:?}"),
+            }
+        }
+        // On non-Unix this test is a no-op; the hot path is exercised by
+        // the Unix variant which is the platform that runs CI today.
+        #[cfg(not(unix))]
+        let _ = ();
+    }
+
+    #[test]
+    fn file_at_exactly_size_cap_is_still_parsed() {
+        // Pin `meta.len() > MAX_SELF_CHECK_BYTES` against `==` and `>=`
+        // mutations: at exactly the 32 MiB cap, the original `>` returns
+        // `false` and proceeds to scan; both mutations short-circuit to
+        // `TrailingState::default()` and lose the parseable prefix.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("at_cap.jsonl");
+        let head = "{\"seq\":11,\"ts\":\"2026-04-07T00:00:00.000Z\",\
+             \"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\
+             \"kind\":\"process_start\",\
+             \"version\":\"0.1.0\",\"git_commit\":\"\",\
+             \"posture\":\"draft-safe\",\
+             \"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\
+             \"previous_last_seq\":null,\"previous_process_id\":null,\
+             \"previous_file_inode\":2024,\"audit_file_inode_changed\":false}\n";
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(head.as_bytes()).unwrap();
+        // Pad to exactly the 32 MiB cap with a sparse `set_len`. The tail
+        // is zero-bytes with no newlines; the scan reads the first record
+        // then breaks at the missing trailing newline.
+        f.set_len(super::MAX_SELF_CHECK_BYTES).unwrap();
+        drop(f);
+
+        let state = read_trailing_state(&path).unwrap();
+        assert_eq!(
+            state.last_seq.map(crate::record::ids::Seq::get),
+            Some(11),
+            "file at exactly the size cap must still be scanned (`>` not `>=`)",
+        );
+        assert_eq!(state.last_recorded_inode, Some(2024));
+    }
+
+    #[test]
+    fn line_at_exactly_per_line_cap_is_still_parsed() {
+        // Pin `n > MAX_LINE_BYTES` against `==` and `>=` mutations: a line
+        // whose `read_line` byte count equals exactly MAX_LINE_BYTES must
+        // be parsed (not skipped). With `>=`, that exact line would be
+        // skipped, dropping the prior record's contribution.
+        //
+        // We construct a record-shaped JSON line padded to be exactly
+        // MAX_LINE_BYTES bytes including the trailing '\n'.
+        let dir = TempDir::new().unwrap();
+        let prefix = "{\"seq\":13,\"ts\":\"2026-04-07T00:00:00.000Z\",\
+             \"process_id\":\"01JXAAAAAAAAAAAAAAAAAAAAAA\",\
+             \"kind\":\"process_start\",\
+             \"version\":\"0.1.0\",\"git_commit\":\"";
+        let suffix = "\",\"posture\":\"draft-safe\",\
+             \"config_path\":\"/tmp/c.toml\",\"config_hash_sha256\":\"aa\",\
+             \"previous_last_seq\":null,\"previous_process_id\":null,\
+             \"previous_file_inode\":4242,\"audit_file_inode_changed\":false}\n";
+        // Total = prefix.len() + filler + suffix.len() == MAX_LINE_BYTES.
+        let filler_len = super::MAX_LINE_BYTES - prefix.len() - suffix.len();
+        let mut body = String::with_capacity(super::MAX_LINE_BYTES);
+        body.push_str(prefix);
+        body.push_str(&"0".repeat(filler_len));
+        body.push_str(suffix);
+        assert_eq!(body.len(), super::MAX_LINE_BYTES, "test setup invariant");
+
+        let path = write_file(&dir, "exact.jsonl", body.as_bytes());
+        let state = read_trailing_state(&path).unwrap();
+        assert_eq!(
+            state.last_seq.map(crate::record::ids::Seq::get),
+            Some(13),
+            "line at exactly MAX_LINE_BYTES must be parsed (`>` not `>=`)",
+        );
+        assert_eq!(state.last_recorded_inode, Some(4242));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_inode_returns_actual_file_inode() {
+        // Pin `current_inode -> Ok(0)` and `Ok(1)` and `inode_of -> 0`
+        // and `1`: the function must return the same value as the kernel's
+        // `stat.st_ino`. Two distinct files have distinct inodes (modulo
+        // theoretical collisions), and neither is `0` or `1` on any
+        // ordinary filesystem.
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = TempDir::new().unwrap();
+        let a = write_file(&dir, "a.jsonl", b"x\n");
+        let b = write_file(&dir, "b.jsonl", b"y\n");
+
+        let ino_a = super::current_inode(&a).unwrap();
+        let ino_b = super::current_inode(&b).unwrap();
+
+        // Compare against the raw kernel value — kills the constant-stub
+        // mutations directly.
+        assert_eq!(ino_a, std::fs::metadata(&a).unwrap().ino());
+        assert_eq!(ino_b, std::fs::metadata(&b).unwrap().ino());
+
+        // Two distinct files must have distinct inodes — kills the
+        // "collapse to a constant" stub mutations even if `meta.ino()`
+        // were also collapsed.
+        assert_ne!(ino_a, ino_b);
+        assert!(ino_a > 1, "real inodes are not 0 or 1; got {ino_a}");
+        assert!(ino_b > 1, "real inodes are not 0 or 1; got {ino_b}");
     }
 }
