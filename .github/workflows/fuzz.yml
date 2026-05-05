@@ -37,14 +37,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ClusterFuzzLite's run_fuzzers action runs every fuzz target found in the
+  # build output regardless of any per-job hint, so a per-target matrix only
+  # produces redundant copies of the same run. Single jobs share the
+  # configured `fuzz-seconds` budget across all four targets.
   pr-smoke:
-    name: pr-smoke (${{ matrix.target }})
+    name: pr-smoke
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [content_mime, content_html]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -54,26 +54,18 @@ jobs:
         with:
           language: rust
           sanitizer: address
-      - name: Run fuzzer (${{ matrix.target }})
+      - name: Run fuzzers
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
         with:
           language: rust
-          fuzz-seconds: 300
+          fuzz-seconds: 600
           mode: code-change
           sanitizer: address
-          # Restrict to a single target per matrix slot so a crash in one
-          # does not mask a regression in the other.
-          parallel-fuzzing: false
 
   nightly:
-    name: nightly (${{ matrix.target }})
+    name: nightly
     if: github.event_name == 'schedule'
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        # Keep in sync with fuzz/fuzz_targets/*.rs.
-        target: [content_mime, content_html, content_rfc2047, content_charset]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -83,11 +75,10 @@ jobs:
         with:
           language: rust
           sanitizer: address
-      - name: Run fuzzer (${{ matrix.target }})
+      - name: Run fuzzers
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
         with:
           language: rust
-          fuzz-seconds: 1800  # 30 minutes per target
+          fuzz-seconds: 7200
           mode: batch
           sanitizer: address
-          parallel-fuzzing: false
