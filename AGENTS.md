@@ -165,12 +165,12 @@ are the ones that trip people up or aren't obvious from the lint set.
 - **`prek` hooks run on every commit and push.** If a hook fails, fix the
   underlying issue — do not `--no-verify`. Do not `--amend` commits that have
   been pushed.
-- **PR workflow:** feature branch -> push -> PR against `main`. CI runs all six
-  status checks (`rustfmt`, `clippy`, `test (stable)`, `test (MSRV 1.88.0)`,
-  `cargo-deny`, `zizmor self-check`), plus `SonarQube` for code quality. `main`
-  has branch protection requiring the status checks strict (branch must be up
-  to date). A separate release workflow triggers on `v*` tags and builds
-  binaries for five platform targets.
+- **PR workflow:** feature branch -> push -> PR against `main`. CI runs all seven
+  status checks (`rustfmt`, `clippy`, `check (macOS)`, `test (stable)`,
+  `test (MSRV 1.88.0)`, `cargo-deny`, `zizmor self-check`), plus `SonarQube` for
+  code quality. `main` has branch protection requiring the status checks strict
+  (branch must be up to date). A separate release workflow triggers on `v*` tags
+  and builds binaries for five platform targets.
 - **Never force-push to `main`.** Never amend commits that have been pushed.
   Never skip hooks.
 
