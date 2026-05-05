@@ -152,6 +152,7 @@ fn locate_encoded_word_end(
 /// Find the byte offset where the header block ends (exclusive of the
 /// blank-line separator). Handles both CRLF and LF line endings.
 /// Returns `(header_end, separator_length)`.
+#[must_use]
 pub fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
     if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
         return Some((pos + 2, 2));
