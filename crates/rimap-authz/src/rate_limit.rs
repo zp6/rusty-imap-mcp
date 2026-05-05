@@ -117,6 +117,7 @@ impl Governor {
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use rimap_core::tool::ToolName;
 
@@ -193,6 +194,27 @@ mod tests {
     #[test]
     fn zero_sends_per_minute_rejected_at_build() {
         assert!(Governor::new(10, 5, 0).is_err());
+    }
+
+    #[test]
+    fn rate_limited_retry_after_ms_is_meaningful_lower_bound() {
+        // Drains the draft bucket (5 per minute → ~12s between refills) and
+        // asserts the retry hint is at least 2ms. Kills both the
+        // `retry_after_ms -> 0` and `-> 1` mutations on rate_limit.rs:36.
+        let g = Governor::new(1000, 5, 3).unwrap();
+        for _ in 0..5 {
+            let _ = g.check(ToolName::CreateDraft);
+        }
+        match g.check(ToolName::CreateDraft) {
+            Err(AuthzError::RateLimited { retry_after_ms }) => {
+                assert!(
+                    retry_after_ms >= 2,
+                    "expected retry hint >= 2ms after draining draft bucket, \
+                     got {retry_after_ms}ms"
+                );
+            }
+            other => panic!("expected RateLimited, got {other:?}"),
+        }
     }
 
     use proptest::prelude::*;
