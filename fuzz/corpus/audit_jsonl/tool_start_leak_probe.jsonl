@@ -1,0 +1,1 @@
+{"seq":7,"ts":"2026-05-05T12:00:00.000Z","process_id":"01HM0000000000000000000000","kind":"tool_start","account":"acct","tool":"search","posture_effective":"readonly","arguments_redacted":{"subject":"PLAINTEXT-SECRET"},"arguments_hash_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
