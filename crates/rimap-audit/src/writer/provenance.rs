@@ -300,14 +300,16 @@ mod tests {
     #[test]
     fn snapshot_returns_actual_recorded_ids() {
         // Pin `snapshot -> Vec<String>` stub mutations (vec![],
-        // vec![String::new()], vec!["xyzzy".into()]): a snapshot must
-        // contain exactly the recorded IDs in order — no constant stand-in
-        // can match a non-empty buffer of distinct strings.
+        // vec![String::new()], vec!["xyzzy".into()]): the production
+        // entry point is `snapshot()` (wall-clock-now), not the
+        // test-only `snapshot_at`. Use a long window so the
+        // implicit `now` cannot trigger eviction, then assert the
+        // returned vec equals the recorded IDs in order.
         let mut b = ProvenanceBuffer::new(3600);
-        b.record_at("<one@x>", at(0));
-        b.record_at("<two@x>", at(1));
-        b.record_at("<three@x>", at(2));
-        let snap = b.snapshot_at(at(3));
+        b.record("<one@x>");
+        b.record("<two@x>");
+        b.record("<three@x>");
+        let snap = b.snapshot();
         assert_eq!(snap, vec!["<one@x>", "<two@x>", "<three@x>"]);
     }
 
