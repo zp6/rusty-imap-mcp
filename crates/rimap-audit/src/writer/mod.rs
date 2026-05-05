@@ -272,7 +272,9 @@ fn set_parent_mode_0700(parent: &Path) {
 fn set_parent_mode_0700(_parent: &Path) {}
 
 #[cfg(test)]
-#[expect(clippy::unwrap_used, clippy::panic, reason = "tests")]
+#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
+#[expect(clippy::panic, reason = "tests")]
 mod tests {
     use tempfile::TempDir;
 
@@ -843,5 +845,159 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         let v: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
         assert_eq!(v["audit_file_inode_changed"], false);
+    }
+
+    #[test]
+    fn rotate_bytes_accessor_returns_configured_threshold() {
+        // Pin `rotate_bytes()` so the `-> u64 with 0` and `with 1` mutations
+        // are observable. Pick a non-zero, non-one value the trivial stubs
+        // cannot return.
+        let dir = TempDir::new().unwrap();
+        let writer = AuditWriter::open(&AuditOptions {
+            path: dir.path().join("audit.jsonl"),
+            rotate_bytes: 4242,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::record::ids::Seq::FIRST,
+        })
+        .unwrap();
+        assert_eq!(writer.rotate_bytes(), 4242);
+    }
+
+    #[test]
+    fn force_next_write_failure_makes_next_write_record_fail() {
+        // Pins the test-injection helper: setting the flag must cause the
+        // *next* `write_record` to return `AuditError::Write`. The
+        // `with ()` mutation would skip the store and the write would
+        // succeed.
+        use crate::record::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap();
+
+        let rec = AuditRecord {
+            seq: Seq::FIRST,
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+
+        writer.force_next_write_failure();
+        let err = writer
+            .write_record(&rec)
+            .expect_err("injected failure must surface as Err");
+        match err {
+            AuditError::Write { .. } => {}
+            other => panic!("expected AuditError::Write, got {other:?}"),
+        }
+
+        // The flag is single-shot: the *next* write should succeed.
+        writer.write_record(&rec).unwrap();
+    }
+
+    #[test]
+    fn force_next_write_failure_is_observed_by_fail_open_counter() {
+        // Confirms the injection helper is wired through the same path as
+        // real write failures: with `fail_open = true`, an injected failure
+        // must increment `suppressed_failures`. The `with ()` mutation
+        // would leave the flag unset and the counter at 0.
+        use crate::record::ids::{ProcessId, Seq, Timestamp};
+        use crate::record::{AuditRecord, Payload, ProcessEnd, ProcessEndReason};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path,
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: true,
+            initial_seq: Seq::FIRST,
+        })
+        .unwrap();
+
+        let rec = AuditRecord {
+            seq: Seq::FIRST,
+            ts: Timestamp::now(),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+
+        writer.force_next_write_failure();
+        // fail_open suppresses the error; the call returns Ok but the counter
+        // increments.
+        writer.write_record(&rec).unwrap();
+        assert_eq!(writer.suppressed_failures(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_sets_file_mode_to_0600() {
+        // Pin `set_file_mode_0600 with ()` mutation: a freshly-opened audit
+        // file must have permission bits 0o600. Pre-create the file with a
+        // wider mode so the defense-in-depth re-assertion in `open` is also
+        // exercised.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        std::fs::File::create(&path).unwrap();
+        let mut wide = std::fs::metadata(&path).unwrap().permissions();
+        wide.set_mode(0o644);
+        std::fs::set_permissions(&path, wide).unwrap();
+
+        let _writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::record::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "audit file must be 0600 after open");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_creates_parent_dir_with_mode_0700() {
+        // Pin `set_parent_mode_0700 with ()` mutation: when `open` creates a
+        // missing parent, that directory must end up at 0o700.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let parent = dir.path().join("audit-dir");
+        let path = parent.join("audit.jsonl");
+        let _writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::record::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let mode = std::fs::metadata(&parent).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "audit parent dir must be 0700");
     }
 }

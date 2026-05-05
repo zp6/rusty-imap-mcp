@@ -7,6 +7,11 @@ use std::path::Path;
 
 /// Exclude `path` from Time Machine backups (macOS only).
 /// Best-effort: logs a warning on failure, never propagates errors.
+// cargo-mutants: known-equivalent — `exclude_from_backup with ()` has no
+// observable effect from a Rust API standpoint. The function returns `()`
+// and never propagates errors; its only side effect is an external
+// `tmutil(8)` subprocess on macOS that the harness has no portable way to
+// inspect, and on non-macOS the body is already a `let _ = path;` no-op.
 pub fn exclude_from_backup(path: &Path) {
     #[cfg(target_os = "macos")]
     exclude_macos(path);
@@ -15,6 +20,11 @@ pub fn exclude_from_backup(path: &Path) {
     let _ = path;
 }
 
+// cargo-mutants: known-equivalent — `exclude_macos with ()` and the
+// `output.status.success()` match-guard mutations all change only the
+// `tracing` event level (debug vs warn) emitted on a tmutil(8) subprocess
+// outcome. No test or production caller observes which level fires; the
+// function returns `()` either way.
 #[cfg(target_os = "macos")]
 fn exclude_macos(path: &Path) {
     match std::process::Command::new("/usr/bin/tmutil")

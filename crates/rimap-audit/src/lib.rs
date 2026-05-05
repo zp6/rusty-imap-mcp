@@ -20,7 +20,7 @@ pub use crate::reader::backup_exclude;
 /// `rimap_audit::ids::{ProcessId, Seq, Timestamp}` after the subsystem split.
 pub use crate::record::ids;
 
-pub use crate::reader::{Filter, open_shared, stream_records};
+pub use crate::reader::{Filter, open_shared, parse_line, stream_records};
 pub use crate::record::error::AuditError;
 pub use crate::record::ids::{ProcessId, Seq, Timestamp};
 pub use crate::record::{
@@ -29,7 +29,7 @@ pub use crate::record::{
 };
 pub use crate::redact::{
     FieldPolicy, RedactionSalt, RedactionSchema, Redactor, ToolRedactionSchema, hash_arguments,
-    schemas,
+    redact, schemas,
 };
 pub use crate::writer::provenance::ProvenanceBuffer;
 pub use crate::writer::self_check::{TrailingState, current_inode, read_trailing_state};

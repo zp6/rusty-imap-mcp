@@ -119,6 +119,14 @@ pub fn rotate_file(
 /// descending, and delete all but the `keep` newest. `keep == 0` deletes
 /// every rotated sibling.
 fn prune_rotated_siblings(active: &Path, keep: u32, retention_seconds: Option<u64>) {
+    // cargo-mutants: known-equivalent — `match guard !p.as_os_str().is_empty()
+    // with true` is observably indistinguishable here. With the original
+    // guard, an empty parent (relative path with no directory component)
+    // returns immediately; with the mutated guard, control reaches
+    // `read_dir("")` which returns `ENOENT`, the warn arm logs, and the
+    // function still returns without pruning anything. Either path performs
+    // zero filesystem mutation; the only difference is one tracing event,
+    // which no test or production caller asserts on.
     let parent = match active.parent() {
         Some(p) if !p.as_os_str().is_empty() => p,
         Some(_) | None => return,
@@ -185,6 +193,12 @@ fn prune_rotated_siblings(active: &Path, keep: u32, retention_seconds: Option<u6
 
     for (idx, (mtime, path)) in siblings.into_iter().enumerate() {
         let beyond_count = idx >= keep_usize;
+        // cargo-mutants: known-equivalent — `mtime < c` vs `mtime <= c`.
+        // The cutoff is computed via `SystemTime::now() - retention`;
+        // matching `mtime == cutoff` to nanosecond precision requires
+        // controlling the kernel's mtime stamp at the moment of `now()`,
+        // which the test harness has no portable way to do. The difference
+        // is therefore unobservable by any deterministic test.
         let beyond_time = cutoff.is_some_and(|c| mtime < c);
         if (beyond_count || beyond_time)
             && let Err(err) = std::fs::remove_file(&path)
