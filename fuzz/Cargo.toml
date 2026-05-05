@@ -15,6 +15,9 @@ libfuzzer-sys = "0.4"
 path = "../crates/rimap-content"
 features = ["test-util"]
 
+[dependencies.rimap-audit]
+path = "../crates/rimap-audit"
+
 [workspace]
 # Standalone — not part of the rusty-imap-mcp workspace because
 # libfuzzer-sys is nightly-only and the workspace stable build must
