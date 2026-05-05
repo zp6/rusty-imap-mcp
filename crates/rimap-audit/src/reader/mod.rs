@@ -505,4 +505,154 @@ mod tests {
         }
         let _ = super::parse_line(&bytes);
     }
+
+    #[test]
+    fn since_bound_is_inclusive_at_record_timestamp() {
+        // Pin the doc-comment "Inclusive lower bound on `ts`" so a `<` -> `<=`
+        // mutation in `Filter::matches` is observable. With `<=`, the record
+        // whose `ts` exactly matches `since` would be filtered out.
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let exact_ts = datetime!(2026-04-07 14:22:01.000 UTC);
+        let rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(exact_ts),
+            process_id: pid,
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+        let path = write_lines(&dir, "a.jsonl", &[serde_json::to_string(&rec).unwrap()]);
+
+        let filter = Filter {
+            since: Some(exact_ts),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(count, 1, "since bound is inclusive at the record timestamp");
+    }
+
+    #[test]
+    fn until_bound_is_inclusive_at_record_timestamp() {
+        // Pin the doc-comment "Inclusive upper bound on `ts`" so a `>` -> `>=`
+        // mutation in `Filter::matches` is observable. With `>=`, the record
+        // whose `ts` exactly matches `until` would be filtered out.
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let exact_ts = datetime!(2026-04-07 14:22:01.000 UTC);
+        let rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(exact_ts),
+            process_id: pid,
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+        let path = write_lines(&dir, "a.jsonl", &[serde_json::to_string(&rec).unwrap()]);
+
+        let filter = Filter {
+            until: Some(exact_ts),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(count, 1, "until bound is inclusive at the record timestamp");
+    }
+
+    #[test]
+    fn tool_filter_excludes_record_whose_tool_does_not_match() {
+        use crate::record::ToolStart;
+
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let tool_rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
+            process_id: pid,
+            payload: Payload::ToolStart(ToolStart {
+                account: None,
+                tool: rimap_core::tool::ToolName::FetchMessage,
+                posture_effective: crate::record::PostureEffective::Account(
+                    rimap_core::Posture::DraftSafe,
+                ),
+                arguments_redacted: serde_json::json!({}),
+                arguments_hash_sha256: "0".repeat(64),
+            }),
+        };
+        let path = write_lines(
+            &dir,
+            "a.jsonl",
+            &[serde_json::to_string(&tool_rec).unwrap()],
+        );
+
+        // Filter for a *different* tool. The matching guard `name == want` must
+        // reject this record; mutating it to `true` would let it through.
+        let filter = Filter {
+            tool: Some("search".to_string()),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(count, 0, "tool filter must exclude non-matching tool records");
+    }
+
+    #[test]
+    fn account_filter_excludes_record_with_different_account() {
+        use crate::record::{Auth, AuthResult};
+
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let auth_rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
+            process_id: pid,
+            payload: Payload::Auth(Auth {
+                account: Some("bob".to_string()),
+                result: AuthResult::Success,
+                host: "h".to_string(),
+                port: 993,
+                username: "u".to_string(),
+                tls_fingerprint_sha256: None,
+                fingerprint_match: None,
+                error_code: None,
+                credential_source: None,
+            }),
+        };
+        let path = write_lines(
+            &dir,
+            "a.jsonl",
+            &[serde_json::to_string(&auth_rec).unwrap()],
+        );
+
+        // Filter for a *different* account. The `name != want` predicate must
+        // reject this record; mutating to `==` would invert it (only matching
+        // records would be filtered out).
+        let filter = Filter {
+            account: Some("alice".to_string()),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(
+            count, 0,
+            "account filter must exclude records whose account differs",
+        );
+    }
+
+    #[test]
+    fn malformed_non_trailing_line_error_carries_one_based_line_number() {
+        // Pin `line_no += 1` against `*= 1` mutation in `stream_records`. With
+        // `*= 1`, line_no stays at 0 throughout; the error would format as
+        // `(line 0)`. The original `+= 1` produces 1-based line numbers, so a
+        // malformed line in slot 2 must report "line 2".
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let good = serde_json::to_string(&sample(1, pid)).unwrap();
+        let good2 = serde_json::to_string(&sample(2, pid)).unwrap();
+        let lines = vec![good, "not json".to_string(), good2];
+        let path = write_lines(&dir, "a.jsonl", &lines);
+
+        let err = stream_records(&path, &Filter::default(), |_| Ok(())).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("line 2"), "expected `line 2` in error, got: {msg}");
+    }
 }
