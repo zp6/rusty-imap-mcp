@@ -38,8 +38,7 @@ fuzz_target!(|data: &[u8]| {
         let schema = start_in.tool.redaction_schema();
 
         let rimap_audit::Payload::ToolStart(ref start_out) = redacted.payload else {
-            // Defensive: redact() never changes the payload variant.
-            return;
+            panic!("redact() must not change the payload variant");
         };
 
         let (
