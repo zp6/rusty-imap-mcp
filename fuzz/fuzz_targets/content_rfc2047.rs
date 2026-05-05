@@ -16,46 +16,44 @@ fuzz_target!(|data: &[u8]| {
     //
     // Reuse the scrubber's own header-boundary detection so the harness
     // asserts on the exact header slice the scrubber processes.
-    let Some((header_end, _sep_len)) = rimap_content::testutil::find_header_end(&scrubbed) else {
-        return; // no header structure: scrubber returned data as-is
+    let Some((header_end, _)) = rimap_content::testutil::find_header_end(&scrubbed) else {
+        return;
     };
+    if !warnings.is_empty() {
+        return;
+    }
+    let header = &scrubbed[..header_end];
 
-    // Invariant: when the scrubber processed a real header structure
-    // and emitted no SecurityWarning, the *header* output never contains
-    // a non-fold bare LF inside an encoded-word run.
-    //
-    // "Non-fold" means the LF is not followed by SP or HT — RFC 5322
-    // folded whitespace (LF + SP/HT) is valid header continuation and
-    // cannot inject a new header line; mail-parser unfolds it to a
-    // single space. The smuggling signal is a bare LF that is *not* a
-    // fold continuation, i.e. one that a lenient parser would interpret
-    // as a header boundary.
-    //
-    // CRLF (LF preceded by CR) is normal header line ending and is also
-    // not the smuggling signal.
-    if warnings.is_empty() {
-        let header = &scrubbed[..header_end];
-        let mut in_eword = false;
-        let mut prev = 0u8;
-        for (i, &b) in header.iter().enumerate() {
-            if b == b'?' && prev == b'=' {
-                in_eword = true;
-            }
-            if in_eword && b == b'\n' && prev != b'\r' {
-                // Only flag if this is not a fold continuation.
-                // A fold is LF followed immediately by SP or HT.
-                let next = header.get(i + 1).copied().unwrap_or(0);
-                if next != b' ' && next != b'\t' {
-                    panic!(
-                        "bare non-fold LF inside encoded-word slipped through \
-                         scrub_header_smuggling"
-                    );
-                }
-            }
-            if b == b'=' && prev == b'?' {
-                in_eword = false;
-            }
-            prev = b;
+    // Encoded words require `?` (=?charset?encoding?text?=); without one,
+    // `in_eword` cannot flip and the scan is a no-op. Skips most fuzzer
+    // inputs (random bytes rarely contain the trigger).
+    if !header.contains(&b'?') {
+        return;
+    }
+
+    // Invariant: when the scrubber processed a real header structure and
+    // emitted no SecurityWarning, the header never contains a non-fold
+    // bare LF inside an encoded-word run. Bare LF (LF not preceded by
+    // CR, not followed by SP/HT fold continuation) is the smuggling
+    // signal a lenient parser would treat as a header boundary.
+    let mut in_eword = false;
+    let mut prev = 0u8;
+    for (i, &b) in header.iter().enumerate() {
+        if b == b'?' && prev == b'=' {
+            in_eword = true;
         }
+        let is_bare_lf = b == b'\n' && prev != b'\r';
+        let next = header.get(i + 1).copied().unwrap_or(0);
+        let is_fold = next == b' ' || next == b'\t';
+        if in_eword && is_bare_lf && !is_fold {
+            panic!(
+                "bare non-fold LF inside encoded-word slipped through \
+                 scrub_header_smuggling"
+            );
+        }
+        if b == b'=' && prev == b'?' {
+            in_eword = false;
+        }
+        prev = b;
     }
 });
