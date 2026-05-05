@@ -476,7 +476,8 @@ mod tests {
     }
 
     #[test]
-    #[expect(clippy::expect_used, clippy::panic, reason = "tests")]
+    #[expect(clippy::expect_used, reason = "tests use expect for assertions")]
+    #[expect(clippy::panic, reason = "tests assert variant shapes via panic")]
     fn parse_line_returns_invalid_data_on_malformed_json() {
         let err = super::parse_line(b"{not json").expect_err("malformed JSON must error");
         match err {
@@ -489,8 +490,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_line_does_not_panic_on_empty_input() {
-        let _ = super::parse_line(b"");
+    fn parse_line_returns_err_on_empty_input() {
+        assert!(
+            super::parse_line(b"").is_err(),
+            "empty input is malformed; doc comment promises Err",
+        );
     }
 
     #[test]
