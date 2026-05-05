@@ -100,6 +100,26 @@ fn kind_of(payload: &Payload) -> &'static str {
     }
 }
 
+/// Parse a single JSONL line into an [`AuditRecord`].
+///
+/// Thin wrapper around `serde_json::from_slice` that maps any decode
+/// failure to [`AuditError::Read`] with `line: None` (callers track line
+/// numbers when they have them — `parse_line` itself does not). Empty
+/// input is treated as malformed and returns `Err`; callers that want
+/// the trailing-empty-line tolerance enforced by `stream_records` should
+/// use that function instead.
+///
+/// # Errors
+/// [`AuditError::Read`] when the bytes do not deserialize to a valid
+/// [`AuditRecord`].
+pub fn parse_line(raw: &[u8]) -> Result<AuditRecord, AuditError> {
+    serde_json::from_slice::<AuditRecord>(raw).map_err(|err| AuditError::Read {
+        path: std::path::PathBuf::new(),
+        line: None,
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
+    })
+}
+
 /// Open the audit file with a shared lock.
 ///
 /// # Errors
@@ -442,5 +462,43 @@ mod tests {
         };
         let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "tests")]
+    fn parse_line_round_trips_a_valid_record() {
+        let pid = ProcessId::new_now();
+        let rec = sample(7, pid);
+        let bytes = serde_json::to_vec(&rec).unwrap();
+
+        let parsed = super::parse_line(&bytes).expect("valid record must parse");
+        assert_eq!(parsed.seq.get(), 7);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, clippy::panic, reason = "tests")]
+    fn parse_line_returns_invalid_data_on_malformed_json() {
+        let err = super::parse_line(b"{not json").expect_err("malformed JSON must error");
+        match err {
+            crate::AuditError::Read { line, source, .. } => {
+                assert!(line.is_none(), "parse_line has no line context");
+                assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_line_does_not_panic_on_empty_input() {
+        let _ = super::parse_line(b"");
+    }
+
+    #[test]
+    fn parse_line_does_not_panic_on_garbage_bytes() {
+        let mut bytes = Vec::with_capacity(1024);
+        for i in 0_u16..1024 {
+            bytes.push((i & 0xff) as u8);
+        }
+        let _ = super::parse_line(&bytes);
     }
 }
