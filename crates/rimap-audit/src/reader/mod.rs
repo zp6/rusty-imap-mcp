@@ -593,7 +593,10 @@ mod tests {
             ..Filter::default()
         };
         let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
-        assert_eq!(count, 0, "tool filter must exclude non-matching tool records");
+        assert_eq!(
+            count, 0,
+            "tool filter must exclude non-matching tool records"
+        );
     }
 
     #[test]
@@ -653,6 +656,9 @@ mod tests {
 
         let err = stream_records(&path, &Filter::default(), |_| Ok(())).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("line 2"), "expected `line 2` in error, got: {msg}");
+        assert!(
+            msg.contains("line 2"),
+            "expected `line 2` in error, got: {msg}"
+        );
     }
 }

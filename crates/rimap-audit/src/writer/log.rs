@@ -296,7 +296,10 @@ mod tests {
         drop(writer);
 
         let contents = std::fs::read_to_string(&path).unwrap();
-        let line = contents.lines().next().expect("emit_auth must persist a line");
+        let line = contents
+            .lines()
+            .next()
+            .expect("emit_auth must persist a line");
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["kind"], "auth");
         assert_eq!(v["result"], "success");

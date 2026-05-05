@@ -205,9 +205,7 @@ pub(super) fn needs_fsync(payload: &crate::record::Payload) -> bool {
 mod tests {
     use rimap_core::auth_event::{AuthEvent, AuthResult};
 
-    use crate::record::{
-        Payload, ProcessEnd, ProcessEndReason, ProcessStart, ToolEnd, ToolStart,
-    };
+    use crate::record::{Payload, ProcessEnd, ProcessEndReason, ProcessStart, ToolEnd, ToolStart};
 
     fn auth_payload() -> Payload {
         Payload::Auth(AuthEvent {
