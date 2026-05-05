@@ -7,6 +7,30 @@
 //! the corpus test harness panics on `None` (a new variant = a harness
 //! gap that must fail loudly).
 
+/// Re-export of [`crate::html::process`] under the alias `sanitize_html`
+/// for fuzz harnesses and out-of-tree integration tests. Production code
+/// must continue to reach `process` through the [`crate::parse::parse_message`]
+/// pipeline.
+pub use crate::html::process as sanitize_html;
+
+/// Re-export of [`crate::parse::mime_scrub::scrub_header_smuggling`]
+/// for fuzz harnesses. Production code reaches this function through
+/// [`crate::parse::parse_message`].
+pub use crate::parse::mime_scrub::scrub_header_smuggling;
+
+/// Re-export of [`crate::parse::mime_scrub::find_header_end`] for fuzz
+/// harnesses that need to mirror the scrubber's exact header-boundary
+/// detection without redefining the offset arithmetic. Returns
+/// `(header_end, sep_len)` where `header_end` excludes the blank-line
+/// separator. Production code reaches this through `scrub_header_smuggling`.
+pub use crate::parse::mime_scrub::find_header_end;
+
+/// Re-export of [`crate::html::HtmlResult`] so external callers of the
+/// re-exported `sanitize_html` alias can name the return type. Production
+/// code does not see `HtmlResult` directly — its fields are folded into
+/// [`crate::output::Content`] by [`crate::parse::parse_message`].
+pub use crate::html::HtmlResult;
+
 use crate::{ContentError, WarningCode};
 
 /// Map a known `WarningCode` variant to its stable audit-label string.
@@ -177,5 +201,26 @@ mod tests {
                 "label for {err:?} changed",
             );
         }
+    }
+}
+
+#[cfg(test)]
+#[expect(clippy::expect_used, reason = "tests")]
+mod test_util_reexports {
+    use crate::output::SecurityWarning;
+
+    #[test]
+    fn fuzz_entries_are_callable_via_testutil() {
+        // sanitize_html: minimal HTML body should round-trip without panic.
+        let result = super::sanitize_html(b"<p>hi</p>", Some("utf-8"))
+            .expect("sanitize_html on minimal HTML must succeed");
+        assert!(!result.body_text.is_empty());
+
+        // scrub_header_smuggling: a clean encoded-word produces no warnings.
+        let mut warnings: Vec<SecurityWarning> = Vec::new();
+        let raw = b"Subject: =?utf-8?B?aGVsbG8=?=\r\n\r\nbody";
+        let scrubbed = super::scrub_header_smuggling(raw, &mut warnings);
+        assert!(warnings.is_empty(), "clean encoded word should not warn");
+        assert!(!scrubbed.is_empty());
     }
 }

@@ -7,6 +7,7 @@ use scraper::{Html, Selector};
 use crate::html::MAX_ANCHOR_TEXT_SCAN;
 use crate::html::MAX_MISMATCH_HITS;
 use crate::html::hidden::compile_selector;
+use crate::unicode::truncate_graphemes_in_place;
 
 /// Selector matching anchor elements with an `href` attribute.
 pub(super) static SEL_ANCHOR: LazyLock<Selector> = LazyLock::new(|| compile_selector("a[href]"));
@@ -100,12 +101,12 @@ pub(super) fn detect_mismatches(
             let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
             // cargo-mutants: known-equivalent — `> with >=` here is
             // observably identical. At `text.len() == MAX_ANCHOR_TEXT_SCAN`,
-            // `truncate(MAX_ANCHOR_TEXT_SCAN)` is a documented no-op
-            // (`String::truncate` does nothing when `new_len >= len`),
-            // so the only case the operators differ on produces no
-            // mutation in `text`.
+            // `truncate_graphemes_in_place` is a no-op (its internal
+            // `grapheme_cut` returns `s.len()` and `String::truncate`
+            // does nothing when `new_len == len`), so the only case the
+            // operators differ on produces no mutation in `text`.
             if text.len() > MAX_ANCHOR_TEXT_SCAN {
-                text.truncate(MAX_ANCHOR_TEXT_SCAN);
+                truncate_graphemes_in_place(&mut text, MAX_ANCHOR_TEXT_SCAN);
             }
             let has_url_text = finder
                 .links(&text)
@@ -118,10 +119,10 @@ pub(super) fn detect_mismatches(
         let mut text: String = anchor.text().collect::<Vec<&str>>().join(" ");
         // cargo-mutants: known-equivalent — `> with >=` is observably
         // identical here for the same reason as the unparsable-branch
-        // truncation above: `truncate(MAX_ANCHOR_TEXT_SCAN)` is a no-op
-        // at `text.len() == MAX_ANCHOR_TEXT_SCAN`.
+        // truncation above: `truncate_graphemes_in_place` is a no-op at
+        // `text.len() == MAX_ANCHOR_TEXT_SCAN`.
         if text.len() > MAX_ANCHOR_TEXT_SCAN {
-            text.truncate(MAX_ANCHOR_TEXT_SCAN);
+            truncate_graphemes_in_place(&mut text, MAX_ANCHOR_TEXT_SCAN);
         }
         let mut link_iter = finder
             .links(&text)
@@ -244,6 +245,33 @@ mod mismatch_tests {
             unparsable.is_empty(),
             "URL placed past MAX_ANCHOR_TEXT_SCAN must be truncated before linkify; got {unparsable:?}",
         );
+    }
+
+    #[test]
+    fn detect_mismatches_does_not_panic_on_multi_byte_at_truncation_boundary() {
+        // Regression: `String::truncate(MAX_ANCHOR_TEXT_SCAN)` panics if
+        // the cut falls inside a multi-byte UTF-8 codepoint. The fuzzer
+        // surfaced a 3628-byte HTML input where anchor text ended with a
+        // 4-byte sequence straddling byte 4096. Both truncation branches
+        // (parsable + unparsable href) now route through
+        // `truncate_graphemes_in_place`, which walks back to a grapheme
+        // boundary instead of panicking.
+        //
+        // Construct anchor text whose byte length crosses the cap inside
+        // a 3-byte CJK codepoint: `'a'` repeated to one byte before the
+        // cap, then `'中'` (3 bytes) — cut at byte `MAX_ANCHOR_TEXT_SCAN`
+        // would land at the second byte of `中`.
+        let mut padding = "a".repeat(MAX_ANCHOR_TEXT_SCAN - 1);
+        padding.push('中');
+        let body =
+            format!("<html><body><a href=\"https://actual.com\">{padding}</a></body></html>");
+        let document = Html::parse_document(&body);
+        let _ = detect_mismatches(&document);
+
+        let body_unparsable =
+            format!("<html><body><a href=\"https://noserver/path\">{padding}</a></body></html>");
+        let document_unparsable = Html::parse_document(&body_unparsable);
+        let _ = detect_mismatches(&document_unparsable);
     }
 
     #[test]

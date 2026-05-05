@@ -15,7 +15,7 @@ mod bodies;
 mod filename;
 mod headers;
 mod meta;
-mod mime_scrub;
+pub(crate) mod mime_scrub;
 pub(crate) mod safe_parser;
 mod sniff;
 

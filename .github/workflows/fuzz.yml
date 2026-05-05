@@ -1,0 +1,84 @@
+name: Fuzz
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/rimap-content/**'
+      - 'crates/rimap-audit/**'
+      - 'crates/rimap-server/**'
+      - 'fuzz/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/fuzz.yml'
+  schedule:
+    # Nightly at 03:17 UTC. The odd minute spreads load on shared GHA
+    # cron schedulers (top-of-the-hour cron jobs queue heavily).
+    - cron: '17 3 * * *'
+
+concurrency:
+  # PR-smoke runs share a per-PR group so a force-push cancels the prior run.
+  # Nightly runs share a single global group so two nightly cycles cannot
+  # overlap if one runs long.
+  group: fuzz-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  # ClusterFuzzLite's run_fuzzers action calls the actions REST API to fetch
+  # prior-run artifacts (corpus persistence + previous-build crash attribution).
+  # Without this scope every API call returns 401 and both features silently
+  # degrade. See issue #202.
+  actions: read
+  # 'security-events: write' would be needed to upload SARIF; not used here
+  # because crash artifacts are sufficient for B1's scope.
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ClusterFuzzLite's run_fuzzers action runs every fuzz target found in the
+  # build output regardless of any per-job hint, so a per-target matrix only
+  # produces redundant copies of the same run. Single jobs share the
+  # configured `fuzz-seconds` budget across all four targets.
+  pr-smoke:
+    name: pr-smoke
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          sanitizer: address
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          fuzz-seconds: 600
+          mode: code-change
+          sanitizer: address
+
+  nightly:
+    name: nightly
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Build fuzzers
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          sanitizer: address
+      - name: Run fuzzers
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1  # v1
+        with:
+          language: rust
+          fuzz-seconds: 7200
+          mode: batch
+          sanitizer: address

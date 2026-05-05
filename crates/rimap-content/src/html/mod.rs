@@ -6,7 +6,10 @@
 //! stripped. The only consumer of `scraper`, `ammonia`, and `linkify`
 //! in the workspace.
 //!
-//! The single public (crate-visible) entrypoint is [`process`].
+//! The single entrypoint visible outside `parse_message` is [`process`],
+//! re-exported through [`crate::testutil`] (under the alias `sanitize_html`)
+//! for fuzz harnesses; production callers reach it via
+//! [`crate::parse::parse_message`].
 
 use std::collections::HashSet;
 
@@ -26,9 +29,13 @@ use crate::html::hidden::detect_hidden;
 use crate::html::mismatch::detect_mismatches;
 use crate::html::sanitize::sanitize_body;
 
+// `pub` only because `testutil` re-exports through `pub mod testutil` (Rust
+// E0364 forbids `pub use` of `pub(crate)` items). Module privacy keeps
+// this unreachable outside the crate; production callers reach this type
+// through [`crate::output::Content`] populated by [`crate::parse::parse_message`].
 /// Result of processing a single HTML body part.
 #[derive(Debug, Clone)]
-pub(crate) struct HtmlResult {
+pub struct HtmlResult {
     /// Plain text extracted from the HTML, already run through
     /// `unicode::sanitize`.
     pub body_text: String,
@@ -102,6 +109,11 @@ impl HiddenMethod {
     }
 }
 
+// `pub` only because `testutil` re-exports through `pub mod testutil` (Rust
+// E0364 forbids `pub use` of `pub(crate)` items). Module privacy (`mod html;`
+// in `lib.rs`) keeps this unreachable outside the crate; production callers
+// MUST reach it via [`crate::parse::parse_message`] so the unicode +
+// lookalike-audit pipeline runs first.
 /// Process a raw HTML body into sanitized text + html + warnings.
 ///
 /// # Arguments
@@ -116,7 +128,7 @@ impl HiddenMethod {
 ///
 /// Returns [`ContentError::LimitExceeded`] if `raw` exceeds
 /// [`MAX_HTML_BYTES`].
-pub(crate) fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, ContentError> {
+pub fn process(raw: &[u8], charset: Option<&str>) -> Result<HtmlResult, ContentError> {
     if raw.len() > MAX_HTML_BYTES {
         return Err(ContentError::LimitExceeded {
             kind: HTML_BODY_LIMIT_KIND,
