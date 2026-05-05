@@ -145,10 +145,14 @@ fn locate_encoded_word_end(
     EncodedWordEnd::Missing
 }
 
+// `pub` only because `testutil` re-exports through `pub mod testutil` (Rust
+// E0364 forbids `pub use` of `pub(crate)` items). Module privacy
+// (`pub(crate) mod mime_scrub` in `parse/mod.rs`) keeps this unreachable
+// outside the crate; production callers reach it via `scrub_header_smuggling`.
 /// Find the byte offset where the header block ends (exclusive of the
 /// blank-line separator). Handles both CRLF and LF line endings.
 /// Returns `(header_end, separator_length)`.
-pub(super) fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
+pub fn find_header_end(raw: &[u8]) -> Option<(usize, usize)> {
     if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
         return Some((pos + 2, 2));
     }

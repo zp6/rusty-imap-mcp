@@ -14,19 +14,9 @@ fuzz_target!(|data: &[u8]| {
     // (encoded-word runs in body bytes are not the smuggling concern;
     // mail-parser would reject the message before any header is read).
     //
-    // Mirror the scrubber's own header-boundary detection so the
-    // harness asserts only on inputs the scrubber actually processed.
-    let header_end = scrubbed
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|p| p + 4)
-        .or_else(|| {
-            scrubbed
-                .windows(2)
-                .position(|w| w == b"\n\n")
-                .map(|p| p + 2)
-        });
-    let Some(header_end) = header_end else {
+    // Reuse the scrubber's own header-boundary detection so the harness
+    // asserts on the exact header slice the scrubber processes.
+    let Some((header_end, _sep_len)) = rimap_content::testutil::find_header_end(&scrubbed) else {
         return; // no header structure: scrubber returned data as-is
     };
 

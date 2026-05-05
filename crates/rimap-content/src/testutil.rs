@@ -18,6 +18,13 @@ pub use crate::html::process as sanitize_html;
 /// [`crate::parse::parse_message`].
 pub use crate::parse::mime_scrub::scrub_header_smuggling;
 
+/// Re-export of [`crate::parse::mime_scrub::find_header_end`] for fuzz
+/// harnesses that need to mirror the scrubber's exact header-boundary
+/// detection without redefining the offset arithmetic. Returns
+/// `(header_end, sep_len)` where `header_end` excludes the blank-line
+/// separator. Production code reaches this through `scrub_header_smuggling`.
+pub use crate::parse::mime_scrub::find_header_end;
+
 /// Re-export of [`crate::html::HtmlResult`] so external callers of the
 /// re-exported `sanitize_html` alias can name the return type. Production
 /// code does not see `HtmlResult` directly — its fields are folded into
