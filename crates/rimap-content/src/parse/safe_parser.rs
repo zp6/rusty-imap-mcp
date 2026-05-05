@@ -63,6 +63,26 @@ fn log_parser_panic(raw: &[u8]) {
 mod tests {
     use super::*;
 
+    /// Install a permissive `Registry` as the global default subscriber on
+    /// the first call (#239). Without this, the *first* test thread to fire
+    /// the `tracing::error!` macro at `log_parser_panic` registers the
+    /// callsite against the still-default `NoSubscriber`, caching
+    /// `Interest::never` for the lifetime of the test process. Any later
+    /// test that installs a thread-local capture layer via `with_default`
+    /// then sees the macro short-circuit before its layer is consulted.
+    /// Calling this from every test that fires the macro guarantees the
+    /// callsite is registered against a permissive subscriber the first
+    /// time, regardless of test ordering.
+    fn install_permissive_global_default() {
+        use std::sync::OnceLock;
+        use tracing_subscriber::registry::Registry;
+        static INIT: OnceLock<()> = OnceLock::new();
+        INIT.get_or_init(|| {
+            let subscriber = Registry::default();
+            let _ = tracing::dispatcher::set_global_default(tracing::Dispatch::new(subscriber));
+        });
+    }
+
     #[test]
     #[expect(
         clippy::expect_used,
@@ -82,6 +102,7 @@ mod tests {
         reason = "test exercises the catch_unwind error arm with a synthetic panic"
     )]
     fn catch_unwind_error_arm_produces_parser_panic() {
+        install_permissive_global_default();
         // We cannot synthesize a panic from inside mail_parser without
         // hitting the actual upstream bug, so we exercise the error-arm
         // logic by mirroring what safe_parse does: catch_unwind on a
@@ -104,6 +125,7 @@ mod tests {
 
     #[test]
     fn log_parser_panic_handles_empty_input() {
+        install_permissive_global_default();
         // Boundary: zero-byte input still produces a valid sha256 and
         // does not panic the logger. `Sha256::new()` + finalize on no
         // updates is a well-defined hash of the empty string.
@@ -116,11 +138,6 @@ mod tests {
         reason = "Mutex::lock() poison-propagation in test-only event-capture layer"
     )]
     fn log_parser_panic_emits_structured_tracing_event() {
-        // Kills `replace log_parser_panic with ()` mutation. The function
-        // is pure side-effect: its only observable behavior is the
-        // structured tracing event. Install a thread-local Layer that
-        // records every event's target and field values, then assert the
-        // expected target and required fields appear.
         use std::fmt::Write as _;
         use std::sync::{Arc, Mutex};
         use tracing::Subscriber;
@@ -129,6 +146,11 @@ mod tests {
         use tracing_subscriber::layer::{Context, SubscriberExt};
         use tracing_subscriber::registry::Registry;
 
+        // Kills `replace log_parser_panic with ()` mutation. The function
+        // is pure side-effect: its only observable behavior is the
+        // structured tracing event. Install a thread-local Layer that
+        // records every event's target and field values, then assert the
+        // expected target and required fields appear.
         struct Capture {
             events: Arc<Mutex<Vec<String>>>,
         }
@@ -152,6 +174,7 @@ mod tests {
             }
         }
 
+        install_permissive_global_default();
         let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let layer = Capture {
             events: Arc::clone(&events),

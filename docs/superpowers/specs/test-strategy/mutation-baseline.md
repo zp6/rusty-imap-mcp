@@ -20,26 +20,21 @@ adding a test, not annotated.
 **Last refresh:** 2026-05-04.
 **Surviving mutants in non-`bin/` code:** 14.
 
-Run summary (652 mutants total, 2026-05-04 full single-threaded run
-via `just mutants --package rimap-content`): 566 caught, 16 missed, 6
-timeout, 64 unviable in 40 minutes wall clock. Three of the 19
-known-equivalent rows below report "caught" in this run only because
-a flaky callsite-cache interaction in
-`parse::safe_parser::tests::log_parser_panic_emits_structured_tracing_event`
-([#239](https://github.com/randomparity/rusty-imap-mcp/issues/239))
-fails the per-mutant runs for `lookalike.rs:220` (`< with <=`),
-`lookalike.rs:228` (`+ with *`), and `bin/epvme_runner.rs:189`
-(`"xyzzy".into()`); the mutations themselves remain genuinely
-mathematically equivalent. Counting all 19 the deterministic
-survivor floor is 14 outside `src/bin/` and 5 inside. Every
-non-`bin/` survivor is a mathematically equivalent mutation
-documented in the table below; the 5 `src/bin/epvme_runner.rs`
-survivors are documented in the `### bin/epvme_runner.rs` subsection
-below (issue #193 took the original 16 to 5 by killing 11 with tests
-and annotating the rest). Issue #236 killed three post-archive
-survivors in `testutil.rs` and `parse/mime_scrub.rs` and added two
-new known-equivalent rows for the `> with >=` mutations on the
-`MAX_ANCHOR_TEXT_SCAN` truncation guards in `html/mismatch.rs`.
+Run summary (652 mutants total, 2026-05-04 full run via `just mutants
+--package rimap-content`): 563 caught, 19 missed, 6 timeout, 64
+unviable in 44 minutes wall clock. The deterministic survivor floor
+is 14 outside `src/bin/` and 5 inside; both numbers match this run's
+output exactly after the
+[#239](https://github.com/randomparity/rusty-imap-mcp/issues/239)
+flaky-tracing-test fix landed. Every non-`bin/` survivor is a
+mathematically equivalent mutation documented in the table below;
+the 5 `src/bin/epvme_runner.rs` survivors are documented in the
+`### bin/epvme_runner.rs` subsection below (issue #193 took the
+original 16 to 5 by killing 11 with tests and annotating the rest).
+Issue #236 killed three post-archive survivors in `testutil.rs` and
+`parse/mime_scrub.rs` and added two new known-equivalent rows for
+the `> with >=` mutations on the `MAX_ANCHOR_TEXT_SCAN` truncation
+guards in `html/mismatch.rs`.
 
 The follow-up plan
 [`archive: 2026-04-30-rimap-content-mutation-cleanup-followup.md`](https://github.com/randomparity/rusty-imap-mcp/blob/archive/daemon-experiment/docs/superpowers/plans/2026-04-30-rimap-content-mutation-cleanup-followup.md)
