@@ -179,6 +179,44 @@ mod tests {
     }
 
     #[test]
+    fn read_error_with_line_number_renders_line_marker() {
+        // Pin `fmt_line -> String::new()` and `fmt_line -> "xyzzy".into()`
+        // mutations: a `Read` error carrying `line: Some(N)` must render
+        // its Display with " (line N)". The empty-string stub would drop
+        // the marker; the constant stub would emit `xyzzy` instead.
+        let err = AuditError::Read {
+            path: PathBuf::from("/tmp/a.jsonl"),
+            line: Some(42),
+            source: std::io::Error::from(std::io::ErrorKind::InvalidData),
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("(line 42)"),
+            "Display must include the line marker; got: {display}",
+        );
+        assert!(
+            !display.contains("xyzzy"),
+            "Display must not echo the mutation stub; got: {display}",
+        );
+    }
+
+    #[test]
+    fn read_error_without_line_number_omits_line_marker() {
+        // The `None` arm produces an empty string. Confirm the formatted
+        // message has no `(line ...)` substring when `line: None`.
+        let err = AuditError::Read {
+            path: PathBuf::from("/tmp/a.jsonl"),
+            line: None,
+            source: std::io::Error::from(std::io::ErrorKind::InvalidData),
+        };
+        let display = err.to_string();
+        assert!(
+            !display.contains("(line "),
+            "no line marker for `line: None`; got: {display}",
+        );
+    }
+
+    #[test]
     fn rimap_error_conversion_preserves_code_and_source() {
         use std::error::Error as _;
 
