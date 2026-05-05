@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use fs4::fs_std::FileExt;
+use fs4::{FileExt, TryLockError};
 use time::OffsetDateTime;
 
 pub mod backup_exclude;
@@ -114,11 +114,11 @@ pub fn open_shared(path: &Path) -> Result<File, AuditError> {
             source,
         })?;
     match FileExt::try_lock_shared(&file) {
-        Ok(true) => Ok(file),
-        Ok(false) => Err(AuditError::Locked {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(AuditError::Locked {
             path: path.to_path_buf(),
         }),
-        Err(source) => Err(AuditError::Open {
+        Err(TryLockError::Error(source)) => Err(AuditError::Open {
             path: path.to_path_buf(),
             source,
         }),
