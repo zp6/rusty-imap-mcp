@@ -202,11 +202,12 @@ pub fn hash_arguments(args: &Value) -> String {
 /// supplied salt. For all other payload variants the record is
 /// returned unchanged (no caller-supplied strings to redact).
 ///
-/// This function is intentionally idempotent: applying it twice with
-/// the same salt produces the same output as applying it once, because
-/// the redaction policies map any surviving string value to either
-/// `"<redacted:N>"`, a salted hash, or removal — none of which contain
-/// the original bytes.
+/// Re-application is safe: once the original string bytes have been
+/// replaced with `"<redacted:N>"`, a salted hash, or removed entirely,
+/// they cannot be reintroduced by further passes. (The `<redacted:N>`
+/// length marker and salted-hash output are themselves treated as
+/// strings on subsequent passes, so the field's textual content will
+/// continue to evolve — but never back toward the original.)
 #[must_use]
 pub fn redact(
     record: &crate::record::AuditRecord,
