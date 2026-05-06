@@ -10,10 +10,14 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 
 [dependencies.rimap-content]
 path = "../crates/rimap-content"
 features = ["test-util"]
+
+[dependencies.rimap-audit]
+path = "../crates/rimap-audit"
 
 [workspace]
 # Standalone — not part of the rusty-imap-mcp workspace because
@@ -44,6 +48,13 @@ bench = false
 [[bin]]
 name = "content_charset"
 path = "fuzz_targets/content_charset.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_jsonl"
+path = "fuzz_targets/audit_jsonl.rs"
 test = false
 doc = false
 bench = false
