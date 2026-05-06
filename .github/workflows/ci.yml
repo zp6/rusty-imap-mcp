@@ -76,7 +76,7 @@ jobs:
         with:
           toolchain: 1.94.0
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
-      - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
+      - uses: taiki-e/install-action@1329c298aa20c3257846c9b2e0e55967df3e3c37  # v2.75.25
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-tests=pass
@@ -97,7 +97,7 @@ jobs:
         with:
           key: msrv
       - run: cargo check --workspace --all-targets --all-features --locked
-      - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
+      - uses: taiki-e/install-action@1329c298aa20c3257846c9b2e0e55967df3e3c37  # v2.75.25
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-tests=pass
@@ -109,7 +109,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979  # v2.0.15
+      - uses: EmbarkStudios/cargo-deny-action@91bf2b620e09e18d6eb78b92e7861937469acedb  # v2.0.17
         with:
           command: check advisories licenses bans sources
 
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
+      - uses: taiki-e/install-action@1329c298aa20c3257846c9b2e0e55967df3e3c37  # v2.75.25
         with:
           tool: zizmor
       - run: zizmor .github/workflows/
@@ -151,12 +151,12 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
           key: sonarqube
-      - uses: taiki-e/install-action@cf39a74df4a72510be4e5b63348d61067f11e64a  # v2.75.0
+      - uses: taiki-e/install-action@1329c298aa20c3257846c9b2e0e55967df3e3c37  # v2.75.25
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage report
         run: cargo llvm-cov --locked --workspace --all-features --lcov --output-path lcov.info
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@299e4b793aaa83bf2aba7c9c14bedbb485688ec4  # v7.1.0
+        uses: SonarSource/sonarqube-scan-action@55e44800a8f495208cce6e4e82f5dedb45fcf0ef  # v7.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
