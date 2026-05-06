@@ -492,6 +492,19 @@ mod tests {
     }
 
     #[test]
+    fn system_clock_now_advances_with_wall_time() {
+        // Stronger than the non-decreasing assertion above: this also kills
+        // the `now -> Duration::default()` mutation, which would pin both
+        // reads to Duration::ZERO and fail the strict-greater check.
+        use crate::breaker::{Clock, SystemClock};
+        let c = SystemClock::default();
+        let a = c.now();
+        std::thread::sleep(Duration::from_millis(2));
+        let b = c.now();
+        assert!(b > a, "SystemClock::now must advance across a real sleep");
+    }
+
+    #[test]
     fn on_failure_in_open_is_a_noop() {
         let b = CircuitBreaker::new(ManualClock::new(), test_cfg());
         b.on_failure(FailureReason::Auth); // trip

@@ -195,6 +195,35 @@ pub fn hash_arguments(args: &Value) -> String {
     hex::encode(digest)
 }
 
+/// Re-apply the per-tool [`RedactionSchema`] to an [`AuditRecord`].
+///
+/// For [`crate::record::Payload::ToolStart`] this re-runs [`Redactor::apply`]
+/// on `arguments_redacted` using the tool's declared schema and the
+/// supplied salt. For all other payload variants the record is
+/// returned unchanged (no caller-supplied strings to redact).
+///
+/// Re-application is safe: once the original string bytes have been
+/// replaced with `"<redacted:N>"`, a salted hash, or removed entirely,
+/// they cannot be reintroduced by further passes. (The `<redacted:N>`
+/// length marker and salted-hash output are themselves treated as
+/// strings on subsequent passes, so the field's textual content will
+/// continue to evolve — but never back toward the original.)
+#[must_use]
+pub fn redact(
+    record: &crate::record::AuditRecord,
+    salt: &RedactionSalt,
+) -> crate::record::AuditRecord {
+    use crate::record::Payload;
+
+    let mut out = record.clone();
+    if let Payload::ToolStart(ref mut start) = out.payload {
+        let schema = start.tool.redaction_schema();
+        let redactor = Redactor::new(&schema, salt);
+        start.arguments_redacted = redactor.apply(&start.arguments_redacted);
+    }
+    out
+}
+
 /// Extension trait adding a total redaction-schema dispatch on
 /// [`ToolName`]. Implemented for `ToolName` in this crate; bring the trait
 /// into scope to call `tool.redaction_schema()`.
@@ -815,6 +844,74 @@ mod tests {
         assert_eq!(
             schema.policies.get("message_count").copied(),
             Some(FieldPolicy::Verbatim),
+        );
+    }
+}
+
+#[cfg(test)]
+mod redact_record_tests {
+    use rimap_core::{Posture, tool::ToolName};
+    use serde_json::json;
+    use time::macros::datetime;
+
+    use crate::record::ids::{ProcessId, Seq, Timestamp};
+    use crate::record::{AuditRecord, Payload, PostureEffective, ToolStart};
+    use crate::redact::{RedactionSalt, redact};
+
+    fn salt() -> RedactionSalt {
+        RedactionSalt::from_bytes([0x42_u8; 32])
+    }
+
+    fn tool_start_record(args_redacted: serde_json::Value) -> AuditRecord {
+        AuditRecord {
+            seq: Seq(1),
+            ts: Timestamp::from_offset(datetime!(2026-05-05 12:00:00.000 UTC)),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ToolStart(ToolStart {
+                account: Some("acct".into()),
+                tool: ToolName::Search,
+                posture_effective: PostureEffective::Account(Posture::Readonly),
+                arguments_redacted: args_redacted,
+                arguments_hash_sha256: "0".repeat(64),
+            }),
+        }
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn redact_re_redacts_tool_start_arguments() {
+        let secret = "this-is-a-secret";
+        let rec = tool_start_record(json!({
+            "subject": secret,
+        }));
+        let s = salt();
+        let redacted = redact(&rec, &s);
+        let serialized = serde_json::to_string(&redacted).unwrap();
+        assert!(
+            !serialized.contains(secret),
+            "post-redaction serialized form leaked secret: {serialized}"
+        );
+    }
+
+    #[test]
+    #[expect(clippy::unwrap_used, reason = "tests")]
+    fn redact_passes_through_non_tool_start_records() {
+        use crate::record::{ProcessEnd, ProcessEndReason};
+        let rec = AuditRecord {
+            seq: Seq(2),
+            ts: Timestamp::from_offset(datetime!(2026-05-05 12:00:00.000 UTC)),
+            process_id: ProcessId::new_now(),
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+        let redacted = redact(&rec, &salt());
+        assert_eq!(rec.seq.get(), redacted.seq.get());
+        assert_eq!(rec.process_id.to_string(), redacted.process_id.to_string());
+        assert_eq!(
+            serde_json::to_string(&rec).unwrap(),
+            serde_json::to_string(&redacted).unwrap(),
         );
     }
 }

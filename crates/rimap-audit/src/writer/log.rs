@@ -251,3 +251,60 @@ pub struct ProcessStartInputs {
     /// (call `crate::writer::self_check::current_inode` on the path).
     pub current_inode: u64,
 }
+
+#[cfg(test)]
+#[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
+mod tests {
+    use rimap_core::auth_event::{AuthEvent, AuthResult};
+    use rimap_core::auth_sink::AuthEventSink;
+    use tempfile::TempDir;
+
+    use crate::writer::{AuditOptions, AuditWriter};
+
+    #[test]
+    fn auth_event_sink_emit_auth_writes_a_record_to_disk() {
+        // Pin `<impl AuthEventSink for AuditWriter>::emit_auth -> Ok(())`
+        // mutation: routing through the trait must produce an on-disk auth
+        // record. The `Ok(())` stub would silently drop the record.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("audit.jsonl");
+        let writer = AuditWriter::open(&AuditOptions {
+            path: path.clone(),
+            rotate_bytes: 0,
+            rotate_keep: 0,
+            retention_seconds: None,
+            fail_open: false,
+            initial_seq: crate::record::ids::Seq::FIRST,
+        })
+        .unwrap();
+
+        let event = AuthEvent {
+            account: Some("alice".to_string()),
+            result: AuthResult::Success,
+            host: "127.0.0.1".to_string(),
+            port: 993,
+            username: "alice@example.test".to_string(),
+            tls_fingerprint_sha256: None,
+            fingerprint_match: None,
+            error_code: None,
+            credential_source: None,
+        };
+
+        // Drive through the trait method, not the inherent `log_auth`, so
+        // the impl block under test is exercised.
+        AuthEventSink::emit_auth(&writer, event).unwrap();
+        drop(writer);
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let line = contents
+            .lines()
+            .next()
+            .expect("emit_auth must persist a line");
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["kind"], "auth");
+        assert_eq!(v["result"], "success");
+        assert_eq!(v["host"], "127.0.0.1");
+        assert_eq!(v["account"], "alice");
+    }
+}

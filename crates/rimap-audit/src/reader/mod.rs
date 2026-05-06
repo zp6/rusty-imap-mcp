@@ -100,6 +100,26 @@ fn kind_of(payload: &Payload) -> &'static str {
     }
 }
 
+/// Parse a single JSONL line into an [`AuditRecord`].
+///
+/// Thin wrapper around `serde_json::from_slice` that maps any decode
+/// failure to [`AuditError::Read`] with `line: None` (callers track line
+/// numbers when they have them — `parse_line` itself does not). Empty
+/// input is treated as malformed and returns `Err`; callers that want
+/// the trailing-empty-line tolerance enforced by `stream_records` should
+/// use that function instead.
+///
+/// # Errors
+/// [`AuditError::Read`] when the bytes do not deserialize to a valid
+/// [`AuditRecord`].
+pub fn parse_line(raw: &[u8]) -> Result<AuditRecord, AuditError> {
+    serde_json::from_slice::<AuditRecord>(raw).map_err(|err| AuditError::Read {
+        path: std::path::PathBuf::new(),
+        line: None,
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
+    })
+}
+
 /// Open the audit file with a shared lock.
 ///
 /// # Errors
@@ -203,7 +223,7 @@ where
     if line.is_empty() {
         return Ok(());
     }
-    match serde_json::from_str::<AuditRecord>(line) {
+    match parse_line(line.as_bytes()) {
         Ok(rec) => {
             if filter.matches(&rec) {
                 on_record(&rec)?;
@@ -211,20 +231,21 @@ where
             }
             Ok(())
         }
-        Err(err) if is_trailing => {
+        Err(AuditError::Read { source, .. }) if is_trailing => {
             tracing::warn!(
                 path = %path.display(),
                 line = line_no,
-                error = %err,
+                error = %source,
                 "skipping malformed trailing line in audit file",
             );
             Ok(())
         }
-        Err(err) => Err(AuditError::Read {
+        Err(AuditError::Read { source, .. }) => Err(AuditError::Read {
             path: path.to_path_buf(),
             line: Some(line_no),
-            source: std::io::Error::new(std::io::ErrorKind::InvalidData, err),
+            source,
         }),
+        Err(other) => Err(other),
     }
 }
 
@@ -442,5 +463,203 @@ mod tests {
         };
         let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "tests")]
+    fn parse_line_round_trips_a_valid_record() {
+        let pid = ProcessId::new_now();
+        let rec = sample(7, pid);
+        let bytes = serde_json::to_vec(&rec).unwrap();
+
+        let parsed = super::parse_line(&bytes).expect("valid record must parse");
+        assert_eq!(parsed.seq.get(), 7);
+    }
+
+    #[test]
+    #[expect(clippy::expect_used, reason = "tests use expect for assertions")]
+    #[expect(clippy::panic, reason = "tests assert variant shapes via panic")]
+    fn parse_line_returns_invalid_data_on_malformed_json() {
+        let err = super::parse_line(b"{not json").expect_err("malformed JSON must error");
+        match err {
+            crate::AuditError::Read { line, source, .. } => {
+                assert!(line.is_none(), "parse_line has no line context");
+                assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
+            }
+            other => panic!("unexpected error kind: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_line_returns_err_on_empty_input() {
+        assert!(
+            super::parse_line(b"").is_err(),
+            "empty input is malformed; doc comment promises Err",
+        );
+    }
+
+    #[test]
+    fn parse_line_does_not_panic_on_garbage_bytes() {
+        let mut bytes = Vec::with_capacity(1024);
+        for i in 0_u16..1024 {
+            bytes.push((i & 0xff) as u8);
+        }
+        let _ = super::parse_line(&bytes);
+    }
+
+    #[test]
+    fn since_bound_is_inclusive_at_record_timestamp() {
+        // Pin the doc-comment "Inclusive lower bound on `ts`" so a `<` -> `<=`
+        // mutation in `Filter::matches` is observable. With `<=`, the record
+        // whose `ts` exactly matches `since` would be filtered out.
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let exact_ts = datetime!(2026-04-07 14:22:01.000 UTC);
+        let rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(exact_ts),
+            process_id: pid,
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+        let path = write_lines(&dir, "a.jsonl", &[serde_json::to_string(&rec).unwrap()]);
+
+        let filter = Filter {
+            since: Some(exact_ts),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(count, 1, "since bound is inclusive at the record timestamp");
+    }
+
+    #[test]
+    fn until_bound_is_inclusive_at_record_timestamp() {
+        // Pin the doc-comment "Inclusive upper bound on `ts`" so a `>` -> `>=`
+        // mutation in `Filter::matches` is observable. With `>=`, the record
+        // whose `ts` exactly matches `until` would be filtered out.
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let exact_ts = datetime!(2026-04-07 14:22:01.000 UTC);
+        let rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(exact_ts),
+            process_id: pid,
+            payload: Payload::ProcessEnd(ProcessEnd {
+                reason: ProcessEndReason::Eof,
+                total_tool_calls: 0,
+            }),
+        };
+        let path = write_lines(&dir, "a.jsonl", &[serde_json::to_string(&rec).unwrap()]);
+
+        let filter = Filter {
+            until: Some(exact_ts),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(count, 1, "until bound is inclusive at the record timestamp");
+    }
+
+    #[test]
+    fn tool_filter_excludes_record_whose_tool_does_not_match() {
+        use crate::record::ToolStart;
+
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let tool_rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
+            process_id: pid,
+            payload: Payload::ToolStart(ToolStart {
+                account: None,
+                tool: rimap_core::tool::ToolName::FetchMessage,
+                posture_effective: crate::record::PostureEffective::Account(
+                    rimap_core::Posture::DraftSafe,
+                ),
+                arguments_redacted: serde_json::json!({}),
+                arguments_hash_sha256: "0".repeat(64),
+            }),
+        };
+        let path = write_lines(
+            &dir,
+            "a.jsonl",
+            &[serde_json::to_string(&tool_rec).unwrap()],
+        );
+
+        // Filter for a *different* tool. The matching guard `name == want` must
+        // reject this record; mutating it to `true` would let it through.
+        let filter = Filter {
+            tool: Some("search".to_string()),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(
+            count, 0,
+            "tool filter must exclude non-matching tool records"
+        );
+    }
+
+    #[test]
+    fn account_filter_excludes_record_with_different_account() {
+        use crate::record::{Auth, AuthResult};
+
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let auth_rec = AuditRecord {
+            seq: crate::record::ids::Seq(1),
+            ts: Timestamp::from_offset(datetime!(2026-04-07 14:22:01.000 UTC)),
+            process_id: pid,
+            payload: Payload::Auth(Auth {
+                account: Some("bob".to_string()),
+                result: AuthResult::Success,
+                host: "h".to_string(),
+                port: 993,
+                username: "u".to_string(),
+                tls_fingerprint_sha256: None,
+                fingerprint_match: None,
+                error_code: None,
+                credential_source: None,
+            }),
+        };
+        let path = write_lines(
+            &dir,
+            "a.jsonl",
+            &[serde_json::to_string(&auth_rec).unwrap()],
+        );
+
+        // Filter for a *different* account. The `name != want` predicate must
+        // reject this record; mutating to `==` would invert it (only matching
+        // records would be filtered out).
+        let filter = Filter {
+            account: Some("alice".to_string()),
+            ..Filter::default()
+        };
+        let count = stream_records(&path, &filter, |_| Ok(())).unwrap();
+        assert_eq!(
+            count, 0,
+            "account filter must exclude records whose account differs",
+        );
+    }
+
+    #[test]
+    fn malformed_non_trailing_line_error_carries_one_based_line_number() {
+        // Pin `line_no += 1` against `*= 1` mutation in `stream_records`. With
+        // `*= 1`, line_no stays at 0 throughout; the error would format as
+        // `(line 0)`. The original `+= 1` produces 1-based line numbers, so a
+        // malformed line in slot 2 must report "line 2".
+        let dir = TempDir::new().unwrap();
+        let pid = ProcessId::new_now();
+        let good = serde_json::to_string(&sample(1, pid)).unwrap();
+        let good2 = serde_json::to_string(&sample(2, pid)).unwrap();
+        let lines = vec![good, "not json".to_string(), good2];
+        let path = write_lines(&dir, "a.jsonl", &lines);
+
+        let err = stream_records(&path, &Filter::default(), |_| Ok(())).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("line 2"),
+            "expected `line 2` in error, got: {msg}"
+        );
     }
 }

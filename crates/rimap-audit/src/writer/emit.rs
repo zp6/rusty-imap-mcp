@@ -200,3 +200,93 @@ fn needs_fsync(payload: &crate::record::Payload) -> bool {
         Payload::ToolStart(_) | Payload::ToolEnd(_) => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use rimap_core::auth_event::{AuthEvent, AuthResult};
+
+    use crate::record::{Payload, ProcessEnd, ProcessEndReason, ProcessStart, ToolEnd, ToolStart};
+
+    fn auth_payload() -> Payload {
+        Payload::Auth(AuthEvent {
+            account: None,
+            result: AuthResult::Success,
+            host: "h".to_string(),
+            port: 1,
+            username: "u".to_string(),
+            tls_fingerprint_sha256: None,
+            fingerprint_match: None,
+            error_code: None,
+            credential_source: None,
+        })
+    }
+
+    fn process_start_payload() -> Payload {
+        Payload::ProcessStart(ProcessStart {
+            version: "0.0.0".to_string(),
+            git_commit: String::new(),
+            posture: None,
+            accounts: None,
+            config_path: std::path::PathBuf::from("/tmp/c"),
+            config_hash_sha256: "00".repeat(32),
+            previous_last_seq: None,
+            previous_process_id: None,
+            previous_file_inode: 0,
+            audit_file_inode_changed: false,
+        })
+    }
+
+    fn process_end_payload() -> Payload {
+        Payload::ProcessEnd(ProcessEnd {
+            reason: ProcessEndReason::Eof,
+            total_tool_calls: 0,
+        })
+    }
+
+    fn tool_start_payload() -> Payload {
+        Payload::ToolStart(ToolStart {
+            account: None,
+            tool: rimap_core::tool::ToolName::FetchMessage,
+            posture_effective: crate::record::PostureEffective::Account(
+                rimap_core::Posture::DraftSafe,
+            ),
+            arguments_redacted: serde_json::json!({}),
+            arguments_hash_sha256: "0".repeat(64),
+        })
+    }
+
+    fn tool_end_payload() -> Payload {
+        Payload::ToolEnd(ToolEnd {
+            account: None,
+            start_seq: crate::record::ids::Seq::FIRST,
+            tool: rimap_core::tool::ToolName::FetchMessage,
+            status: crate::record::ToolStatus::Ok,
+            error_code: None,
+            duration_ms: 0,
+            result_summary: crate::record::ResultSummary::default(),
+            provenance: crate::record::Provenance {
+                window_seconds: 60,
+                message_ids_recently_read: Vec::new(),
+            },
+        })
+    }
+
+    #[test]
+    fn auth_process_and_config_records_are_fsynced() {
+        // Pins `needs_fsync -> true` mutation: durability-critical kinds
+        // must trigger an fsync after write. The `with false` mutation would
+        // skip fsync for these, breaking the durability contract.
+        assert!(super::needs_fsync(&auth_payload()));
+        assert!(super::needs_fsync(&process_start_payload()));
+        assert!(super::needs_fsync(&process_end_payload()));
+    }
+
+    #[test]
+    fn tool_start_and_tool_end_records_are_not_fsynced() {
+        // Pins `needs_fsync -> false` mutation: high-frequency tool records
+        // must skip fsync to keep the audit path off the I/O hot loop. The
+        // `with true` mutation would fsync every tool call.
+        assert!(!super::needs_fsync(&tool_start_payload()));
+        assert!(!super::needs_fsync(&tool_end_payload()));
+    }
+}
