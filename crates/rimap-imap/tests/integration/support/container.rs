@@ -284,6 +284,33 @@ fn check_prerequisites() -> Result<(), HarnessError> {
     Ok(())
 }
 
+/// Minimal interface over `docker compose up` so the retry wrapper
+/// can be unit-tested without a real docker.
+trait ComposeRunner {
+    fn up(
+        &self,
+        project: &str,
+        compose_dir: &Path,
+        tls_port: u16,
+        starttls_port: u16,
+    ) -> Result<(), HarnessError>;
+}
+
+/// Production runner: shells out to `docker compose up -d` (or podman).
+struct DockerComposeRunner;
+
+impl ComposeRunner for DockerComposeRunner {
+    fn up(
+        &self,
+        project: &str,
+        compose_dir: &Path,
+        tls_port: u16,
+        starttls_port: u16,
+    ) -> Result<(), HarnessError> {
+        compose_up(project, compose_dir, tls_port, starttls_port)
+    }
+}
+
 fn compose_up(
     project: &str,
     compose_dir: &Path,
