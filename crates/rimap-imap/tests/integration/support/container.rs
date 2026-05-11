@@ -391,12 +391,12 @@ fn compose_up(
 /// Covers three observed phrasings:
 ///   - docker engine: "Bind for 127.0.0.1:NNNN failed: port is already allocated"
 ///   - libc EADDRINUSE: "address already in use"
-///   - podman rootlessport: "Bind for ..."
+///   - podman rootlessport: "Bind for 127.0.0.1:NNNN failed"
 fn is_port_collision(stderr: &str) -> bool {
     let s = stderr.to_lowercase();
     s.contains("port is already allocated")
         || s.contains("address already in use")
-        || s.contains("bind for")
+        || s.contains("bind for 127.0.0.1")
 }
 
 fn wait_for_ready(
