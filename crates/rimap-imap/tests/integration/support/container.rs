@@ -276,7 +276,7 @@ fn compose_up(
     host_port: u16,
     host_starttls_port: u16,
 ) -> Result<(), HarnessError> {
-    let status = Command::new(runtime())
+    let output = Command::new(runtime())
         .arg("compose")
         .arg("-p")
         .arg(project)
@@ -288,11 +288,14 @@ fn compose_up(
             host_starttls_port.to_string(),
         )
         .current_dir(compose_dir)
-        .status()
+        .output()
         .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(HarnessError::DockerCommandFailed(format!(
-            "compose up exit {status}"
+            "compose up exit {}: {}",
+            output.status,
+            stderr.trim()
         )));
     }
     Ok(())
