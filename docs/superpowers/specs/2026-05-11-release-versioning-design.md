@@ -120,10 +120,16 @@ instead of `env!("CARGO_PKG_VERSION")` at the three call sites listed below.
 
 Three sites switch from `CARGO_PKG_VERSION` to `rimap_core::version()`:
 
-1. `crates/rimap-server/src/cli/mod.rs:24` — clap's `#[command(version = ...)]`.
-   Short `--version` prints `rusty-imap-mcp <version>`. Long `--version`
-   (clap's `long_version`) adds the commit short SHA, target triple, and
-   `release`/`dev` indicator for support diagnostics.
+1. `crates/rimap-server/src/cli/mod.rs:24` — the `#[command(version)]`
+   attribute is removed from the derive, and `crates/rimap-server/src/main.rs`
+   switches to clap's `CommandFactory` builder pattern
+   (`Cli::command().version(rimap_core::version::version()).get_matches()`).
+   Short `--version` prints `rusty-imap-mcp <version>`. The richer
+   `long_version` (commit + target triple + release flag) is deferred
+   until a real user asks for it — wiring it through the builder also
+   requires a `String`-with-`'static`-lifetime workaround that adds
+   little for support diagnostics, since the audit log already carries
+   the commit.
 2. `crates/rimap-server/src/mcp/server.rs:228` — `server_info.version`
    announced to MCP clients during the initialize handshake.
 3. `crates/rimap-server/src/boot/audit_init.rs:66` — the `version` field
