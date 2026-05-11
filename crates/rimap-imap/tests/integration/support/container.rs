@@ -105,19 +105,33 @@ impl DovecotHarness {
         prune_stale_projects(&compose_dir);
 
         let project = format!("rimap-it-{}", uuid_like());
-        let host_port = pick_free_port()?;
-        let host_starttls_port = pick_free_port()?;
+        let mut host_port = ReservedPort::acquire()?;
+        let mut host_starttls_port = ReservedPort::acquire()?;
 
-        compose_up(&project, &compose_dir, host_port, host_starttls_port)?;
+        // Release the kernel-level port leases just before docker binds them.
+        // Task 5 will move this release into the retry wrapper.
+        host_port.release();
+        host_starttls_port.release();
+        compose_up(
+            &project,
+            &compose_dir,
+            host_port.port(),
+            host_starttls_port.port(),
+        )?;
 
-        let result = wait_for_ready(&project, &compose_dir, host_port, host_starttls_port);
+        let result = wait_for_ready(
+            &project,
+            &compose_dir,
+            host_port.port(),
+            host_starttls_port.port(),
+        );
         match result {
             Ok((fingerprint, port)) => Ok(Self {
                 project,
                 compose_dir,
                 fingerprint,
                 port,
-                starttls_port: host_starttls_port,
+                starttls_port: host_starttls_port.port(),
             }),
             Err(e) => {
                 compose_down(&project, &compose_dir);
@@ -497,17 +511,44 @@ fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
     TlsFingerprint::from_hex(&s).map_err(|e| HarnessError::FingerprintReadFailed(e.to_string()))
 }
 
-/// Bind to `127.0.0.1:0`, read the kernel-assigned port, and drop the
-/// listener. Technically racy (another process could claim the same port
-/// in the gap before docker binds it) but acceptable for integration
-/// tests — the port is passed immediately to `docker compose up`.
-fn pick_free_port() -> Result<u16, HarnessError> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| HarnessError::PortReadFailed(format!("bind: {e}")))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| HarnessError::PortReadFailed(format!("local_addr: {e}")))?;
-    Ok(addr.port())
+/// A host port reserved by binding `127.0.0.1:0` and reading the
+/// kernel-assigned number. The `TcpListener` is kept open until
+/// `release()` is called, holding the kernel-level lease so docker
+/// (or any other process) cannot bind the same port in the meantime.
+///
+/// Lifecycle: callers acquire two `ReservedPort`s, then pass `&mut`
+/// references to the retry wrapper, which releases them just before
+/// invoking `docker compose up`. If `compose up` fails with a port
+/// collision (the residual race window), the wrapper drops the
+/// reservations and acquires fresh ones for the next attempt.
+struct ReservedPort {
+    port: u16,
+    listener: Option<std::net::TcpListener>,
+}
+
+impl ReservedPort {
+    fn acquire() -> Result<Self, HarnessError> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| HarnessError::PortReadFailed(format!("bind: {e}")))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| HarnessError::PortReadFailed(format!("local_addr: {e}")))?
+            .port();
+        Ok(Self {
+            port,
+            listener: Some(listener),
+        })
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Drop the underlying `TcpListener`, releasing the kernel-level
+    /// port lease. Idempotent.
+    fn release(&mut self) {
+        self.listener.take();
+    }
 }
 
 /// Maximum age of a `rimap-it-*` compose project before it is considered
@@ -644,6 +685,8 @@ pub enum PinChoice {
 
 #[cfg(test)]
 mod tests {
+    #![expect(clippy::expect_used, reason = "tests")]
+
     use super::*;
 
     #[test]
@@ -678,5 +721,37 @@ mod tests {
     fn is_port_collision_is_case_insensitive() {
         assert!(is_port_collision("PORT IS ALREADY ALLOCATED"));
         assert!(is_port_collision("Bind FOR 127.0.0.1:80 failed"));
+    }
+
+    #[test]
+    fn reserved_port_acquires_distinct_ports() {
+        let a = ReservedPort::acquire().expect("acquire a");
+        let b = ReservedPort::acquire().expect("acquire b");
+        assert_ne!(
+            a.port(),
+            b.port(),
+            "two reservations must yield different ports"
+        );
+    }
+
+    #[test]
+    fn reserved_port_release_drops_lease() {
+        let mut p = ReservedPort::acquire().expect("acquire");
+        let port = p.port();
+        p.release();
+        // After release, another bind on the same port should succeed.
+        let bound_again = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(
+            bound_again.is_ok(),
+            "should be able to bind {port} after release: {:?}",
+            bound_again.err()
+        );
+    }
+
+    #[test]
+    fn reserved_port_release_is_idempotent() {
+        let mut p = ReservedPort::acquire().expect("acquire");
+        p.release();
+        p.release(); // must not panic
     }
 }
