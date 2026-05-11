@@ -13,35 +13,121 @@ Set up rusty-imap-mcp with Proton Mail via Proton Bridge in about
 ## Step 1: Install
 
 Download a pre-built binary from the
-[releases page](https://github.com/randomparity/rusty-imap-mcp/releases),
-or build from source:
+[releases page](https://github.com/randomparity/rusty-imap-mcp/releases)
+and put it on your `$PATH`, or build from source and install:
 
 ```bash
 git clone https://github.com/randomparity/rusty-imap-mcp.git
 cd rusty-imap-mcp
-cargo build --release
-# Binary at target/release/rusty-imap-mcp
+cargo install --path crates/rimap-server   # installs into ~/.cargo/bin
 ```
 
-Verify the binary works:
+If `~/.cargo/bin` isn't already on your `$PATH`, add it (e.g.
+`export PATH="$HOME/.cargo/bin:$PATH"` in `~/.zshrc` or `~/.bashrc`),
+then verify:
 
 ```bash
 rusty-imap-mcp --version
 ```
 
-## Step 2: Capture the TLS fingerprint
+All subsequent commands assume `rusty-imap-mcp` resolves on `$PATH`.
+
+## Step 2: Create the config and audit directories
+
+The config file lives at:
+
+- **Linux:** `~/.config/rusty-imap-mcp/config.toml`
+- **macOS:** `~/Library/Application Support/rusty-imap-mcp/config.toml`
+
+The audit log directory must exist before startup; `rusty-imap-mcp`
+never creates it for you. The audit path must also live under the
+platform-default `allowed_base_dir`
+(`~/Library/Application Support/rusty-imap-mcp/` on macOS,
+`~/.local/share/rusty-imap-mcp/` on Linux) unless you set
+`audit.allowed_base_dir` explicitly.
+
+Create both directories:
+
+```bash
+# macOS
+mkdir -p ~/Library/Application\ Support/rusty-imap-mcp
+
+# Linux
+mkdir -p ~/.config/rusty-imap-mcp ~/.local/share/rusty-imap-mcp
+```
+
+Then write the initial config. Proton Bridge's default IMAP mode is
+STARTTLS on port 1143; the implicit-TLS alternative (port 1993)
+requires enabling "SSL" in Bridge's Advanced Settings. This config
+uses the default.
+
+**The TOML parser does not expand `~`** — `audit.path` must be an
+absolute path. Leave `tls_fingerprint_sha256` empty for now; you fill
+it in after Step 3:
+
+**macOS** (`~/Library/Application Support/rusty-imap-mcp/config.toml`):
+
+```toml
+[imap]
+host = "127.0.0.1"
+port = 1143
+encryption = "starttls"
+username = "you@proton.me"
+# tls_fingerprint_sha256 = "fill-in-after-step-3"
+
+[security]
+posture = "draft-safe"
+
+[audit]
+path = "/Users/you/Library/Application Support/rusty-imap-mcp/audit.jsonl"
+```
+
+**Linux** (`~/.config/rusty-imap-mcp/config.toml`):
+
+```toml
+[imap]
+host = "127.0.0.1"
+port = 1143
+encryption = "starttls"
+username = "you@proton.me"
+# tls_fingerprint_sha256 = "fill-in-after-step-3"
+
+[security]
+posture = "draft-safe"
+
+[audit]
+path = "/home/you/.local/share/rusty-imap-mcp/audit.jsonl"
+```
+
+Replace `you@proton.me` with your Proton email address and `/Users/you`
+or `/home/you` with your actual home directory (run `echo $HOME` if
+unsure).
+
+> **No `[smtp]` yet.** The default posture (`draft-safe`) does not
+> permit `send_email`, so SMTP is not needed for this quickstart.
+> Adding an `[smtp]` block before storing the credential causes the
+> server to fail at startup. To enable sending later, see
+> [Optional: enable sending](#optional-enable-sending) below.
+
+If you plan to run multiple MCP clients against this account (e.g.
+two Claude Code windows on different projects, or Claude Code
+alongside Codex), see
+[Running multiple MCP clients](audit-log.md#running-multiple-mcp-clients)
+for the per-client configuration pattern.
+
+## Step 3: Capture and pin the TLS fingerprint
 
 Proton Bridge uses a self-signed TLS certificate that is not in your
 system trust store. Pin the certificate fingerprint so the server can
 verify it.
 
-### Get the TLS fingerprint (recommended path)
+### Recommended: capture via `--dry-run`
 
-After saving an initial `config.toml` with `host`, `port`, and `username`,
+With the config from Step 2 saved (and the audit directory created),
 run:
 
 ```bash
-rusty-imap-mcp --config config.toml --dry-run
+rusty-imap-mcp --dry-run
 ```
 
 The output includes a `TLS fingerprint (sha256):` line followed by the
@@ -53,8 +139,9 @@ TLS fingerprint (sha256):
   (add `tls_fingerprint_sha256 = "ab:cd:ef:...:ef"` under [imap] in config.toml to pin)
 ```
 
-Copy the hex value into `tls_fingerprint_sha256` under `[imap]` and re-run
-`--dry-run`; the fingerprint section now reads `(matches configured pin)`.
+Uncomment `tls_fingerprint_sha256` in `[imap]` and paste the hex value,
+then re-run `--dry-run`; the fingerprint section now reads
+`(matches configured pin)`.
 
 > **Trust note**: `--dry-run` records whatever cert the network presents.
 > Run it from a network you trust at the time of fingerprint extraction —
@@ -62,7 +149,8 @@ Copy the hex value into `tls_fingerprint_sha256` under `[imap]` and re-run
 
 ### Alternative: extract the fingerprint with openssl
 
-If you prefer not to run a partial config first, the fingerprint can also be extracted directly:
+If you prefer to extract the fingerprint without invoking
+`rusty-imap-mcp` at all:
 
 ```bash
 openssl s_client -connect 127.0.0.1:1143 -starttls imap < /dev/null 2>/dev/null \
@@ -71,7 +159,8 @@ openssl s_client -connect 127.0.0.1:1143 -starttls imap < /dev/null 2>/dev/null 
   | awk '{print $2}'
 ```
 
-This prints a 64-character hex string. Copy it for the next step.
+This prints a 64-character hex string. Paste it as the value of
+`tls_fingerprint_sha256` in `[imap]`.
 
 Bridge's IMAP port uses STARTTLS rather than implicit TLS, so `-starttls imap`
 is required — without it, `openssl` returns no certificate and the pipeline
@@ -81,66 +170,25 @@ If you see that value, you forgot the flag.
 
 The fingerprint changes when Proton Bridge regenerates its certificate
 (after a Bridge update or reinstall). If the server later fails with
-`ERR_TLS`, re-run this command and update the config.
-
-## Step 3: Create the config file
-
-Create `~/.config/rusty-imap-mcp/config.toml` (Linux) or
-`~/Library/Application Support/rusty-imap-mcp/config.toml` (macOS):
-
-Proton Bridge's default IMAP mode is STARTTLS on port 1143. The implicit-TLS
-alternative (port 1993) requires enabling "SSL" in Bridge's Advanced Settings.
-This config uses the default.
-
-```toml
-[imap]
-host = "127.0.0.1"
-port = 1143
-encryption = "starttls"
-username = "you@proton.me"
-tls_fingerprint_sha256 = "paste-your-64-char-fingerprint-here"
-
-[smtp]
-host = "127.0.0.1"
-port = 1025
-encryption = "starttls"
-username = "you@proton.me"
-
-[security]
-posture = "draft-safe"
-
-[audit]
-path = "~/.local/state/rusty-imap-mcp/audit.jsonl"
-```
-
-If you plan to run multiple MCP clients against this account (e.g.
-two Claude Code windows on different projects, or Claude Code
-alongside Codex), see
-[Running multiple MCP clients](audit-log.md#running-multiple-mcp-clients)
-for the per-client configuration pattern.
-
-Replace `you@proton.me` with your Proton email address and
-`tls_fingerprint_sha256` with the output from Step 2.
+`ERR_TLS`, re-run this step and update the config.
 
 ## Step 4: Store your credentials
 
-Store the Bridge password in your OS keychain:
+Store the Bridge password in your OS keychain. The `login` subcommand
+prompts on `/dev/tty`; `--host` and `--username` are required:
 
 ```bash
-rusty-imap-mcp login
+rusty-imap-mcp login --host 127.0.0.1 --username you@proton.me
 ```
 
 When prompted, paste the bridge password from Proton Bridge settings
 (not your Proton account password). The password is stored in the OS
 keychain under service `rusty-imap-mcp`, account
-`you@proton.me@127.0.0.1`.
+`default/you@proton.me@127.0.0.1`.
 
-For SMTP (if using `send_email` in `full` posture), the same bridge
-password is used. Store it for the SMTP host:
-
-```bash
-RUSTY_IMAP_MCP_PASSWORD=<bridge-password> rusty-imap-mcp login
-```
+Because Proton Bridge serves IMAP and SMTP on the same host
+(`127.0.0.1`), this single keyring entry covers both protocols — no
+separate SMTP login is needed when you later enable sending.
 
 ## Step 5: Test the connection
 
@@ -159,7 +207,9 @@ exits. It does not authenticate.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `ERR_TLS` | Fingerprint mismatch or Bridge not running | Verify Bridge is running, then re-capture the fingerprint (Step 2) |
+| `path ... is not writable: directory does not exist` | Audit log parent directory missing | Create it (see Step 2). Confirm `audit.path` is an absolute path, not `~/...` — the TOML parser does not expand `~`. |
+| `audit path ... is not contained in allowed base ...` | `audit.path` is outside the platform-default base | Move the audit file under the platform-default base (Step 2) or set `audit.allowed_base_dir` explicitly in the `[audit]` block. |
+| `ERR_TLS` | Fingerprint mismatch or Bridge not running | Verify Bridge is running, then re-capture the fingerprint (Step 3) |
 | `Capabilities ...: unavailable (...)` | Preflight could not complete | Inspect the parenthesised cause — typically connectivity or TLS. `--dry-run` does not authenticate, so an auth error cannot surface here |
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Connection refused | Bridge not running or wrong port | Start Proton Bridge and verify the IMAP port in Bridge settings |
@@ -212,6 +262,32 @@ email content), and `security_warnings` (any detected issues).
 
 Expected: an empty result set, not an error.
 
+## Optional: enable sending
+
+The default `draft-safe` posture cannot send mail. To enable
+`send_email`, add an `[smtp]` block and switch posture to `full`:
+
+```toml
+[smtp]
+host = "127.0.0.1"
+port = 1025
+encryption = "starttls"
+username = "you@proton.me"
+
+[security]
+posture = "full"
+```
+
+The keyring entry stored in Step 4 already covers SMTP — Bridge uses
+the same host (`127.0.0.1`) and the same bridge password for both
+protocols, so no second `login` invocation is needed.
+
+The SMTP port shown above (1025) is the Proton Bridge default; the
+exact port appears in Bridge settings.
+
+Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
+`send_email` as `[ok ]`.
+
 ## Known quirks
 
 ### Bridge password vs. account password
@@ -256,7 +332,7 @@ Bridge is slow to start or your mailbox is large, increase
 
 The fingerprint changes when Bridge regenerates its certificate (after
 updates or reinstalls). If you get `ERR_TLS` after a Bridge update,
-re-run the openssl command from Step 2 and update the config.
+re-run the fingerprint capture from Step 3 and update the config.
 
 ### Running headless or over SSH
 
@@ -304,6 +380,6 @@ then store the Bridge password for `rusty-imap-mcp` the usual way
 Bridge does.
 
 **C. Capture the fingerprint from a TTY.** The `openssl` pipeline in
-Step 2 works over SSH as long as you can reach `127.0.0.1:1143` from
+Step 3 works over SSH as long as you can reach `127.0.0.1:1143` from
 the shell where Bridge is running. The `-starttls imap` flag is
 required regardless of session type.

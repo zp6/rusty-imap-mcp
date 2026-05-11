@@ -10,26 +10,53 @@ Set up rusty-imap-mcp with a Gmail account in about 10 minutes.
 ## Step 1: Install
 
 Download a pre-built binary from the
-[releases page](https://github.com/randomparity/rusty-imap-mcp/releases),
-or build from source:
+[releases page](https://github.com/randomparity/rusty-imap-mcp/releases)
+and put it on your `$PATH`, or build from source and install:
 
 ```bash
 git clone https://github.com/randomparity/rusty-imap-mcp.git
 cd rusty-imap-mcp
-cargo build --release
-# Binary at target/release/rusty-imap-mcp
+cargo install --path crates/rimap-server   # installs into ~/.cargo/bin
 ```
 
-Verify the binary works:
+If `~/.cargo/bin` isn't already on your `$PATH`, add it (e.g.
+`export PATH="$HOME/.cargo/bin:$PATH"` in `~/.zshrc` or `~/.bashrc`),
+then verify:
 
 ```bash
 rusty-imap-mcp --version
 ```
 
-## Step 2: Create the config file
+All subsequent commands assume `rusty-imap-mcp` resolves on `$PATH`.
 
-Create `~/.config/rusty-imap-mcp/config.toml` (Linux) or
-`~/Library/Application Support/rusty-imap-mcp/config.toml` (macOS):
+## Step 2: Create the config and audit directories
+
+The config file lives at:
+
+- **Linux:** `~/.config/rusty-imap-mcp/config.toml`
+- **macOS:** `~/Library/Application Support/rusty-imap-mcp/config.toml`
+
+The audit log directory must exist before startup; `rusty-imap-mcp`
+never creates it for you. The audit path must also live under the
+platform-default `allowed_base_dir`
+(`~/Library/Application Support/rusty-imap-mcp/` on macOS,
+`~/.local/share/rusty-imap-mcp/` on Linux) unless you set
+`audit.allowed_base_dir` explicitly.
+
+Create both directories:
+
+```bash
+# macOS
+mkdir -p ~/Library/Application\ Support/rusty-imap-mcp
+
+# Linux
+mkdir -p ~/.config/rusty-imap-mcp ~/.local/share/rusty-imap-mcp
+```
+
+Then write the config file. **The TOML parser does not expand `~`** —
+`audit.path` must be an absolute path. Pick the block for your platform:
+
+**macOS** (`~/Library/Application Support/rusty-imap-mcp/config.toml`):
 
 ```toml
 [imap]
@@ -37,15 +64,32 @@ host = "imap.gmail.com"
 port = 993
 username = "you@gmail.com"
 
-[smtp]
-host = "smtp.gmail.com"
-port = 465
-encryption = "tls"
+[audit]
+path = "/Users/you/Library/Application Support/rusty-imap-mcp/audit.jsonl"
+```
+
+**Linux** (`~/.config/rusty-imap-mcp/config.toml`):
+
+```toml
+[imap]
+host = "imap.gmail.com"
+port = 993
 username = "you@gmail.com"
 
 [audit]
-path = "~/.local/state/rusty-imap-mcp/audit.jsonl"
+path = "/home/you/.local/share/rusty-imap-mcp/audit.jsonl"
 ```
+
+Replace `you@gmail.com` with your Gmail address and `/Users/you` or
+`/home/you` with your actual home directory (run `echo $HOME` if
+unsure).
+
+> **No `[smtp]` yet.** The default posture (`draft-safe`) does not
+> permit `send_email`, so SMTP is not needed for this quickstart.
+> Adding an `[smtp]` block while the credential is missing causes the
+> server to fail at startup. To enable sending later, switch posture to
+> `full` and follow [Optional: enable sending](#optional-enable-sending)
+> below.
 
 If you plan to run multiple MCP clients against this account (e.g.
 two Claude Code windows on different projects, or Claude Code
@@ -53,19 +97,19 @@ alongside Codex), see
 [Running multiple MCP clients](audit-log.md#running-multiple-mcp-clients)
 for the per-client configuration pattern.
 
-Replace `you@gmail.com` with your Gmail address.
-
 ## Step 3: Store your credentials
 
-Store the App Password in your OS keychain:
+Store the App Password in your OS keychain. The `login` subcommand
+prompts on `/dev/tty`; `--host` and `--username` are required:
 
 ```bash
-rusty-imap-mcp login
+rusty-imap-mcp login --host imap.gmail.com --username you@gmail.com
 ```
 
 When prompted, paste your 16-character App Password (not your Google
-account password). The password is stored in the OS keychain under
-service `rusty-imap-mcp`, account `you@gmail.com@imap.gmail.com`.
+account password). Spaces in the displayed App Password don't matter.
+The password is stored in the OS keychain under service
+`rusty-imap-mcp`, account `default/you@gmail.com@imap.gmail.com`.
 
 ## Step 4: Test the connection
 
@@ -84,6 +128,8 @@ exits. It does not authenticate.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| `path ... is not writable: directory does not exist` | Audit log parent directory missing | Create it (see Step 2). Confirm `audit.path` is an absolute path, not `~/...` — the TOML parser does not expand `~`. |
+| `audit path ... is not contained in allowed base ...` | `audit.path` is outside the platform-default base | Move the audit file under the platform-default base (Step 2) or set `audit.allowed_base_dir` explicitly in the `[audit]` block. |
 | `ERR_TLS` | TLS handshake failure | Verify your network allows connections to imap.gmail.com:993 |
 | `Capabilities ...: unavailable (...)` | Preflight could not complete | Inspect the parenthesised cause — typically connectivity, DNS, or TLS. `--dry-run` does not authenticate, so an auth error cannot surface here |
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
@@ -136,6 +182,38 @@ email content), and `security_warnings` (any detected issues).
 > "Search for emails from nonexistent-sender-abc123@example.com."
 
 Expected: an empty result set, not an error.
+
+## Optional: enable sending
+
+The default `draft-safe` posture cannot send mail. To enable
+`send_email`, you need both the SMTP block in the config and a separate
+keyring entry for the SMTP host (Gmail uses different hosts for IMAP
+and SMTP, so the IMAP keyring entry does not cover SMTP):
+
+1. Add an `[smtp]` block and switch posture:
+
+   ```toml
+   [smtp]
+   host = "smtp.gmail.com"
+   port = 465
+   encryption = "tls"
+   username = "you@gmail.com"
+
+   [security]
+   posture = "full"
+   ```
+
+2. Store the App Password under the SMTP host as well:
+
+   ```bash
+   rusty-imap-mcp login --host smtp.gmail.com --username you@gmail.com
+   ```
+
+   Reuse the same 16-character App Password — Gmail accepts it for both
+   IMAP and SMTP.
+
+3. Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
+   `send_email` as `[ok ]`.
 
 ## What's next
 

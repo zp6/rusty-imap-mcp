@@ -170,11 +170,12 @@ command = "/usr/local/bin/rusty-imap-mcp"
 args = ["--config", "/home/dave/.config/rusty-imap-mcp/codex.toml"]
 ```
 
-`~/.config/rusty-imap-mcp/claude.toml`:
+`~/.config/rusty-imap-mcp/claude.toml` (Linux example — the TOML
+parser does not expand `~`, so `audit.path` must be absolute):
 
 ```toml
 [audit]
-path = "~/.local/state/rusty-imap-mcp/audit-claude.jsonl"
+path = "/home/dave/.local/share/rusty-imap-mcp/audit-claude.jsonl"
 # ... rest of config identical between the two
 ```
 
@@ -182,9 +183,15 @@ path = "~/.local/state/rusty-imap-mcp/audit-claude.jsonl"
 
 ```toml
 [audit]
-path = "~/.local/state/rusty-imap-mcp/audit-codex.jsonl"
+path = "/home/dave/.local/share/rusty-imap-mcp/audit-codex.jsonl"
 # ...
 ```
+
+Both parent directories must already exist before startup — create
+them with `mkdir -p /home/dave/.local/share/rusty-imap-mcp` (Linux)
+or the equivalent under `~/Library/Application Support/rusty-imap-mcp/`
+on macOS. The audit path must also live under the platform-default
+`allowed_base_dir` (or set `audit.allowed_base_dir` explicitly).
 
 #### Cross-project: per-project `.mcp.json`
 
@@ -292,9 +299,13 @@ warning and are skipped.
 rusty-imap-mcp audit merge \
   --since 2026-04-07T00:00:00Z \
   --tool fetch_message \
-  ~/.local/state/rusty-imap-mcp/audit.jsonl \
+  ~/.local/share/rusty-imap-mcp/audit.jsonl \
   | jq '.result_summary'
 ```
+
+(The CLI path here is a shell argument, so `~` is expanded by the
+shell — only `audit.path` inside the TOML config file is taken
+literally.)
 
 ### File permissions for merged output
 
