@@ -17,7 +17,7 @@ workspace = true
 test-support = []
 
 [dependencies]
-rimap-core = { path = "../rimap-core", version = "1.0.0" }
+rimap-core = { path = "../rimap-core", version = "0.1.0" }
 utf7-imap = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
