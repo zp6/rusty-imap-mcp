@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use rimap_authz::DispatchGuard;
 use rimap_authz::breaker::{BreakerConfig, CircuitBreaker, SystemClock};
 use rimap_authz::matrix::EffectiveMatrix;
@@ -28,9 +28,21 @@ use secrecy::ExposeSecret;
 
 use crate::cli::{AuditAction, Cli, Command};
 
+fn parse_cli() -> Result<Cli, clap::Error> {
+    let matches = Cli::command()
+        .version(rimap_core::version::version())
+        .get_matches();
+    Cli::from_arg_matches(&matches)
+}
+
 fn main() -> ExitCode {
     logging::init();
-    let cli = Cli::parse();
+    let cli = match parse_cli() {
+        Ok(cli) => cli,
+        Err(e) => {
+            e.exit();
+        }
+    };
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

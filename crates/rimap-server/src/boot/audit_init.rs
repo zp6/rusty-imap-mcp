@@ -63,8 +63,8 @@ pub fn init_audit_writer_multi(
     };
 
     writer.log_process_start(ProcessStartInputs {
-        version: env!("CARGO_PKG_VERSION").to_string(),
-        git_commit: String::new(),
+        version: rimap_core::version::version().to_string(),
+        git_commit: rimap_core::version::commit().to_string(),
         posture,
         accounts,
         config_path: config_file_path.to_path_buf(),
