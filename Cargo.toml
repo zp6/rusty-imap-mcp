@@ -13,7 +13,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "1.0.0"
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.88.0"
 license = "MIT OR Apache-2.0"
@@ -47,6 +47,16 @@ nonzero_ext = "0.3"
 parking_lot = "0.12"
 # Lock-free Arc swap for session-scoped mutable state. MIT OR Apache-2.0.
 arc-swap = "1"
+
+# rimap-core ships a workspace-internal build script at
+# crates/rimap-core/build.rs that shells out to `git describe`,
+# `rev-parse`, and `status` via std::process::Command (constant argv,
+# no shell). It emits RIMAP_VERSION / RIMAP_COMMIT / RIMAP_RELEASE via
+# cargo:rustc-env, consumed by the CLI --version, MCP server_info, and
+# audit-log process_start. Every git failure path falls through to a
+# safe `gunknown` default — the build never fails on missing git or
+# vendored sources. Re-audit on substantive logic changes to build.rs
+# (SC-PROC-01).
 
 # Async runtime
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "time", "sync", "net"] }

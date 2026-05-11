@@ -232,8 +232,9 @@ impl From<ToolStartInputs> for crate::record::ToolStart {
 pub struct ProcessStartInputs {
     /// `CARGO_PKG_VERSION` of the running binary.
     pub version: String,
-    /// Git commit SHA at build time. Empty string until `vergen` lands in
-    /// Sprint 5.
+    /// Short git SHA of the running binary (7 hex chars, optionally
+    /// suffixed `-dirty`, or `unknown` when no git information is
+    /// available). Populated by callers via `rimap_core::version::commit`.
     pub git_commit: String,
     /// Effective base posture at startup (single-account mode).
     /// Typed at the construction seam to keep the on-disk string form

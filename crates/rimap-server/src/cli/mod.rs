@@ -21,7 +21,6 @@ use rimap_core::account::DEFAULT_ACCOUNT_NAME;
 #[derive(Debug, Parser)]
 #[command(
     name = "rusty-imap-mcp",
-    version,
     about = "Security-first MCP server for IMAP email access"
 )]
 pub struct Cli {

@@ -16,7 +16,7 @@ description = "MIME parsing, Unicode-safe sanitization, and look-alike detection
 workspace = true
 
 [dependencies]
-rimap-core = { path = "../rimap-core", version = "1.0.0" }
+rimap-core = { path = "../rimap-core", version = "0.1.0" }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -58,7 +58,7 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies.rimap-content]
 path = "."
-version = "1.0.0"
+version = "0.1.0"
 features = ["test-util"]
 
 # `phf` is consumed by the `include!`-expanded output of `build.rs`, so

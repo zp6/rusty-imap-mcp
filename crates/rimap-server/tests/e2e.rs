@@ -91,6 +91,9 @@ struct DovecotHarness {
 
 impl DovecotHarness {
     fn try_start() -> Option<Self> {
+        const BACKOFF_MS: [u64; 2] = [50, 250];
+        const MAX_ATTEMPTS: usize = BACKOFF_MS.len() + 1;
+
         if std::env::consts::ARCH != "x86_64" {
             return None;
         }
@@ -114,23 +117,42 @@ impl DovecotHarness {
                 .unwrap_or(0)
         );
 
-        let host_port = pick_free_port()?;
+        let mut host_port = ReservedPort::acquire()?;
 
-        let status = Command::new(runtime())
-            .arg("compose")
-            .arg("-p")
-            .arg(&project)
-            .arg("up")
-            .arg("-d")
-            .env("RIMAP_DOVECOT_HOST_PORT", host_port.to_string())
-            .current_dir(&compose_dir)
-            .status()
-            .ok()?;
-        if !status.success() {
-            return None;
+        // Attempt 0 is the initial try (no prior sleep). Attempts 1 and 2
+        // are retries preceded by teardown + backoff sleep + fresh port.
+        for attempt in 0..MAX_ATTEMPTS {
+            if attempt > 0 {
+                compose_down(&project, &compose_dir);
+                std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS[attempt - 1]));
+                host_port = ReservedPort::acquire()?;
+            }
+            host_port.release();
+
+            let output = Command::new(runtime())
+                .arg("compose")
+                .arg("-p")
+                .arg(&project)
+                .arg("up")
+                .arg("-d")
+                .env("RIMAP_DOVECOT_HOST_PORT", host_port.port().to_string())
+                .current_dir(&compose_dir)
+                .output()
+                .ok()?;
+
+            if output.status.success() {
+                return wait_for_ready(&project, host_port.port(), &compose_dir);
+            }
+
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !is_port_collision(&stderr) {
+                // Non-collision failure: stop retrying.
+                return None;
+            }
         }
 
-        wait_for_ready(&project, host_port, &compose_dir)
+        // All attempts hit port collisions.
+        None
     }
 
     /// Create a mailbox via `doveadm` inside the container.
@@ -212,9 +234,43 @@ fn read_fingerprint(project: &str) -> Result<TlsFingerprint, String> {
     TlsFingerprint::from_hex(&s).map_err(|e| e.to_string())
 }
 
-fn pick_free_port() -> Option<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
-    Some(listener.local_addr().ok()?.port())
+/// Host port reserved by binding `127.0.0.1:0` and reading the
+/// kernel-assigned number. The `TcpListener` is kept open until
+/// `release()` is called, holding the kernel-level lease so docker
+/// (or any other process) cannot bind the same port in the meantime.
+struct ReservedPort {
+    port: u16,
+    listener: Option<std::net::TcpListener>,
+}
+
+impl ReservedPort {
+    fn acquire() -> Option<Self> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+        let port = listener.local_addr().ok()?.port();
+        Some(Self {
+            port,
+            listener: Some(listener),
+        })
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Drop the underlying `TcpListener`, releasing the kernel-level
+    /// port lease. Idempotent.
+    fn release(&mut self) {
+        self.listener.take();
+    }
+}
+
+/// Classify a stderr blob from a failed `compose up`: `true` when the
+/// failure looks like a host-port bind collision.
+fn is_port_collision(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("port is already allocated")
+        || s.contains("address already in use")
+        || s.contains("bind for 127.0.0.1")
 }
 
 struct StaticCreds(String);

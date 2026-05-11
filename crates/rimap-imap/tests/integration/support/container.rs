@@ -105,19 +105,31 @@ impl DovecotHarness {
         prune_stale_projects(&compose_dir);
 
         let project = format!("rimap-it-{}", uuid_like());
-        let host_port = pick_free_port()?;
-        let host_starttls_port = pick_free_port()?;
+        let mut host_port = ReservedPort::acquire()?;
+        let mut host_starttls_port = ReservedPort::acquire()?;
 
-        compose_up(&project, &compose_dir, host_port, host_starttls_port)?;
+        let runner = DockerComposeRunner;
+        compose_up_with_retry(
+            &runner,
+            &project,
+            &compose_dir,
+            &mut host_port,
+            &mut host_starttls_port,
+        )?;
 
-        let result = wait_for_ready(&project, &compose_dir, host_port, host_starttls_port);
+        let result = wait_for_ready(
+            &project,
+            &compose_dir,
+            host_port.port(),
+            host_starttls_port.port(),
+        );
         match result {
             Ok((fingerprint, port)) => Ok(Self {
                 project,
                 compose_dir,
                 fingerprint,
                 port,
-                starttls_port: host_starttls_port,
+                starttls_port: host_starttls_port.port(),
             }),
             Err(e) => {
                 compose_down(&project, &compose_dir);
@@ -270,13 +282,85 @@ fn check_prerequisites() -> Result<(), HarnessError> {
     Ok(())
 }
 
+/// Minimal interface over `docker compose up` so the retry wrapper
+/// can be unit-tested without a real docker.
+trait ComposeRunner {
+    fn up(
+        &self,
+        project: &str,
+        compose_dir: &Path,
+        tls_port: u16,
+        starttls_port: u16,
+    ) -> Result<(), HarnessError>;
+}
+
+/// Production runner: shells out to `docker compose up -d` (or podman).
+struct DockerComposeRunner;
+
+impl ComposeRunner for DockerComposeRunner {
+    fn up(
+        &self,
+        project: &str,
+        compose_dir: &Path,
+        tls_port: u16,
+        starttls_port: u16,
+    ) -> Result<(), HarnessError> {
+        compose_up(project, compose_dir, tls_port, starttls_port)
+    }
+}
+
+/// Drive `runner.up(...)` with a bounded retry on host-port collisions.
+///
+/// Three attempts total (initial + 2 retries). Each retry tears down
+/// the partial compose project, sleeps with increasing backoff, and
+/// acquires fresh `ReservedPort`s. Non-collision errors propagate
+/// immediately on the first failure. If all three attempts hit
+/// collisions, the most recent stderr is preserved in the error
+/// message.
+fn compose_up_with_retry(
+    runner: &dyn ComposeRunner,
+    project: &str,
+    compose_dir: &Path,
+    tls: &mut ReservedPort,
+    starttls: &mut ReservedPort,
+) -> Result<(), HarnessError> {
+    const BACKOFF_MS: [u64; 2] = [50, 250];
+    const MAX_ATTEMPTS: usize = BACKOFF_MS.len() + 1;
+    let mut last_collision: Option<String> = None;
+
+    // Attempt 0 is the initial try (no prior sleep). Attempts 1 and 2 are
+    // retries preceded by teardown + backoff sleep + fresh port acquisition.
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            compose_down(project, compose_dir);
+            std::thread::sleep(Duration::from_millis(BACKOFF_MS[attempt - 1]));
+            *tls = ReservedPort::acquire()?;
+            *starttls = ReservedPort::acquire()?;
+        }
+        tls.release();
+        starttls.release();
+        let result = runner.up(project, compose_dir, tls.port(), starttls.port());
+        match result {
+            Ok(()) => return Ok(()),
+            Err(HarnessError::DockerCommandFailed(s)) if is_port_collision(&s) => {
+                last_collision = Some(s);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(HarnessError::DockerCommandFailed(format!(
+        "compose up: exhausted {MAX_ATTEMPTS} attempts on port collision; last error: {}",
+        last_collision.unwrap_or_else(|| "<no error captured>".into()),
+    )))
+}
+
 fn compose_up(
     project: &str,
     compose_dir: &Path,
     host_port: u16,
     host_starttls_port: u16,
 ) -> Result<(), HarnessError> {
-    let status = Command::new(runtime())
+    let output = Command::new(runtime())
         .arg("compose")
         .arg("-p")
         .arg(project)
@@ -288,14 +372,31 @@ fn compose_up(
             host_starttls_port.to_string(),
         )
         .current_dir(compose_dir)
-        .status()
+        .output()
         .map_err(|e| HarnessError::DockerCommandFailed(e.to_string()))?;
-    if !status.success() {
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(HarnessError::DockerCommandFailed(format!(
-            "compose up exit {status}"
+            "compose up exit {}: {}",
+            output.status,
+            stderr.trim()
         )));
     }
     Ok(())
+}
+
+/// Classify a stderr blob from a failed `compose up`: `true` when the
+/// failure looks like a host-port bind collision, `false` otherwise.
+///
+/// Covers three observed phrasings:
+///   - docker engine: "Bind for 127.0.0.1:NNNN failed: port is already allocated"
+///   - libc EADDRINUSE: "address already in use"
+///   - podman rootlessport: "Bind for 127.0.0.1:NNNN failed"
+fn is_port_collision(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("port is already allocated")
+        || s.contains("address already in use")
+        || s.contains("bind for 127.0.0.1")
 }
 
 fn wait_for_ready(
@@ -480,17 +581,44 @@ fn read_fingerprint(project: &str) -> Result<TlsFingerprint, HarnessError> {
     TlsFingerprint::from_hex(&s).map_err(|e| HarnessError::FingerprintReadFailed(e.to_string()))
 }
 
-/// Bind to `127.0.0.1:0`, read the kernel-assigned port, and drop the
-/// listener. Technically racy (another process could claim the same port
-/// in the gap before docker binds it) but acceptable for integration
-/// tests — the port is passed immediately to `docker compose up`.
-fn pick_free_port() -> Result<u16, HarnessError> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|e| HarnessError::PortReadFailed(format!("bind: {e}")))?;
-    let addr = listener
-        .local_addr()
-        .map_err(|e| HarnessError::PortReadFailed(format!("local_addr: {e}")))?;
-    Ok(addr.port())
+/// A host port reserved by binding `127.0.0.1:0` and reading the
+/// kernel-assigned number. The `TcpListener` is kept open until
+/// `release()` is called, holding the kernel-level lease so docker
+/// (or any other process) cannot bind the same port in the meantime.
+///
+/// Lifecycle: callers acquire two `ReservedPort`s, then pass `&mut`
+/// references to the retry wrapper, which releases them just before
+/// invoking `docker compose up`. If `compose up` fails with a port
+/// collision (the residual race window), the wrapper drops the
+/// reservations and acquires fresh ones for the next attempt.
+struct ReservedPort {
+    port: u16,
+    listener: Option<std::net::TcpListener>,
+}
+
+impl ReservedPort {
+    fn acquire() -> Result<Self, HarnessError> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| HarnessError::PortReadFailed(format!("bind: {e}")))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| HarnessError::PortReadFailed(format!("local_addr: {e}")))?
+            .port();
+        Ok(Self {
+            port,
+            listener: Some(listener),
+        })
+    }
+
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    /// Drop the underlying `TcpListener`, releasing the kernel-level
+    /// port lease. Idempotent.
+    fn release(&mut self) {
+        self.listener.take();
+    }
 }
 
 /// Maximum age of a `rimap-it-*` compose project before it is considered
@@ -623,4 +751,241 @@ pub enum PinChoice {
     Correct,
     Wrong,
     None,
+}
+
+#[cfg(test)]
+mod tests {
+    #![expect(clippy::unwrap_used, reason = "tests")]
+    #![expect(clippy::expect_used, reason = "tests")]
+    #![expect(clippy::panic, reason = "test failure path")]
+
+    use super::*;
+
+    const PORT_COLLISION_STDERR: &str =
+        "Bind for 127.0.0.1:12345 failed: port is already allocated";
+
+    #[test]
+    fn is_port_collision_matches_docker_engine_error() {
+        let stderr = "Error response from daemon: failed to set up container networking: \
+            driver failed programming external connectivity on endpoint rimap-it-abc-dovecot \
+            (...): Bind for 127.0.0.1:35615 failed: port is already allocated";
+        assert!(is_port_collision(stderr));
+    }
+
+    #[test]
+    fn is_port_collision_matches_libc_eaddrinuse() {
+        assert!(is_port_collision("bind: address already in use"));
+    }
+
+    #[test]
+    fn is_port_collision_matches_podman_variant() {
+        assert!(is_port_collision(
+            "Error: rootlessport listen tcp 127.0.0.1:1234: bind: address already in use"
+        ));
+    }
+
+    #[test]
+    fn is_port_collision_rejects_unrelated_error() {
+        assert!(!is_port_collision(
+            "no such image: docker.io/dovecot/dovecot:9.9.9"
+        ));
+        assert!(!is_port_collision("dovecot exited with non-zero status"));
+    }
+
+    #[test]
+    fn is_port_collision_is_case_insensitive() {
+        assert!(is_port_collision("PORT IS ALREADY ALLOCATED"));
+        assert!(is_port_collision("Bind FOR 127.0.0.1:80 failed"));
+    }
+
+    #[test]
+    fn reserved_port_acquires_distinct_ports() {
+        let a = ReservedPort::acquire().expect("acquire a");
+        let b = ReservedPort::acquire().expect("acquire b");
+        assert_ne!(
+            a.port(),
+            b.port(),
+            "two reservations must yield different ports"
+        );
+    }
+
+    #[test]
+    fn reserved_port_release_drops_lease() {
+        let mut p = ReservedPort::acquire().expect("acquire");
+        let port = p.port();
+        p.release();
+        // After release, another bind on the same port should succeed.
+        let bound_again = std::net::TcpListener::bind(("127.0.0.1", port));
+        assert!(
+            bound_again.is_ok(),
+            "should be able to bind {port} after release: {:?}",
+            bound_again.err()
+        );
+    }
+
+    #[test]
+    fn reserved_port_release_is_idempotent() {
+        let mut p = ReservedPort::acquire().expect("acquire");
+        p.release();
+        p.release(); // must not panic
+    }
+
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Test double for `ComposeRunner`. Records every observed
+    /// `(tls_port, starttls_port)` pair and returns a programmable
+    /// sequence of results.
+    struct FlakyComposeRunner {
+        fail_first_n: AtomicU32,
+        observed_ports: Mutex<Vec<(u16, u16)>>,
+        port_collision_stderr: String,
+        terminal_error: Option<String>,
+    }
+
+    impl FlakyComposeRunner {
+        /// Fail the first `n` attempts with a port-collision stderr;
+        /// succeed afterward.
+        fn fail_first_n_with_port_collision(n: u32) -> Self {
+            Self {
+                fail_first_n: AtomicU32::new(n),
+                observed_ports: Mutex::new(Vec::new()),
+                port_collision_stderr: PORT_COLLISION_STDERR.into(),
+                terminal_error: None,
+            }
+        }
+
+        /// Always fail with a port-collision stderr.
+        fn always_fail_with_port_collision() -> Self {
+            Self {
+                fail_first_n: AtomicU32::new(u32::MAX),
+                observed_ports: Mutex::new(Vec::new()),
+                port_collision_stderr: PORT_COLLISION_STDERR.into(),
+                terminal_error: None,
+            }
+        }
+
+        /// Always fail with a non-collision stderr.
+        fn always_fail_with(msg: &str) -> Self {
+            Self {
+                fail_first_n: AtomicU32::new(u32::MAX),
+                observed_ports: Mutex::new(Vec::new()),
+                port_collision_stderr: String::new(),
+                terminal_error: Some(msg.into()),
+            }
+        }
+
+        fn observed_ports(&self) -> Vec<(u16, u16)> {
+            self.observed_ports.lock().unwrap().clone()
+        }
+
+        fn attempts(&self) -> usize {
+            self.observed_ports.lock().unwrap().len()
+        }
+    }
+
+    impl ComposeRunner for FlakyComposeRunner {
+        fn up(
+            &self,
+            _project: &str,
+            _compose_dir: &Path,
+            tls_port: u16,
+            starttls_port: u16,
+        ) -> Result<(), HarnessError> {
+            self.observed_ports
+                .lock()
+                .unwrap()
+                .push((tls_port, starttls_port));
+
+            if let Some(msg) = self.terminal_error.as_ref() {
+                return Err(HarnessError::DockerCommandFailed(msg.clone()));
+            }
+
+            let remaining = self.fail_first_n.load(Ordering::SeqCst);
+            if remaining > 0 {
+                self.fail_first_n.fetch_sub(1, Ordering::SeqCst);
+                return Err(HarnessError::DockerCommandFailed(
+                    self.port_collision_stderr.clone(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    fn dummy_compose_dir() -> &'static Path {
+        Path::new("/tmp/rimap-it-test")
+    }
+
+    #[test]
+    fn compose_up_retries_on_port_collision_then_succeeds() {
+        let runner = FlakyComposeRunner::fail_first_n_with_port_collision(2);
+        let mut tls = ReservedPort::acquire().expect("tls");
+        let mut starttls = ReservedPort::acquire().expect("starttls");
+
+        let result = compose_up_with_retry(
+            &runner,
+            "test-proj",
+            dummy_compose_dir(),
+            &mut tls,
+            &mut starttls,
+        );
+
+        assert!(
+            result.is_ok(),
+            "should succeed on third attempt: {:?}",
+            result.err()
+        );
+        let ports = runner.observed_ports();
+        assert_eq!(ports.len(), 3, "should have attempted three times");
+        // Each retry uses a fresh port pair (proves the reacquire path).
+        assert_ne!(ports[0], ports[1], "attempt 1 vs 2 ports identical");
+        assert_ne!(ports[1], ports[2], "attempt 2 vs 3 ports identical");
+    }
+
+    #[test]
+    fn compose_up_gives_up_after_max_attempts() {
+        let runner = FlakyComposeRunner::always_fail_with_port_collision();
+        let mut tls = ReservedPort::acquire().expect("tls");
+        let mut starttls = ReservedPort::acquire().expect("starttls");
+
+        let result = compose_up_with_retry(
+            &runner,
+            "test-proj",
+            dummy_compose_dir(),
+            &mut tls,
+            &mut starttls,
+        );
+
+        let Err(HarnessError::DockerCommandFailed(msg)) = result else {
+            panic!("expected DockerCommandFailed, got: {result:?}");
+        };
+        assert!(msg.contains("exhausted"), "missing 'exhausted' in {msg:?}");
+        assert!(
+            msg.contains("port is already allocated"),
+            "underlying stderr should be preserved in {msg:?}"
+        );
+        assert_eq!(runner.attempts(), 3, "should have attempted three times");
+    }
+
+    #[test]
+    fn compose_up_propagates_non_port_errors_immediately() {
+        let runner = FlakyComposeRunner::always_fail_with("no such image: dovecot:9.9.9");
+        let mut tls = ReservedPort::acquire().expect("tls");
+        let mut starttls = ReservedPort::acquire().expect("starttls");
+
+        let result = compose_up_with_retry(
+            &runner,
+            "test-proj",
+            dummy_compose_dir(),
+            &mut tls,
+            &mut starttls,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            runner.attempts(),
+            1,
+            "non-collision errors should not retry"
+        );
+    }
 }

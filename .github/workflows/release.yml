@@ -3,6 +3,16 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run verify-tag only; skip build and release jobs."
+        type: boolean
+        default: true
+      tag:
+        description: "Tag to validate (e.g. v0.1.0). Used only on workflow_dispatch."
+        type: string
+        required: true
 
 permissions: {}
 
@@ -12,9 +22,36 @@ env:
   BINARY_NAME: rusty-imap-mcp
 
 jobs:
+  # Gates every build/release job below via `needs: verify-tag`. Fails fast on
+  # tag/Cargo.toml drift, malformed tag formats, or a `-dev` literal in the
+  # manifest. workflow_dispatch with `dry_run: true` exercises just this job.
+  verify-tag:
+    name: Verify tag matches Cargo.toml
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Exposed for future jobs that need the parsed version. Currently unused; the
+    # tag itself is what gates the build, so removing this output is fine if no
+    # consumer materializes.
+    outputs:
+      version: ${{ steps.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Verify tag
+        id: verify
+        env:
+          TAG_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          ./scripts/check-release-version.sh "$TAG_REF"
+          echo "version=${TAG_REF#v}" >> "$GITHUB_OUTPUT"
+
   build-linux-x86_64:
     name: build (x86_64-unknown-linux-gnu)
+    needs: verify-tag
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     permissions:
       contents: read
     steps:
@@ -38,7 +75,9 @@ jobs:
 
   build-linux-aarch64:
     name: build (aarch64-unknown-linux-gnu)
+    needs: verify-tag
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     permissions:
       contents: read
     steps:
@@ -66,7 +105,9 @@ jobs:
 
   build-macos-aarch64:
     name: build (aarch64-apple-darwin)
+    needs: verify-tag
     runs-on: macos-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     permissions:
       contents: read
     steps:
@@ -88,7 +129,9 @@ jobs:
 
   build-linux-ppc64le:
     name: build (powerpc64le-unknown-linux-gnu)
+    needs: verify-tag
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     permissions:
       contents: read
     steps:
@@ -115,7 +158,9 @@ jobs:
 
   build-linux-s390x:
     name: build (s390x-unknown-linux-gnu)
+    needs: verify-tag
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     permissions:
       contents: read
     steps:
@@ -143,12 +188,14 @@ jobs:
   release:
     name: Create GitHub Release
     needs:
+      - verify-tag
       - build-linux-x86_64
       - build-linux-aarch64
       - build-macos-aarch64
       - build-linux-ppc64le
       - build-linux-s390x
     runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch' || inputs.dry_run != true
     environment: release
     permissions:
       contents: write
@@ -177,8 +224,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           VERSION="${TAG#v}"
-          awk "/^## \\[${VERSION}\\]/,/^## \\[[^\\]]+\\]/" CHANGELOG.md \
-            | head -n -1 > RELEASE_NOTES.md
+          awk -v v="$VERSION" '
+              $0 ~ "^## \\[" v "\\]" { p=1; next }
+              p && /^## \[/         { exit }
+              p && /^\[[^]]+\]: /    { exit }
+              p                     { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
           if [ ! -s RELEASE_NOTES.md ]; then
             echo "Warning: no release notes extracted for ${TAG}"
             cp CHANGELOG.md RELEASE_NOTES.md

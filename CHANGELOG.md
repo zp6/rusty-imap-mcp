@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - Unreleased
+
 ### Changed
 
 - **Breaking (keyring):** Credential keyring entries are now namespaced by
@@ -35,10 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`keyring` / `legacy_keyring` / `env_var`) for post-incident analysis.
 - `rusty-imap-mcp migrate-keyring` CLI subcommand to migrate credentials
   from the legacy keyring key format to the new namespaced format.
-
-## [1.0.0] - 2026-04-13
-
-### Added
 
 #### Multi-account support
 
@@ -241,4 +239,5 @@ Pre-built binaries for five targets:
 - Replace `Mutex<Option<AccountId>>` in the account registry with
   `ArcSwapOption` to eliminate async-refactor footguns and mutex poisoning.
 
-## [Unreleased]
+[Unreleased]: https://github.com/randomparity/rusty-imap-mcp/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/randomparity/rusty-imap-mcp/releases/tag/v0.1.0

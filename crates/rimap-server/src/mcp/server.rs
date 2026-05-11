@@ -225,7 +225,7 @@ impl ServerHandler for ImapMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::default().with_server_info(Implementation::new(
             "rusty-imap-mcp",
-            env!("CARGO_PKG_VERSION"),
+            rimap_core::version::version(),
         ))
     }
 

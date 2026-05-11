@@ -15,8 +15,8 @@ keywords = ["smtp", "email", "mcp"]
 workspace = true
 
 [dependencies]
-rimap-core = { path = "../rimap-core", version = "1.0.0" }
-rimap-config = { path = "../rimap-config", version = "1.0.0" }
+rimap-core = { path = "../rimap-core", version = "0.1.0" }
+rimap-config = { path = "../rimap-config", version = "0.1.0" }
 
 lettre = { workspace = true }
 thiserror = { workspace = true }
