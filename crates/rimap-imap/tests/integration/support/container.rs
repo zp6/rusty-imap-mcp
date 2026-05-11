@@ -108,15 +108,13 @@ impl DovecotHarness {
         let mut host_port = ReservedPort::acquire()?;
         let mut host_starttls_port = ReservedPort::acquire()?;
 
-        // Release the kernel-level port leases just before docker binds them.
-        // Task 5 will move this release into the retry wrapper.
-        host_port.release();
-        host_starttls_port.release();
-        compose_up(
+        let runner = DockerComposeRunner;
+        compose_up_with_retry(
+            &runner,
             &project,
             &compose_dir,
-            host_port.port(),
-            host_starttls_port.port(),
+            &mut host_port,
+            &mut host_starttls_port,
         )?;
 
         let result = wait_for_ready(
@@ -309,6 +307,51 @@ impl ComposeRunner for DockerComposeRunner {
     ) -> Result<(), HarnessError> {
         compose_up(project, compose_dir, tls_port, starttls_port)
     }
+}
+
+/// Drive `runner.up(...)` with a bounded retry on host-port collisions.
+///
+/// Three attempts total (initial + 2 retries). Each retry tears down
+/// the partial compose project, sleeps with jittered backoff, and
+/// acquires fresh `ReservedPort`s. Non-collision errors propagate
+/// immediately on the first failure. If all three attempts hit
+/// collisions, the most recent stderr is preserved in the error
+/// message.
+fn compose_up_with_retry(
+    runner: &dyn ComposeRunner,
+    project: &str,
+    compose_dir: &Path,
+    tls: &mut ReservedPort,
+    starttls: &mut ReservedPort,
+) -> Result<(), HarnessError> {
+    const BACKOFF_MS: [u64; 2] = [50, 250];
+    const MAX_ATTEMPTS: usize = BACKOFF_MS.len() + 1;
+    let mut last_collision: Option<String> = None;
+
+    // Attempt 0 is the initial try (no prior sleep). Attempts 1 and 2 are
+    // retries preceded by teardown + backoff sleep + fresh port acquisition.
+    for attempt in 0..MAX_ATTEMPTS {
+        if attempt > 0 {
+            compose_down(project, compose_dir);
+            std::thread::sleep(Duration::from_millis(BACKOFF_MS[attempt - 1]));
+            *tls = ReservedPort::acquire()?;
+            *starttls = ReservedPort::acquire()?;
+        }
+        tls.release();
+        starttls.release();
+        let result = runner.up(project, compose_dir, tls.port(), starttls.port());
+        match result {
+            Ok(()) => return Ok(()),
+            Err(HarnessError::DockerCommandFailed(s)) if is_port_collision(&s) => {
+                last_collision = Some(s);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(HarnessError::DockerCommandFailed(format!(
+        "compose up: exhausted {MAX_ATTEMPTS} attempts on port collision; last error: {}",
+        last_collision.unwrap_or_else(|| "<no error captured>".into()),
+    )))
 }
 
 fn compose_up(
