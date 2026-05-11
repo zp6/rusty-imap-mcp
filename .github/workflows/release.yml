@@ -22,11 +22,17 @@ env:
   BINARY_NAME: rusty-imap-mcp
 
 jobs:
+  # Gates every build/release job below via `needs: verify-tag`. Fails fast on
+  # tag/Cargo.toml drift, malformed tag formats, or a `-dev` literal in the
+  # manifest. workflow_dispatch with `dry_run: true` exercises just this job.
   verify-tag:
     name: Verify tag matches Cargo.toml
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+    # Exposed for future jobs that need the parsed version. Currently unused; the
+    # tag itself is what gates the build, so removing this output is fine if no
+    # consumer materializes.
     outputs:
       version: ${{ steps.verify.outputs.version }}
     steps:
