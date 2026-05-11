@@ -42,7 +42,7 @@ posture = "draft-safe"
 commands_per_second = 10
 
 [audit]
-path = "/home/alice/.local/state/rusty-imap-mcp/audit.jsonl"
+path = "/home/alice/.local/share/rusty-imap-mcp/audit.jsonl"
 
 [attachments]
 download_dir = ""
@@ -85,7 +85,7 @@ username = "me@fastmail.com"
 posture = "readonly"
 
 [audit]
-path = "/home/user/.local/state/rusty-imap-mcp/audit.jsonl"
+path = "/home/user/.local/share/rusty-imap-mcp/audit.jsonl"
 ```
 
 See [multi-account.md](multi-account.md) for account discovery and
@@ -220,13 +220,13 @@ accounts in multi-account configs).
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `path` | string | (required) | Path to the audit log file (JSONL) |
+| `path` | string | (required) | Path to the audit log file (JSONL). Must be an absolute path — the TOML parser does not expand `~`. The parent directory must exist before startup. |
 | `rotate_bytes` | u64 | 10,485,760 (10 MiB) | Rotate when the file reaches this size. `0` disables rotation. |
 | `rotate_keep` | u32 | 5 | Number of rotated files to keep after rotation |
 | `retention_seconds` | u64 | (none) | Time-based retention for rotated files. Omit to disable. |
 | `provenance_window_seconds` | u32 | 60 | Provenance ring buffer window |
 | `fail_open` | bool | false | If true, continue on audit write failure (insecure). Default: audit write failure fails the tool call. |
-| `allowed_base_dir` | string | (platform default) | Containment base for `audit.path`. Defaults to `$XDG_STATE_HOME/rusty-imap-mcp/`. Set to `"/"` to disable (not recommended). |
+| `allowed_base_dir` | string | (platform default) | Containment base for `audit.path`. Default is `directories::ProjectDirs::data_local_dir()` — `~/Library/Application Support/rusty-imap-mcp/` on macOS, `$XDG_DATA_HOME/rusty-imap-mcp/` (typically `~/.local/share/rusty-imap-mcp/`) on Linux. Set to `"/"` to disable (not recommended). |
 
 See [audit-log.md](audit-log.md) for the log format and record types.
 
@@ -262,12 +262,17 @@ in the per-account section inherit from defaults.
 Passwords are never stored in the config file. Resolution order:
 
 1. **OS keychain** -- service `rusty-imap-mcp`, account
-   `<username>@<host>`. Store credentials with:
+   `<account-id>/<username>@<host>` (the legacy `<username>@<host>` form
+   is still read for back-compat). Store credentials with:
    ```
-   rusty-imap-mcp login
+   rusty-imap-mcp login --host <host> --username <username>
    ```
+   Add `--account <name>` to target a non-default account. The command
+   prompts on `/dev/tty`; the password is never read from stdin or the
+   environment.
 2. **Environment variable** `RUSTY_IMAP_MCP_PASSWORD` -- fallback for
-   headless, container, or CI environments.
+   headless, container, or CI environments. Read by the server at
+   credential-resolution time, not by `login`.
 3. **Error** -- if neither source has a value, the server exits with a
    message directing the user to run `rusty-imap-mcp login` or set the
    environment variable.
