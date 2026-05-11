@@ -755,7 +755,9 @@ pub enum PinChoice {
 
 #[cfg(test)]
 mod tests {
+    #![expect(clippy::unwrap_used, reason = "tests")]
     #![expect(clippy::expect_used, reason = "tests")]
+    #![expect(clippy::panic, reason = "test failure path")]
 
     use super::*;
 
@@ -823,5 +825,168 @@ mod tests {
         let mut p = ReservedPort::acquire().expect("acquire");
         p.release();
         p.release(); // must not panic
+    }
+
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Test double for `ComposeRunner`. Records every observed
+    /// `(tls_port, starttls_port)` pair and returns a programmable
+    /// sequence of results.
+    struct FlakyComposeRunner {
+        fail_first_n: AtomicU32,
+        observed_ports: Mutex<Vec<(u16, u16)>>,
+        port_collision_stderr: String,
+        terminal_error: Option<String>,
+    }
+
+    impl FlakyComposeRunner {
+        /// Fail the first `n` attempts with a port-collision stderr;
+        /// succeed afterward.
+        fn fail_first_n_with_port_collision(n: u32) -> Self {
+            Self {
+                fail_first_n: AtomicU32::new(n),
+                observed_ports: Mutex::new(Vec::new()),
+                port_collision_stderr: "Bind for 127.0.0.1:12345 failed: \
+                                        port is already allocated"
+                    .into(),
+                terminal_error: None,
+            }
+        }
+
+        /// Always fail with a port-collision stderr.
+        fn always_fail_with_port_collision() -> Self {
+            Self {
+                fail_first_n: AtomicU32::new(u32::MAX),
+                observed_ports: Mutex::new(Vec::new()),
+                port_collision_stderr: "Bind for 127.0.0.1:12345 failed: \
+                                        port is already allocated"
+                    .into(),
+                terminal_error: None,
+            }
+        }
+
+        /// Always fail with a non-collision stderr.
+        fn always_fail_with(msg: &str) -> Self {
+            Self {
+                fail_first_n: AtomicU32::new(u32::MAX),
+                observed_ports: Mutex::new(Vec::new()),
+                port_collision_stderr: String::new(),
+                terminal_error: Some(msg.into()),
+            }
+        }
+
+        fn observed_ports(&self) -> Vec<(u16, u16)> {
+            self.observed_ports.lock().unwrap().clone()
+        }
+
+        fn attempts(&self) -> usize {
+            self.observed_ports.lock().unwrap().len()
+        }
+    }
+
+    impl ComposeRunner for FlakyComposeRunner {
+        fn up(
+            &self,
+            _project: &str,
+            _compose_dir: &Path,
+            tls_port: u16,
+            starttls_port: u16,
+        ) -> Result<(), HarnessError> {
+            self.observed_ports
+                .lock()
+                .unwrap()
+                .push((tls_port, starttls_port));
+
+            if let Some(msg) = self.terminal_error.as_ref() {
+                return Err(HarnessError::DockerCommandFailed(msg.clone()));
+            }
+
+            let remaining = self.fail_first_n.load(Ordering::SeqCst);
+            if remaining > 0 {
+                self.fail_first_n.fetch_sub(1, Ordering::SeqCst);
+                return Err(HarnessError::DockerCommandFailed(
+                    self.port_collision_stderr.clone(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    fn dummy_compose_dir() -> &'static Path {
+        Path::new("/tmp/rimap-it-test")
+    }
+
+    #[test]
+    fn compose_up_retries_on_port_collision_then_succeeds() {
+        let runner = FlakyComposeRunner::fail_first_n_with_port_collision(2);
+        let mut tls = ReservedPort::acquire().expect("tls");
+        let mut starttls = ReservedPort::acquire().expect("starttls");
+
+        let result = compose_up_with_retry(
+            &runner,
+            "test-proj",
+            dummy_compose_dir(),
+            &mut tls,
+            &mut starttls,
+        );
+
+        assert!(
+            result.is_ok(),
+            "should succeed on third attempt: {:?}",
+            result.err()
+        );
+        let ports = runner.observed_ports();
+        assert_eq!(ports.len(), 3, "should have attempted three times");
+        // Each retry uses a fresh port pair (proves the reacquire path).
+        assert_ne!(ports[0], ports[1], "attempt 1 vs 2 ports identical");
+        assert_ne!(ports[1], ports[2], "attempt 2 vs 3 ports identical");
+    }
+
+    #[test]
+    fn compose_up_gives_up_after_max_attempts() {
+        let runner = FlakyComposeRunner::always_fail_with_port_collision();
+        let mut tls = ReservedPort::acquire().expect("tls");
+        let mut starttls = ReservedPort::acquire().expect("starttls");
+
+        let result = compose_up_with_retry(
+            &runner,
+            "test-proj",
+            dummy_compose_dir(),
+            &mut tls,
+            &mut starttls,
+        );
+
+        let Err(HarnessError::DockerCommandFailed(msg)) = result else {
+            panic!("expected DockerCommandFailed, got: {result:?}");
+        };
+        assert!(msg.contains("exhausted"), "missing 'exhausted' in {msg:?}");
+        assert!(
+            msg.contains("port is already allocated"),
+            "underlying stderr should be preserved in {msg:?}"
+        );
+        assert_eq!(runner.attempts(), 3, "should have attempted three times");
+    }
+
+    #[test]
+    fn compose_up_propagates_non_port_errors_immediately() {
+        let runner = FlakyComposeRunner::always_fail_with("no such image: dovecot:9.9.9");
+        let mut tls = ReservedPort::acquire().expect("tls");
+        let mut starttls = ReservedPort::acquire().expect("starttls");
+
+        let result = compose_up_with_retry(
+            &runner,
+            "test-proj",
+            dummy_compose_dir(),
+            &mut tls,
+            &mut starttls,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            runner.attempts(),
+            1,
+            "non-collision errors should not retry"
+        );
     }
 }
