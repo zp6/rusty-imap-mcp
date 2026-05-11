@@ -301,6 +301,20 @@ fn compose_up(
     Ok(())
 }
 
+/// Classify a stderr blob from a failed `compose up`: `true` when the
+/// failure looks like a host-port bind collision, `false` otherwise.
+///
+/// Covers three observed phrasings:
+///   - docker engine: "Bind for 127.0.0.1:NNNN failed: port is already allocated"
+///   - libc EADDRINUSE: "address already in use"
+///   - podman rootlessport: "Bind for ..."
+fn is_port_collision(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("port is already allocated")
+        || s.contains("address already in use")
+        || s.contains("bind for")
+}
+
 fn wait_for_ready(
     project: &str,
     compose_dir: &Path,
@@ -626,4 +640,43 @@ pub enum PinChoice {
     Correct,
     Wrong,
     None,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_port_collision_matches_docker_engine_error() {
+        let stderr = "Error response from daemon: failed to set up container networking: \
+            driver failed programming external connectivity on endpoint rimap-it-abc-dovecot \
+            (...): Bind for 127.0.0.1:35615 failed: port is already allocated";
+        assert!(is_port_collision(stderr));
+    }
+
+    #[test]
+    fn is_port_collision_matches_libc_eaddrinuse() {
+        assert!(is_port_collision("bind: address already in use"));
+    }
+
+    #[test]
+    fn is_port_collision_matches_podman_variant() {
+        assert!(is_port_collision(
+            "Error: rootlessport listen tcp 127.0.0.1:1234: bind: address already in use"
+        ));
+    }
+
+    #[test]
+    fn is_port_collision_rejects_unrelated_error() {
+        assert!(!is_port_collision(
+            "no such image: docker.io/dovecot/dovecot:9.9.9"
+        ));
+        assert!(!is_port_collision("dovecot exited with non-zero status"));
+    }
+
+    #[test]
+    fn is_port_collision_is_case_insensitive() {
+        assert!(is_port_collision("PORT IS ALREADY ALLOCATED"));
+        assert!(is_port_collision("Bind FOR 127.0.0.1:80 failed"));
+    }
 }
