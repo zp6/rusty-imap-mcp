@@ -224,8 +224,12 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           VERSION="${TAG#v}"
-          awk "/^## \\[${VERSION}\\]/,/^## \\[[^\\]]+\\]/" CHANGELOG.md \
-            | head -n -1 > RELEASE_NOTES.md
+          awk -v v="$VERSION" '
+              $0 ~ "^## \\[" v "\\]" { p=1; next }
+              p && /^## \[/         { exit }
+              p && /^\[[^]]+\]: /    { exit }
+              p                     { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
           if [ ! -s RELEASE_NOTES.md ]; then
             echo "Warning: no release notes extracted for ${TAG}"
             cp CHANGELOG.md RELEASE_NOTES.md
