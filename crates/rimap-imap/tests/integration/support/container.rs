@@ -761,6 +761,9 @@ mod tests {
 
     use super::*;
 
+    const PORT_COLLISION_STDERR: &str =
+        "Bind for 127.0.0.1:12345 failed: port is already allocated";
+
     #[test]
     fn is_port_collision_matches_docker_engine_error() {
         let stderr = "Error response from daemon: failed to set up container networking: \
@@ -847,9 +850,7 @@ mod tests {
             Self {
                 fail_first_n: AtomicU32::new(n),
                 observed_ports: Mutex::new(Vec::new()),
-                port_collision_stderr: "Bind for 127.0.0.1:12345 failed: \
-                                        port is already allocated"
-                    .into(),
+                port_collision_stderr: PORT_COLLISION_STDERR.into(),
                 terminal_error: None,
             }
         }
@@ -859,9 +860,7 @@ mod tests {
             Self {
                 fail_first_n: AtomicU32::new(u32::MAX),
                 observed_ports: Mutex::new(Vec::new()),
-                port_collision_stderr: "Bind for 127.0.0.1:12345 failed: \
-                                        port is already allocated"
-                    .into(),
+                port_collision_stderr: PORT_COLLISION_STDERR.into(),
                 terminal_error: None,
             }
         }
