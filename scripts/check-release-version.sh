@@ -25,6 +25,11 @@ fi
 # Strip the leading 'v'.
 tag_version="${tag#v}"
 
+if [ ! -f Cargo.toml ]; then
+    echo "error: Cargo.toml not found (run from the repo root)" >&2
+    exit 66
+fi
+
 # Parse workspace version. Match `version = "X.Y.Z"` only under [workspace.package].
 # awk pattern: enter range on [workspace.package], exit on next section header.
 workspace_version=$(
