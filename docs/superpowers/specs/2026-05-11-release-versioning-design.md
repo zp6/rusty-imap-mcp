@@ -143,8 +143,9 @@ manifest-dir resolution) are unrelated and stay as-is.
 version = "0.1.0"   # was "1.0.0"
 ```
 
-Twelve `version = "1.0.0"` literals on path-dependency entries across the
-seven dependent member crates (`rimap-imap`, `rimap-content`, `rimap-config`,
+22 `version = "1.0.0"` literals on path-dependency entries (including
+dev-deps and the self-referencing test-support entries in `rimap-server`)
+across the seven dependent member crates (`rimap-imap`, `rimap-content`, `rimap-config`,
 `rimap-audit`, `rimap-smtp`, `rimap-authz`, `rimap-server`) update to
 `"0.1.0"`. The existing comment in `crates/rimap-imap/Cargo.toml`
 (`# Internal — direct path + explicit version to satisfy cargo-deny's
