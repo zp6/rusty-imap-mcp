@@ -312,7 +312,7 @@ impl ComposeRunner for DockerComposeRunner {
 /// Drive `runner.up(...)` with a bounded retry on host-port collisions.
 ///
 /// Three attempts total (initial + 2 retries). Each retry tears down
-/// the partial compose project, sleeps with jittered backoff, and
+/// the partial compose project, sleeps with increasing backoff, and
 /// acquires fresh `ReservedPort`s. Non-collision errors propagate
 /// immediately on the first failure. If all three attempts hit
 /// collisions, the most recent stderr is preserved in the error
