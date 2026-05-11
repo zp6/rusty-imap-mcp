@@ -232,3 +232,9 @@ ci: fmt-check lint test test-msrv deny
 hooks:
     prek install
     prek run --all-files
+
+# Verify a candidate tag against the Cargo.toml workspace version.
+# Run this before pushing a `vX.Y.Z` tag.
+#   just release-check v0.1.0
+release-check TAG:
+    ./scripts/check-release-version.sh {{TAG}}
