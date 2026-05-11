@@ -46,8 +46,10 @@ fn main() {
         "cargo:rustc-env=RIMAP_RELEASE={}",
         if is_release { "true" } else { "false" }
     );
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/tags");
+    println!("cargo:rerun-if-changed=.git/packed-refs");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
 }
 
