@@ -63,6 +63,24 @@ fn schema_map<T: schemars::JsonSchema>() -> serde_json::Map<String, serde_json::
     }
 }
 
+/// JSON Schema for a tool that takes no arguments. The MCP spec models
+/// `inputSchema` as an object schema (`"type": "object"`) — a bare `{}` is
+/// technically a permissive JSON Schema but spec-strict clients (e.g.
+/// `bobshell`'s Zod validator) reject any tool whose `inputSchema.type`
+/// is not the string `"object"`.
+fn no_args_schema() -> serde_json::Map<String, serde_json::Value> {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "type".to_string(),
+        serde_json::Value::String("object".into()),
+    );
+    map.insert(
+        "properties".to_string(),
+        serde_json::Value::Object(serde_json::Map::new()),
+    );
+    map
+}
+
 /// Return (description, schema) for the given `ToolName`, or `None`
 /// for sub-capabilities that share an MCP tool name with a parent
 /// (e.g. `SearchAdvanced`, `FetchMessageHtml`).
@@ -83,7 +101,7 @@ fn tool_spec(name: ToolName) -> Option<ToolSpec> {
     use crate::tools::retrieval::list_attachments::ListAttachmentsInput;
     use crate::tools::retrieval::search::SearchInput;
     let tuple = match name {
-        ToolName::ListFolders => ("List all IMAP folders", serde_json::Map::new()),
+        ToolName::ListFolders => ("List all IMAP folders", no_args_schema()),
         ToolName::Search => (
             "Search messages with structured query",
             schema_map::<SearchInput>(),
@@ -152,7 +170,7 @@ fn tool_spec(name: ToolName) -> Option<ToolSpec> {
             "Set the active account for subsequent tool calls",
             schema_map::<UseAccountInput>(),
         ),
-        ToolName::ListAccounts => ("List all configured email accounts", serde_json::Map::new()),
+        ToolName::ListAccounts => ("List all configured email accounts", no_args_schema()),
         // Sub-capabilities that share an MCP tool name with a parent
         // (e.g. `SearchAdvanced` shares `search`; `FetchMessageHtml`
         // shares `fetch_message`) are advertised under the parent entry,
@@ -222,15 +240,29 @@ mod tests {
             .into_iter()
             .filter_map(|tn| TOOL_DEFS.get(&tn))
         {
-            // list_folders and list_accounts have no input — empty
-            // schema is expected.
-            if def.name == "list_folders" || def.name == "list_accounts" {
-                continue;
-            }
             let schema = &def.input_schema;
             assert!(
                 !schema.is_empty(),
                 "tool {} has empty input schema",
+                def.name,
+            );
+        }
+    }
+
+    #[test]
+    fn every_tool_input_schema_declares_object_type() {
+        // Spec-strict MCP clients (e.g. bobshell's Zod validator) reject
+        // any tool whose inputSchema.type is not the string "object". A
+        // bare `{}` is a valid JSON Schema but the wrong shape for MCP.
+        for def in ToolName::all()
+            .into_iter()
+            .filter_map(|tn| TOOL_DEFS.get(&tn))
+        {
+            let type_field = def.input_schema.get("type");
+            assert_eq!(
+                type_field.and_then(serde_json::Value::as_str),
+                Some("object"),
+                "tool {} input_schema.type must be the string \"object\"; got {type_field:?}",
                 def.name,
             );
         }
