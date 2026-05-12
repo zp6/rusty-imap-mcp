@@ -214,6 +214,54 @@ exits. It does not authenticate.
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Connection refused | Bridge not running or wrong port | Start Proton Bridge and verify the IMAP port in Bridge settings |
 
+### Optional: verify the credential authenticates
+
+`--dry-run` deliberately stops before `LOGIN`, so it cannot tell you
+whether your stored password is accepted. The first auth attempt
+happens inside the MCP client at server startup, which is the worst
+place to discover a wrong password. To verify the credential before
+integration, speak IMAP to Bridge directly (note `-starttls imap` —
+Bridge uses STARTTLS on port 1143, not implicit TLS):
+
+```bash
+openssl s_client -connect 127.0.0.1:1143 -starttls imap -crlf -quiet
+```
+
+After the `* OK ...` greeting, type these (the `a1`/`a2` tags are
+arbitrary identifiers you make up):
+
+```
+a1 LOGIN you@proton.me YourBridgePasswordHere
+a2 LOGOUT
+```
+
+Interpreting the response:
+
+| Response to `a1` | Meaning | Next step |
+|------------------|---------|-----------|
+| `a1 OK ...` | Credential accepted | Continue to Step 6 |
+| `a1 NO ...` | Server rejected the credential | Re-copy the bridge password from Proton Bridge settings (not your Proton account password); re-run `rusty-imap-mcp login` if you mistyped it earlier |
+| `a1 BAD ...` | Server rejected the `LOGIN` command itself | Unexpected against Bridge; send `a3 CAPABILITY` and inspect what's advertised |
+
+> **Shell-history caveat.** The command line above places your bridge
+> password in your shell history. Prefix the entire shell command
+> with a space (most shells with `HISTCONTROL=ignorespace` skip it),
+> or run `LOGIN you@proton.me "PaSt3 H3rE"` after the connection
+> opens so the password only lives in the openssl session.
+
+Confirm the stored password matches what just worked:
+
+```bash
+security find-generic-password \
+  -s rusty-imap-mcp \
+  -a "default/you@proton.me@127.0.0.1" -w
+```
+
+The printed value should match byte-for-byte what you typed at the
+`LOGIN` prompt. If they differ, re-run `rusty-imap-mcp login`. For
+Linux equivalents and broader credential management, see
+[docs/troubleshooting.md](troubleshooting.md#verifying-and-managing-stored-credentials).
+
 ## Step 6: Add to your MCP client
 
 ### Claude Desktop
