@@ -12,7 +12,6 @@
 //!    `inputSchema: {}` with no `type` field.
 
 #![expect(clippy::expect_used, reason = "integration tests")]
-#![expect(clippy::unwrap_used, reason = "integration tests")]
 #![expect(clippy::panic, reason = "test assertions render diagnostics")]
 #![expect(
     dead_code,
@@ -45,7 +44,6 @@ const PINNED_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_SCHEMA_JSON: &str = include_str!("fixtures/mcp-spec/2025-11-25/schema.json");
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const SPAWN_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Owns the spawned child plus its piped stdio.
@@ -61,6 +59,10 @@ struct Harness {
 
 impl Harness {
     /// Spawn the binary with a zero-account tempdir config.
+    #[expect(
+        clippy::unused_async,
+        reason = "harness API is uniformly async so tests await every constructor"
+    )]
     async fn spawn() -> Self {
         let tempdir = TempDir::new().expect("tempdir");
         let config_path = tempdir.path().join("config.toml");
@@ -88,13 +90,10 @@ allowed_base_dir = "{}"
             .arg(&config_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .kill_on_drop(true);
 
-        let mut child = timeout(SPAWN_TIMEOUT, async { cmd.spawn() })
-            .await
-            .expect("spawn within timeout")
-            .expect("spawn");
+        let mut child = cmd.spawn().expect("spawn rusty-imap-mcp binary");
 
         let stdin = child.stdin.take().expect("stdin");
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
@@ -201,31 +200,56 @@ allowed_base_dir = "{}"
 /// `Arc` so multiple parallel tests can share the compiled validator
 /// without lifetime gymnastics.
 fn validator_for(fragment: &'static str) -> Arc<jsonschema::Validator> {
+    // All function-scoped items declared up front so cache and parsed
+    // schema lifetimes are visible from the top of the body
+    // (clippy::items_after_statements).
     type Cache = Mutex<HashMap<&'static str, Arc<jsonschema::Validator>>>;
+    static PARSED: OnceLock<(Value, &'static str)> = OnceLock::new();
     static CACHE: OnceLock<Cache> = OnceLock::new();
+
+    // Parse the vendored schema exactly once and detect the
+    // definitions key (`$defs` for Draft 2020-12, `definitions` for
+    // older dialects). The full Value and the detected key are
+    // immutable for the lifetime of the test process.
+    let parsed = PARSED.get_or_init(|| {
+        let full: Value = serde_json::from_str(MCP_SCHEMA_JSON).expect("parse vendored MCP schema");
+        let defs_key = if full.get("$defs").is_some() {
+            "$defs"
+        } else {
+            "definitions"
+        };
+        (full, defs_key)
+    });
+    let full = &parsed.0;
+    let defs_key: &'static str = parsed.1;
+
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
-    if let Some(v) = guard.get(fragment) {
-        return Arc::clone(v);
+
+    // Fast path: read under the lock, return if cached.
+    {
+        let guard = cache.lock().expect("validator cache mutex poisoned");
+        if let Some(v) = guard.get(fragment) {
+            return Arc::clone(v);
+        }
     }
 
-    // Detect which key the spec uses for nested definitions. Newer
-    // JSON Schema dialects use `$defs`; older specs use `definitions`.
-    let full: Value = serde_json::from_str(MCP_SCHEMA_JSON).expect("parse vendored MCP schema");
-    let defs_key = if full.get("$defs").is_some() {
-        "$defs"
-    } else {
-        "definitions"
-    };
-
-    // Build a wrapper schema that $refs into the requested fragment.
+    // Slow path: compile the fragment validator WITHOUT holding the
+    // cache lock, so parallel tests compiling different fragments
+    // don't serialize.
     let wrapper = json!({
         "$ref": format!("#/{defs_key}/{fragment}"),
         defs_key: full.get(defs_key).cloned().unwrap_or(json!({})),
     });
-    let v = Arc::new(jsonschema::validator_for(&wrapper).expect("compile fragment validator"));
-    guard.insert(fragment, Arc::clone(&v));
-    v
+    let new_validator =
+        Arc::new(jsonschema::validator_for(&wrapper).expect("compile fragment validator"));
+
+    // Insert. If a concurrent thread already inserted while we were
+    // compiling, prefer the existing entry to keep the Arc stable.
+    let mut guard = cache.lock().expect("validator cache mutex poisoned");
+    let entry = guard
+        .entry(fragment)
+        .or_insert_with(|| Arc::clone(&new_validator));
+    Arc::clone(entry)
 }
 
 /// Validate a value against a vendored fragment, panicking with the
