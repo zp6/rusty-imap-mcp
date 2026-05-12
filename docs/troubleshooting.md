@@ -2,6 +2,33 @@
 
 Diagnosing startup failures and runtime issues with `rusty-imap-mcp`.
 
+## "No prompts or tools found" / `tools/list` returns nothing
+
+If an MCP client reports that the server is reachable but exposes
+no tools, drive the stdio transport directly to see what the server
+actually returns:
+
+```bash
+./scripts/mcp-probe-tools.sh
+```
+
+The script auto-generates `/tmp/rimap-probe.toml` from your main
+config (rewriting `[audit].path` to a distinct file so it doesn't
+fight a running MCP client's audit lock), sends `initialize` +
+`notifications/initialized` + `tools/list`, and reports the tool
+count and names plus full stderr.
+
+- **Tool count matches the posture matrix (16 on draft-safe)** —
+  the gap is client-side. Capture the client's `initialize` request
+  via the stderr-capture shim below and inspect its
+  `clientCapabilities` plus the actual `tools/list` response in the
+  client's own logs. Spec-strict clients (e.g. `bobshell`) verify
+  the server's advertised capabilities first; the server must
+  declare `tools` in its `initialize` response or these clients
+  refuse to call `tools/list` at all.
+- **Tool count is 0 or the probe shows a server error** — the gap
+  is server-side; check the stderr output the script printed.
+
 ## "Connection closed" / "MCP error -32000" from your MCP client
 
 A generic transport error from the client (Claude Desktop, Claude Code,
