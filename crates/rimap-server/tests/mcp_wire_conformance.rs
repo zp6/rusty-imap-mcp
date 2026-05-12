@@ -275,3 +275,32 @@ async fn wire_smoke_initialize_returns_valid_envelope() {
         "initialize response must have a result object, got {response}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_initialize_advertises_tools_capability() {
+    let mut harness = Harness::spawn().await;
+    let response = harness.initialize_handshake().await;
+
+    let result = &response["result"];
+    assert_valid(result, "InitializeResult");
+
+    assert_eq!(
+        result["protocolVersion"],
+        json!(PINNED_PROTOCOL_VERSION),
+        "server must echo the pinned protocol version",
+    );
+
+    // Regression net for #261: the capabilities object must contain
+    // a `tools` key on the wire. Permissive clients ignore the
+    // absence; spec-strict clients (e.g. bobshell) refuse to call
+    // tools/list.
+    let capabilities = &result["capabilities"];
+    assert!(
+        capabilities.is_object(),
+        "capabilities must be an object, got {capabilities}",
+    );
+    assert!(
+        capabilities.get("tools").is_some(),
+        "capabilities.tools must be present on the wire; got {capabilities}",
+    );
+}
