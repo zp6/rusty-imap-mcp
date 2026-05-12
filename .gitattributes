@@ -1,0 +1,7 @@
+# Force LF line endings for vendored MCP spec schemas so the
+# upstream-verbatim invariant survives Windows checkouts with
+# core.autocrlf=true. The weekly drift check
+# (.github/workflows/mcp-spec-drift.yml, issue #263) compares the
+# vendored copy byte-for-byte against upstream; any CRLF churn
+# would surface as false-positive drift.
+crates/rimap-server/tests/fixtures/mcp-spec/** text eol=lf

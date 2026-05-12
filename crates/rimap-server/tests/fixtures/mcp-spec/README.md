@@ -31,4 +31,17 @@ rmcp / spec mismatch forces us to relax a strict constraint (e.g. a
 fragment with `additionalProperties: false` that rmcp violates),
 document the diff here and link the rationale.
 
+## Naming notes for downstream code
+
+The 2025-11-25 schema's `$defs` splits the JSON-RPC envelope into
+three definitions:
+
+- `JSONRPCResponse` — `anyOf` union of the two leaves below
+- `JSONRPCResultResponse` — successful result envelope
+- `JSONRPCErrorResponse` — error envelope (NOT `JSONRPCError`)
+
+When validating wire payloads in the conformance harness, prefer the
+leaf names (`JSONRPCResultResponse` / `JSONRPCErrorResponse`) over
+the union.
+
 [spec-repo]: https://github.com/modelcontextprotocol/modelcontextprotocol
