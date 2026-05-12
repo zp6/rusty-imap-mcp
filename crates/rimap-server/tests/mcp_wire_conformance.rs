@@ -335,3 +335,48 @@ async fn wire_initialized_notification_elicits_no_response() {
         .assert_no_response_within(Duration::from_millis(200))
         .await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_tools_list_returns_object_schemas() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    let response = harness.request("tools/list", json!({})).await;
+    let result = &response["result"];
+    assert_valid(result, "ListToolsResult");
+
+    let tools = result["tools"].as_array().expect("tools must be an array");
+    assert!(
+        !tools.is_empty(),
+        "tools/list must return at least the infrastructure tools"
+    );
+
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+    assert!(
+        names.contains(&"list_accounts"),
+        "list_accounts must be advertised; got names {names:?}",
+    );
+    assert!(
+        names.contains(&"use_account"),
+        "use_account must be advertised; got names {names:?}",
+    );
+
+    // Regression net for fix/tool-input-schema-object-type: every
+    // tool advertised on the wire must declare an object inputSchema.
+    // Permissive MCP clients tolerate the absence; Zod-based clients
+    // reject the tool.
+    for tool in tools {
+        let name = tool["name"].as_str().unwrap_or("<missing-name>");
+        let schema = &tool["inputSchema"];
+        assert!(
+            schema.is_object(),
+            "tool {name}: inputSchema must be an object, got {schema}",
+        );
+        assert_eq!(
+            schema["type"],
+            json!("object"),
+            "tool {name}: inputSchema.type must be \"object\" (issue #263 regression net), got {schema}",
+        );
+    }
+}
