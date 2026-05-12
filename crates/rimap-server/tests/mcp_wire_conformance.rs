@@ -325,3 +325,13 @@ async fn wire_protocol_version_negotiation_matches_vendored_schema() {
          negotiation regression. Full response: {response}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_initialized_notification_elicits_no_response() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+    harness
+        .assert_no_response_within(Duration::from_millis(200))
+        .await;
+}
