@@ -435,3 +435,27 @@ async fn wire_tools_call_unknown_tool_returns_error_envelope() {
         "error.message must be a string, got {response}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_unknown_method_returns_minus_32601() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    let response = harness.request("rimap/no_such_method", json!({})).await;
+    assert!(
+        response["error"].is_object(),
+        "expected error envelope, got {response}",
+    );
+    assert_eq!(
+        response["error"]["code"],
+        json!(-32601),
+        "JSON-RPC method-not-found code, got {response}",
+    );
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "error.message must be non-empty, got {response}",
+    );
+}
