@@ -135,6 +135,44 @@ exits. It does not authenticate.
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Config not found | Wrong file location | Verify the path matches your platform (see Step 2) or use `--config <path>` |
 
+### Optional: pin the TLS certificate
+
+The dry-run output ends with the observed certificate's SHA-256
+fingerprint and a copy-pasteable line:
+
+```
+TLS fingerprint (sha256):
+  ab:cd:ef:...:ef
+  (add `tls_fingerprint_sha256 = "ab:cd:ef:...:ef"` under [imap] in config.toml to pin)
+```
+
+Gmail's certificate chains to a public root, so pinning is **not
+required** for a successful connection. Pin anyway if you want
+defense-in-depth against:
+
+- Corporate TLS-inspection proxies presenting an internal CA
+- Local MITM (compromised network, malicious profile)
+- Any environment where the cert chain `rusty-imap-mcp` sees should
+  match what you observed at setup time
+
+Paste the printed line into your `[imap]` block:
+
+```toml
+[imap]
+host = "imap.gmail.com"
+port = 993
+username = "you@gmail.com"
+tls_fingerprint_sha256 = "ab:cd:ef:...:ef"
+```
+
+Re-run `rusty-imap-mcp --dry-run`; the fingerprint section now reads
+`(matches configured pin)`. From this point, a fingerprint mismatch
+aborts the connection — when Gmail rotates its certificate (rare, but
+it happens), re-run `--dry-run` and update the pinned value.
+
+> **Trust note:** the pin records whatever cert the network presents
+> the first time. Capture it from a network you trust.
+
 ## Step 5: Add to your MCP client
 
 ### Claude Desktop
