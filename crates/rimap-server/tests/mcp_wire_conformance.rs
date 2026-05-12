@@ -304,3 +304,24 @@ async fn wire_initialize_advertises_tools_capability() {
         "capabilities.tools must be present on the wire; got {capabilities}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_protocol_version_negotiation_matches_vendored_schema() {
+    // Sends an initialize request with the LATEST version known to
+    // the test, asks the server to echo it back. rmcp negotiates
+    // min(client, server), so when the server bumps to a newer
+    // LATEST this still succeeds — but if the server somehow
+    // negotiates to an older version (e.g. the pinned string is
+    // wrong) this test catches it. The fragment-validation tests
+    // depend on this invariant.
+    let mut harness = Harness::spawn().await;
+    let response = harness.initialize_handshake().await;
+    assert_eq!(
+        response["result"]["protocolVersion"],
+        json!(PINNED_PROTOCOL_VERSION),
+        "harness pinned to {PINNED_PROTOCOL_VERSION} but server returned a \
+         different value; either update PINNED_PROTOCOL_VERSION + the \
+         tests/fixtures/mcp-spec/<version>/ directory, or fix the rmcp \
+         negotiation regression. Full response: {response}",
+    );
+}
