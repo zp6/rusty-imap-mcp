@@ -399,3 +399,39 @@ async fn wire_resources_list_is_empty_for_no_accounts() {
         "zero accounts must produce zero resources, got {resources:?}",
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_tools_call_unknown_tool_returns_error_envelope() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    let response = harness
+        .request(
+            "tools/call",
+            json!({
+                "name": "this_tool_does_not_exist",
+                "arguments": {}
+            }),
+        )
+        .await;
+
+    assert!(
+        response["error"].is_object(),
+        "expected error envelope, got {response}",
+    );
+    // rmcp 1.5 emits INVALID_PARAMS (-32602) with message "tool not found"
+    // for unknown tool names; see rmcp-1.5.0/src/handler/server/router/tool.rs.
+    // If this code ever changes, update the assertion and document why
+    // — silent drift in rmcp's error mapping is exactly what this test
+    // is meant to surface.
+    assert_eq!(
+        response["error"]["code"],
+        json!(-32602),
+        "expected -32602 INVALID_PARAMS, got {response}",
+    );
+    assert!(
+        response["error"]["message"].is_string(),
+        "error.message must be a string, got {response}",
+    );
+}
