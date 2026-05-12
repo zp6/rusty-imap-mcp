@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `initialize` response now advertises the `tools` and `resources`
+  capabilities. Previously `get_info()` returned
+  `ServerCapabilities::default()` (all-`None` fields), so the wire
+  payload was `"capabilities": {}` and spec-strict MCP clients (e.g.
+  `bobshell`) refused to call `tools/list` with "No prompts or tools
+  found on the server." Permissive clients (Claude Desktop, IBM Bob
+  desktop) called `tools/list` anyway and were unaffected.
+
 ## [0.1.0] - Unreleased
 
 ### Changed
