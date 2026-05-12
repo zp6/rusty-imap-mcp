@@ -204,8 +204,27 @@ insta = { version = "1.47", features = ["json"] }
 # JSON Schema validator used only by integration tests
 # (crates/rimap-server/tests/mcp_wire_conformance.rs) to validate MCP
 # JSON-RPC envelopes against the vendored MCP spec schemas. Pure-Rust,
-# Draft 2020-12 capable. Reviewed for supply-chain risk per
-# SC-PROC-01 on plan execution date.
+# Draft 2020-12 capable. Test-only scope — not shipped in release
+# binaries — so the audit bar is lighter than for runtime deps.
+# SC-PROC-01 review 2026-05-12: three crates in the new transitive
+# closure carry a `build.rs`. All three are local-only codegen with no
+# network, filesystem-outside-OUT_DIR, or arbitrary process spawn:
+#   - `ahash 0.8.12`             — calls `version_check` to gate
+#                                  stable-vs-nightly rustc intrinsics.
+#   - `ref-cast 1.0.25`          — execs `rustc --version` to gate
+#                                  `cfg(no_phantom_pinned)` /
+#                                  `cfg(no_intrinsic_type_name)` and
+#                                  writes a generated `private.rs` to
+#                                  `OUT_DIR`.
+#   - `unicode-general-category` — emits a compile-time UAX #44
+#                                  category lookup table to `OUT_DIR`
+#                                  from the in-crate `src/tables.rs`.
+# The remaining new transitives (`referencing`, `fluent-uri`,
+# `fancy-regex`, `bit-set`, `bit-vec`, `bytecount`, `data-encoding`,
+# `email_address`, `fraction`, `num`, `num-bigint`, `num-complex`,
+# `num-integer`, `num-iter`, `num-rational`, `num-cmp`, `uuid-simd`,
+# `vsimd`, `outref`, `borrow-or-share`, `micromap`) are pure-data
+# crates: no build.rs, no proc-macros.
 jsonschema = { version = "0.46", default-features = false }
 
 [workspace.lints.rust]
