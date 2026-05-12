@@ -135,6 +135,91 @@ exits. It does not authenticate.
 | `ERR_CONFIG` | Config parse error | Check TOML syntax and field names against the [configuration reference](configuration.md) |
 | Config not found | Wrong file location | Verify the path matches your platform (see Step 2) or use `--config <path>` |
 
+### Optional: pin the TLS certificate
+
+The dry-run output ends with the observed certificate's SHA-256
+fingerprint and a copy-pasteable line:
+
+```
+TLS fingerprint (sha256):
+  ab:cd:ef:...:ef
+  (add `tls_fingerprint_sha256 = "ab:cd:ef:...:ef"` under [imap] in config.toml to pin)
+```
+
+Gmail's certificate chains to a public root, so pinning is **not
+required** for a successful connection. Pin anyway if you want
+defense-in-depth against:
+
+- Corporate TLS-inspection proxies presenting an internal CA
+- Local MITM (compromised network, malicious profile)
+- Any environment where the cert chain `rusty-imap-mcp` sees should
+  match what you observed at setup time
+
+Paste the printed line into your `[imap]` block:
+
+```toml
+[imap]
+host = "imap.gmail.com"
+port = 993
+username = "you@gmail.com"
+tls_fingerprint_sha256 = "ab:cd:ef:...:ef"
+```
+
+Re-run `rusty-imap-mcp --dry-run`; the fingerprint section now reads
+`(matches configured pin)`. From this point, a fingerprint mismatch
+aborts the connection — when Gmail rotates its certificate (rare, but
+it happens), re-run `--dry-run` and update the pinned value.
+
+> **Trust note:** the pin records whatever cert the network presents
+> the first time. Capture it from a network you trust.
+
+### Optional: verify the credential authenticates
+
+`--dry-run` deliberately stops before `LOGIN`, so it cannot tell you
+whether your stored password is accepted. The first auth attempt
+happens inside the MCP client at server startup, which is the worst
+place to discover a wrong password. To verify the credential before
+integration, speak IMAP to Gmail directly:
+
+```bash
+openssl s_client -connect imap.gmail.com:993 -crlf -quiet
+```
+
+After the `* OK ...` greeting, type these (the `a1`/`a2` tags are
+arbitrary identifiers you make up):
+
+```
+a1 LOGIN you@gmail.com YourAppPasswordHere
+a2 LOGOUT
+```
+
+Interpreting the response:
+
+| Response to `a1` | Meaning | Next step |
+|------------------|---------|-----------|
+| `a1 OK ...` | Credential accepted | Continue to Step 5 |
+| `a1 NO ...` | Server rejected the credential | Re-check the App Password (16 chars, spaces optional); regenerate if needed and re-run `rusty-imap-mcp login` |
+| `a1 BAD ...` | Server rejected the `LOGIN` command itself | Server may require `AUTHENTICATE` with a specific SASL mechanism; send `a3 CAPABILITY` and look at what's advertised |
+
+> **Shell-history caveat.** The command line above places your App
+> Password in your shell history. Prefix the entire shell command
+> with a space (most shells with `HISTCONTROL=ignorespace` skip it),
+> or run `LOGIN you@gmail.com "PaSt3 H3rE"` after the connection
+> opens so the password only lives in the openssl session.
+
+Confirm the stored password matches what just worked:
+
+```bash
+security find-generic-password \
+  -s rusty-imap-mcp \
+  -a "default/you@gmail.com@imap.gmail.com" -w
+```
+
+The printed value should match byte-for-byte what you typed at the
+`LOGIN` prompt. If they differ, re-run `rusty-imap-mcp login`. For
+Linux equivalents and broader credential management, see
+[docs/troubleshooting.md](troubleshooting.md#verifying-and-managing-stored-credentials).
+
 ## Step 5: Add to your MCP client
 
 ### Claude Desktop
@@ -212,7 +297,33 @@ and SMTP, so the IMAP keyring entry does not cover SMTP):
    Reuse the same 16-character App Password — Gmail accepts it for both
    IMAP and SMTP.
 
-3. Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
+3. (Optional) Verify the SMTP credential authenticates. `--dry-run`
+   exercises IMAP only, so a wrong SMTP password surfaces inside the
+   MCP client at first `send_email` attempt. Test it ahead of time
+   with [`swaks`](https://github.com/jetmore/swaks)
+   (`brew install swaks` on macOS, `apt install swaks` /
+   `dnf install swaks` on Linux):
+
+   ```bash
+   swaks --server smtp.gmail.com:465 --tls-on-connect \
+         --auth LOGIN \
+         --auth-user you@gmail.com \
+         --auth-password 'YOUR-APP-PASSWORD' \
+         --quit-after AUTH
+   ```
+
+   `--quit-after AUTH` sends `EHLO` → AUTH negotiation → `QUIT`. No
+   message is transacted. Look for `235 2.7.0 Accepted` on the AUTH
+   response — that's the credential confirmed. `535 5.7.8 ...` means
+   the App Password was rejected; regenerate it and re-run
+   `rusty-imap-mcp login --host smtp.gmail.com --username you@gmail.com`.
+
+   > **Shell-history caveat.** The command above places your App
+   > Password on the command line. Prefix the entire command with a
+   > space if your shell has `HISTCONTROL=ignorespace`, or omit
+   > `--auth-password` and let swaks prompt for it on stderr.
+
+4. Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
    `send_email` as `[ok ]`.
 
 ## What's next

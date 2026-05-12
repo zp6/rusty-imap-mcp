@@ -19,7 +19,8 @@ use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ErrorCode as McpCode, ErrorData, Implementation,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerInfo, Tool,
+    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
+    ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 
@@ -223,7 +224,20 @@ fn error_data_to_rimap_error(err: &ErrorData) -> rimap_core::RimapError {
 
 impl ServerHandler for ImapMcpServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::default().with_server_info(Implementation::new(
+        // Spec-strict MCP clients refuse to call `tools/list` unless the
+        // server's `initialize` response advertises a `tools` capability.
+        // `ServerCapabilities::default()` is all-`None`, so without this
+        // declaration the wire payload is `"capabilities": {}` and such
+        // clients report "no tools found." `tool_list_changed` matches the
+        // existing `notifications/tools/list_changed` emission after
+        // `use_account` (see `call_tool` below). `resources` advertises the
+        // `list_resources`/`read_resource` surface implemented in this file.
+        let capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .enable_resources()
+            .build();
+        ServerInfo::new(capabilities).with_server_info(Implementation::new(
             "rusty-imap-mcp",
             rimap_core::version::version(),
         ))

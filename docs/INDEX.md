@@ -15,6 +15,7 @@
 | [Security postures](postures.md) | 4-tier tool matrix, per-tool overrides, folder safety |
 | [Multi-account support](multi-account.md) | Account discovery, selection, per-account isolation |
 | [Audit log](audit-log.md) | JSONL format, rotation, merge subcommand, tamper detection |
+| [Troubleshooting](troubleshooting.md) | Diagnosing startup failures, where logs go, capturing stderr from GUI MCP clients |
 
 ## Security
 

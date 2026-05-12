@@ -159,10 +159,16 @@ Binaries are published for five targets on each
 - [Security model and posture matrix](docs/security-model.md)
 - [Multi-account support](docs/multi-account.md)
 - [Audit log format](docs/audit-log.md)
+- [Troubleshooting](docs/troubleshooting.md)
 - [Full documentation index](docs/INDEX.md)
 
 ## Troubleshooting
 
+- **MCP client reports `Connection closed` / `MCP error -32000` at
+  startup** — the server exited before completing the handshake; the
+  real error went to stderr. See
+  [docs/troubleshooting.md](docs/troubleshooting.md) for the
+  `--dry-run` and stderr-capture workflow.
 - **`rusty-imap-mcp` exits at startup with `audit file ... is already locked`** —
   another `rusty-imap-mcp` process holds the audit lock. Each MCP
   client must use a distinct `[audit].path`; see
