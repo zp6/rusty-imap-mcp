@@ -13,13 +13,6 @@
 
 #![expect(clippy::expect_used, reason = "integration tests")]
 #![expect(clippy::panic, reason = "test assertions render diagnostics")]
-#![expect(
-    dead_code,
-    reason = "Task 5 lands the harness scaffolding; Tasks 6-13 exercise \
-              the remaining helpers (notify, assert_no_response_within, \
-              send_initialized, shutdown_and_wait, validator_for, \
-              assert_valid, MCP_SCHEMA_JSON, SHUTDOWN_TIMEOUT, child)"
-)]
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -457,5 +450,17 @@ async fn wire_unknown_method_returns_minus_32601() {
             .as_str()
             .is_some_and(|s| !s.is_empty()),
         "error.message must be non-empty, got {response}",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_clean_eof_shutdown_exits_zero() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+    let status = harness.shutdown_and_wait().await;
+    assert!(
+        status.success(),
+        "server must exit 0 on clean stdin EOF, got {status:?}",
     );
 }
