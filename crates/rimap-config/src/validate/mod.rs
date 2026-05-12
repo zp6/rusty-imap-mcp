@@ -69,10 +69,6 @@ pub struct ValidatedMultiConfig {
 /// # Errors
 /// Returns `ConfigError` on any validation failure.
 pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig, ConfigError> {
-    if config.accounts.is_empty() {
-        return Err(ConfigError::NoAccounts);
-    }
-
     let mut accounts = BTreeMap::new();
     for raw in config.accounts {
         let id = AccountId::new(&raw.name)?;
@@ -751,11 +747,17 @@ allowed_base_dir = "{}"
     }
 
     #[test]
-    fn no_accounts_rejected() {
+    fn empty_accounts_array_validates_for_infrastructure_only_boot() {
+        // Before: the server refused to boot with zero accounts. This
+        // blocked the MCP wire-conformance harness (#263) from probing
+        // initialize / tools/list / resources/list without standing up
+        // an IMAP fixture. Empty accounts now validates cleanly; the
+        // resulting AccountRegistry is empty and list_accounts returns
+        // [], which is the correct infrastructure-only behavior.
         let dir = TempDir::new().unwrap();
         let cfg = base_multi_config(dir.path(), vec![]);
-        let err = validate_multi(cfg).unwrap_err();
-        assert!(matches!(err, ConfigError::NoAccounts));
+        let validated = validate_multi(cfg).unwrap();
+        assert!(validated.accounts.is_empty());
     }
 
     #[test]

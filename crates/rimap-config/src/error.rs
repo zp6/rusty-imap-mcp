@@ -162,9 +162,6 @@ pub enum ConfigError {
     /// Account name failed validation.
     #[error(transparent)]
     InvalidAccountName(#[from] InvalidAccountName),
-    /// Multi-account config has an empty `[[accounts]]` array.
-    #[error("no accounts defined in [[accounts]] array")]
-    NoAccounts,
 }
 
 #[cfg(test)]
