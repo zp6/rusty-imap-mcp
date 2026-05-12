@@ -1,0 +1,253 @@
+//! MCP wire-shape conformance harness (issue #263, Phase 1).
+//!
+//! Spawns the production `rusty-imap-mcp` binary with a tempdir
+//! config that has zero accounts, drives a deterministic JSON-RPC
+//! sequence over its stdio, and validates every response against
+//! the vendored MCP spec schemas under
+//! `tests/fixtures/mcp-spec/2025-11-25/`.
+//!
+//! Permanent regression net for two real wire-shape bugs:
+//!  - #261: `initialize.result.capabilities` was serialized as `{}`.
+//!  - `fix/tool-input-schema-object-type`: tools advertised
+//!    `inputSchema: {}` with no `type` field.
+
+#![expect(clippy::expect_used, reason = "integration tests")]
+#![expect(clippy::unwrap_used, reason = "integration tests")]
+#![expect(clippy::panic, reason = "test assertions render diagnostics")]
+#![expect(
+    dead_code,
+    reason = "Task 5 lands the harness scaffolding; Tasks 6-13 exercise \
+              the remaining helpers (notify, assert_no_response_within, \
+              send_initialized, shutdown_and_wait, validator_for, \
+              assert_valid, MCP_SCHEMA_JSON, SHUTDOWN_TIMEOUT, child)"
+)]
+
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
+
+use assert_cmd::cargo::cargo_bin;
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::time::timeout;
+
+/// MCP protocol version pinned by this harness. Matches the
+/// directory under `tests/fixtures/mcp-spec/` and the `LATEST` value
+/// in `rmcp 1.5`. Update both when bumping.
+const PINNED_PROTOCOL_VERSION: &str = "2025-11-25";
+
+/// Vendored MCP spec schema, compiled in at build time so tests run
+/// hermetically (no network, no filesystem dependency beyond the
+/// crate source).
+const MCP_SCHEMA_JSON: &str = include_str!("fixtures/mcp-spec/2025-11-25/schema.json");
+
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const SPAWN_TIMEOUT: Duration = Duration::from_secs(5);
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Owns the spawned child plus its piped stdio.
+struct Harness {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    next_id: u64,
+    // Hold the tempdir until the harness drops so the audit log path
+    // remains valid for the lifetime of the spawned process.
+    _tempdir: TempDir,
+}
+
+impl Harness {
+    /// Spawn the binary with a zero-account tempdir config.
+    async fn spawn() -> Self {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        let audit_path = tempdir.path().join("audit.jsonl");
+        let allowed_base = tempdir.path();
+
+        // Multi-account format with zero accounts. Task 1 lifted the
+        // empty-accounts validator gate, so this is the canonical
+        // zero-account shape the loader accepts.
+        let config = format!(
+            r#"
+accounts = []
+
+[audit]
+path = "{}"
+allowed_base_dir = "{}"
+"#,
+            audit_path.display(),
+            allowed_base.display(),
+        );
+        std::fs::write(&config_path, config).expect("write config");
+
+        let mut cmd = Command::new(cargo_bin("rusty-imap-mcp"));
+        cmd.arg("--config")
+            .arg(&config_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+
+        let mut child = timeout(SPAWN_TIMEOUT, async { cmd.spawn() })
+            .await
+            .expect("spawn within timeout")
+            .expect("spawn");
+
+        let stdin = child.stdin.take().expect("stdin");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout"));
+
+        Self {
+            child,
+            stdin,
+            stdout,
+            next_id: 0,
+            _tempdir: tempdir,
+        }
+    }
+
+    /// Send a JSON-RPC request and return the parsed response value.
+    /// Panics on timeout, EOF before a response arrives, or non-JSON output.
+    async fn request(&mut self, method: &str, params: Value) -> Value {
+        self.next_id += 1;
+        let id = self.next_id;
+        let envelope = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let line = format!("{envelope}\n");
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .expect("write request");
+        self.stdin.flush().await.expect("flush request");
+
+        let mut buf = String::new();
+        let read = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf))
+            .await
+            .expect("response within timeout")
+            .expect("read response");
+        assert!(read > 0, "stdout closed before responding to {method}");
+        let response: Value = serde_json::from_str(buf.trim_end()).expect("parse response JSON");
+        assert_eq!(response["id"], json!(id), "response id must match request");
+        response
+    }
+
+    /// Send a JSON-RPC notification (no `id`, no response expected).
+    async fn notify(&mut self, method: &str, params: Value) {
+        let envelope = json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+        });
+        let line = format!("{envelope}\n");
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .expect("write notification");
+        self.stdin.flush().await.expect("flush notification");
+    }
+
+    /// Assert no bytes arrive on stdout for the given duration.
+    async fn assert_no_response_within(&mut self, dur: Duration) {
+        let mut buf = String::new();
+        match timeout(dur, self.stdout.read_line(&mut buf)).await {
+            Err(_) => {} // timeout → no response, as expected
+            Ok(Ok(0)) => panic!("stdout closed unexpectedly"),
+            Ok(Ok(_)) => panic!("expected no response within {dur:?}, got: {buf:?}"),
+            Ok(Err(e)) => panic!("read error: {e}"),
+        }
+    }
+
+    /// Send an MCP `initialize` request with the pinned protocol
+    /// version and return the response.
+    async fn initialize_handshake(&mut self) -> Value {
+        self.request(
+            "initialize",
+            json!({
+                "protocolVersion": PINNED_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "rusty-imap-mcp-conformance-harness",
+                    "version": env!("CARGO_PKG_VERSION"),
+                },
+            }),
+        )
+        .await
+    }
+
+    /// Send `notifications/initialized` after the handshake.
+    async fn send_initialized(&mut self) {
+        self.notify("notifications/initialized", json!({})).await;
+    }
+
+    /// Close stdin, await the child, and return its exit status.
+    async fn shutdown_and_wait(mut self) -> std::process::ExitStatus {
+        drop(self.stdin);
+        timeout(SHUTDOWN_TIMEOUT, self.child.wait())
+            .await
+            .expect("clean exit within timeout")
+            .expect("wait")
+    }
+}
+
+/// Compile (once) and return a validator for a top-level definition in
+/// the vendored MCP schema. `fragment` is the key under
+/// `definitions` / `$defs` (e.g. `"InitializeResult"`). Returns an
+/// `Arc` so multiple parallel tests can share the compiled validator
+/// without lifetime gymnastics.
+fn validator_for(fragment: &'static str) -> Arc<jsonschema::Validator> {
+    type Cache = Mutex<HashMap<&'static str, Arc<jsonschema::Validator>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = cache.lock().unwrap();
+    if let Some(v) = guard.get(fragment) {
+        return Arc::clone(v);
+    }
+
+    // Detect which key the spec uses for nested definitions. Newer
+    // JSON Schema dialects use `$defs`; older specs use `definitions`.
+    let full: Value = serde_json::from_str(MCP_SCHEMA_JSON).expect("parse vendored MCP schema");
+    let defs_key = if full.get("$defs").is_some() {
+        "$defs"
+    } else {
+        "definitions"
+    };
+
+    // Build a wrapper schema that $refs into the requested fragment.
+    let wrapper = json!({
+        "$ref": format!("#/{defs_key}/{fragment}"),
+        defs_key: full.get(defs_key).cloned().unwrap_or(json!({})),
+    });
+    let v = Arc::new(jsonschema::validator_for(&wrapper).expect("compile fragment validator"));
+    guard.insert(fragment, Arc::clone(&v));
+    v
+}
+
+/// Validate a value against a vendored fragment, panicking with the
+/// list of errors on failure.
+fn assert_valid(value: &Value, fragment: &'static str) {
+    let v = validator_for(fragment);
+    if !v.is_valid(value) {
+        let errors: Vec<String> = v.iter_errors(value).map(|e| e.to_string()).collect();
+        panic!(
+            "schema validation failed for fragment {fragment}:\n  {}",
+            errors.join("\n  ")
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_smoke_initialize_returns_valid_envelope() {
+    let mut harness = Harness::spawn().await;
+    let response = harness.initialize_handshake().await;
+    assert_eq!(response["jsonrpc"], json!("2.0"));
+    assert!(
+        response["result"].is_object(),
+        "initialize response must have a result object, got {response}"
+    );
+}
