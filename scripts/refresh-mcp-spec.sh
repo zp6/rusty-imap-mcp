@@ -26,6 +26,10 @@ if [[ -z "${version}" ]]; then
     echo "usage: $0 [--check] <version>" >&2
     exit 64
 fi
+if [[ ! "${version}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}(-[a-z]+)?$ ]]; then
+    echo "error: version must look like YYYY-MM-DD or YYYY-MM-DD-<suffix> (got '${version}')" >&2
+    exit 65
+fi
 
 local_path="${fixtures_dir}/${version}/schema.json"
 upstream_url="${upstream_base}/${version}/schema.json"
@@ -43,6 +47,10 @@ fi
 case "${mode}" in
 refresh)
     mkdir -p "$(dirname "${local_path}")"
+    # mktemp creates the file at 0600 but the vendored copies are 0644.
+    # Fix the mode before the atomic rename so the refreshed file
+    # matches the rest of the fixtures directory.
+    chmod 0644 "${tmp}"
     mv "${tmp}" "${local_path}"
     trap - EXIT
     echo "refreshed ${local_path}"
