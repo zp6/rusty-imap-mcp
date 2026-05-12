@@ -12,13 +12,15 @@ repos:
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        exclude: ^(tests/injection-corpus/|fuzz/corpus/|crates/rimap-content/data/confusables\.txt$)
+        exclude: ^(tests/injection-corpus/|fuzz/corpus/|crates/rimap-content/data/confusables\.txt$|crates/rimap-server/tests/fixtures/mcp-spec/)
       - id: end-of-file-fixer
         # Email fixtures are byte-exact; auto-appending a final newline
         # (or stripping a trailing CRLF pair) corrupts them. The vendored
         # Unicode 16 confusables.txt is byte-identical to the upstream
-        # file and must not be mangled.
-        exclude: ^(tests/injection-corpus/|fuzz/corpus/|crates/rimap-content/data/confusables\.txt$)
+        # file and must not be mangled. The vendored MCP spec schemas
+        # under tests/fixtures/mcp-spec/ are byte-for-byte verbatim
+        # copies of upstream and feed the weekly drift check.
+        exclude: ^(tests/injection-corpus/|fuzz/corpus/|crates/rimap-content/data/confusables\.txt$|crates/rimap-server/tests/fixtures/mcp-spec/)
       - id: check-merge-conflict
       - id: check-toml
       - id: check-yaml
