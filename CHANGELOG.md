@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `list_folders` and `list_accounts` now advertise a proper
+  `"type": "object"` `inputSchema` instead of a bare `{}`. Spec-strict
+  MCP clients (e.g. `bobshell`'s Zod validator) reject any tool whose
+  `inputSchema.type` is not the string `"object"` and surface
+  `invalid_value` errors at tool-discovery time. `{}` is a valid JSON
+  Schema (matches anything) but the wrong shape for MCP. New
+  `every_tool_input_schema_declares_object_type` regression test
+  guards every entry in `TOOL_DEFS`.
 - `initialize` response now advertises the `tools` and `resources`
   capabilities. Previously `get_info()` returned
   `ServerCapabilities::default()` (all-`None` fields), so the wire
