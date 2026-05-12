@@ -380,3 +380,22 @@ async fn wire_tools_list_returns_object_schemas() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wire_resources_list_is_empty_for_no_accounts() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    let response = harness.request("resources/list", json!({})).await;
+    let result = &response["result"];
+    assert_valid(result, "ListResourcesResult");
+
+    let resources = result["resources"]
+        .as_array()
+        .expect("resources must be an array");
+    assert!(
+        resources.is_empty(),
+        "zero accounts must produce zero resources, got {resources:?}",
+    );
+}
