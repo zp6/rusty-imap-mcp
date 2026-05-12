@@ -201,6 +201,12 @@ tempfile = "3.14"
 proptest = "1.6"
 temp-env = "0.3"
 insta = { version = "1.47", features = ["json"] }
+# JSON Schema validator used only by integration tests
+# (crates/rimap-server/tests/mcp_wire_conformance.rs) to validate MCP
+# JSON-RPC envelopes against the vendored MCP spec schemas. Pure-Rust,
+# Draft 2020-12 capable. Reviewed for supply-chain risk per
+# SC-PROC-01 on plan execution date.
+jsonschema = { version = "0.46", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
