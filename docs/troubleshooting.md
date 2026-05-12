@@ -185,6 +185,47 @@ shell history. Use this only for diagnosis or in environments where
 the OS keyring genuinely isn't available. Move back to the keyring as
 soon as the underlying problem is fixed.
 
+**The env-var fallback is single-valued.** `RUSTY_IMAP_MCP_PASSWORD`
+is the only password env var; it serves IMAP and SMTP lookups
+indistinguishably (see `crates/rimap-config/src/credential.rs` —
+`resolve_credential` is called from both protocol paths with the
+same env var name). If your IMAP and SMTP passwords are identical
+(Gmail App Passwords, Proton Bridge passwords), this is fine. If
+they differ, the env-var fallback can silently feed the wrong
+password to one of the two protocols.
+
+For split-credential setups, use the keyring (each protocol uses its
+own key — `<account>/<imap_username>@<imap_host>` vs
+`<account>/<smtp_username>@<smtp_host>`) and switch the credential
+policy to keyring-only so a keyring miss fails loud instead of
+falling through to the wrong env var:
+
+```toml
+[defaults.credentials]
+fallback = "keyring-only"
+```
+
+The `fallback` field lives under `[defaults.credentials]` (applies
+to all accounts) or per-account under `[accounts.credentials]`. It
+is **not available in legacy single-account configs** (flat `[imap]`
+with no `[[accounts]]`) — `deny_unknown_fields` rejects a
+`[credentials]` block at the top level. To use keyring-only with a
+single account, migrate to the multi-account form:
+
+```toml
+[defaults.credentials]
+fallback = "keyring-only"
+
+[[accounts]]
+name = "default"
+imap = { host = "imap.example.com", port = 993, username = "you@example.com" }
+```
+
+See `crates/rimap-config/src/model.rs` (`FallbackMode` doc-comment)
+for the design rationale: the same hazard motivated the keyring-only
+mode for multi-account deployments and applies here within a single
+account.
+
 ### `--dry-run` does not verify credentials
 
 A successful `--dry-run` proves your config parses, your network
