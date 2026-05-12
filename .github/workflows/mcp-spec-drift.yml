@@ -1,0 +1,80 @@
+# Weekly drift detector for the vendored MCP spec schemas consumed by
+# crates/rimap-server/tests/mcp_wire_conformance.rs. See
+# docs/superpowers/specs/2026-05-12-mcp-wire-conformance-design.md §3.5.
+
+name: mcp-spec-drift
+
+on:
+  schedule:
+    # Mondays 12:00 UTC. Cron is best-effort on GitHub Actions but
+    # weekly cadence is fine here — we only need eventual notice.
+    - cron: '0 12 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: mcp-spec-drift
+  cancel-in-progress: false
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    env:
+      PINNED_VERSION: '2025-11-25'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run drift check
+        id: check
+        run: |
+          set -euo pipefail
+          if ./scripts/refresh-mcp-spec.sh --check "${PINNED_VERSION}"; then
+            echo "drift=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "drift=true" >> "${GITHUB_OUTPUT}"
+            # Capture the diff for the issue body. The script wrote
+            # the diff to stderr — re-run and capture both streams.
+            ./scripts/refresh-mcp-spec.sh --check "${PINNED_VERSION}" \
+              > drift-diff.txt 2>&1 || true
+          fi
+
+      - name: Open or update tracking issue on drift
+        if: steps.check.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="MCP spec drift: ${PINNED_VERSION}/schema.json"
+          body_file="$(mktemp)"
+          {
+            echo "Weekly drift check found differences between the vendored"
+            echo "MCP spec at \`crates/rimap-server/tests/fixtures/mcp-spec/${PINNED_VERSION}/schema.json\`"
+            echo "and upstream \`modelcontextprotocol/modelcontextprotocol@main\`."
+            echo ""
+            echo "Run \`scripts/refresh-mcp-spec.sh ${PINNED_VERSION}\` to update the vendored copy"
+            echo "and re-run \`cargo test -p rimap-server --test mcp_wire_conformance\` to confirm"
+            echo "the harness still validates."
+            echo ""
+            echo "<details><summary>diff</summary>"
+            echo ""
+            echo '```diff'
+            cat drift-diff.txt
+            echo '```'
+            echo ""
+            echo "</details>"
+          } > "${body_file}"
+          existing="$(gh issue list --label mcp-spec-drift --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "${existing}" ]]; then
+            gh issue comment "${existing}" --body-file "${body_file}"
+          else
+            gh issue create --title "${title}" --label mcp-spec-drift --body-file "${body_file}"
+          fi
+          # Fail the run so the Actions tab badge reflects drift even
+          # if the issue mechanism somehow no-ops.
+          exit 1
