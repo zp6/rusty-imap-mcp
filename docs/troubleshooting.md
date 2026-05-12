@@ -189,11 +189,25 @@ soon as the underlying problem is fixed.
 
 A successful `--dry-run` proves your config parses, your network
 reaches the IMAP server, and your TLS configuration is correct. It
-does **not** prove your credential is stored — the preflight probe
-deliberately stops before `LOGIN` (see
-`crates/rimap-imap/src/preflight.rs`). If `--dry-run` succeeds but
-your MCP client fails on auth, run the verification commands above
-before assuming the credential is fine.
+does **not** prove your credentials authenticate — the preflight
+probe deliberately stops before `LOGIN` (see
+`crates/rimap-imap/src/preflight.rs`), and SMTP isn't touched at all.
+
+The verify-the-credential-stored commands above prove the keyring
+entry exists, but not that the stored password is accepted by the
+server. To exercise authentication directly:
+
+- **IMAP:** see "Optional: verify the credential authenticates" in
+  [quickstart-gmail.md](quickstart-gmail.md#optional-verify-the-credential-authenticates)
+  or [quickstart-proton-bridge.md](quickstart-proton-bridge.md#optional-verify-the-credential-authenticates)
+  — uses `openssl s_client` to send `LOGIN` / `LOGOUT` directly.
+- **SMTP:** see the "Verify the SMTP credential" step in the
+  "Optional: enable sending" section of either quickstart — uses
+  `swaks --quit-after AUTH` to exercise AUTH without transacting a
+  message.
+
+Built-in support for both is tracked in
+[issue #259](https://github.com/randomparity/rusty-imap-mcp/issues/259).
 
 ## Where logs go
 

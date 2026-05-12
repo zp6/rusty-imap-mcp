@@ -333,6 +333,36 @@ protocols, so no second `login` invocation is needed.
 The SMTP port shown above (1025) is the Proton Bridge default; the
 exact port appears in Bridge settings.
 
+### Optional: verify the SMTP credential authenticates
+
+`--dry-run` exercises IMAP only, so a wrong SMTP password surfaces
+inside the MCP client at first `send_email` attempt. Test it ahead of
+time with [`swaks`](https://github.com/jetmore/swaks)
+(`brew install swaks` on macOS, `apt install swaks` /
+`dnf install swaks` on Linux):
+
+```bash
+swaks --server 127.0.0.1:1025 --tls \
+      --auth LOGIN \
+      --auth-user you@proton.me \
+      --auth-password 'YOUR-BRIDGE-PASSWORD' \
+      --quit-after AUTH
+```
+
+`--quit-after AUTH` sends `EHLO` → STARTTLS → AUTH negotiation →
+`QUIT`. No message is transacted. Look for `235 ... Authentication
+succeeded` on the AUTH response — that's the credential confirmed.
+`535 ...` means Bridge rejected the password; re-copy it from
+Bridge settings (it's the bridge-specific password, not your Proton
+account password) and re-run `rusty-imap-mcp login`.
+
+> **Shell-history caveat.** The command above places your bridge
+> password on the command line. Prefix the entire command with a
+> space if your shell has `HISTCONTROL=ignorespace`, or omit
+> `--auth-password` and let swaks prompt for it on stderr.
+
+### Confirm the posture matrix
+
 Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
 `send_email` as `[ok ]`.
 

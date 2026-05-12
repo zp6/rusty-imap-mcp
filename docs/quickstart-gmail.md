@@ -297,7 +297,33 @@ and SMTP, so the IMAP keyring entry does not cover SMTP):
    Reuse the same 16-character App Password — Gmail accepts it for both
    IMAP and SMTP.
 
-3. Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
+3. (Optional) Verify the SMTP credential authenticates. `--dry-run`
+   exercises IMAP only, so a wrong SMTP password surfaces inside the
+   MCP client at first `send_email` attempt. Test it ahead of time
+   with [`swaks`](https://github.com/jetmore/swaks)
+   (`brew install swaks` on macOS, `apt install swaks` /
+   `dnf install swaks` on Linux):
+
+   ```bash
+   swaks --server smtp.gmail.com:465 --tls-on-connect \
+         --auth LOGIN \
+         --auth-user you@gmail.com \
+         --auth-password 'YOUR-APP-PASSWORD' \
+         --quit-after AUTH
+   ```
+
+   `--quit-after AUTH` sends `EHLO` → AUTH negotiation → `QUIT`. No
+   message is transacted. Look for `235 2.7.0 Accepted` on the AUTH
+   response — that's the credential confirmed. `535 5.7.8 ...` means
+   the App Password was rejected; regenerate it and re-run
+   `rusty-imap-mcp login --host smtp.gmail.com --username you@gmail.com`.
+
+   > **Shell-history caveat.** The command above places your App
+   > Password on the command line. Prefix the entire command with a
+   > space if your shell has `HISTCONTROL=ignorespace`, or omit
+   > `--auth-password` and let swaks prompt for it on stderr.
+
+4. Re-run `rusty-imap-mcp --dry-run` to confirm the matrix now shows
    `send_email` as `[ok ]`.
 
 ## What's next
