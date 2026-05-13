@@ -128,9 +128,9 @@ fn force_use_for_dead_code_link() {
     let _ = Harness::response_or_close;
     let _ = Harness::send_line;
     let _ = Harness::send_request_no_wait;
-    // No current callers — suppressed here for the same per-binary
-    // dead-code reason; Task 5 will add callers via the concurrency
-    // and adversarial-input tests.
+    let _ = Harness::recv_until_id;
+    // No current callers in any binary — suppressed here for the same
+    // per-binary dead-code reason.
     let _ = Harness::recv_line_within;
     // Method used by mcp_wire_conformance, not by other binaries.
     let _ = Harness::assert_no_response_within;
@@ -320,7 +320,6 @@ allowed_base_dir = "{}"
     /// requests already in flight are buffered and can be retrieved by
     /// later `recv_until_id` calls. Panics if the response envelope
     /// fails schema validation.
-    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
     pub async fn recv_until_id(&mut self, target: u64) -> Value {
         // Fast path: target already buffered.
         if let Some(pos) = self

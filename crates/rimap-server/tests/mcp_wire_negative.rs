@@ -368,6 +368,71 @@ async fn tools_list_before_initialize() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9: two `tools/list` requests in flight simultaneously
+// ---------------------------------------------------------------------------
+
+/// Send two `tools/list` requests back-to-back without awaiting
+/// the first response. Both must return well-formed envelopes
+/// within `REQUEST_TIMEOUT`, with ids matching the requests. Tests
+/// that the server doesn't serialize stdout writes in a way that
+/// corrupts responses, and that the harness's id-buffering works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_tools_list_two_inflight() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    let id_a = harness.send_request_no_wait("tools/list", json!({})).await;
+    let id_b = harness.send_request_no_wait("tools/list", json!({})).await;
+
+    // Await in the OPPOSITE order from send to exercise the
+    // out-of-order buffering path in recv_until_id.
+    let response_b = harness.recv_until_id(id_b).await;
+    let response_a = harness.recv_until_id(id_a).await;
+
+    assert_eq!(response_a["id"], json!(id_a));
+    assert_eq!(response_b["id"], json!(id_b));
+    assert!(response_a["result"].is_object(), "id_a must succeed");
+    assert!(response_b["result"].is_object(), "id_b must succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: bidi-override character in a tool argument
+// ---------------------------------------------------------------------------
+
+/// Inject a Unicode bidi-override character (U+202E RIGHT-TO-LEFT
+/// OVERRIDE) into a tool argument. Server must either accept and
+/// process the call (returning an error envelope because no
+/// account named that exists in the zero-account config) or
+/// reject with a validation error. Either way: no panic in the
+/// argument-redactor or audit writer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bidi_override_in_tool_argument() {
+    let mut harness = Harness::spawn().await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    let response = harness
+        .request(
+            "tools/call",
+            json!({
+                "name": "use_account",
+                "arguments": { "account": "foo\u{202E}bar" },
+            }),
+        )
+        .await;
+
+    // The contract here is "server didn't panic and returned a
+    // well-formed envelope" — the schema validation inside
+    // `request` already enforces that. Additionally assert the
+    // call was rejected (no account exists with that name).
+    assert!(
+        response.get("error").is_some() || response["result"]["isError"].as_bool() == Some(true),
+        "use_account with non-existent account must fail, got {response}",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test 8: `initialize` with unsupported protocol version
 // ---------------------------------------------------------------------------
 
