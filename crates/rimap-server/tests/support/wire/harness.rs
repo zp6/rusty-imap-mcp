@@ -221,6 +221,45 @@ allowed_base_dir = "{}"
         self.stdin.flush().await.expect("flush notification");
     }
 
+    /// Write arbitrary bytes to the child's stdin verbatim. No newline
+    /// is appended; the caller is responsible for framing. Used by
+    /// fuzz / malformed-input tests that need to send bytes the
+    /// normal `request` / `notify` API would reject.
+    pub async fn send_raw(&mut self, bytes: &[u8]) {
+        self.stdin.write_all(bytes).await.expect("write raw bytes");
+        self.stdin.flush().await.expect("flush raw bytes");
+    }
+
+    /// Convenience wrapper: write `line` followed by `\n`. The
+    /// `line` itself MUST NOT contain a `\n` (MCP framing is one
+    /// JSON envelope per line; embedded newlines would split the
+    /// envelope across lines).
+    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
+    pub async fn send_line(&mut self, line: &str) {
+        assert!(
+            !line.contains('\n'),
+            "send_line: caller-supplied content must not contain a newline; got {line:?}",
+        );
+        let mut framed = String::with_capacity(line.len() + 1);
+        framed.push_str(line);
+        framed.push('\n');
+        self.send_raw(framed.as_bytes()).await;
+    }
+
+    /// Read one line of stdout under `dur`. Returns `Some(line)` on
+    /// success, `None` if `dur` elapsed before a newline arrived OR
+    /// the child closed stdout. Unlike `request`, this does NOT parse
+    /// or validate the line; fuzz tests use it to observe whatever
+    /// the server actually emitted (which may be malformed by design).
+    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
+    pub async fn recv_line_within(&mut self, dur: Duration) -> Option<String> {
+        let mut buf = String::new();
+        match timeout(dur, self.stdout.read_line(&mut buf)).await {
+            Ok(Ok(0) | Err(_)) | Err(_) => None, // EOF, I/O error, or timeout
+            Ok(Ok(_)) => Some(buf),              // line read; buf ends with '\n'
+        }
+    }
+
     /// Assert no bytes arrive on stdout for the given duration.
     pub async fn assert_no_response_within(&mut self, dur: Duration) {
         let mut buf = String::new();
