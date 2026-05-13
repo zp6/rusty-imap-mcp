@@ -327,50 +327,41 @@ async fn initialize_after_already_initialized() {
 // Test 7: `tools/list` before `initialize`
 // ---------------------------------------------------------------------------
 
-/// `tools/list` before `initialize` must error or close the session.
-/// Server is in the "uninitialized" state and cannot answer protocol-
-/// level requests until handshake completes.
+/// `tools/list` before `initialize` must error or close the session
+/// cleanly. Server is in the "uninitialized" state and cannot answer
+/// protocol-level requests until handshake completes.
 ///
-/// Probed 2026-05-13 (rmcp 1.5): rmcp exits with a non-zero status
-/// (exit code 1, `Crashed`) on a pre-initialize `tools/list`. It logs
-/// "expect initialized request, but received: Some(Request(...))" and
-/// terminates. Both `Crashed` and `CleanClose` are acceptable session-
-/// rejection outcomes; only Hung fails the test. A Response path is
-/// also handled: if rmcp emits a JSON-RPC error instead of crashing it
-/// must be a well-formed error envelope.
+/// Probed 2026-05-13 (rmcp 1.5): server CRASHES with exit code 1.
+/// This is a bug filed as #275. The test below pins the spec-
+/// compliant behavior (error envelope OR clean close); it is
+/// `#[ignore]`'d until the underlying bug is fixed. Un-ignore
+/// after #275 lands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "blocked on #275: server crashes on pre-initialize requests"]
 async fn tools_list_before_initialize() {
     let mut harness = Harness::spawn().await;
     // Deliberately skip initialize_handshake.
 
-    // Use send_request_no_wait + response_or_close because rmcp closes
-    // (or crashes) the connection instead of emitting a JSON-RPC error
-    // envelope for pre-initialize requests.
     let _id = harness.send_request_no_wait("tools/list", json!({})).await;
 
-    // Probed 2026-05-13 (rmcp 1.5): server crashes (exit code 1) on
-    // tools/list before initialize. Crashed is the observed outcome.
     match harness.response_or_close(REQUEST_TIMEOUT).await {
         CloseOrResponse::Response(line) => {
-            // rmcp chose to emit a response instead of crashing. If it is
-            // an error envelope, accept it; if somehow a success, fail the test.
             let envelope = parse_response_line(&line);
             assert!(
                 envelope["error"].is_object(),
-                "tools/list before initialize must return an error if it responds, got {envelope}",
+                "tools/list before initialize must return an error envelope, got {envelope}",
             );
             assert_envelope_valid(&envelope);
         }
         CloseOrResponse::CleanClose => {
-            // Server shut down cleanly on pre-initialize request — acceptable.
+            // Spec-compliant: server closed cleanly.
         }
-        CloseOrResponse::Crashed(_diag) => {
-            // Probed 2026-05-13 (rmcp 1.5): server exits with code 1 on
-            // tools/list before initialize. This is the observed behavior.
+        CloseOrResponse::Crashed(diag) => {
+            panic!("server crashed on pre-initialize tools/list (bug #275): {diag}",);
         }
         CloseOrResponse::Hung => {
             panic!(
-                "server hung (no response within {REQUEST_TIMEOUT:?}) on tools/list before initialize"
+                "server hung (no response within {REQUEST_TIMEOUT:?}) on pre-initialize tools/list",
             );
         }
     }
@@ -381,22 +372,19 @@ async fn tools_list_before_initialize() {
 // ---------------------------------------------------------------------------
 
 /// Client requests a protocol version the server doesn't support.
-/// Spec allows two behaviors: server may counter-propose its own
-/// supported version, or return a JSON-RPC error.
+/// Spec (per MCP): "If the server supports the requested protocol
+/// version, it MUST respond with the same version. Otherwise, the
+/// server MUST respond with a version it does support."
 ///
-/// Probed 2026-05-13 (rmcp 1.5): rmcp takes the counter-proposal path
-/// and echoes back the client's version string verbatim (even for an
-/// obviously invalid version like "1999-01-01"). rmcp performs no
-/// version validation — any string is accepted. The test pins this:
-/// if rmcp responds, it must be a success result with a non-null
-/// protocolVersion string. The error path and clean-close path are
-/// also handled for forward compatibility.
+/// Probed 2026-05-13 (rmcp 1.5): rmcp accepts the unknown version
+/// and echoes it back. This is a bug filed as #276. The test
+/// below pins the spec-compliant behavior; it is `#[ignore]`'d
+/// until #276 lands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "blocked on #276: server echoes unsupported protocol versions"]
 async fn initialize_unsupported_protocol_version() {
     let mut harness = Harness::spawn().await;
 
-    // Use send_request_no_wait + response_or_close in case rmcp closes
-    // the connection on an unsupported version, rather than responding.
     let _id = harness
         .send_request_no_wait(
             "initialize",
@@ -411,49 +399,40 @@ async fn initialize_unsupported_protocol_version() {
         )
         .await;
 
-    // Probed 2026-05-13 (rmcp 1.5): counter-proposal path fires. rmcp
-    // echoes the client's "1999-01-01" version back in the result.
     match harness.response_or_close(REQUEST_TIMEOUT).await {
         CloseOrResponse::Response(line) => {
             let envelope = parse_response_line(&line);
             if envelope.get("error").is_some() {
-                // Error path. rmcp emitted a JSON-RPC error — acceptable.
-                // Probed 2026-05-13: this branch did NOT fire; counter-proposal
-                // fired instead. If this branch fires in a future rmcp version,
-                // tighten to the actual error code.
+                // Error path. Spec-legal: server rejected the version.
                 let code = &envelope["error"]["code"];
                 assert!(
                     code.is_i64(),
                     "error code must be an integer per JSON-RPC, got {envelope}",
                 );
             } else {
-                // Counter-proposal path — observed rmcp 1.5 behavior.
-                // rmcp returns a success result. The protocolVersion in the
-                // result is whatever rmcp chose (may echo the client's string).
+                // Counter-proposal path. The server's response must include
+                // a SUPPORTED version, NOT echo the client's bad input.
                 let version = envelope["result"]["protocolVersion"]
                     .as_str()
                     .unwrap_or_else(|| {
                         panic!("protocolVersion must be a string, got {envelope}");
                     });
-                // Probed 2026-05-13 (rmcp 1.5): rmcp echoes "1999-01-01" back
-                // verbatim — no version enforcement. Assert the field is present
-                // and non-empty; the exact value is rmcp's choice.
-                assert!(
-                    !version.is_empty(),
-                    "protocolVersion in counter-proposal must be non-empty, got {envelope}",
+                assert_ne!(
+                    version, "1999-01-01",
+                    "server must not echo the unsupported version back (bug #276); got {envelope}",
                 );
                 assert_envelope_valid(&envelope);
             }
         }
         CloseOrResponse::CleanClose => {
-            // Server elected to close on unsupported protocol version — acceptable.
+            // Server elected clean close on unsupported version — also spec-legal.
         }
         CloseOrResponse::Crashed(diag) => {
             panic!("server crashed on unsupported protocol version: {diag}");
         }
         CloseOrResponse::Hung => {
             panic!(
-                "server hung (no response within {REQUEST_TIMEOUT:?}) on unsupported protocol version"
+                "server hung (no response within {REQUEST_TIMEOUT:?}) on unsupported protocol version",
             );
         }
     }
