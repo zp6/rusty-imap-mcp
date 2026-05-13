@@ -69,10 +69,10 @@ pub struct SearchResultEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
     /// From addresses, sanitized. Omitted when empty.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub from: Vec<String>,
     /// To addresses, sanitized. Omitted when empty.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
     /// RFC 2822 `Message-ID`, sanitized.
     #[serde(skip_serializing_if = "Option::is_none")]

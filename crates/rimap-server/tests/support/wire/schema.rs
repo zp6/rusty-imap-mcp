@@ -207,7 +207,8 @@ mod fixture_smoke_tests {
         //
         // SearchMeta requires: folder, total_matched, returned, truncated.
         // SearchUntrusted requires: messages (array of SearchResultEntry).
-        // SearchResultEntry requires: uid, from, to.
+        // SearchResultEntry requires: uid (from/to are optional —
+        // omitted when the parsed message had no headers).
         let search = validator_for_tool_response("search");
         let payload = serde_json::json!({
             "meta": {
@@ -234,6 +235,43 @@ mod fixture_smoke_tests {
                 .collect();
             panic!(
                 "constructed search payload should validate; errors:\n  {}\n\npayload: {payload}",
+                errors.join("\n  ")
+            );
+        }
+    }
+
+    #[test]
+    fn search_fixture_validates_payload_with_omitted_from_and_to() {
+        // Wire shape when the parsed message has no From / To headers:
+        // both fields are omitted (Vec::is_empty skip_serializing_if on
+        // SearchResultEntry). Pre-fix, the schema required them as keys
+        // and this payload would have been falsely rejected.
+        let search = validator_for_tool_response("search");
+        let payload = serde_json::json!({
+            "meta": {
+                "total_matched": 1u64,
+                "folder": "INBOX",
+                "returned": 1u64,
+                "truncated": false,
+            },
+            "untrusted": {
+                "messages": [
+                    {
+                        "uid": 42u32,
+                        // from and to are omitted, matching the wire
+                        // when both vectors are empty.
+                    }
+                ],
+            },
+            "security_warnings": [],
+        });
+        if !search.is_valid(&payload) {
+            let errors: Vec<String> = search
+                .iter_errors(&payload)
+                .map(|e| e.to_string())
+                .collect();
+            panic!(
+                "search schema must accept a result entry with omitted from/to; errors:\n  {}\n\npayload: {payload}",
                 errors.join("\n  ")
             );
         }

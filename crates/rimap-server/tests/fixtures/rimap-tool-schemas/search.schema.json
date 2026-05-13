@@ -65,9 +65,7 @@
         }
       },
       "required": [
-        "uid",
-        "from",
-        "to"
+        "uid"
       ],
       "type": "object"
     },
