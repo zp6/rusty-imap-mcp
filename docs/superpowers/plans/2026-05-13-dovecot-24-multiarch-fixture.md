@@ -239,15 +239,23 @@ Keep everything from `container_name:` onwards unchanged.
 
 - [ ] **Step 2: If Task 2 Step 3 found inherited `conf.d/` defaults, also override the directory**
 
-Only if needed (skip this step otherwise). Under `volumes:` in the same compose file, add a tmpfs mount for the conf.d directory immediately after the existing `shared:/shared` line:
+Only if needed (skip this step otherwise). A bare path under `volumes:` does **not** mask the image contents — it creates an anonymous volume that Docker initializes from the image's directory at first run, so the upstream defaults would still leak through. Use a real empty tmpfs instead. Add a top-level `tmpfs:` service key (sibling of `volumes:`, `image:`, etc.) to the `dovecot` service:
 
 ```yaml
-      # Override upstream image's baked-in /etc/dovecot/conf.d/ with an
-      # empty tmpfs so its defaults cannot conflict with our config.
+    tmpfs:
+      # Empty tmpfs mounted over /etc/dovecot/conf.d so upstream image
+      # defaults cannot override the settings in our dovecot.conf. A
+      # bare-path entry under `volumes:` would NOT do this — Docker
+      # populates anonymous volumes from the image's directory contents
+      # at first run.
       - /etc/dovecot/conf.d
 ```
 
-(A bare path under `volumes:` creates an anonymous tmpfs-like volume scoped to the container, masking the image's directory.)
+If the long form is preferred (e.g., because tmpfs sizing matters), the equivalent under `volumes:` is:
+```yaml
+      - type: tmpfs
+        target: /etc/dovecot/conf.d
+```
 
 - [ ] **Step 3: Manual bring-up to validate**
 
@@ -270,9 +278,14 @@ Run:
 ```bash
 docker compose -p smoke -f crates/rimap-imap/tests/integration/dovecot/docker-compose.yml exec dovecot id
 docker compose -p smoke -f crates/rimap-imap/tests/integration/dovecot/docker-compose.yml exec dovecot doveconf -n > /tmp/dovecot-2.4-probe/runtime.conf 2>&1
-diff -u /tmp/dovecot-2.4-probe/canonical.conf /tmp/dovecot-2.4-probe/runtime.conf || true
+diff -u /tmp/dovecot-2.4-probe/canonical.conf /tmp/dovecot-2.4-probe/runtime.conf
 ```
-Expected: `id` reports `uid=0(root)`. The diff between the Task-2 canonical output and the runtime `doveconf -n` is empty (or only differs in setting-order trivia that `doveconf -n` itself normalizes).
+Expected: `id` reports `uid=0(root)`. `diff` exits 0 with empty output — runtime `doveconf -n` matches the Task-2 baseline exactly.
+
+**This check fails closed.** If `diff` exits non-zero, do not proceed. A non-empty diff means an inherited `conf.d/` default or a settings-format mismatch is silently changing the runtime config; this is the exact failure mode Task 2 Step 3 and this step were designed to catch. Triage:
+- If the diff is purely whitespace/comment lines, normalize with `diff -u -w` and re-evaluate.
+- If real settings differ (e.g., upstream `conf.d/` set `ssl_min_protocol = TLSv1.3`), apply the conditional `tmpfs:` override from Step 2 and re-run the bring-up loop (Steps 3 → 4) until `diff` reports clean.
+- If `doveconf -n` reorders entries deterministically but values match, treat that as parity and document the canonical form by re-capturing `/tmp/dovecot-2.4-probe/canonical.conf` from the running container (`cp runtime.conf canonical.conf`) — the runtime output is authoritative.
 
 - [ ] **Step 5: TLS handshake smoke test**
 
