@@ -17,7 +17,7 @@ use super::harness::MCP_SCHEMA_JSON;
 /// `definitions` / `$defs` (e.g. `"InitializeResult"`). Returns an
 /// `Arc` so multiple parallel tests can share the compiled validator
 /// without lifetime gymnastics.
-pub(crate) fn validator_for(fragment: &'static str) -> Arc<jsonschema::Validator> {
+pub fn validator_for(fragment: &'static str) -> Arc<jsonschema::Validator> {
     // All function-scoped items declared up front so cache and parsed
     // schema lifetimes are visible from the top of the body
     // (clippy::items_after_statements).
