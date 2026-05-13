@@ -251,6 +251,10 @@ allowed_base_dir = "{}"
     /// the child closed stdout. Unlike `request`, this does NOT parse
     /// or validate the line; fuzz tests use it to observe whatever
     /// the server actually emitted (which may be malformed by design).
+    ///
+    /// The returned string retains the trailing `\n`. Callers that
+    /// need to parse or compare the payload should strip it via
+    /// `line.trim_end_matches('\n')` or `line.trim_end()`.
     #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
     pub async fn recv_line_within(&mut self, dur: Duration) -> Option<String> {
         let mut buf = String::new();
