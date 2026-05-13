@@ -12,6 +12,8 @@ pub(crate) mod audit_merge;
 pub(crate) mod dry_run;
 #[cfg(feature = "test-support")]
 pub(crate) mod dump_tool_catalog;
+#[cfg(feature = "test-support")]
+pub(crate) mod dump_tool_schemas;
 pub(crate) mod migrate_keyring;
 
 use std::path::PathBuf;
@@ -97,6 +99,15 @@ pub enum Command {
     #[cfg(feature = "test-support")]
     #[command(name = "dump-tool-catalog", hide = true)]
     DumpToolCatalog,
+    /// Emit per-tool JSON Schemas (one entry per in-scope tool,
+    /// composing `<Tool>Meta` and `<Tool>Untrusted` into a single
+    /// `{meta, untrusted}` envelope) as pretty JSON on stdout. Used
+    /// by the Phase 3 wire-conformance harness (#265) and the
+    /// `just regen-tool-schemas` recipe. Hidden from `--help` because
+    /// it is a test-only utility.
+    #[cfg(feature = "test-support")]
+    #[command(name = "dump-tool-schemas", hide = true)]
+    DumpToolSchemas,
 }
 
 /// Actions under `rusty-imap-mcp audit <action>`.

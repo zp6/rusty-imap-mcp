@@ -360,13 +360,23 @@ fn resolve_download_dir_multi(
 /// code path and the `run` body stays under the workspace 100-line cap.
 #[cfg(feature = "test-support")]
 fn run_test_support_subcommands(cli: &Cli) -> Option<anyhow::Result<()>> {
-    if matches!(cli.command, Some(Command::DumpToolCatalog)) {
-        let mut stdout = std::io::stdout().lock();
-        return Some(
-            cli::dump_tool_catalog::dump_tool_catalog(&mut stdout).context("dumping tool catalog"),
-        );
+    match cli.command {
+        Some(Command::DumpToolCatalog) => {
+            let mut stdout = std::io::stdout().lock();
+            Some(
+                cli::dump_tool_catalog::dump_tool_catalog(&mut stdout)
+                    .context("dumping tool catalog"),
+            )
+        }
+        Some(Command::DumpToolSchemas) => {
+            let mut stdout = std::io::stdout().lock();
+            Some(
+                cli::dump_tool_schemas::dump_tool_schemas(&mut stdout)
+                    .context("dumping tool schemas"),
+            )
+        }
+        _ => None,
     }
-    None
 }
 
 /// Handle the `migrate-keyring` subcommand.

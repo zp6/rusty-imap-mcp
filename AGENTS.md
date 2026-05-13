@@ -30,6 +30,9 @@ strict-client conformance spec (`2026-05-12-mcp-conformance-node-design.md`)
 extends the Phase 1 wire-conformance work
 (`2026-05-12-mcp-wire-conformance-design.md`) with a Node + TypeScript harness
 that drives `rusty-imap-mcp` through the official `@modelcontextprotocol/sdk`.
+The Phase 3 behavioral-conformance spec
+(`docs/superpowers/specs/2026-05-12-mcp-behavioral-conformance-design.md`) covers
+the wire-driven Dovecot e2e harness for tool dispatch + audit-log attribution.
 
 ## Repository status
 
@@ -70,6 +73,47 @@ runtimes work on macOS, Ubuntu CI, and Fedora. Override with
 to force a specific one. Set `RIMAP_REQUIRE_DOCKER=1` to fail loudly
 instead of silently skipping when no runtime is installed (the env var
 name is historical — it gates both docker and podman).
+
+**Apple Silicon (arm64 macOS):** Docker Desktop *can* run x86_64 images via
+Rosetta emulation in general, **but the pinned `dovecot/dovecot:2.3.21`
+image fails under Rosetta** — the container starts and the IMAPS port
+binds, but dovecot's child processes (`anvil`, `log`, `auth`) die with
+`rosetta error: unable to mmap ExecutableHeap: 12` (ENOMEM emulating an
+executable heap) and `userdb lookup ... Disconnected unexpectedly`. The
+`dovecot/dovecot:2.4.x` line is multi-arch but has breaking config-format
+changes deferred out of scope (see commit `ae1bf8b` and
+`crates/rimap-imap/tests/integration/dovecot/docker-compose.yml`). For
+that reason the harness `std::env::consts::ARCH != "x86_64"` check in
+`crates/rimap-server/tests/support/dovecot/harness.rs` silently skips on
+arm64 hosts — the gate exists for this specific fixture incompatibility,
+not as a blanket assumption about Docker emulation.
+
+### Wire-driven Dovecot e2e (Phase 3, #265)
+
+`crates/rimap-server/tests/e2e_wire.rs` drives the production binary
+over its stdio JSON-RPC wire against the same Dovecot fixture
+`e2e_full_session` uses. It exercises every draft-safe and read-only
+posture tool, validates every response against the vendored MCP spec
+schemas + per-tool schemas under
+`crates/rimap-server/tests/fixtures/rimap-tool-schemas/`, and asserts
+audit-log pairing + namespace attribution.
+
+- Wall time: silent-skip path is sub-second (measured locally at ~0.019s
+  on macOS arm64 without Docker); with Docker on linux/x86_64 expected
+  ~10–25s on a warm machine (Dovecot bring-up dominates). Recorded in
+  CI logs.
+- Gating: silent-skip ONLY when the host genuinely cannot run the
+  fixture — missing docker/podman, or an arm64 host where dovecot
+  2.3.21 amd64 crashes under Rosetta (see the Apple Silicon note
+  above). `RIMAP_REQUIRE_DOCKER=1` flips every other failure mode
+  (compose-up, readiness timeout, port reservation, fingerprint read)
+  to a panic with diagnostic context. Same convention as the legacy
+  in-process `e2e_full_session`.
+- Schema regen: when changing any `<Tool>Meta` or `<Tool>Untrusted`
+  struct in `crates/rimap-server/src/tools/`, run
+  `just regen-tool-schemas` and commit the diff. CI fails on a
+  non-empty diff under `tests/fixtures/rimap-tool-schemas/`.
+- Specs: see `docs/superpowers/specs/2026-05-12-mcp-behavioral-conformance-design.md`.
 
 ## Toolchain and MSRV
 

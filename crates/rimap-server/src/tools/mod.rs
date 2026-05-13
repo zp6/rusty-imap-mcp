@@ -7,9 +7,9 @@
 //! Callers must reference the subdir path (`crate::tools::retrieval::fetch_message`);
 //! no wildcard facade is provided so the partition stays meaningful.
 
-pub(crate) mod admin;
-pub(crate) mod compose;
+pub mod admin;
+pub mod compose;
 pub(crate) mod fetch_by_uid;
-pub(crate) mod mailbox;
-pub(crate) mod retrieval;
+pub mod mailbox;
+pub mod retrieval;
 pub(crate) mod validation;

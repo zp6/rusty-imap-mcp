@@ -30,7 +30,7 @@ default = []
 # binary's wire shape rather than the production binary's, silently
 # voiding its regression nets. See:
 #   docs/superpowers/specs/2026-05-12-mcp-conformance-node-design.md §4.7
-test-support = ["rimap-config/test-support"]
+test-support = ["rimap-config/test-support", "rimap-content/test-support"]
 
 [lib]
 name = "rimap_server"
@@ -81,3 +81,4 @@ rimap-imap = { path = "../rimap-imap", version = "0.1.0", features = ["test-supp
 rimap-server = { path = ".", version = "0.1.0", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util"] }
 tempfile = { workspace = true }
+base64 = { workspace = true }

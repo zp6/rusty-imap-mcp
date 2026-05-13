@@ -80,6 +80,13 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-tests=pass
+      - name: Phase 3 wire e2e — fail if zero tests selected
+        run: |
+          cargo nextest run -p rimap-server --test e2e_wire \
+            --locked --no-tests=fail \
+            --no-capture
+        env:
+          RIMAP_REQUIRE_DOCKER: "1"
 
   msrv:
     name: test (MSRV 1.88.0)
@@ -101,6 +108,35 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-tests=pass
+
+  tool-schema-drift:
+    name: tool-schema drift
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: 1.94.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: tool-schema-drift
+      - uses: taiki-e/install-action@1329c298aa20c3257846c9b2e0e55967df3e3c37  # v2.75.25
+        with:
+          tool: just
+      - name: Regenerate tool schemas
+        run: just regen-tool-schemas
+      - name: Verify no schema drift
+        run: |
+          if ! git diff --exit-code crates/rimap-server/tests/fixtures/rimap-tool-schemas/; then
+            git diff --stat crates/rimap-server/tests/fixtures/rimap-tool-schemas/
+            echo "::error::Tool schemas are out of sync — run 'just regen-tool-schemas' and commit the updated fixture files"
+            exit 1
+          fi
 
   deny:
     name: cargo-deny

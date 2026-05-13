@@ -68,12 +68,19 @@ fn default_connect_timeout() -> u32 {
 
 /// How credential resolution falls back when the keyring has no entry.
 ///
-/// - `KeyringThenEnv` (default) — try the keyring, then
-///   `RUSTY_IMAP_MCP_PASSWORD`, then fail. Suitable for CI/test and
-///   single-account deployments.
-/// - `KeyringOnly` — keyring only; a miss returns `NoCredential` without
-///   consulting the env var. Recommended for multi-account deployments
-///   where a shared env-var fallback would silently send one account's
+/// - `KeyringThenEnv` (default) — try the keyring; on either a miss or
+///   a hard keyring failure (e.g. no D-Bus session available, as in CI
+///   runners and Docker containers), fall back to
+///   `RUSTY_IMAP_MCP_PASSWORD`; if that is unset, fail. Suitable for
+///   CI/test and single-account deployments, including headless
+///   environments without a running secret-service. When the env-var
+///   fallback fires because of a keyring transport error rather than a
+///   plain miss, the resolver emits a `tracing::warn!` so the
+///   misconfiguration is still visible to operators.
+/// - `KeyringOnly` — keyring only; a miss returns `NoCredential` and a
+///   transport error propagates as `Keychain`. The env var is never
+///   consulted. Recommended for multi-account deployments where a
+///   shared env-var fallback would silently send one account's
 ///   password to another account's server (see #78).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

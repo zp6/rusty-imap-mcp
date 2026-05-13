@@ -249,6 +249,14 @@ mcp-conformance-node:
         RUSTY_IMAP_MCP_BIN="{{justfile_directory()}}/target/debug/rusty-imap-mcp" \
         pnpm test
 
+# Regenerate per-tool JSON Schemas under
+# crates/rimap-server/tests/fixtures/rimap-tool-schemas/. Run after
+# changing any tool response struct (<Tool>Meta or <Tool>Untrusted).
+# CI fails on a non-empty diff under that directory.
+regen-tool-schemas:
+    #!/usr/bin/env bash
+    ./scripts/regen-tool-schemas.sh
+
 # Full local-CI equivalent. If this passes, CI will pass.
 ci: fmt-check lint test test-msrv deny mcp-conformance-node
     typos
