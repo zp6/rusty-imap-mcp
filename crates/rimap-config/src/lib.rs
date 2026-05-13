@@ -17,6 +17,8 @@ pub use crate::credential::{
     resolve_credential,
 };
 pub use crate::error::ConfigError;
+#[cfg(feature = "test-support")]
+pub use crate::loader::load_and_validate_allowing_empty;
 pub use crate::loader::{CONFIG_ENV_VAR, load_and_validate, load_from_path, resolve_config_path};
 pub use crate::login::{run_login, tty_prompt};
 pub use crate::model::{
@@ -24,6 +26,8 @@ pub use crate::model::{
     ImapConfig, LimitsConfig, LookalikeConfig, MultiAccountConfig, RawAccountConfig,
     SecurityConfig, SmtpConfig, SmtpEncryption, Verdict,
 };
+#[cfg(feature = "test-support")]
+pub use crate::validate::validate_multi_allowing_empty;
 pub use crate::validate::{
     ValidatedAccountConfig, ValidatedMultiConfig, validate_legacy_as_multi, validate_multi,
 };

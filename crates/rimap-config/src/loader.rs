@@ -14,6 +14,8 @@ use directories::ProjectDirs;
 
 use crate::error::ConfigError;
 use crate::model::{Config, MultiAccountConfig};
+#[cfg(feature = "test-support")]
+use crate::validate::validate_multi_allowing_empty;
 use crate::validate::{ValidatedMultiConfig, validate_legacy_as_multi, validate_multi};
 
 /// Organization qualifiers for `directories::ProjectDirs`.
@@ -67,6 +69,43 @@ pub fn load_from_path(path: &Path) -> Result<Config, ConfigError> {
 /// # Errors
 /// Returns `ConfigError` on read, parse, or validation failure.
 pub fn load_and_validate(path: &Path) -> Result<ValidatedMultiConfig, ConfigError> {
+    match classify_format(path)? {
+        DetectedFormat::Multi(config) => validate_multi(config),
+        DetectedFormat::Legacy(config) => validate_legacy_as_multi(config),
+    }
+}
+
+/// Variant of [`load_and_validate`] that, for multi-account format,
+/// invokes [`crate::validate::validate_multi_allowing_empty`] so the
+/// wire-conformance harness can spawn the binary with `accounts = []`.
+/// Gated behind the `test-support` feature.
+///
+/// # Errors
+/// Same surface as [`load_and_validate`], minus `ConfigError::NoAccounts`
+/// for empty multi-account configs.
+#[cfg(feature = "test-support")]
+pub fn load_and_validate_allowing_empty(path: &Path) -> Result<ValidatedMultiConfig, ConfigError> {
+    match classify_format(path)? {
+        DetectedFormat::Multi(config) => validate_multi_allowing_empty(config),
+        DetectedFormat::Legacy(config) => validate_legacy_as_multi(config),
+    }
+}
+
+/// Detected on-disk config shape after reading + parsing the file.
+///
+/// Multi-account vs legacy classification happens here so the two
+/// validating entrypoints ([`load_and_validate`] and, under
+/// `test-support`, [`load_and_validate_allowing_empty`]) share the
+/// same I/O and format-detection path.
+enum DetectedFormat {
+    Multi(MultiAccountConfig),
+    Legacy(Config),
+}
+
+/// Read `path`, parse it as TOML, and classify it as multi-account or
+/// legacy. Returns [`ConfigError::MixedConfigFormat`] if both shapes
+/// appear in the same document.
+fn classify_format(path: &Path) -> Result<DetectedFormat, ConfigError> {
     let contents = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
         path: path.to_path_buf(),
         source,
@@ -98,13 +137,13 @@ pub fn load_and_validate(path: &Path) -> Result<ValidatedMultiConfig, ConfigErro
             path: path.to_path_buf(),
             source,
         })?;
-        validate_multi(config)
+        Ok(DetectedFormat::Multi(config))
     } else {
         let config: Config = value.try_into().map_err(|source| ConfigError::Parse {
             path: path.to_path_buf(),
             source,
         })?;
-        validate_legacy_as_multi(config)
+        Ok(DetectedFormat::Legacy(config))
     }
 }
 
