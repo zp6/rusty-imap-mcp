@@ -81,6 +81,10 @@ allowed_base_dir = "{}"
         let mut cmd = Command::new(cargo_bin("rusty-imap-mcp"));
         cmd.arg("--config")
             .arg(&config_path)
+            // Production rejects `accounts = []`. The harness opts in
+            // to infrastructure-only boot via this test-support flag
+            // (Codex adversarial review on PR #270).
+            .arg("--allow-empty-accounts")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
