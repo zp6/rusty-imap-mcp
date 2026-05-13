@@ -46,7 +46,10 @@ describe("wire conformance (SDK harness)", () => {
     // Zod will have thrown inside listTools() if any tool's
     // inputSchema fails the SDK's Tool definition. Explicit asserts
     // below are belt-and-suspenders for if Zod ever relaxes.
-    expect(result.tools.length, "tools/list must return at least the infrastructure tools").toBeGreaterThan(0);
+    expect(
+      result.tools.length,
+      "tools/list must return at least the infrastructure tools",
+    ).toBeGreaterThan(0);
 
     const names = result.tools.map((t) => t.name);
     expect(names, "list_accounts must be advertised").toContain("list_accounts");
@@ -123,14 +126,10 @@ describe("wire conformance (raw harness)", () => {
     });
     expect(response.result, "initialize must produce a result envelope").toBeDefined();
     const negotiated = response.result?.["protocolVersion"];
-    expect(
-      typeof negotiated,
-      "result.protocolVersion must be a string on the wire",
-    ).toBe("string");
-    expect(
-      negotiated,
-      "server must echo the pinned protocol version on the wire",
-    ).toBe(PINNED_PROTOCOL_VERSION);
+    expect(typeof negotiated, "result.protocolVersion must be a string on the wire").toBe("string");
+    expect(negotiated, "server must echo the pinned protocol version on the wire").toBe(
+      PINNED_PROTOCOL_VERSION,
+    );
   });
 
   it("wire_initialized_notification_elicits_no_response (Raw)", async () => {

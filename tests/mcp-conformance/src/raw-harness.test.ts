@@ -13,7 +13,9 @@ describe("assertEnvelopeValid", () => {
       id: 1,
       result: { foo: "bar" },
     };
-    expect(() => { assertEnvelopeValid(ok, 1); }).not.toThrow();
+    expect(() => {
+      assertEnvelopeValid(ok, 1);
+    }).not.toThrow();
   });
 
   it("accepts a well-formed error envelope", () => {
@@ -22,22 +24,30 @@ describe("assertEnvelopeValid", () => {
       id: 1,
       error: { code: -32601, message: "method not found" },
     };
-    expect(() => { assertEnvelopeValid(err, 1); }).not.toThrow();
+    expect(() => {
+      assertEnvelopeValid(err, 1);
+    }).not.toThrow();
   });
 
   it("rejects a missing jsonrpc field", () => {
     const bad = { id: 1, result: {} } as unknown as JsonRpcResponse;
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/jsonrpc/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/jsonrpc/);
   });
 
   it("rejects a wrong jsonrpc value", () => {
     const bad = { jsonrpc: "1.0", id: 1, result: {} } as unknown as JsonRpcResponse;
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/jsonrpc/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/jsonrpc/);
   });
 
   it("rejects mismatched id", () => {
     const bad: JsonRpcResponse = { jsonrpc: "2.0", id: 99, result: {} };
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/id/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/id/);
   });
 
   it("rejects an envelope with both result and error", () => {
@@ -47,12 +57,16 @@ describe("assertEnvelopeValid", () => {
       result: {},
       error: { code: -1, message: "x" },
     } as unknown as JsonRpcResponse;
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/exactly one/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/exactly one/);
   });
 
   it("rejects an envelope with neither result nor error", () => {
     const bad = { jsonrpc: "2.0", id: 1 } as unknown as JsonRpcResponse;
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/exactly one/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/exactly one/);
   });
 
   it("rejects an error envelope with non-numeric code", () => {
@@ -61,7 +75,9 @@ describe("assertEnvelopeValid", () => {
       id: 1,
       error: { code: "not-a-number", message: "x" },
     } as unknown as JsonRpcResponse;
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/error\.code/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/error\.code/);
   });
 
   it("rejects an error envelope with missing message", () => {
@@ -70,7 +86,9 @@ describe("assertEnvelopeValid", () => {
       id: 1,
       error: { code: -1 },
     } as unknown as JsonRpcResponse;
-    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/error\.message/);
+    expect(() => {
+      assertEnvelopeValid(bad, 1);
+    }).toThrow(/error\.message/);
   });
 });
 

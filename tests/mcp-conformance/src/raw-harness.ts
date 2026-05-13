@@ -38,16 +38,11 @@ export type JsonRpcResponse = JsonRpcSuccess | JsonRpcError;
  *
  * Throws a descriptive `Error` on any structural violation.
  */
-export function assertEnvelopeValid(
-  response: JsonRpcResponse,
-  expectedId: number,
-): void {
+export function assertEnvelopeValid(response: JsonRpcResponse, expectedId: number): void {
   const env = response as unknown as Record<string, unknown>;
 
   if (env["jsonrpc"] !== "2.0") {
-    throw new Error(
-      `envelope must declare jsonrpc="2.0"; got ${JSON.stringify(env["jsonrpc"])}`,
-    );
+    throw new Error(`envelope must declare jsonrpc="2.0"; got ${JSON.stringify(env["jsonrpc"])}`);
   }
 
   if (env["id"] !== expectedId) {
@@ -68,16 +63,12 @@ export function assertEnvelopeValid(
   if (hasResult) {
     const result = env["result"];
     if (result === null || typeof result !== "object" || Array.isArray(result)) {
-      throw new Error(
-        `envelope.result must be an object; got ${JSON.stringify(result)}`,
-      );
+      throw new Error(`envelope.result must be an object; got ${JSON.stringify(result)}`);
     }
   } else {
     const error = env["error"];
     if (error === null || typeof error !== "object" || Array.isArray(error)) {
-      throw new Error(
-        `envelope.error must be an object; got ${JSON.stringify(error)}`,
-      );
+      throw new Error(`envelope.error must be an object; got ${JSON.stringify(error)}`);
     }
     const errObj = error as Record<string, unknown>;
     if (typeof errObj["code"] !== "number") {
