@@ -191,13 +191,29 @@ signal handling) that a Rust-only harness cannot surface.
 
 ```just
 # Run the Node strict-client conformance suite (issue #264, Phase 2).
+# The binary is built with the `test-support` feature so the
+# `--allow-empty-accounts` CLI flag (#[cfg(feature = "test-support")])
+# is compiled in. A plain `cargo build` would produce a binary where
+# clap rejects that flag before the MCP handshake runs. Phase 1's
+# Rust integration tests already build with this feature via the
+# rimap-server self-dev-dep; this target makes the same requirement
+# explicit for the out-of-band build that Phase 2 needs.
 mcp-conformance-node:
-    cargo build --bin rusty-imap-mcp --locked
+    cargo build -p rimap-server --bin rusty-imap-mcp \
+        --features test-support --locked
     cd tests/mcp-conformance && pnpm install --frozen-lockfile
+    cd tests/mcp-conformance && pnpm lint
     cd tests/mcp-conformance && \
         RUSTY_IMAP_MCP_BIN="{{justfile_directory()}}/target/debug/rusty-imap-mcp" \
         pnpm test
 ```
+
+The `pnpm lint` step (which runs `tsc --noEmit`) is invoked **before**
+`pnpm test` so the local target catches TypeScript errors at the same
+point CI does. Vitest's esbuild-based transpilation will happily run
+test code containing type errors; without an explicit `tsc --noEmit`
+step, `just ci` can pass locally and fail in CI, breaking the
+"`just ci` passes locally → CI will pass" promise.
 
 Added to `just ci` for local-CI parity:
 
@@ -282,7 +298,7 @@ Add an `npm` ecosystem entry to `.github/dependabot.yml` for
 `tests/mcp-conformance/` with a 7-day cooldown and grouped updates per
 repo convention.
 
-### 4.7 Binary path discovery
+### 4.7 Binary path discovery and feature requirements
 
 `process.env.RUSTY_IMAP_MCP_BIN`, falling back to a computed default
 of `../../target/debug/rusty-imap-mcp` relative to
@@ -290,6 +306,27 @@ of `../../target/debug/rusty-imap-mcp` relative to
 the CI workflow both set the env var explicitly. If the binary
 doesn't exist, Vitest's `beforeAll` fails with a clear error pointing
 at `just mcp-conformance-node`.
+
+**The binary must be built with `--features test-support`.** The
+harness depends on `--allow-empty-accounts`, which is
+`#[cfg(feature = "test-support")]` in `rimap-server`. Phase 1 gets
+this for free because its integration-test build graph includes a
+self-dev-dep `rimap-server = { features = ["test-support"] }` that
+auto-activates the feature workspace-wide during `cargo test`. Phase
+2 builds the binary outside that build graph, so the feature must be
+passed explicitly.
+
+The semantic boundary this introduces: the binary Phase 2 spawns is a
+*test-support* build. The activated feature paths only widen
+acceptance (zero-account configs become valid) — they do not alter
+the MCP wire protocol the harness asserts on. If a future
+`test-support` feature change ever modified the wire shape, Phase 2's
+regression net would test the test-support binary's wire shape, not
+production's. To guard against that, additions under
+`#[cfg(feature = "test-support")]` MUST NOT touch any code path
+exercised by `tools/list`, `resources/list`, the `initialize`
+handshake, or JSON-RPC error mapping. This constraint is documented
+on the feature in `rimap-server/Cargo.toml`.
 
 ## 5. CI workflow
 
@@ -307,6 +344,15 @@ mcp-conformance-node:
       with:
         persist-credentials: false
 
+    # libdbus-1-dev + pkg-config are required because the workspace
+    # keyring dependency enables Linux native keyring (secret-service)
+    # support, which links against libdbus at build time. Every
+    # existing Ubuntu Rust build job in this workflow installs these
+    # for the same reason; omitting them here makes the job red before
+    # any Node code runs.
+    - name: Install libdbus-1-dev
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+
     - uses: dtolnay/rust-toolchain@<sha>  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
       with:
         toolchain: 1.94.0
@@ -314,8 +360,12 @@ mcp-conformance-node:
       with:
         key: mcp-conformance-node
 
-    - name: Build rusty-imap-mcp (debug)
-      run: cargo build --bin rusty-imap-mcp --locked
+    # `--features test-support` activates the `--allow-empty-accounts`
+    # CLI flag, which is #[cfg(feature = "test-support")] on the
+    # binary. Without it the harness fails at clap parsing before the
+    # MCP handshake.
+    - name: Build rusty-imap-mcp (debug, test-support)
+      run: cargo build -p rimap-server --bin rusty-imap-mcp --features test-support --locked
 
     - uses: pnpm/action-setup@<sha>  # v4.x.x
       with:
