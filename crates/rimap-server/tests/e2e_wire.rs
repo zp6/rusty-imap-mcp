@@ -530,6 +530,180 @@ fn read_audit_records(path: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
+// Pin the posture-denial JSON-RPC error code. If rmcp's error mapping or
+// the posture-denial bridge changes, update this constant and document why —
+// silent drift in posture wire shape is exactly what this test surfaces.
+// (-32602 = rmcp INVALID_PARAMS; posture denials bridge through ErrorData::invalid_params)
+const POSTURE_DENIAL_CODE: i64 = -32602;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wire_e2e_readonly_posture_denial() {
+    let Some(dovecot) = DovecotHarness::try_start() else {
+        return; // silent skip
+    };
+    let tempdir = TempDir::new().expect("tempdir");
+    let audit_path = tempdir.path().join("audit.jsonl");
+    let allowed_base = tempdir.path().to_path_buf();
+    let download_dir = tempdir.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).expect("mkdir download_dir");
+
+    let config_path = tempdir.path().join("config.toml");
+    let fingerprint_hex = dovecot.fingerprint().to_hex();
+    let config = build_dovecot_config(
+        &fingerprint_hex,
+        dovecot.port(),
+        &audit_path,
+        &allowed_base,
+        &download_dir,
+    );
+    std::fs::write(&config_path, config).expect("write config");
+
+    let envs = [(PASSWORD_ENV_VAR, DOVECOT_PASSWORD)];
+    let mut harness = Harness::spawn_with_config(&config_path, tempdir, &envs).await;
+    let _ = harness.initialize_handshake().await;
+    harness.send_initialized().await;
+
+    assert_readonly_tools_list(&mut harness).await;
+    assert_readonly_success_path(&mut harness).await;
+    assert_readonly_denial(&mut harness).await;
+
+    let status = harness.shutdown_and_wait().await;
+    assert!(status.success(), "child must exit 0, got {status:?}");
+
+    assert_readonly_audit_records(&audit_path);
+}
+
+/// Verify tools/list advertisement posture for the readonly namespace.
+async fn assert_readonly_tools_list(harness: &mut Harness) {
+    let tools_list = harness.request("tools/list", json!({})).await;
+    assert_valid(&tools_list["result"], "ListToolsResult");
+    let names: Vec<&str> = tools_list["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"draftsafe.move_message"),
+        "draftsafe.move_message must be advertised; got {names:?}",
+    );
+    assert!(
+        names.contains(&"readonly.list_folders"),
+        "readonly.list_folders must be advertised; got {names:?}",
+    );
+    assert!(
+        !names.contains(&"readonly.move_message"),
+        "readonly.move_message must not be advertised; got {names:?}",
+    );
+}
+
+/// Readonly success path: drive `list_folders` end-to-end.
+async fn assert_readonly_success_path(harness: &mut Harness) {
+    let readonly_folders = call_tool(harness, "readonly.list_folders", json!({})).await;
+    let folder_names: Vec<&str> = readonly_folders["meta"]["folders"]
+        .as_array()
+        .expect("folders")
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    assert!(
+        folder_names.contains(&"INBOX"),
+        "readonly.list_folders did not return INBOX: {folder_names:?}",
+    );
+}
+
+/// Posture denial on the wire: `readonly.move_message` must return an error envelope.
+async fn assert_readonly_denial(harness: &mut Harness) {
+    // Use harness.request directly — call_tool asserts error.is_null() and
+    // would panic here. We expect an error envelope, not a success result.
+    let resp = harness
+        .request(
+            "tools/call",
+            json!({
+                "name": "readonly.move_message",
+                "arguments": {"folder": "INBOX", "destination": "Trash", "uid": 1},
+            }),
+        )
+        .await;
+    assert!(
+        resp["error"].is_object(),
+        "expected error envelope, got {resp}",
+    );
+    assert_eq!(
+        resp["error"]["code"].as_i64(),
+        Some(POSTURE_DENIAL_CODE),
+        "posture-denial wire code drifted; got {resp}",
+    );
+}
+
+/// Verify audit records from the readonly posture denial test.
+fn assert_readonly_audit_records(audit_path: &std::path::Path) {
+    let records = read_audit_records(audit_path);
+
+    // Success path: list_folders pair, account="readonly".
+    let lf_starts: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "tool_start" && r["tool"] == "list_folders")
+        .collect();
+    assert_eq!(
+        lf_starts.len(),
+        1,
+        "expected exactly one list_folders tool_start"
+    );
+    assert_eq!(
+        lf_starts[0]["account"].as_str(),
+        Some("readonly"),
+        "readonly.list_folders tool_start must record account=\"readonly\": {records:#?}",
+    );
+    let lf_ends: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "tool_end" && r["tool"] == "list_folders")
+        .collect();
+    assert_eq!(
+        lf_ends.len(),
+        1,
+        "expected exactly one list_folders tool_end"
+    );
+    assert_eq!(
+        lf_ends[0]["account"].as_str(),
+        Some("readonly"),
+        "readonly.list_folders tool_end must record account=\"readonly\": {records:#?}",
+    );
+    assert_eq!(lf_ends[0]["start_seq"], lf_starts[0]["seq"]);
+
+    // Denial path: move_message pair, account="readonly".
+    let mm_starts: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "tool_start" && r["tool"] == "move_message")
+        .collect();
+    assert_eq!(
+        mm_starts.len(),
+        1,
+        "expected exactly one move_message tool_start"
+    );
+    assert_eq!(
+        mm_starts[0]["account"].as_str(),
+        Some("readonly"),
+        "readonly.move_message tool_start must record account=\"readonly\" \
+         (not collapsed to None): {records:#?}",
+    );
+    let mm_ends: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "tool_end" && r["tool"] == "move_message")
+        .collect();
+    assert_eq!(
+        mm_ends.len(),
+        1,
+        "expected exactly one move_message tool_end"
+    );
+    assert_eq!(
+        mm_ends[0]["account"].as_str(),
+        Some("readonly"),
+        "readonly.move_message tool_end must record account=\"readonly\": {records:#?}",
+    );
+    assert_eq!(mm_ends[0]["start_seq"], mm_starts[0]["seq"]);
+}
+
 async fn seed_multipart_message(dovecot: &DovecotHarness) {
     let audit_dir = TempDir::new().expect("seed-audit tempdir");
     let audit = AuditWriter::open(&AuditOptions {
