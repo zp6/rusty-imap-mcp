@@ -165,3 +165,77 @@ fn force_use_for_dead_code_link() {
     let _ = validator_for_tool_response;
     let _ = validator_for;
 }
+
+#[cfg(test)]
+mod fixture_smoke_tests {
+    use super::*;
+
+    #[test]
+    fn every_fixture_compiles_against_jsonschema() {
+        let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/rimap-tool-schemas");
+        let entries: Vec<_> = std::fs::read_dir(&fixture_dir)
+            .expect("read fixture dir")
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".schema.json"))
+            .collect();
+        // Pin to the current 16-tool set. Update when adding or removing
+        // tools from `build_schemas()` in cli/dump_tool_schemas.rs.
+        assert_eq!(
+            entries.len(),
+            16,
+            "expected exactly 16 tool schema fixtures (pinned), found {}",
+            entries.len()
+        );
+
+        // Compile every fixture — catches dangling $refs at validator build time.
+        for entry in &entries {
+            let path = entry.path();
+            let raw = std::fs::read_to_string(&path).expect("read fixture");
+            let parsed: serde_json::Value = serde_json::from_str(&raw)
+                .unwrap_or_else(|e| panic!("invalid JSON in {path:?}: {e}"));
+            jsonschema::validator_for(&parsed)
+                .unwrap_or_else(|e| panic!("schema {path:?} failed to compile: {e}"));
+        }
+    }
+
+    #[test]
+    fn search_fixture_validates_realistic_payload() {
+        // Positive payload test: the search schema must accept a
+        // response that exercises a non-empty nested array AND a
+        // security_warnings entry.
+        //
+        // SearchMeta requires: folder, total_matched, returned, truncated.
+        // SearchUntrusted requires: messages (array of SearchResultEntry).
+        // SearchResultEntry requires: uid, from, to.
+        let search = validator_for_tool_response("search");
+        let payload = serde_json::json!({
+            "meta": {
+                "total_matched": 1u64,
+                "folder": "INBOX",
+                "returned": 1u64,
+                "truncated": false,
+            },
+            "untrusted": {
+                "messages": [
+                    {
+                        "uid": 42u32,
+                        "from": ["sender@example.com"],
+                        "to": ["recipient@example.com"],
+                    }
+                ],
+            },
+            "security_warnings": [],
+        });
+        if !search.is_valid(&payload) {
+            let errors: Vec<String> = search
+                .iter_errors(&payload)
+                .map(|e| e.to_string())
+                .collect();
+            panic!(
+                "constructed search payload should validate; errors:\n  {}\n\npayload: {payload}",
+                errors.join("\n  ")
+            );
+        }
+    }
+}

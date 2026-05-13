@@ -87,44 +87,125 @@ fn build_schemas() -> BTreeMap<&'static str, Value> {
 // security_warnings are skip-serialize-if-empty/None, so the schema
 // makes them optional, not required.
 
-fn warnings_schema() -> Value {
-    let schema = schemars::schema_for!(rimap_content::SecurityWarning);
+/// Strip the `$defs` block from `value` and return the extracted defs.
+/// `value` is mutated in place: after the call it no longer carries a
+/// `$defs` key at its top level. Returns an empty `Map` if there were
+/// no defs to hoist.
+fn extract_defs(value: &mut Value) -> serde_json::Map<String, Value> {
+    let Some(obj) = value.as_object_mut() else {
+        return serde_json::Map::new();
+    };
+    match obj.remove("$defs") {
+        Some(Value::Object(defs)) => defs,
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// Merge `from` into `into`. Panics if any key in `from` already
+/// exists in `into` with a different value — that would be a real
+/// name collision and we want to surface it loudly rather than
+/// silently keep one side. For Phase 3's struct set this should
+/// never trigger; schemars uses the Rust type's identifier as the
+/// def key and the four root types we compose don't share inner
+/// types with different shapes.
+#[expect(
+    clippy::panic,
+    reason = "programmer error: schemars $defs key collision"
+)]
+fn merge_defs(into: &mut serde_json::Map<String, Value>, from: serde_json::Map<String, Value>) {
+    for (key, value) in from {
+        match into.get(&key) {
+            None => {
+                into.insert(key, value);
+            }
+            Some(existing) if existing == &value => { /* identical, skip */ }
+            Some(existing) => {
+                panic!(
+                    "duplicate $defs key {key:?} with conflicting shapes:\n\
+                     existing: {existing}\nincoming: {value}"
+                );
+            }
+        }
+    }
+}
+
+/// `Vec<rimap_content::SecurityWarning>` schema, with its nested $defs
+/// hoisted into the caller's accumulator.
+#[expect(
+    clippy::expect_used,
+    reason = "schemars always produces serializable output; failure is a bug"
+)]
+fn warnings_schema(defs: &mut serde_json::Map<String, Value>) -> Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(rimap_content::SecurityWarning))
+        .expect("SecurityWarning schema serializes");
+    merge_defs(defs, extract_defs(&mut schema));
     serde_json::json!({
         "type": "array",
         "items": schema,
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "schemars always produces serializable output; failure is a bug"
+)]
 fn meta_only<M: schemars::JsonSchema>() -> Value {
-    let schema = schemars::schema_for!(M);
-    serde_json::json!({
+    let mut meta = serde_json::to_value(schemars::schema_for!(M)).expect("meta schema serializes");
+    let mut defs = extract_defs(&mut meta);
+    let warnings = warnings_schema(&mut defs);
+
+    let mut envelope = serde_json::json!({
         "type": "object",
         "properties": {
-            "meta": schema,
-            "security_warnings": warnings_schema(),
+            "meta": meta,
+            "security_warnings": warnings,
         },
         "required": ["meta"],
         "additionalProperties": false,
-    })
+    });
+    if !defs.is_empty() {
+        envelope
+            .as_object_mut()
+            .expect("envelope is object")
+            .insert("$defs".to_string(), Value::Object(defs));
+    }
+    envelope
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "schemars always produces serializable output; failure is a bug"
+)]
 fn meta_and_untrusted<M: schemars::JsonSchema, U: schemars::JsonSchema>() -> Value {
-    let m = schemars::schema_for!(M);
-    let u = schemars::schema_for!(U);
-    serde_json::json!({
+    let mut meta = serde_json::to_value(schemars::schema_for!(M)).expect("meta schema serializes");
+    let mut untrusted =
+        serde_json::to_value(schemars::schema_for!(U)).expect("untrusted schema serializes");
+    let mut defs = extract_defs(&mut meta);
+    merge_defs(&mut defs, extract_defs(&mut untrusted));
+    let warnings = warnings_schema(&mut defs);
+
+    let mut envelope = serde_json::json!({
         "type": "object",
         "properties": {
-            "meta": m,
-            "untrusted": u,
-            "security_warnings": warnings_schema(),
+            "meta": meta,
+            "untrusted": untrusted,
+            "security_warnings": warnings,
         },
         "required": ["meta", "untrusted"],
         "additionalProperties": false,
-    })
+    });
+    if !defs.is_empty() {
+        envelope
+            .as_object_mut()
+            .expect("envelope is object")
+            .insert("$defs".to_string(), Value::Object(defs));
+    }
+    envelope
 }
 
 #[cfg(test)]
 #[expect(clippy::unwrap_used, reason = "tests")]
+#[expect(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
 
@@ -176,6 +257,33 @@ mod tests {
             assert!(
                 parsed[name]["properties"]["untrusted"].is_object(),
                 "{name} must declare an untrusted schema"
+            );
+        }
+    }
+
+    #[test]
+    fn search_schema_hoists_defs_to_envelope_root() {
+        let mut buf = Vec::new();
+        dump_tool_schemas(&mut buf).unwrap();
+        let parsed: serde_json::Map<String, Value> = serde_json::from_slice(&buf).unwrap();
+
+        let search = &parsed["search"];
+        assert!(
+            search.get("$defs").is_some(),
+            "search schema must hoist nested $defs to envelope root: {search}"
+        );
+        let defs = search["$defs"].as_object().expect("$defs is an object");
+        assert!(
+            defs.contains_key("SearchResultEntry"),
+            "envelope $defs must include SearchResultEntry: {defs:?}"
+        );
+
+        // No nested $defs anywhere under properties.
+        let props = search["properties"].as_object().expect("properties");
+        for (name, sub) in props {
+            assert!(
+                sub.get("$defs").is_none(),
+                "tool subschema {name} must not carry its own $defs after hoist: {sub}"
             );
         }
     }
