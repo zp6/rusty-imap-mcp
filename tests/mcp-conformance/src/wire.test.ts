@@ -1,9 +1,9 @@
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { spawnRaw, type RawHandles } from "./raw-harness.js";
 import { spawnSdk, type SdkHandles } from "./sdk-harness.js";
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-// Consumed by T9 — see plan task 9
 const PINNED_PROTOCOL_VERSION = "2025-11-25";
 
 describe("wire conformance (SDK harness)", () => {
@@ -89,5 +89,91 @@ describe("wire conformance (SDK harness)", () => {
   });
 });
 
-// PINNED_PROTOCOL_VERSION is consumed by Task 9's raw-harness block,
-// which appends to this same file. Keep it as a module-scoped const.
+describe("wire conformance (raw harness)", () => {
+  let raw: RawHandles | undefined;
+
+  afterEach(async () => {
+    if (raw) {
+      try {
+        await raw.close();
+      } finally {
+        raw = undefined;
+      }
+    }
+  });
+
+  it("wire_protocol_version_negotiation_matches_vendored_schema (Raw)", async () => {
+    // Four-way drift check (extends Phase 1's three-way):
+    //   1. SDK's LATEST_PROTOCOL_VERSION constant
+    //   2. PINNED_PROTOCOL_VERSION literal pinned in this test file
+    //   3. negotiated value returned by the server on the wire
+    //   4. Phase 1's PINNED_PROTOCOL_VERSION + fixture dir + rmcp::ProtocolVersion::LATEST
+    // The wire read is direct — no optional/escape-hatch path. If the
+    // server fails to echo the version, the test fails hard.
+    expect(
+      LATEST_PROTOCOL_VERSION,
+      "SDK's LATEST drifted from this test's pinned literal — refresh both",
+    ).toBe(PINNED_PROTOCOL_VERSION);
+
+    raw = await spawnRaw();
+    const response = await raw.request("initialize", {
+      protocolVersion: PINNED_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "raw-self", version: "0.0.0" },
+    });
+    expect(response.result, "initialize must produce a result envelope").toBeDefined();
+    const negotiated = response.result?.["protocolVersion"];
+    expect(
+      typeof negotiated,
+      "result.protocolVersion must be a string on the wire",
+    ).toBe("string");
+    expect(
+      negotiated,
+      "server must echo the pinned protocol version on the wire",
+    ).toBe(PINNED_PROTOCOL_VERSION);
+  });
+
+  it("wire_initialized_notification_elicits_no_response (Raw)", async () => {
+    raw = await spawnRaw();
+    await raw.request("initialize", {
+      protocolVersion: PINNED_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "raw-self", version: "0.0.0" },
+    });
+    await raw.notify("notifications/initialized", {});
+    await raw.assertNoResponseWithin(200);
+  });
+
+  it("wire_unknown_method_returns_minus_32601 (Raw)", async () => {
+    raw = await spawnRaw();
+    await raw.request("initialize", {
+      protocolVersion: PINNED_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "raw-self", version: "0.0.0" },
+    });
+    await raw.notify("notifications/initialized", {});
+
+    // The raw harness now validates the full envelope inside
+    // request() (jsonrpc==2.0, matching id, exactly-one-of, error
+    // structural shape). The test below adds the JSON-RPC-specific
+    // semantic check (the code value).
+    const response = await raw.request("rimap/no_such_method", {});
+    expect(response.error, "expected error envelope").toBeDefined();
+    expect(response.error?.code, "JSON-RPC method-not-found code").toBe(-32601);
+    expect(response.error?.message.length, "error.message must be non-empty").toBeGreaterThan(0);
+  });
+
+  it("wire_clean_eof_shutdown_exits_zero (Raw)", async () => {
+    raw = await spawnRaw();
+    await raw.request("initialize", {
+      protocolVersion: PINNED_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "raw-self", version: "0.0.0" },
+    });
+    await raw.notify("notifications/initialized", {});
+    const code = await raw.shutdownAndWait();
+    expect(code, "server must exit 0 on clean stdin EOF").toBe(0);
+    // shutdownAndWait already consumed the child; suppress afterEach.
+    raw = undefined;
+  });
+});
