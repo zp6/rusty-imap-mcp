@@ -8,6 +8,8 @@
 #![expect(clippy::expect_used, reason = "integration tests")]
 #![expect(clippy::panic, reason = "test assertions render diagnostics")]
 
+use std::fs::File;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -46,6 +48,13 @@ pub struct Harness {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    /// Path to the file capturing the child's stderr. Read on assertion
+    /// failure so the binary's `tracing::error!` output surfaces in the
+    /// panic message instead of being silently lost. Using a `File`-backed
+    /// stdio target (rather than an async drain) avoids the runtime
+    /// contention that made the prior `Stdio::piped()` capture hang every
+    /// wire test on the 2-second `REQUEST_TIMEOUT` (see commit 3a58304).
+    stderr_log: PathBuf,
     // Hold the tempdir until the harness drops so the audit log path
     // remains valid for the lifetime of the spawned process.
     _tempdir: TempDir,
@@ -89,13 +98,16 @@ allowed_base_dir = "{}"
         tempdir: TempDir,
         extra_envs: &[(&str, &str)],
     ) -> Self {
+        let stderr_log = tempdir.path().join("rusty-imap-mcp.stderr.log");
+        let stderr_file = File::create(&stderr_log).expect("create stderr log file");
+
         let mut cmd = Command::new(cargo_bin("rusty-imap-mcp"));
         cmd.arg("--config")
             .arg(config_path)
             .arg("--allow-empty-accounts")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::from(stderr_file))
             .kill_on_drop(true);
         for (k, v) in extra_envs {
             cmd.env(k, v);
@@ -111,8 +123,17 @@ allowed_base_dir = "{}"
             stdin,
             stdout,
             next_id: 0,
+            stderr_log,
             _tempdir: tempdir,
         }
+    }
+
+    /// Read whatever the child has written to its stderr log so far.
+    /// Used in assertion diagnostics; tolerates a missing or unreadable
+    /// file (returns an empty string) so callers can rely on it inside
+    /// panic messages.
+    pub fn captured_stderr(&self) -> String {
+        std::fs::read_to_string(&self.stderr_log).unwrap_or_default()
     }
 
     /// Send a JSON-RPC request and return the parsed response value.
@@ -134,11 +155,27 @@ allowed_base_dir = "{}"
         self.stdin.flush().await.expect("flush request");
 
         let mut buf = String::new();
-        let read = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf))
-            .await
-            .expect("response within timeout")
-            .expect("read response");
-        assert!(read > 0, "stdout closed before responding to {method}");
+        let read_result = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf)).await;
+        let read = match read_result {
+            Ok(io_result) => io_result.unwrap_or_else(|e| {
+                panic!(
+                    "read response error on {method}: {e}\n\
+                     --- captured child stderr ---\n{}",
+                    self.captured_stderr(),
+                )
+            }),
+            Err(elapsed) => panic!(
+                "response to {method} did not arrive within {REQUEST_TIMEOUT:?} ({elapsed})\n\
+                 --- captured child stderr ---\n{}",
+                self.captured_stderr(),
+            ),
+        };
+        assert!(
+            read > 0,
+            "stdout closed before responding to {method}\n\
+             --- captured child stderr ---\n{}",
+            self.captured_stderr(),
+        );
         let response: Value = serde_json::from_str(buf.trim_end()).expect("parse response JSON");
         assert_eq!(response["id"], json!(id), "response id must match request");
         assert_envelope_valid(&response);
