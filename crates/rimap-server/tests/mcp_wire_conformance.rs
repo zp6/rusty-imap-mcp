@@ -244,7 +244,7 @@ async fn wire_clean_eof_shutdown_exits_zero() {
     let mut harness = Harness::spawn().await;
     let _ = harness.initialize_handshake().await;
     harness.send_initialized().await;
-    let status = harness.shutdown_and_wait().await;
+    let (status, _tempdir) = harness.shutdown_and_wait().await;
     assert!(
         status.success(),
         "server must exit 0 on clean stdin EOF, got {status:?}",

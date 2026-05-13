@@ -134,7 +134,10 @@ async fn wire_e2e_full_session_draft_safe() {
     let uid = drive_account_scoped_tools(&mut harness).await;
     assert_move_message(&mut harness, uid).await;
 
-    let status = harness.shutdown_and_wait().await;
+    // Bind the returned tempdir guard so the audit file outlives the
+    // harness; dropping it before the assertion below would delete the
+    // file the test is about to read.
+    let (status, _tempdir_guard) = harness.shutdown_and_wait().await;
     assert!(status.success(), "binary exited non-zero: {status:?}");
 
     assert_audit_records(&audit_path);
@@ -573,7 +576,10 @@ async fn wire_e2e_readonly_posture_denial() {
     assert_readonly_success_path(&mut harness).await;
     assert_readonly_denial(&mut harness).await;
 
-    let status = harness.shutdown_and_wait().await;
+    // Bind the returned tempdir guard so the audit file outlives the
+    // harness; dropping it before the assertion below would delete the
+    // file the test is about to read.
+    let (status, _tempdir_guard) = harness.shutdown_and_wait().await;
     assert!(status.success(), "child must exit 0, got {status:?}");
 
     assert_readonly_audit_records(&audit_path);

@@ -185,12 +185,19 @@ allowed_base_dir = "{}"
             let envelope: Value =
                 serde_json::from_str(buf.trim_end()).expect("parse envelope JSON");
             // A notification is identified by the presence of `method` and
-            // an absent or null `id` field. Validate its envelope shape
-            // against the spec schema and keep reading.
+            // an absent or null `id` field. `assert_envelope_valid` is
+            // response-only (it demands `result` or `error`), so we
+            // intentionally do not validate the notification envelope
+            // here — we just check `jsonrpc=2.0` so a malformed line
+            // does not silently slip past, and continue reading.
             let is_notification =
                 envelope.get("method").is_some() && envelope.get("id").is_none_or(Value::is_null);
             if is_notification {
-                assert_envelope_valid(&envelope);
+                assert_eq!(
+                    envelope["jsonrpc"],
+                    json!("2.0"),
+                    "notification must declare jsonrpc=\"2.0\"; got {envelope}",
+                );
                 continue;
             }
             assert_eq!(envelope["id"], json!(id), "response id must match request");
@@ -247,12 +254,29 @@ allowed_base_dir = "{}"
         self.notify("notifications/initialized", json!({})).await;
     }
 
-    /// Close stdin, await the child, and return its exit status.
-    pub async fn shutdown_and_wait(mut self) -> std::process::ExitStatus {
-        drop(self.stdin);
-        timeout(SHUTDOWN_TIMEOUT, self.child.wait())
+    /// Close stdin, await the child, and hand the audit-log tempdir
+    /// back to the caller along with the exit status.
+    ///
+    /// The tempdir is kept alive only by the returned [`TempDir`] guard
+    /// — once it drops, the audit log path becomes invalid. Callers
+    /// that need to read the audit file after shutdown must bind the
+    /// returned `TempDir` to a variable that outlives those reads.
+    /// Callers that only care about the exit status can drop the
+    /// tempdir immediately with `let (status, _) = ...`.
+    pub async fn shutdown_and_wait(self) -> (std::process::ExitStatus, TempDir) {
+        let Self {
+            mut child,
+            stdin,
+            stdout: _,
+            next_id: _,
+            stderr_log: _,
+            _tempdir: tempdir,
+        } = self;
+        drop(stdin);
+        let status = timeout(SHUTDOWN_TIMEOUT, child.wait())
             .await
             .expect("clean exit within timeout")
-            .expect("wait")
+            .expect("wait");
+        (status, tempdir)
     }
 }
