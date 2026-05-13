@@ -16,7 +16,11 @@ default = []
 # Gated entry points for integration tests that need to exercise the
 # full dispatch pipeline (posture → breaker → rate → audit envelope →
 # handler) without re-implementing the composition in each test.
-test-support = []
+# Also enables the `--allow-empty-accounts` CLI flag on the binary so
+# the wire-conformance harness (#263) can boot with `accounts = []`;
+# propagates to `rimap-config/test-support` to expose
+# `load_and_validate_allowing_empty`.
+test-support = ["rimap-config/test-support"]
 
 [lib]
 name = "rimap_server"

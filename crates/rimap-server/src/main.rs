@@ -113,8 +113,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
     // Server mode: load config, build subsystems, run MCP transport.
     let config_path = resolve_cli_config_path(&cli)?;
-    let multi = load_and_validate(&config_path)
-        .with_context(|| format!("loading config {}", config_path.display()))?;
+    let multi = load_validated_multi(&cli, &config_path)?;
     let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
         .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
 
@@ -182,6 +181,30 @@ fn resolve_cli_config_path(cli: &Cli) -> anyhow::Result<PathBuf> {
         .ok_or_else(|| {
             anyhow::anyhow!("no config path (pass --config or set RUSTY_IMAP_MCP_CONFIG)")
         })
+}
+
+/// Load and validate the multi-account config, optionally relaxing the
+/// empty-accounts rejection when `--allow-empty-accounts` is set.
+///
+/// `--allow-empty-accounts` is a `#[cfg(feature = "test-support")]` CLI
+/// flag (#263 Codex adversarial review). In production builds the field
+/// does not exist and we always hit the strict loader.
+fn load_validated_multi(
+    cli: &Cli,
+    config_path: &std::path::Path,
+) -> anyhow::Result<rimap_config::validate::ValidatedMultiConfig> {
+    #[cfg(feature = "test-support")]
+    let result = if cli.allow_empty_accounts {
+        rimap_config::loader::load_and_validate_allowing_empty(config_path)
+    } else {
+        load_and_validate(config_path)
+    };
+    #[cfg(not(feature = "test-support"))]
+    let result = {
+        let _ = cli; // suppress unused-binding warning when flag is compiled out
+        load_and_validate(config_path)
+    };
+    result.with_context(|| format!("loading config {}", config_path.display()))
 }
 
 /// Build the account registry from a validated multi-account config.
