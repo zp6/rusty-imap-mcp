@@ -38,7 +38,12 @@ const PINNED_PROTOCOL_VERSION: &str = "2025-11-25";
 const MCP_SCHEMA_JSON: &str = include_str!("fixtures/mcp-spec/2025-11-25/schema.json");
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+// Under `cargo nextest run` with the full workspace suite (~1100 tests
+// in parallel), the EOF-to-exit slice for `wire_clean_eof_shutdown_exits_zero`
+// can exceed a tight 1 s budget on CPU-contended runners. 5 s remains
+// tight enough to fail-fast on a real hang while absorbing scheduling
+// jitter when other tests are spawning binaries / parsers concurrently.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owns the spawned child plus its piped stdio.
 struct Harness {
