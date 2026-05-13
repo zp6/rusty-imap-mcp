@@ -63,7 +63,7 @@ encryption = "tls"
 tls_fingerprint_sha256 = "{fingerprint_hex}"
 
 [accounts.security]
-posture = "read-only"
+posture = "readonly"
 "#,
         audit_path = audit_path.display(),
         allowed_base = allowed_base.display(),
