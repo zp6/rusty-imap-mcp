@@ -29,29 +29,41 @@ async function resolveBinaryPath(): Promise<string> {
 export async function spawnSdk(): Promise<SdkHandles> {
   const binPath = await resolveBinaryPath();
   const tempdir = await mkdtemp(join(tmpdir(), "rusty-imap-mcp-sdk-"));
-  const configPath = join(tempdir, "config.toml");
-  await writeFile(configPath, buildConfigToml(tempdir), "utf8");
+  try {
+    const configPath = join(tempdir, "config.toml");
+    await writeFile(configPath, buildConfigToml(tempdir), "utf8");
 
-  const transport = new StdioClientTransport({
-    command: binPath,
-    args: ["--config", configPath, "--allow-empty-accounts"],
-    stderr: "ignore",
-  });
+    const transport = new StdioClientTransport({
+      command: binPath,
+      args: ["--config", configPath, "--allow-empty-accounts"],
+      stderr: "ignore",
+    });
 
-  const client = new Client(
-    { name: "rusty-imap-mcp-conformance-harness-node", version: "0.1.0" },
-    { capabilities: {} },
-  );
+    const client = new Client(
+      { name: "rusty-imap-mcp-conformance-harness-node", version: "0.1.0" },
+      { capabilities: {} },
+    );
 
-  await client.connect(transport);
+    try {
+      await client.connect(transport);
+    } catch (err) {
+      // connect() failed; ensure the spawned child is reaped by closing
+      // the transport (which kills the process) before we rethrow.
+      await transport.close().catch(() => undefined);
+      throw err;
+    }
 
-  return {
-    client,
-    transport,
-    tempdir,
-    close: async (): Promise<void> => {
-      await client.close();
-      await rm(tempdir, { recursive: true, force: true });
-    },
-  };
+    return {
+      client,
+      transport,
+      tempdir,
+      close: async (): Promise<void> => {
+        await client.close();
+        await rm(tempdir, { recursive: true, force: true });
+      },
+    };
+  } catch (err) {
+    await rm(tempdir, { recursive: true, force: true });
+    throw err;
+  }
 }
