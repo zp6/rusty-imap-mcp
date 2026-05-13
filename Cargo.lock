@@ -2426,6 +2426,7 @@ dependencies = [
  "mail-builder",
  "mail-parser",
  "predicates",
+ "proptest",
  "rimap-audit",
  "rimap-authz",
  "rimap-config",

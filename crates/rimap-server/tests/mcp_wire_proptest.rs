@@ -1,0 +1,141 @@
+//! MCP wire-shape property tests (issue #266, Phase 4).
+//!
+//! Three proptest properties driving the production
+//! `rusty-imap-mcp` binary with arbitrary JSON-RPC envelopes and
+//! tool-call arguments. Default ≥1000 cases per property; nightly
+//! runs scale via `PROPTEST_CASES`.
+//!
+//! Session-isolation discipline (§3.2 of the design doc):
+//! - The harness is shared across cases for speed.
+//! - `with_live_harness` restarts the harness if a case closed the
+//!   connection, so cases never run against a poisoned session.
+//! - Property 1's strategy excludes the pinned state-mutating
+//!   method set so cases stay independent of MCP session state.
+//!
+//! Property strategy notes inline. See
+//! `docs/superpowers/specs/2026-05-13-mcp-protocol-fuzzing-design.md`
+//! for the full design context.
+//!
+//! # Runtime architecture
+//!
+//! Proptest's `proptest!` macro expands to a synchronous function,
+//! so each case calls `block_on` to drive async work. Tokio I/O
+//! handles (`ChildStdin`, `BufReader<ChildStdout>`) are bound to
+//! the runtime that created them — using a fresh runtime per case
+//! would invalidate the shared harness. Instead, `RUNTIME` is a
+//! single process-lifetime `tokio::runtime::Runtime` stored in a
+//! `OnceLock`; every case reuses the same `block_on` target so
+//! harness I/O handles remain valid across cases.
+
+#![expect(clippy::expect_used, reason = "integration tests")]
+
+#[path = "support/mod.rs"]
+mod support;
+
+use std::sync::{Mutex, OnceLock};
+
+use proptest::prelude::*;
+use serde_json::{Value, json};
+
+use support::wire::harness::Harness;
+
+/// Single tokio runtime shared across all proptest cases in this
+/// binary. All `Harness` I/O handles are bound to this runtime;
+/// creating a new runtime per-case would invalidate them.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build shared tokio runtime")
+    })
+}
+
+/// Run `body` against a harness, restarting the harness if the
+/// previous case poisoned the session. After `body` runs, the
+/// helper checks `is_usable` and drops the harness if false.
+///
+/// Codex review finding #2 verified that a simple `try_wait`
+/// check could let a poisoned (stdout-closed but not-yet-reaped)
+/// harness leak across cases. `Harness::is_usable` consolidates
+/// the check.
+async fn with_live_harness<F, Fut>(mut h: Option<Harness>, body: F) -> Option<Harness>
+where
+    F: FnOnce(Harness) -> Fut,
+    Fut: std::future::Future<Output = Harness>,
+{
+    let needs_fresh = match h.as_mut() {
+        None => true,
+        Some(harness) => !harness.is_usable(),
+    };
+    if needs_fresh {
+        drop(h);
+        let mut fresh = Harness::spawn().await;
+        let _ = fresh.initialize_handshake().await;
+        fresh.send_initialized().await;
+        h = Some(fresh);
+    }
+    let mut after = body(h.expect("ensured Some above")).await;
+    if !after.is_usable() {
+        return None;
+    }
+    Some(after)
+}
+
+/// Process-lifetime harness shared across all proptest cases within
+/// one property invocation. Protected by a `std::sync::Mutex` so
+/// the synchronous proptest runner can lock it without requiring an
+/// async context; all actual I/O is performed inside `runtime().block_on`.
+static HARNESS: Mutex<Option<Harness>> = Mutex::new(None);
+
+// Property 2: arbitrary tool name with arbitrary JSON arguments
+// always produces a JSON-RPC error envelope. Stateless by
+// construction (every case is `tools/call <X>`; no method that
+// mutates MCP session state is ever sent).
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(
+        std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000)
+    ))]
+
+    #[test]
+    fn prop_tools_call_unknown_tool(
+        tool_name in "[A-Za-z0-9_./-]{1,64}",
+        args in proptest::collection::hash_map(
+            "[A-Za-z0-9_]{1,16}",
+            proptest::arbitrary::any::<i64>().prop_map(|n| json!(n)),
+            0..6,
+        ),
+    ) {
+        runtime().block_on(async {
+            let harness = HARNESS.lock().expect("HARNESS lock").take();
+            let harness = with_live_harness(harness, |mut h| async move {
+                let arguments: serde_json::Map<String, Value> = args
+                    .into_iter()
+                    .collect();
+                let response = h
+                    .request(
+                        "tools/call",
+                        json!({
+                            "name": tool_name,
+                            "arguments": arguments,
+                        }),
+                    )
+                    .await;
+                let is_envelope_error = response.get("error").is_some();
+                let is_tool_error = response["result"]["isError"]
+                    .as_bool()
+                    .unwrap_or(false);
+                assert!(
+                    is_envelope_error || is_tool_error,
+                    "unknown tool {tool_name:?} must produce an error, got {response}",
+                );
+                h
+            }).await;
+            *HARNESS.lock().expect("HARNESS lock") = harness;
+        });
+    }
+}

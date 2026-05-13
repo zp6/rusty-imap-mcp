@@ -82,3 +82,4 @@ rimap-server = { path = ".", version = "0.1.0", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util"] }
 tempfile = { workspace = true }
 base64 = { workspace = true }
+proptest = { workspace = true }

@@ -124,6 +124,8 @@ fn force_use_for_dead_code_link() {
     {
         let _ = s;
     }
+    // Method used by mcp_wire_proptest, not by other binaries.
+    let _ = Harness::is_usable;
     // Methods used by mcp_wire_negative, not by other binaries.
     let _ = Harness::response_or_close;
     let _ = Harness::send_line;
@@ -208,6 +210,36 @@ allowed_base_dir = "{}"
             buffered_responses: std::collections::VecDeque::new(),
             poisoned: false,
             _tempdir: tempdir,
+        }
+    }
+
+    /// Returns true if the harness can be used for another request:
+    /// the child process is still running AND the harness has not
+    /// observed an unrecoverable session state (EOF, crash, hang,
+    /// schema-validation failure on a parsed envelope). Codex
+    /// review finding #2 verified that `try_wait` alone is
+    /// insufficient — a child whose stdout closed but whose process
+    /// has not yet been reaped would otherwise pass the "alive"
+    /// check while subsequent reads return EOF immediately.
+    ///
+    /// Always check this before reusing a harness across cases.
+    /// The proptest restart-on-close discipline (this task)
+    /// consults it; if false, the helper drops the poisoned
+    /// harness and spawns a fresh one.
+    pub fn is_usable(&mut self) -> bool {
+        if self.poisoned {
+            return false;
+        }
+        match self.child.try_wait() {
+            Ok(None) => true,
+            Ok(Some(_status)) => {
+                self.poisoned = true;
+                false
+            }
+            Err(_) => {
+                self.poisoned = true;
+                false
+            }
         }
     }
 
