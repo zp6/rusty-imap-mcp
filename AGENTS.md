@@ -74,6 +74,20 @@ to force a specific one. Set `RIMAP_REQUIRE_DOCKER=1` to fail loudly
 instead of silently skipping when no runtime is installed (the env var
 name is historical — it gates both docker and podman).
 
+**Apple Silicon (arm64 macOS):** Docker Desktop *can* run x86_64 images via
+Rosetta emulation in general, **but the pinned `dovecot/dovecot:2.3.21`
+image fails under Rosetta** — the container starts and the IMAPS port
+binds, but dovecot's child processes (`anvil`, `log`, `auth`) die with
+`rosetta error: unable to mmap ExecutableHeap: 12` (ENOMEM emulating an
+executable heap) and `userdb lookup ... Disconnected unexpectedly`. The
+`dovecot/dovecot:2.4.x` line is multi-arch but has breaking config-format
+changes deferred out of scope (see commit `ae1bf8b` and
+`crates/rimap-imap/tests/integration/dovecot/docker-compose.yml`). For
+that reason the harness `std::env::consts::ARCH != "x86_64"` check in
+`crates/rimap-server/tests/support/dovecot/harness.rs` silently skips on
+arm64 hosts — the gate exists for this specific fixture incompatibility,
+not as a blanket assumption about Docker emulation.
+
 ### Wire-driven Dovecot e2e (Phase 3, #265)
 
 `crates/rimap-server/tests/e2e_wire.rs` drives the production binary
@@ -88,9 +102,10 @@ audit-log pairing + namespace attribution.
   on macOS arm64 without Docker); with Docker on linux/x86_64 expected
   ~10–25s on a warm machine (Dovecot bring-up dominates). Recorded in
   CI logs.
-- Gating: silent-skip ONLY when no container runtime is genuinely
-  unavailable (missing docker/podman or non-x86_64 host).
-  `RIMAP_REQUIRE_DOCKER=1` flips every other failure mode
+- Gating: silent-skip ONLY when the host genuinely cannot run the
+  fixture — missing docker/podman, or an arm64 host where dovecot
+  2.3.21 amd64 crashes under Rosetta (see the Apple Silicon note
+  above). `RIMAP_REQUIRE_DOCKER=1` flips every other failure mode
   (compose-up, readiness timeout, port reservation, fingerprint read)
   to a panic with diagnostic context. Same convention as the legacy
   in-process `e2e_full_session`.
