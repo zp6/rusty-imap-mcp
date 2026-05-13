@@ -37,3 +37,21 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+
+  - package-ecosystem: "npm"
+    directory: "/tests/mcp-conformance"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    groups:
+      npm-all:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps(npm)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "npm"
