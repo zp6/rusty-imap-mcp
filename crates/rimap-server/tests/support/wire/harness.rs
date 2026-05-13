@@ -47,7 +47,6 @@ pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 /// an orderly shutdown — the malformed-input contract demands
 /// that distinction, so this enum is required.
 #[derive(Debug)]
-#[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
 pub enum CloseOrResponse {
     /// The server produced a line of output (newline-terminated).
     Response(String),
@@ -100,6 +99,40 @@ pub struct Harness {
     // Hold the tempdir until the harness drops so the audit log path
     // remains valid for the lifetime of the spawned process.
     _tempdir: TempDir,
+}
+
+/// Suppress per-binary dead-code warnings on items consumed by some but not all
+/// integration-test binaries. Each binary compiles this file independently; items
+/// used by `mcp_wire_negative.rs` appear dead in `mcp_wire_conformance.rs` and
+/// vice-versa. Referencing them here marks them as used in every compilation unit,
+/// eliminating the need for `#[expect(dead_code)]` annotations that would fire as
+/// "unfulfilled" in the binary that DOES call the item.
+///
+/// Mirrors the `force_use_for_dead_code_link` function in `schema.rs`.
+#[expect(
+    dead_code,
+    reason = "type-link to suppress per-binary dead-code in binaries that don't call these items"
+)]
+fn force_use_for_dead_code_link() {
+    // CloseOrResponse and its associated methods: used by mcp_wire_negative,
+    // unused by mcp_wire_conformance / e2e_wire. The inner String fields of
+    // Response and Crashed must also be referenced to suppress the
+    // "field `0` is never read" lint in binaries that don't pattern-match
+    // on the enum.
+    if let CloseOrResponse::Response(s) | CloseOrResponse::Crashed(s) =
+        CloseOrResponse::Response(String::new())
+    {
+        let _ = s;
+    }
+    // Methods used by mcp_wire_negative, not by other binaries.
+    let _ = Harness::response_or_close;
+    let _ = Harness::send_line;
+    let _ = Harness::recv_line_within;
+    // Methods used by mcp_wire_conformance, not by mcp_wire_negative.
+    let _ = Harness::assert_no_response_within;
+    let _ = Harness::shutdown_and_wait;
+    // Constant used by mcp_wire_conformance / e2e_wire, not by mcp_wire_negative.
+    let _ = PINNED_PROTOCOL_VERSION;
 }
 
 impl Harness {
@@ -317,7 +350,6 @@ allowed_base_dir = "{}"
     /// Callers MUST `match` the result; `_` matches are a code-
     /// review failure because they re-introduce the original
     /// Option-shaped bug.
-    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
     pub async fn response_or_close(&mut self, request_dur: Duration) -> CloseOrResponse {
         let mut buf = String::new();
         let read = timeout(request_dur, self.stdout.read_line(&mut buf)).await;
@@ -390,7 +422,6 @@ allowed_base_dir = "{}"
     /// `line` itself MUST NOT contain a `\n` (MCP framing is one
     /// JSON envelope per line; embedded newlines would split the
     /// envelope across lines).
-    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
     pub async fn send_line(&mut self, line: &str) {
         assert!(
             !line.contains('\n'),
@@ -411,7 +442,6 @@ allowed_base_dir = "{}"
     /// The returned string retains the trailing `\n`. Callers that
     /// need to parse or compare the payload should strip it via
     /// `line.trim_end_matches('\n')` or `line.trim_end()`.
-    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
     pub async fn recv_line_within(&mut self, dur: Duration) -> Option<String> {
         let mut buf = String::new();
         match timeout(dur, self.stdout.read_line(&mut buf)).await {
