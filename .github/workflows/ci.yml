@@ -209,6 +209,10 @@ jobs:
         working-directory: tests/mcp-conformance
         run: pnpm lint
 
+      - name: Format check
+        working-directory: tests/mcp-conformance
+        run: pnpm format:check
+
       - name: Run conformance suite
         working-directory: tests/mcp-conformance
         env:

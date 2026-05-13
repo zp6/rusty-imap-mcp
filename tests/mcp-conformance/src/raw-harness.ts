@@ -125,6 +125,14 @@ export async function spawnRaw(): Promise<RawHandles> {
     { stdio: ["pipe", "pipe", "ignore"] },
   ) as unknown as ChildProcessWithoutNullStreams;
 
+  // Guard against async spawn-error events that would otherwise crash
+  // the test worker with an unhandled error (TOCTOU between
+  // resolveBinaryPath()'s access() and exec, or kernel-level failures).
+  // The error surfaces synchronously as a stdin write failure or stdout
+  // EOF on the next request, which the request-path code already
+  // handles.
+  child.on("error", () => {});
+
   try {
     const reader: Interface = createInterface({ input: child.stdout, crlfDelay: Infinity });
 

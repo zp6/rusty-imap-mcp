@@ -244,6 +244,7 @@ mcp-conformance-node:
         --features test-support --locked
     cd tests/mcp-conformance && pnpm install --frozen-lockfile
     cd tests/mcp-conformance && pnpm lint
+    cd tests/mcp-conformance && pnpm format:check
     cd tests/mcp-conformance && \
         RUSTY_IMAP_MCP_BIN="{{justfile_directory()}}/target/debug/rusty-imap-mcp" \
         pnpm test
