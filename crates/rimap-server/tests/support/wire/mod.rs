@@ -6,4 +6,5 @@ pub mod schema;
 
 #[expect(unused_imports, reason = "Phase 3 e2e_wire.rs will use these")]
 pub use harness::{Harness, PINNED_PROTOCOL_VERSION, REQUEST_TIMEOUT, SHUTDOWN_TIMEOUT};
-pub use schema::assert_valid;
+#[expect(unused_imports, reason = "Phase 3 e2e_wire.rs will use this")]
+pub use schema::{assert_valid, validator_for_tool_response};

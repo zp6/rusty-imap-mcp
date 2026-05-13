@@ -110,3 +110,44 @@ pub fn assert_envelope_valid(response: &Value) {
         }
     }
 }
+
+/// Compile (lazily, cached) a validator for the per-tool response
+/// schema at `tests/fixtures/rimap-tool-schemas/<tool>.schema.json`.
+/// Panics in the test process if the fixture is missing — that's the
+/// signal that `just regen-tool-schemas` was not run.
+#[expect(
+    dead_code,
+    reason = "Phase 3 e2e_wire.rs will call this to validate tool responses"
+)]
+pub fn validator_for_tool_response(tool: &'static str) -> Arc<jsonschema::Validator> {
+    type Cache = Mutex<HashMap<&'static str, Arc<jsonschema::Validator>>>;
+    static CACHE: OnceLock<Cache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    {
+        let guard = cache.lock().expect("tool schema cache mutex poisoned");
+        if let Some(v) = guard.get(tool) {
+            return Arc::clone(v);
+        }
+    }
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/rimap-tool-schemas")
+        .join(format!("{tool}.schema.json"));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "missing tool-response schema fixture for {tool} at {}: {e}\n\
+             Run `just regen-tool-schemas` to regenerate.",
+            path.display()
+        )
+    });
+    let parsed: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("invalid JSON in {}: {e}", path.display()));
+    let compiled = jsonschema::validator_for(&parsed)
+        .unwrap_or_else(|e| panic!("invalid JSON Schema in {}: {e}", path.display()));
+    let arc = Arc::new(compiled);
+
+    let mut guard = cache.lock().expect("tool schema cache mutex poisoned");
+    let entry = guard.entry(tool).or_insert_with(|| Arc::clone(&arc));
+    Arc::clone(entry)
+}
