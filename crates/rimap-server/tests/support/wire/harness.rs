@@ -154,32 +154,49 @@ allowed_base_dir = "{}"
             .expect("write request");
         self.stdin.flush().await.expect("flush request");
 
-        let mut buf = String::new();
-        let read_result = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf)).await;
-        let read = match read_result {
-            Ok(io_result) => io_result.unwrap_or_else(|e| {
-                panic!(
-                    "read response error on {method}: {e}\n\
+        // MCP servers may interleave server-initiated notifications
+        // (e.g. `notifications/tools/list_changed` after a successful
+        // `use_account` — see crates/rimap-server/src/mcp/server.rs)
+        // ahead of the response to our request. Loop past notifications
+        // until we observe a response whose id matches our request.
+        loop {
+            let mut buf = String::new();
+            let read_result = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf)).await;
+            let read = match read_result {
+                Ok(io_result) => io_result.unwrap_or_else(|e| {
+                    panic!(
+                        "read response error on {method}: {e}\n\
+                         --- captured child stderr ---\n{}",
+                        self.captured_stderr(),
+                    )
+                }),
+                Err(elapsed) => panic!(
+                    "response to {method} did not arrive within {REQUEST_TIMEOUT:?} ({elapsed})\n\
                      --- captured child stderr ---\n{}",
                     self.captured_stderr(),
-                )
-            }),
-            Err(elapsed) => panic!(
-                "response to {method} did not arrive within {REQUEST_TIMEOUT:?} ({elapsed})\n\
+                ),
+            };
+            assert!(
+                read > 0,
+                "stdout closed before responding to {method}\n\
                  --- captured child stderr ---\n{}",
                 self.captured_stderr(),
-            ),
-        };
-        assert!(
-            read > 0,
-            "stdout closed before responding to {method}\n\
-             --- captured child stderr ---\n{}",
-            self.captured_stderr(),
-        );
-        let response: Value = serde_json::from_str(buf.trim_end()).expect("parse response JSON");
-        assert_eq!(response["id"], json!(id), "response id must match request");
-        assert_envelope_valid(&response);
-        response
+            );
+            let envelope: Value =
+                serde_json::from_str(buf.trim_end()).expect("parse envelope JSON");
+            // A notification is identified by the presence of `method` and
+            // an absent or null `id` field. Validate its envelope shape
+            // against the spec schema and keep reading.
+            let is_notification =
+                envelope.get("method").is_some() && envelope.get("id").is_none_or(Value::is_null);
+            if is_notification {
+                assert_envelope_valid(&envelope);
+                continue;
+            }
+            assert_eq!(envelope["id"], json!(id), "response id must match request");
+            assert_envelope_valid(&envelope);
+            return envelope;
+        }
     }
 
     /// Send a JSON-RPC notification (no `id`, no response expected).

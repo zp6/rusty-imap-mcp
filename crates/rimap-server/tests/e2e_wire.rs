@@ -532,11 +532,13 @@ fn read_audit_records(path: &std::path::Path) -> Vec<Value> {
         .collect()
 }
 
-// Pin the posture-denial JSON-RPC error code. If rmcp's error mapping or
-// the posture-denial bridge changes, update this constant and document why —
-// silent drift in posture wire shape is exactly what this test surfaces.
-// (-32602 = rmcp INVALID_PARAMS; posture denials bridge through ErrorData::invalid_params)
-const POSTURE_DENIAL_CODE: i64 = -32602;
+// Pin the posture-denial JSON-RPC error code. If `to_mcp_error` (in
+// `crates/rimap-server/src/mcp/error.rs`) remaps `ErrorCode::PostureDenied`,
+// update this constant and document why — silent drift in posture wire
+// shape is exactly what this test surfaces.
+// (-32001 = custom server-error code reserved for posture denials; see
+//  the `POSTURE_DENIED` constant in `mcp/error.rs`.)
+const POSTURE_DENIAL_CODE: i64 = -32001;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wire_e2e_readonly_posture_denial() {
