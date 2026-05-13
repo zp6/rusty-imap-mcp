@@ -42,6 +42,31 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 // jitter when other tests are spawning binaries / parsers concurrently.
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Possible outcomes when probing the server for "either a
+/// response or a close." Codex review finding #1 verified that
+/// a simple `Option<String>` could not distinguish a panic
+/// (stdout closed but child exited with non-zero status) from
+/// an orderly shutdown — the malformed-input contract demands
+/// that distinction, so this enum is required.
+#[derive(Debug)]
+#[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
+pub enum CloseOrResponse {
+    /// The server produced a line of output (newline-terminated).
+    Response(String),
+    /// EOF observed AND `child.wait()` returned exit code 0
+    /// within `SHUTDOWN_TIMEOUT`. The server shut down
+    /// cleanly. Harness is now poisoned (process reaped).
+    CleanClose,
+    /// EOF observed AND child exited with a non-zero status or
+    /// was killed by a signal. The server crashed. Includes the
+    /// raw exit-status string for diagnostics. Harness poisoned.
+    Crashed(String),
+    /// Stdout did NOT yield EOF AND no line arrived within
+    /// `request_dur`. The server is hung or unresponsive.
+    /// Harness poisoned.
+    Hung,
+}
+
 /// Owns the spawned child plus its piped stdio.
 pub struct Harness {
     child: Child,
@@ -55,6 +80,23 @@ pub struct Harness {
     /// contention that made the prior `Stdio::piped()` capture hang every
     /// wire test on the 2-second `REQUEST_TIMEOUT` (see commit 3a58304).
     stderr_log: PathBuf,
+    /// Out-of-order response envelopes parked here by `recv_until_id`
+    /// when a response for a not-yet-awaited id arrives ahead of the
+    /// one the caller is waiting for. Keyed by the JSON-RPC `id`
+    /// (always a u64 in this harness because `next_id` is u64).
+    buffered_responses: std::collections::VecDeque<(u64, Value)>,
+    /// Set to true once the harness has observed an unrecoverable
+    /// session state: stdout EOF, child exit (clean or crash),
+    /// timeout where stdout is still open but the server is
+    /// unresponsive, or schema validation failure on a parsed
+    /// envelope. Once poisoned the harness MUST NOT be used for
+    /// further requests — `is_usable` returns false for poisoned
+    /// harnesses regardless of process status, which is what the
+    /// proptest restart-on-close discipline (Task 6) consults.
+    /// Codex review finding #2 verified this is necessary because
+    /// a closed-stdout child may not yet be reaped, so `try_wait`
+    /// alone is insufficient.
+    poisoned: bool,
     // Hold the tempdir until the harness drops so the audit log path
     // remains valid for the lifetime of the spawned process.
     _tempdir: TempDir,
@@ -124,6 +166,8 @@ allowed_base_dir = "{}"
             stdout,
             next_id: 0,
             stderr_log,
+            buffered_responses: std::collections::VecDeque::new(),
+            poisoned: false,
             _tempdir: tempdir,
         }
     }
@@ -134,6 +178,57 @@ allowed_base_dir = "{}"
     /// panic messages.
     pub fn captured_stderr(&self) -> String {
         std::fs::read_to_string(&self.stderr_log).unwrap_or_default()
+    }
+
+    /// Read exactly one parsed envelope from stdout. Skips
+    /// notifications (which have a `method` and absent/null `id`) but
+    /// does NOT skip responses; returns the first response observed.
+    /// Panics on timeout, EOF, or parse failure with stderr included
+    /// in the diagnostic. Shared by `request` and `recv_until_id`.
+    async fn read_one_envelope(&mut self, caller: &str) -> Value {
+        loop {
+            let mut buf = String::new();
+            let read_result = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf)).await;
+            let read = match read_result {
+                Ok(io_result) => io_result.unwrap_or_else(|e| {
+                    panic!(
+                        "read response error on {caller}: {e}\n\
+                         --- captured child stderr ---\n{}",
+                        self.captured_stderr(),
+                    )
+                }),
+                Err(elapsed) => panic!(
+                    "response to {caller} did not arrive within {REQUEST_TIMEOUT:?} ({elapsed})\n\
+                     --- captured child stderr ---\n{}",
+                    self.captured_stderr(),
+                ),
+            };
+            assert!(
+                read > 0,
+                "stdout closed before responding to {caller}\n\
+                 --- captured child stderr ---\n{}",
+                self.captured_stderr(),
+            );
+            let envelope: Value = serde_json::from_str(buf.trim_end()).unwrap_or_else(|e| {
+                panic!(
+                    "failed to parse envelope JSON from server on {caller}: {e}\n\
+                         raw line: {buf:?}\n\
+                         --- captured child stderr ---\n{}",
+                    self.captured_stderr(),
+                )
+            });
+            let is_notification =
+                envelope.get("method").is_some() && envelope.get("id").is_none_or(Value::is_null);
+            if is_notification {
+                assert_eq!(
+                    envelope["jsonrpc"],
+                    json!("2.0"),
+                    "notification must declare jsonrpc=\"2.0\"; got {envelope}",
+                );
+                continue;
+            }
+            return envelope;
+        }
     }
 
     /// Send a JSON-RPC request and return the parsed response value.
@@ -154,55 +249,116 @@ allowed_base_dir = "{}"
             .expect("write request");
         self.stdin.flush().await.expect("flush request");
 
-        // MCP servers may interleave server-initiated notifications
-        // (e.g. `notifications/tools/list_changed` after a successful
-        // `use_account` — see crates/rimap-server/src/mcp/server.rs)
-        // ahead of the response to our request. Loop past notifications
-        // until we observe a response whose id matches our request.
+        let envelope = self.read_one_envelope(method).await;
+        assert_eq!(envelope["id"], json!(id), "response id must match request");
+        assert_envelope_valid(&envelope);
+        envelope
+    }
+
+    /// Send a JSON-RPC request and return the assigned id WITHOUT
+    /// awaiting a response. Pair with `recv_until_id` to drive
+    /// multiple in-flight requests deterministically.
+    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
+    pub async fn send_request_no_wait(&mut self, method: &str, params: Value) -> u64 {
+        self.next_id += 1;
+        let id = self.next_id;
+        let envelope = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        let line = format!("{envelope}\n");
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .expect("write request");
+        self.stdin.flush().await.expect("flush request");
+        id
+    }
+
+    /// Drain stdout (skipping notifications) until a response envelope
+    /// with `id == target` arrives. Out-of-order responses for other
+    /// requests already in flight are buffered and can be retrieved by
+    /// later `recv_until_id` calls. Panics if the response envelope
+    /// fails schema validation.
+    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
+    pub async fn recv_until_id(&mut self, target: u64) -> Value {
+        // Fast path: target already buffered.
+        if let Some(pos) = self
+            .buffered_responses
+            .iter()
+            .position(|(id, _)| *id == target)
+        {
+            let (_, env) = self.buffered_responses.remove(pos).expect("indexed");
+            super::schema::assert_envelope_valid(&env);
+            return env;
+        }
+        // Slow path: read until we see target, parking other ids.
         loop {
-            let mut buf = String::new();
-            let read_result = timeout(REQUEST_TIMEOUT, self.stdout.read_line(&mut buf)).await;
-            let read = match read_result {
-                Ok(io_result) => io_result.unwrap_or_else(|e| {
-                    panic!(
-                        "read response error on {method}: {e}\n\
+            let envelope = self
+                .read_one_envelope(&format!("recv_until_id({target})"))
+                .await;
+            let id = envelope["id"].as_u64().unwrap_or_else(|| {
+                panic!("response envelope missing numeric id while awaiting {target}: {envelope}")
+            });
+            if id == target {
+                super::schema::assert_envelope_valid(&envelope);
+                return envelope;
+            }
+            self.buffered_responses.push_back((id, envelope));
+        }
+    }
+
+    /// Probe-based contract helper: within `request_dur`, observe
+    /// one of `Response`/`CleanClose`/`Crashed`/`Hung`. On any
+    /// non-`Response` outcome, the harness is marked `poisoned`
+    /// so the restart-on-close discipline (Task 6) won't reuse it.
+    /// Callers MUST `match` the result; `_` matches are a code-
+    /// review failure because they re-introduce the original
+    /// Option-shaped bug.
+    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
+    pub async fn response_or_close(&mut self, request_dur: Duration) -> CloseOrResponse {
+        let mut buf = String::new();
+        let read = timeout(request_dur, self.stdout.read_line(&mut buf)).await;
+        match read {
+            Ok(Ok(0)) => {
+                // EOF. Verify the child exited cleanly within
+                // SHUTDOWN_TIMEOUT and distinguish CleanClose from Crashed.
+                self.poisoned = true;
+                let wait = timeout(SHUTDOWN_TIMEOUT, self.child.wait()).await;
+                match wait {
+                    Ok(Ok(status)) if status.success() => CloseOrResponse::CleanClose,
+                    Ok(Ok(status)) => CloseOrResponse::Crashed(format!(
+                        "{status:?}\n\
                          --- captured child stderr ---\n{}",
                         self.captured_stderr(),
-                    )
-                }),
-                Err(elapsed) => panic!(
-                    "response to {method} did not arrive within {REQUEST_TIMEOUT:?} ({elapsed})\n\
+                    )),
+                    Ok(Err(e)) => CloseOrResponse::Crashed(format!(
+                        "child.wait() error: {e}\n\
+                         --- captured child stderr ---\n{}",
+                        self.captured_stderr(),
+                    )),
+                    Err(_elapsed) => CloseOrResponse::Crashed(format!(
+                        "child did not exit within {SHUTDOWN_TIMEOUT:?} after EOF\n\
+                         --- captured child stderr ---\n{}",
+                        self.captured_stderr(),
+                    )),
+                }
+            }
+            Ok(Ok(_)) => CloseOrResponse::Response(buf),
+            Ok(Err(e)) => {
+                self.poisoned = true;
+                CloseOrResponse::Crashed(format!(
+                    "read error while waiting for response-or-close: {e}\n\
                      --- captured child stderr ---\n{}",
                     self.captured_stderr(),
-                ),
-            };
-            assert!(
-                read > 0,
-                "stdout closed before responding to {method}\n\
-                 --- captured child stderr ---\n{}",
-                self.captured_stderr(),
-            );
-            let envelope: Value =
-                serde_json::from_str(buf.trim_end()).expect("parse envelope JSON");
-            // A notification is identified by the presence of `method` and
-            // an absent or null `id` field. `assert_envelope_valid` is
-            // response-only (it demands `result` or `error`), so we
-            // intentionally do not validate the notification envelope
-            // here — we just check `jsonrpc=2.0` so a malformed line
-            // does not silently slip past, and continue reading.
-            let is_notification =
-                envelope.get("method").is_some() && envelope.get("id").is_none_or(Value::is_null);
-            if is_notification {
-                assert_eq!(
-                    envelope["jsonrpc"],
-                    json!("2.0"),
-                    "notification must declare jsonrpc=\"2.0\"; got {envelope}",
-                );
-                continue;
+                ))
             }
-            assert_eq!(envelope["id"], json!(id), "response id must match request");
-            assert_envelope_valid(&envelope);
-            return envelope;
+            Err(_elapsed) => {
+                self.poisoned = true;
+                CloseOrResponse::Hung
+            }
         }
     }
 
@@ -313,6 +469,8 @@ allowed_base_dir = "{}"
             stdout: _,
             next_id: _,
             stderr_log: _,
+            buffered_responses: _,
+            poisoned: _,
             _tempdir: tempdir,
         } = self;
         drop(stdin);
