@@ -1,0 +1,14 @@
+# pnpm settings for this isolated project.
+#
+# In pnpm 11, supply-chain hygiene settings (auto-install-peers,
+# strict-peer-dependencies, minimum-release-age, ignore-scripts)
+# are read from `pnpm-workspace.yaml` using camelCase keys. They are
+# NOT read from `.npmrc` at this version. The `.npmrc` in this
+# directory is kept for documentation parity with the spec and for
+# any non-pnpm tool that may consume it; each setting here must agree
+# with `.npmrc` so the lockfile is reproducible regardless of which
+# file an environment honors.
+autoInstallPeers: false
+ignoreScripts: true
+minimumReleaseAge: 1440
+strictPeerDependencies: true
