@@ -1,7 +1,7 @@
 //! Dovecot container harness lifted from the original
 //! `crates/rimap-server/tests/e2e.rs`. Honors the same env vars
 //! (`RIMAP_CONTAINER_TOOL`, `RIMAP_REQUIRE_DOCKER`) and silently skips
-//! on non-x86_64 hosts or when no container runtime is available.
+//! when no container runtime is available.
 //! See `AGENTS.md` "Container runtime for integration tests".
 
 #![expect(clippy::expect_used, reason = "integration tests")]
@@ -47,17 +47,6 @@ impl std::error::Error for HarnessError {}
 
 fn check_prerequisites() -> Result<(), HarnessError> {
     let require_runtime = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
-
-    if std::env::consts::ARCH != "x86_64" {
-        return if require_runtime {
-            Err(HarnessError::ComposeFailed(format!(
-                "host arch {} cannot run amd64 dovecot image but RIMAP_REQUIRE_DOCKER=1",
-                std::env::consts::ARCH
-            )))
-        } else {
-            Err(HarnessError::DockerUnavailable)
-        };
-    }
 
     if !runtime_available() {
         return if require_runtime {
