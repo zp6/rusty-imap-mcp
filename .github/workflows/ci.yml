@@ -80,6 +80,13 @@ jobs:
         with:
           tool: cargo-nextest
       - run: cargo nextest run --workspace --locked --no-tests=pass
+      - name: Phase 3 wire e2e — fail if zero tests selected
+        run: |
+          cargo nextest run -p rimap-server --test e2e_wire \
+            --locked --no-tests=fail \
+            --no-capture
+        env:
+          RIMAP_REQUIRE_DOCKER: "1"
 
   msrv:
     name: test (MSRV 1.88.0)
