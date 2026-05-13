@@ -37,6 +37,7 @@ pub struct DownloadAttachmentInput {
 
 /// Trusted metadata for a `download_attachment` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct DownloadAttachmentMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -58,6 +59,7 @@ pub struct DownloadAttachmentMeta {
 
 /// Untrusted payload for a `download_attachment` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct DownloadAttachmentUntrusted {
     /// Original filename from `Content-Disposition` / `Content-Type`
     /// name parameter (sanitized).

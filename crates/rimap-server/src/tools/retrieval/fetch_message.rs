@@ -33,6 +33,7 @@ pub struct FetchMessageInput {
 
 /// Trusted metadata for a `fetch_message` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct FetchMessageMeta {
     /// IMAP folder the message was fetched from.
     pub folder: String,
@@ -48,6 +49,7 @@ pub struct FetchMessageMeta {
 
 /// Sanitized untrusted payload for a `fetch_message` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct FetchMessageUntrusted {
     /// Plain-text body (sanitized).
     pub body_text: String,
@@ -64,7 +66,18 @@ pub struct FetchMessageUntrusted {
     pub cc: Vec<String>,
     /// `Reply-To` header.
     pub reply_to: Option<String>,
-    /// `Date` header.
+    /// `Date` header. Serialized as a 9-element integer tuple:
+    /// `[year, ordinal, hour, minute, second, nanosecond,
+    ///   offset_whole_hours, offset_minutes_past_hour,
+    ///   offset_seconds_past_minute]`.
+    ///
+    /// Note: the `time` crate does not enable `serde-human-readable` in
+    /// this workspace, so `OffsetDateTime` always serializes as a tuple
+    /// regardless of the serializer's `is_human_readable()` flag.
+    #[cfg_attr(
+        feature = "test-support",
+        schemars(schema_with = "offset_date_time_tuple_schema")
+    )]
     pub date: Option<time::OffsetDateTime>,
     /// MIME attachment parts found in the message.
     pub attachments: Vec<rimap_content::AttachmentMeta>,
@@ -144,4 +157,43 @@ pub async fn handle(
         attachments: content.meta.attachments,
     })
     .with_warnings(content.security_warnings))
+}
+
+/// JSON Schema for `time::OffsetDateTime` as serialized by the `time` crate
+/// without the `serde-human-readable` feature.
+///
+/// The `time` crate serializes `OffsetDateTime` as a 9-element integer tuple:
+/// `[year, day_of_year, hour, minute, second, nanosecond,
+///   offset_whole_hours, offset_minutes_past_hour, offset_seconds_past_minute]`.
+/// This matches the actual wire bytes produced by `serde_json::to_string` when
+/// the workspace does not enable `serde-human-readable` on the `time` crate.
+///
+/// Used via `#[schemars(schema_with = "offset_date_time_tuple_schema")]` on
+/// `FetchMessageUntrusted::date`.
+#[cfg(feature = "test-support")]
+fn offset_date_time_tuple_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    use schemars::json_schema;
+    json_schema!({
+        "type": ["array", "null"],
+        "description": concat!(
+            "time::OffsetDateTime as a 9-element integer tuple: ",
+            "[year, day_of_year, hour, minute, second, nanosecond, ",
+            "offset_whole_hours, offset_minutes_past_hour, ",
+            "offset_seconds_past_minute]. Null when the header is absent."
+        ),
+        "prefixItems": [
+            { "type": "integer", "description": "year" },
+            { "type": "integer", "description": "day_of_year (ordinal 1–366)" },
+            { "type": "integer", "description": "hour (0–23)" },
+            { "type": "integer", "description": "minute (0–59)" },
+            { "type": "integer", "description": "second (0–60)" },
+            { "type": "integer", "description": "nanosecond (0–999999999)" },
+            { "type": "integer", "description": "UTC offset: whole hours (-23–23)" },
+            { "type": "integer", "description": "UTC offset: minutes past hour (-59–59)" },
+            { "type": "integer", "description": "UTC offset: seconds past minute (-59–59)" }
+        ],
+        "minItems": 9,
+        "maxItems": 9,
+        "items": false
+    })
 }

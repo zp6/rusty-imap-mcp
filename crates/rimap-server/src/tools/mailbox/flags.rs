@@ -45,6 +45,7 @@ pub struct FlagInput {
 
 /// Trusted metadata for a flag mutation response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct FlagsMeta {
     /// Folder the flags were updated in.
     pub folder: String,

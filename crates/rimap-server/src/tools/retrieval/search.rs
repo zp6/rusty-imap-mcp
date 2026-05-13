@@ -52,6 +52,7 @@ pub struct SearchInput {
 
 /// A single message entry in a `search` untrusted payload.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct SearchResultEntry {
     /// UID of the message.
     pub uid: u32,
@@ -80,6 +81,7 @@ pub struct SearchResultEntry {
 
 /// Trusted metadata for a `search` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct SearchMeta {
     /// Folder that was searched.
     pub folder: String,
@@ -93,6 +95,7 @@ pub struct SearchMeta {
 
 /// Untrusted payload for a `search` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct SearchUntrusted {
     /// Matching messages with sanitized header fields.
     pub messages: Vec<SearchResultEntry>,

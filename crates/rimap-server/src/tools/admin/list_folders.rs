@@ -80,6 +80,7 @@ fn sanitize_folder_entry(
 
 /// A single folder entry in a `list_folders` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub struct FolderEntry {
     /// Sanitized, display-safe folder name. Bidi / zero-width / Unicode
@@ -106,6 +107,7 @@ pub struct FolderEntry {
 
 /// Trusted metadata for a `list_folders` response.
 #[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 pub struct ListFoldersMeta {
     /// All folders returned by the server.
     pub folders: Vec<FolderEntry>,

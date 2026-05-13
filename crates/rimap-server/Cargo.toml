@@ -30,7 +30,7 @@ default = []
 # binary's wire shape rather than the production binary's, silently
 # voiding its regression nets. See:
 #   docs/superpowers/specs/2026-05-12-mcp-conformance-node-design.md §4.7
-test-support = ["rimap-config/test-support"]
+test-support = ["rimap-config/test-support", "rimap-content/test-support"]
 
 [lib]
 name = "rimap_server"

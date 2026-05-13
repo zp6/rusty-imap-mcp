@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 rimap-core = { path = "../rimap-core", version = "0.1.0" }
+schemars = { workspace = true, optional = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -44,6 +45,12 @@ phf_codegen = { workspace = true }
 # for the epvme_runner binary and when depending on this crate from
 # integration tests.
 test-util = []
+# Optional JsonSchema derives on the wire-facing public types
+# (SecurityWarning, WarningCode, AttachmentMeta). Enabled transitively
+# by rimap-server's test-support feature so Phase 3's wire-conformance
+# harness can generate schemas for the full response envelope. Off in
+# production — schemars stays out of the runtime dep graph.
+test-support = ["dep:schemars"]
 
 [[bin]]
 name = "epvme_runner"

@@ -2356,6 +2356,7 @@ dependencies = [
  "proptest",
  "rimap-content",
  "rimap-core",
+ "schemars",
  "scraper",
  "serde",
  "serde_json",

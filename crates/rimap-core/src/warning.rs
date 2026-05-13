@@ -6,13 +6,14 @@
 //! so both crates can reference the typed enum without a
 //! `rimap-content -> rimap-audit` dependency inversion.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Classification of pipeline warnings. New variants will be added as
 /// new detectors land — the enum is `#[non_exhaustive]` so matches
 /// outside this crate must include a wildcard arm.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningCode {
     /// Zero-width codepoints were present in input text and stripped.
@@ -116,7 +117,7 @@ pub enum WarningCode {
 /// adversarial signals without each caller maintaining its own
 /// classification table.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WarningSeverity {
     /// Emitted for normal-operation events (e.g. a legitimate
