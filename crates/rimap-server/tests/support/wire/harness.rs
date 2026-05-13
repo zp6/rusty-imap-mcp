@@ -127,9 +127,14 @@ fn force_use_for_dead_code_link() {
     // Methods used by mcp_wire_negative, not by other binaries.
     let _ = Harness::response_or_close;
     let _ = Harness::send_line;
+    // No current callers — suppressed here for the same per-binary
+    // dead-code reason; Task 5 will add callers via the concurrency
+    // and adversarial-input tests.
     let _ = Harness::recv_line_within;
-    // Methods used by mcp_wire_conformance, not by mcp_wire_negative.
+    // Method used by mcp_wire_conformance, not by other binaries.
     let _ = Harness::assert_no_response_within;
+    // Method used by mcp_wire_conformance and e2e_wire, not by
+    // mcp_wire_negative.
     let _ = Harness::shutdown_and_wait;
     // Constant used by mcp_wire_conformance / e2e_wire, not by mcp_wire_negative.
     let _ = PINNED_PROTOCOL_VERSION;
