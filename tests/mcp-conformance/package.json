@@ -10,11 +10,14 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit && oxlint src/",
+    "format:check": "oxfmt --check src/"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "@types/node": "25.7.0",
+    "oxfmt": "0.49.0",
+    "oxlint": "1.64.0",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
   }
