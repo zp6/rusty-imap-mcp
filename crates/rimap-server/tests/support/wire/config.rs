@@ -20,7 +20,6 @@ use std::path::Path;
 ///     &download_dir,
 /// );
 /// ```
-#[expect(dead_code, reason = "Phase 3 e2e_wire.rs will use this")]
 pub fn build_dovecot_config(
     fingerprint_hex: &str,
     port: u16,
@@ -70,4 +69,19 @@ posture = "read-only"
         allowed_base = allowed_base.display(),
         download_dir = download_dir.display(),
     )
+}
+
+/// Per-binary dead-code suppression. `mcp_wire_conformance.rs`
+/// compiles this module through `support/wire/mod.rs` but never calls
+/// `build_dovecot_config`; if we relied on `#[expect(dead_code)]`
+/// instead, that expectation would be unfulfilled in `e2e_wire.rs`
+/// (which does use it) and `clippy::allow_attributes = "deny"`
+/// forbids `#[allow]`. Referencing the function inside a never-called
+/// helper marks it as used in every compilation unit.
+#[expect(
+    dead_code,
+    reason = "type-link to suppress per-binary dead-code in mcp_wire_conformance.rs"
+)]
+fn force_use_for_dead_code_link() {
+    let _ = build_dovecot_config;
 }

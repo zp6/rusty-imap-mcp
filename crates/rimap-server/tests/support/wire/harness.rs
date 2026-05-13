@@ -164,7 +164,10 @@ allowed_base_dir = "{}"
     }
 
     /// Snapshot the captured stderr for diagnostic messages.
-    #[expect(dead_code, reason = "Phase 3 e2e_wire.rs will use this")]
+    #[expect(
+        dead_code,
+        reason = "available for future diagnostic use; no test binary calls it yet"
+    )]
     pub fn captured_stderr(&self) -> String {
         stderr_snapshot(&self.stderr_buf)
     }

@@ -2,10 +2,10 @@
 //! builders live here so the seed bytes and the assertion-side bytes
 //! reference the same source — no "what was seeded" / "what to check"
 //! duplication.
-// Phase 3 e2e_wire.rs (Task 10) uses all public items in this module.
-// Until that file exists, every item here is unreachable from e2e.rs,
-// so we suppress the lint at module scope rather than per-item.
-#![expect(dead_code, reason = "Phase 3 e2e_wire.rs will use these")]
+//!
+//! `e2e_wire.rs` uses every public item below. `e2e.rs` pulls this
+//! module in through `support/dovecot/mod.rs` but never references the
+//! items — see [`force_use_for_dead_code_link`] for the per-binary dead-code suppression.
 
 /// Filename declared in the attachment's `Content-Disposition`.
 pub const ATTACHMENT_FILENAME: &str = "attached.bin";
@@ -69,4 +69,24 @@ pub fn multipart_with_attachment() -> Vec<u8> {
     );
 
     body.into_bytes()
+}
+
+/// Per-binary dead-code suppression. `e2e.rs` compiles this module
+/// through `support/dovecot/mod.rs` but never calls any item here; if
+/// we relied on `#![expect(dead_code)]` instead, that expectation
+/// would be unfulfilled in `e2e_wire.rs` (which does use them) and
+/// `clippy::allow_attributes = "deny"` forbids `#[allow]`. Referencing
+/// each public item inside a never-called function marks them as used
+/// in every compilation unit. The function name omits the leading `_`
+/// so the function itself is flagged dead and the `#[expect]` is
+/// fulfilled.
+#[expect(
+    dead_code,
+    reason = "type-link to suppress per-binary dead-code in e2e.rs"
+)]
+fn force_use_for_dead_code_link() {
+    let _: &str = ATTACHMENT_FILENAME;
+    let _: &[u8] = ATTACHMENT_BYTES;
+    let _: &str = PLAIN_BODY;
+    let _ = multipart_with_attachment;
 }

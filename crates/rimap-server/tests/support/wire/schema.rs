@@ -115,10 +115,6 @@ pub fn assert_envelope_valid(response: &Value) {
 /// schema at `tests/fixtures/rimap-tool-schemas/<tool>.schema.json`.
 /// Panics in the test process if the fixture is missing — that's the
 /// signal that `just regen-tool-schemas` was not run.
-#[expect(
-    dead_code,
-    reason = "Phase 3 e2e_wire.rs will call this to validate tool responses"
-)]
 pub fn validator_for_tool_response(tool: &'static str) -> Arc<jsonschema::Validator> {
     type Cache = Mutex<HashMap<&'static str, Arc<jsonschema::Validator>>>;
     static CACHE: OnceLock<Cache> = OnceLock::new();
@@ -150,4 +146,22 @@ pub fn validator_for_tool_response(tool: &'static str) -> Arc<jsonschema::Valida
     let mut guard = cache.lock().expect("tool schema cache mutex poisoned");
     let entry = guard.entry(tool).or_insert_with(|| Arc::clone(&arc));
     Arc::clone(entry)
+}
+
+/// Per-binary dead-code suppression. `mcp_wire_conformance.rs`
+/// compiles this module through `support/wire/mod.rs` but never calls
+/// `assert_envelope_valid` or `validator_for_tool_response`; if we
+/// relied on per-item `#[expect(dead_code)]` instead, those
+/// expectations would be unfulfilled in `e2e_wire.rs` (which does use
+/// them) and `clippy::allow_attributes = "deny"` forbids `#[allow]`.
+/// Referencing each item inside a never-called function marks them as
+/// used in every compilation unit.
+#[expect(
+    dead_code,
+    reason = "type-link to suppress per-binary dead-code in mcp_wire_conformance.rs"
+)]
+fn force_use_for_dead_code_link() {
+    let _ = assert_envelope_valid;
+    let _ = validator_for_tool_response;
+    let _ = validator_for;
 }
