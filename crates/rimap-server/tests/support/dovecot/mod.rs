@@ -4,4 +4,4 @@
 pub mod fixtures;
 pub mod harness;
 
-pub use harness::DovecotHarness;
+pub use harness::{DovecotHarness, HarnessError};

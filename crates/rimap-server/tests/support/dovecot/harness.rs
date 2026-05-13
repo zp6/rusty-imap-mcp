@@ -5,13 +5,72 @@
 //! See `AGENTS.md` "Container runtime for integration tests".
 
 #![expect(clippy::expect_used, reason = "integration tests")]
-#![expect(clippy::unwrap_used, reason = "integration tests")]
 
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use rimap_core::TlsFingerprint;
+
+/// Failure modes for `DovecotHarness::try_start`. `DockerUnavailable`
+/// is the silent-skip signal: it means the host genuinely cannot run
+/// the fixture (no runtime, wrong arch). All other variants represent
+/// real infrastructure failures that should fail tests when
+/// `RIMAP_REQUIRE_DOCKER=1` is set.
+#[derive(Debug)]
+pub enum HarnessError {
+    DockerUnavailable,
+    ComposeFailed(String),
+    ReadinessTimeout,
+    PortReservationFailed(String),
+    /// Last `read_fingerprint` error captured during the wait-for-ready
+    /// loop. Surfaced when the wait-for-ready timeout fires and the
+    /// last attempt to read the container's TLS fingerprint failed.
+    FingerprintReadFailed(String),
+}
+
+impl std::fmt::Display for HarnessError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DockerUnavailable => {
+                f.write_str("no container runtime (docker or podman) is available")
+            }
+            Self::ComposeFailed(s) => write!(f, "compose up failed: {s}"),
+            Self::ReadinessTimeout => f.write_str("dovecot did not become ready within timeout"),
+            Self::PortReservationFailed(s) => write!(f, "host port reservation failed: {s}"),
+            Self::FingerprintReadFailed(s) => write!(f, "fingerprint read failed: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for HarnessError {}
+
+fn check_prerequisites() -> Result<(), HarnessError> {
+    let require_runtime = std::env::var("RIMAP_REQUIRE_DOCKER").is_ok();
+
+    if std::env::consts::ARCH != "x86_64" {
+        return if require_runtime {
+            Err(HarnessError::ComposeFailed(format!(
+                "host arch {} cannot run amd64 dovecot image but RIMAP_REQUIRE_DOCKER=1",
+                std::env::consts::ARCH
+            )))
+        } else {
+            Err(HarnessError::DockerUnavailable)
+        };
+    }
+
+    if !runtime_available() {
+        return if require_runtime {
+            Err(HarnessError::ComposeFailed(
+                "neither docker nor podman found but RIMAP_REQUIRE_DOCKER=1".into(),
+            ))
+        } else {
+            Err(HarnessError::DockerUnavailable)
+        };
+    }
+
+    Ok(())
+}
 
 fn runtime() -> &'static str {
     static TOOL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
@@ -55,20 +114,15 @@ pub struct DovecotHarness {
 }
 
 impl DovecotHarness {
-    pub fn try_start() -> Option<Self> {
+    pub fn try_start() -> Result<Self, HarnessError> {
         const BACKOFF_MS: [u64; 2] = [50, 250];
         const MAX_ATTEMPTS: usize = BACKOFF_MS.len() + 1;
 
-        if std::env::consts::ARCH != "x86_64" {
-            return None;
-        }
-        if !runtime_available() {
-            return None;
-        }
+        check_prerequisites()?;
 
         let compose_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
-            .unwrap()
+            .ok_or_else(|| HarnessError::ComposeFailed("manifest dir has no parent".into()))?
             .join("rimap-imap")
             .join("tests")
             .join("integration")
@@ -82,7 +136,10 @@ impl DovecotHarness {
                 .unwrap_or(0)
         );
 
-        let mut host_port = ReservedPort::acquire()?;
+        let mut host_port = ReservedPort::acquire()
+            .ok_or_else(|| HarnessError::PortReservationFailed("acquire returned None".into()))?;
+
+        let mut last_stderr = String::new();
 
         // Attempt 0 is the initial try (no prior sleep). Attempts 1 and 2
         // are retries preceded by teardown + backoff sleep + fresh port.
@@ -90,7 +147,9 @@ impl DovecotHarness {
             if attempt > 0 {
                 compose_down(&project, &compose_dir);
                 std::thread::sleep(std::time::Duration::from_millis(BACKOFF_MS[attempt - 1]));
-                host_port = ReservedPort::acquire()?;
+                host_port = ReservedPort::acquire().ok_or_else(|| {
+                    HarnessError::PortReservationFailed("retry acquire returned None".into())
+                })?;
             }
             host_port.release();
 
@@ -103,21 +162,23 @@ impl DovecotHarness {
                 .env("RIMAP_DOVECOT_HOST_PORT", host_port.port().to_string())
                 .current_dir(&compose_dir)
                 .output()
-                .ok()?;
+                .map_err(|e| HarnessError::ComposeFailed(format!("spawn failed: {e}")))?;
 
             if output.status.success() {
                 return wait_for_ready(&project, host_port.port(), &compose_dir);
             }
 
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
             if !is_port_collision(&stderr) {
-                // Non-collision failure: stop retrying.
-                return None;
+                return Err(HarnessError::ComposeFailed(stderr));
             }
+            last_stderr = stderr;
         }
 
         // All attempts hit port collisions.
-        None
+        Err(HarnessError::ComposeFailed(format!(
+            "exhausted {MAX_ATTEMPTS} port-collision retries; last stderr: {last_stderr}",
+        )))
     }
 
     /// Create a mailbox via `doveadm` inside the container.
@@ -149,21 +210,29 @@ fn wait_for_ready(
     project: &str,
     host_port: u16,
     compose_dir: &std::path::Path,
-) -> Option<DovecotHarness> {
+) -> Result<DovecotHarness, HarnessError> {
     let started = Instant::now();
     let timeout = Duration::from_secs(60);
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], host_port));
+    let mut last_fp_err: Option<String> = None;
     loop {
         if started.elapsed() > timeout {
             compose_down(project, compose_dir);
-            return None;
+            return Err(match last_fp_err {
+                Some(e) => HarnessError::FingerprintReadFailed(e),
+                None => HarnessError::ReadinessTimeout,
+            });
         }
-        let Ok(fp) = read_fingerprint(project) else {
-            std::thread::sleep(Duration::from_millis(500));
-            continue;
+        let fp = match read_fingerprint(project) {
+            Ok(fp) => fp,
+            Err(e) => {
+                last_fp_err = Some(e);
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
         };
         if std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
-            return Some(DovecotHarness {
+            return Ok(DovecotHarness {
                 project: project.to_string(),
                 compose_dir: compose_dir.to_path_buf(),
                 fingerprint: fp,

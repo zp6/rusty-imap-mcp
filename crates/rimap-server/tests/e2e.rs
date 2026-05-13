@@ -23,6 +23,7 @@
 
 #![expect(clippy::unwrap_used, reason = "tests")]
 #![expect(clippy::expect_used, reason = "tests")]
+#![expect(clippy::panic, reason = "test diagnostics")]
 
 // Import dovecot directly (not via support/mod.rs) so this binary
 // doesn't compile the wire driver it doesn't use.
@@ -46,7 +47,7 @@ use rimap_core::posture::Posture;
 use rimap_imap::{Connection, ConnectionConfig};
 use tempfile::TempDir;
 
-use dovecot::DovecotHarness;
+use dovecot::{DovecotHarness, HarnessError};
 use rimap_server::mcp::server::ImapMcpServer;
 
 struct StaticCreds(String);
@@ -225,8 +226,10 @@ fn test_message() -> Vec<u8> {
 
 #[tokio::test]
 async fn e2e_full_session() {
-    let Some(harness) = DovecotHarness::try_start() else {
-        return; // silent skip
+    let harness = match DovecotHarness::try_start() {
+        Ok(h) => h,
+        Err(HarnessError::DockerUnavailable) => return,
+        Err(e) => panic!("Dovecot harness failed: {e}"),
     };
 
     harness.create_mailbox("Drafts");

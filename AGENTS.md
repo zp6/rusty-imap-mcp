@@ -88,9 +88,12 @@ audit-log pairing + namespace attribution.
   on macOS arm64 without Docker); with Docker on linux/x86_64 expected
   ~10–25s on a warm machine (Dovecot bring-up dominates). Recorded in
   CI logs.
-- Gating: silent-skip when no container runtime is present;
-  `RIMAP_REQUIRE_DOCKER=1` flips to loud failure. Same convention
-  as the legacy in-process `e2e_full_session`.
+- Gating: silent-skip ONLY when no container runtime is genuinely
+  unavailable (missing docker/podman or non-x86_64 host).
+  `RIMAP_REQUIRE_DOCKER=1` flips every other failure mode
+  (compose-up, readiness timeout, port reservation, fingerprint read)
+  to a panic with diagnostic context. Same convention as the legacy
+  in-process `e2e_full_session`.
 - Schema regen: when changing any `<Tool>Meta` or `<Tool>Untrusted`
   struct in `crates/rimap-server/src/tools/`, run
   `just regen-tool-schemas` and commit the diff. CI fails on a

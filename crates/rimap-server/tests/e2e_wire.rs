@@ -30,7 +30,7 @@ use secrecy::SecretString;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
-use dovecot::{DovecotHarness, fixtures};
+use dovecot::{DovecotHarness, HarnessError, fixtures};
 // `Harness`, `PINNED_PROTOCOL_VERSION`, and `assert_valid` go through
 // `wire::*` (the same re-exports `mcp_wire_conformance.rs` uses) so
 // the re-exports in `support/wire/mod.rs` register as "used" in both
@@ -92,8 +92,10 @@ impl CredentialStore for StaticCreds {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wire_e2e_full_session_draft_safe() {
-    let Some(dovecot) = DovecotHarness::try_start() else {
-        return; // silent skip — matches e2e_full_session
+    let dovecot = match DovecotHarness::try_start() {
+        Ok(d) => d,
+        Err(HarnessError::DockerUnavailable) => return,
+        Err(e) => panic!("Dovecot harness failed: {e}"),
     };
     dovecot.create_mailbox("Drafts");
     dovecot.create_mailbox("Trash");
@@ -538,8 +540,10 @@ const POSTURE_DENIAL_CODE: i64 = -32602;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wire_e2e_readonly_posture_denial() {
-    let Some(dovecot) = DovecotHarness::try_start() else {
-        return; // silent skip
+    let dovecot = match DovecotHarness::try_start() {
+        Ok(d) => d,
+        Err(HarnessError::DockerUnavailable) => return,
+        Err(e) => panic!("Dovecot harness failed: {e}"),
     };
     let tempdir = TempDir::new().expect("tempdir");
     let audit_path = tempdir.path().join("audit.jsonl");
