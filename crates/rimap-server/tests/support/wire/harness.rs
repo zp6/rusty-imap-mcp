@@ -127,6 +127,7 @@ fn force_use_for_dead_code_link() {
     // Methods used by mcp_wire_negative, not by other binaries.
     let _ = Harness::response_or_close;
     let _ = Harness::send_line;
+    let _ = Harness::send_request_no_wait;
     // No current callers — suppressed here for the same per-binary
     // dead-code reason; Task 5 will add callers via the concurrency
     // and adversarial-input tests.
@@ -296,7 +297,6 @@ allowed_base_dir = "{}"
     /// Send a JSON-RPC request and return the assigned id WITHOUT
     /// awaiting a response. Pair with `recv_until_id` to drive
     /// multiple in-flight requests deterministically.
-    #[expect(dead_code, reason = "consumed by upcoming Phase 4 fuzz tests")]
     pub async fn send_request_no_wait(&mut self, method: &str, params: Value) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
