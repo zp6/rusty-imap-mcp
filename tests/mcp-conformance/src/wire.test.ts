@@ -1,6 +1,7 @@
-import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
+import { LATEST_PROTOCOL_VERSION, ToolSchema } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { dumpToolCatalog } from "./catalog-dump-harness.js";
 import { spawnRaw, type RawHandles } from "./raw-harness.js";
 import { spawnSdk, type SdkHandles } from "./sdk-harness.js";
 
@@ -174,5 +175,29 @@ describe("wire conformance (raw harness)", () => {
     expect(code, "server must exit 0 on clean stdin EOF").toBe(0);
     // shutdownAndWait already consumed the child; suppress afterEach.
     raw = undefined;
+  });
+});
+
+describe("wire conformance (CLI catalog dump)", () => {
+  it("wire_all_advertised_tools_pass_sdk_schema (CLI dump) — regression net for issue #264 strict-client gap", async () => {
+    // The SDK harness only sees infrastructure tools when the server
+    // is spawned with accounts=[]. This test invokes the test-support
+    // `dump-tool-catalog` subcommand on the binary directly and
+    // validates every TOOL_DEFS entry against the SDK's Zod Tool
+    // schema. Catches malformed account-scoped tool schemas that the
+    // wire-path SDK tests cannot reach without a live IMAP server.
+    const entries = await dumpToolCatalog();
+    expect(
+      entries.length,
+      "dump must contain 22 tool defs (24 ToolName variants - 2 sub-capabilities)",
+    ).toBe(22);
+
+    for (const entry of entries) {
+      const result = ToolSchema.safeParse(entry);
+      if (!result.success) {
+        const name = (entry as { name?: string })?.name ?? "<unknown>";
+        throw new Error(`SDK ToolSchema rejected tool ${name}: ${result.error.message}`);
+      }
+    }
   });
 });
