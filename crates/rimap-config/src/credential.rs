@@ -109,34 +109,66 @@ pub fn resolve_credential(
     use rimap_core::CredentialSource;
 
     let new_key = account_key(account_id, username, host);
-    if let Some(p) = store.get_password(&new_key)?
-        && !p.expose_secret().is_empty()
-    {
-        return Ok((p, CredentialSource::Keyring));
+    let legacy_key = legacy_account_key(username, host);
+
+    // Probe the keyring without surfacing transport errors yet. In
+    // `KeyringThenEnv` mode a hard keyring failure (e.g. no D-Bus session
+    // in CI/Docker) must not short-circuit the documented env-var fallback;
+    // in `KeyringOnly` mode it still propagates because the operator opted
+    // out of env. See model.rs `FallbackMode` docs and #265.
+    let mut keyring_error: Option<ConfigError> = None;
+    match store.get_password(&new_key) {
+        Ok(Some(p)) if !p.expose_secret().is_empty() => {
+            return Ok((p, CredentialSource::Keyring));
+        }
+        Ok(_) => {}
+        Err(e) => keyring_error = Some(e),
     }
 
     // Back-compat: before #77 the keyring key was <username>@<host>, with no
-    // account-id prefix. If the new key lookup missed, try the legacy key and
-    // warn the operator to run `rusty-imap-mcp migrate-keyring`.
-    let legacy_key = legacy_account_key(username, host);
-    if let Some(p) = store.get_password(&legacy_key)?
-        && !p.expose_secret().is_empty()
-    {
-        tracing::warn!(
-            account_id = %account_id.as_str(),
-            host = %host,
-            "credential resolved via legacy keyring key format; \
-             run `rusty-imap-mcp migrate-keyring --account {}` to migrate",
-            account_id.as_str(),
-        );
-        return Ok((p, CredentialSource::LegacyKeyring));
+    // account-id prefix. If the new key lookup missed and the keyring is
+    // otherwise reachable, try the legacy key and warn the operator to run
+    // `rusty-imap-mcp migrate-keyring`. Skip when the new-key probe already
+    // failed — the keyring transport is broken either way.
+    if keyring_error.is_none() {
+        match store.get_password(&legacy_key) {
+            Ok(Some(p)) if !p.expose_secret().is_empty() => {
+                tracing::warn!(
+                    account_id = %account_id.as_str(),
+                    host = %host,
+                    "credential resolved via legacy keyring key format; \
+                     run `rusty-imap-mcp migrate-keyring --account {}` to migrate",
+                    account_id.as_str(),
+                );
+                return Ok((p, CredentialSource::LegacyKeyring));
+            }
+            Ok(_) => {}
+            Err(e) => keyring_error = Some(e),
+        }
     }
 
     if fallback_mode == crate::model::FallbackMode::KeyringThenEnv
         && let Ok(env) = std::env::var(PASSWORD_ENV_VAR)
         && !env.is_empty()
     {
+        if let Some(e) = &keyring_error {
+            tracing::warn!(
+                account_id = %account_id.as_str(),
+                host = %host,
+                error = %e,
+                "keyring lookup failed; using `RUSTY_IMAP_MCP_PASSWORD` fallback",
+            );
+        }
         return Ok((SecretString::from(env), CredentialSource::EnvVar));
+    }
+
+    // No env fallback available (env unset/empty, or `KeyringOnly` mode).
+    // If the keyring transport itself errored, surface that diagnostic
+    // instead of the generic "no credential" message — it tells the
+    // operator the difference between a misconfigured keyring and a
+    // missing entry.
+    if let Some(e) = keyring_error {
+        return Err(e);
     }
 
     Err(ConfigError::NoCredential {
@@ -423,10 +455,57 @@ mod tests {
     }
 
     #[test]
-    fn keychain_error_propagates() {
+    fn keychain_error_propagates_in_keyring_only_mode() {
+        // `KeyringOnly` is the strict mode: the operator opted out of
+        // the env-var fallback, so a hard keyring failure must surface
+        // (not silently mask the misconfigured keyring).
         let store = MockStore::failing();
         let default_id = AccountId::default_account();
         temp_env::with_var(PASSWORD_ENV_VAR, Some("unused"), || {
+            let err = resolve_credential(
+                &store,
+                &default_id,
+                "alice",
+                "host",
+                FallbackMode::KeyringOnly,
+            )
+            .unwrap_err();
+            assert!(matches!(err, ConfigError::Keychain { .. }));
+        });
+    }
+
+    #[test]
+    fn keychain_error_falls_back_to_env_in_keyring_then_env_mode() {
+        // Documented behavior (model.rs `FallbackMode::KeyringThenEnv`):
+        // "Suitable for CI/test and single-account deployments." In
+        // environments without a working keyring (CI runners, Docker
+        // containers, headless servers) the env var must take over —
+        // otherwise the documented mode is unusable in its primary
+        // use case. Surfaced by the Phase 3 wire e2e tests (#265).
+        let store = MockStore::failing();
+        let default_id = AccountId::default_account();
+        temp_env::with_var(PASSWORD_ENV_VAR, Some("from_env"), || {
+            let (got, src) = resolve_credential(
+                &store,
+                &default_id,
+                "alice",
+                "host",
+                FallbackMode::KeyringThenEnv,
+            )
+            .unwrap();
+            assert_eq!(got.expose_secret(), "from_env");
+            assert_eq!(src, rimap_core::CredentialSource::EnvVar);
+        });
+    }
+
+    #[test]
+    fn keychain_error_propagates_when_no_env_in_keyring_then_env_mode() {
+        // With no env-var set, the keyring error is the most useful
+        // diagnostic: it tells the operator the difference between a
+        // missing keyring entry and a broken keyring transport.
+        let store = MockStore::failing();
+        let default_id = AccountId::default_account();
+        temp_env::with_var(PASSWORD_ENV_VAR, None::<&str>, || {
             let err = resolve_credential(
                 &store,
                 &default_id,
