@@ -102,6 +102,13 @@ export interface RawHandles {
   readonly tempdir: string;
 }
 
+class HarnessTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`timeout waiting for stdout line after ${timeoutMs} ms`);
+    this.name = "HarnessTimeoutError";
+  }
+}
+
 async function resolveBinaryPath(): Promise<string> {
   const envPath = process.env["RUSTY_IMAP_MCP_BIN"];
   if (envPath !== undefined && envPath !== "") {
@@ -127,128 +134,136 @@ export async function spawnRaw(): Promise<RawHandles> {
     { stdio: ["pipe", "pipe", "ignore"] },
   ) as unknown as ChildProcessWithoutNullStreams;
 
-  const reader: Interface = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  try {
+    const reader: Interface = createInterface({ input: child.stdout, crlfDelay: Infinity });
 
-  const lineQueue: string[] = [];
-  const waiters: ((line: string | null) => void)[] = [];
-  let stdoutClosed = false;
+    const lineQueue: string[] = [];
+    const waiters: ((line: string | null) => void)[] = [];
+    let stdoutClosed = false;
 
-  reader.on("line", (line) => {
-    const waiter = waiters.shift();
-    if (waiter) {
-      waiter(line);
-    } else {
-      lineQueue.push(line);
-    }
-  });
-  reader.on("close", () => {
-    stdoutClosed = true;
-    while (waiters.length > 0) {
+    reader.on("line", (line) => {
       const waiter = waiters.shift();
       if (waiter) {
-        waiter(null);
+        waiter(line);
+      } else {
+        lineQueue.push(line);
       }
-    }
-  });
-
-  function nextLine(timeoutMs: number): Promise<string | null> {
-    const queued = lineQueue.shift();
-    if (queued !== undefined) {
-      return Promise.resolve(queued);
-    }
-    if (stdoutClosed) {
-      return Promise.resolve(null);
-    }
-    return new Promise<string | null>((resolveLine, rejectLine) => {
-      const timer = setTimeout(() => {
-        const idx = waiters.indexOf(onLine);
-        if (idx >= 0) {
-          waiters.splice(idx, 1);
-        }
-        rejectLine(new Error(`timeout waiting for stdout line after ${timeoutMs} ms`));
-      }, timeoutMs);
-      const onLine = (line: string | null): void => {
-        clearTimeout(timer);
-        resolveLine(line);
-      };
-      waiters.push(onLine);
     });
-  }
-
-  let nextId = 0;
-
-  async function write(line: string): Promise<void> {
-    await new Promise<void>((resolveWrite, rejectWrite) => {
-      child.stdin.write(line, (err) => {
-        if (err) {
-          rejectWrite(err);
-        } else {
-          resolveWrite();
+    reader.on("close", () => {
+      stdoutClosed = true;
+      while (waiters.length > 0) {
+        const waiter = waiters.shift();
+        if (waiter) {
+          waiter(null);
         }
+      }
+    });
+
+    function nextLine(timeoutMs: number): Promise<string | null> {
+      const queued = lineQueue.shift();
+      if (queued !== undefined) {
+        return Promise.resolve(queued);
+      }
+      if (stdoutClosed) {
+        return Promise.resolve(null);
+      }
+      return new Promise<string | null>((resolveLine, rejectLine) => {
+        const timer = setTimeout(() => {
+          const idx = waiters.indexOf(onLine);
+          if (idx >= 0) {
+            waiters.splice(idx, 1);
+          }
+          rejectLine(new HarnessTimeoutError(timeoutMs));
+        }, timeoutMs);
+        const onLine = (line: string | null): void => {
+          clearTimeout(timer);
+          resolveLine(line);
+        };
+        waiters.push(onLine);
       });
-    });
-  }
-
-  async function request(method: string, params: unknown): Promise<JsonRpcResponse> {
-    nextId += 1;
-    const id = nextId;
-    const envelope = { jsonrpc: "2.0", id, method, params };
-    await write(`${JSON.stringify(envelope)}\n`);
-    const line = await nextLine(REQUEST_TIMEOUT_MS);
-    if (line === null) {
-      throw new Error(`stdout closed before responding to ${method}`);
     }
-    const parsed = JSON.parse(line) as JsonRpcResponse;
-    // Full envelope validation — matches Phase 1's `assert_envelope_valid`.
-    // Without this, negative-path tests (unknown method, unknown tool)
-    // could pass against a malformed error envelope.
-    assertEnvelopeValid(parsed, id);
-    return parsed;
-  }
 
-  async function notify(method: string, params: unknown): Promise<void> {
-    const envelope = { jsonrpc: "2.0", method, params };
-    await write(`${JSON.stringify(envelope)}\n`);
-  }
+    let nextId = 0;
 
-  async function assertNoResponseWithin(ms: number): Promise<void> {
-    try {
-      const line = await nextLine(ms);
+    async function write(line: string): Promise<void> {
+      await new Promise<void>((resolveWrite, rejectWrite) => {
+        child.stdin.write(line, (err) => {
+          if (err) {
+            rejectWrite(err);
+          } else {
+            resolveWrite();
+          }
+        });
+      });
+    }
+
+    async function request(method: string, params: unknown): Promise<JsonRpcResponse> {
+      nextId += 1;
+      const id = nextId;
+      const envelope = { jsonrpc: "2.0", id, method, params };
+      await write(`${JSON.stringify(envelope)}\n`);
+      const line = await nextLine(REQUEST_TIMEOUT_MS);
       if (line === null) {
-        throw new Error("stdout closed unexpectedly");
+        throw new Error(`stdout closed before responding to ${method}`);
       }
-      throw new Error(`expected no response within ${ms} ms, got: ${line}`);
-    } catch (err) {
-      if (err instanceof Error && err.message.startsWith("timeout waiting for stdout line")) {
-        return; // expected: no response, as desired
-      }
-      throw err;
+      const parsed = JSON.parse(line) as JsonRpcResponse;
+      // Full envelope validation — matches Phase 1's `assert_envelope_valid`.
+      // Without this, negative-path tests (unknown method, unknown tool)
+      // could pass against a malformed error envelope.
+      assertEnvelopeValid(parsed, id);
+      return parsed;
     }
-  }
 
-  async function shutdownAndWait(): Promise<number> {
-    child.stdin.end();
-    return await new Promise<number>((resolveExit, rejectExit) => {
-      const timer = setTimeout(() => {
-        rejectExit(new Error(`process did not exit within ${SHUTDOWN_TIMEOUT_MS} ms`));
-      }, SHUTDOWN_TIMEOUT_MS);
-      child.once("exit", (code) => {
-        clearTimeout(timer);
-        if (code === null) {
-          rejectExit(new Error("process exited via signal"));
-        } else {
-          resolveExit(code);
+    async function notify(method: string, params: unknown): Promise<void> {
+      const envelope = { jsonrpc: "2.0", method, params };
+      await write(`${JSON.stringify(envelope)}\n`);
+    }
+
+    async function assertNoResponseWithin(ms: number): Promise<void> {
+      try {
+        const line = await nextLine(ms);
+        if (line === null) {
+          throw new Error("stdout closed unexpectedly");
         }
-      });
-    });
-  }
+        throw new Error(`expected no response within ${ms} ms, got: ${line}`);
+      } catch (err) {
+        if (err instanceof HarnessTimeoutError) {
+          return; // expected: no response, as desired
+        }
+        throw err;
+      }
+    }
 
-  async function close(): Promise<void> {
+    async function shutdownAndWait(): Promise<number> {
+      child.stdin.end();
+      return await new Promise<number>((resolveExit, rejectExit) => {
+        const timer = setTimeout(() => {
+          rejectExit(new Error(`process did not exit within ${SHUTDOWN_TIMEOUT_MS} ms`));
+        }, SHUTDOWN_TIMEOUT_MS);
+        child.once("exit", (code) => {
+          clearTimeout(timer);
+          if (code === null) {
+            rejectExit(new Error("process exited via signal"));
+          } else {
+            resolveExit(code);
+          }
+        });
+      });
+    }
+
+    async function close(): Promise<void> {
+      if (!child.killed && child.exitCode === null) {
+        child.kill("SIGKILL");
+      }
+      await rm(tempdir, { recursive: true, force: true });
+    }
+
+    return { request, notify, assertNoResponseWithin, shutdownAndWait, close, tempdir };
+  } catch (err) {
     if (!child.killed && child.exitCode === null) {
       child.kill("SIGKILL");
     }
     await rm(tempdir, { recursive: true, force: true });
+    throw err;
   }
-
-  return { request, notify, assertNoResponseWithin, shutdownAndWait, close, tempdir };
 }
