@@ -48,9 +48,14 @@
 
 ---
 
-## Task 1: Add `schemars::JsonSchema` derives to 14 tool response structs
+## Task 1: Add `schemars::JsonSchema` derives across `rimap-content` and `rimap-server`
 
 **Files:**
+- Modify: `Cargo.toml` (workspace `[workspace.dependencies]` — enable schemars `time` feature)
+- Modify: `crates/rimap-content/Cargo.toml`
+- Modify: `crates/rimap-content/src/output.rs:80-160` (AttachmentMeta, SecurityWarning, WarningCode)
+- Modify: `crates/rimap-server/Cargo.toml` (propagate test-support feature)
+- Modify: `crates/rimap-server/src/mcp/response.rs:14-26` (ToolResponse envelope)
 - Modify: `crates/rimap-server/src/tools/admin/accounts.rs:16-44`
 - Modify: `crates/rimap-server/src/tools/admin/list_folders.rs:82-130`
 - Modify: `crates/rimap-server/src/tools/mailbox/labels.rs:111-140`
@@ -58,18 +63,107 @@
 - Modify: `crates/rimap-server/src/tools/mailbox/move_message.rs:40-60`
 - Modify: `crates/rimap-server/src/tools/compose/create_draft.rs:14-30`
 - Modify: `crates/rimap-server/src/tools/retrieval/search.rs:54-100`
-- Modify: `crates/rimap-server/src/tools/retrieval/fetch_message.rs:35-60`
-- Modify: `crates/rimap-server/src/tools/retrieval/list_attachments.rs:31-70`
-- Modify: `crates/rimap-server/src/tools/retrieval/download_attachment.rs:39-80`
+- Modify: `crates/rimap-server/src/tools/retrieval/fetch_message.rs:35-71`
+- Modify: `crates/rimap-server/src/tools/retrieval/list_attachments.rs:31-60`
+- Modify: `crates/rimap-server/src/tools/retrieval/download_attachment.rs:39-65`
 
-- [ ] **Step 1: Verify schemars is already in scope (no Cargo.toml change required)**
+**Why this is bigger than the original draft.** Codex adversarial review (#1) flagged that the wire envelope `ToolResponse<M, U>` carries a top-level `security_warnings: Vec<rimap_content::SecurityWarning>` field (see `crates/rimap-server/src/mcp/response.rs:24`), and `FetchMessageUntrusted::attachments: Vec<rimap_content::AttachmentMeta>` references another nested rimap-content type. `rimap-content` has no schemars dependency today, and `String`-fallback `schemars(with = ...)` would produce a schema that doesn't describe the actual wire bytes for these structured fields. So this task must:
 
-Run: `grep -nE "^schemars" /Users/dave/src/rusty-imap-mcp/Cargo.toml /Users/dave/src/rusty-imap-mcp/crates/rimap-server/Cargo.toml`
-Expected: `Cargo.toml:194:schemars = "1.0"` and `rimap-server/Cargo.toml:53:schemars = { workspace = true }`. No change needed.
+1. Add an opt-in `test-support` feature to `rimap-content` that pulls in `schemars` and derives `JsonSchema` on the wire-facing public types.
+2. Propagate the feature through `rimap-server`'s `test-support` feature.
+3. Tighten the gate from `any(test, feature = "test-support")` to just `feature = "test-support"` everywhere — `rimap-content`'s `cfg(test)` builds otherwise need schemars unconditionally, which churns the dep graph without benefit. The Task 2 inline tests already run via `cargo test --features test-support` so the narrower gate is sufficient.
 
-- [ ] **Step 2: Add the derive to every in-scope struct**
+- [ ] **Step 1: Enable schemars `time` feature in the workspace**
 
-For each struct listed in the file table for this task, replace its existing derive line. Example for `crates/rimap-server/src/tools/mailbox/flags.rs:47`:
+`FetchMessageUntrusted::date` is `time::OffsetDateTime`, which serializes as an RFC 3339 string on the wire. schemars 1.0 ships `JsonSchema` impls for the `time` crate behind a feature flag. Edit `Cargo.toml` at the workspace `[workspace.dependencies]` line for schemars (currently `schemars = "1.0"`):
+
+```toml
+schemars = { version = "1.0", features = ["time"] }
+```
+
+- [ ] **Step 2: Add a `test-support` feature to `rimap-content`**
+
+Edit `crates/rimap-content/Cargo.toml`. Under `[features]`, add:
+
+```toml
+# Optional JsonSchema derives on the wire-facing public types
+# (SecurityWarning, WarningCode, AttachmentMeta). Enabled transitively
+# by rimap-server's test-support feature so Phase 3's wire-conformance
+# harness can generate schemas for the full response envelope. Off in
+# production — schemars stays out of the runtime dep graph.
+test-support = ["dep:schemars"]
+```
+
+Under `[dependencies]`, add (it must be `optional = true` so the feature gate is meaningful):
+
+```toml
+schemars = { workspace = true, optional = true }
+```
+
+- [ ] **Step 3: Add `JsonSchema` derives to `rimap_content` wire-facing types**
+
+In `crates/rimap-content/src/output.rs`, add the derive next to the existing `Serialize` derive on each of:
+
+- `AttachmentMeta` (line 82)
+- `SecurityWarning` (line 118)
+- `WarningCode` enum (look up via `grep -n "pub enum WarningCode" crates/rimap-content/src/output.rs`)
+
+Pattern:
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
+pub struct AttachmentMeta {
+    // unchanged fields
+}
+```
+
+If any nested field type (e.g. inner enums on `WarningCode`) lacks `JsonSchema`, follow the chain and derive on it too. The full transitive closure must be feasible without `with = "String"` fallbacks — Codex review #1 explicitly rules those out for structured wire fields.
+
+- [ ] **Step 4: Propagate the feature through `rimap-server`**
+
+Edit `crates/rimap-server/Cargo.toml`. Replace:
+
+```toml
+test-support = ["rimap-config/test-support"]
+```
+
+with:
+
+```toml
+test-support = ["rimap-config/test-support", "rimap-content/test-support"]
+```
+
+- [ ] **Step 5: Add the derive to `ToolResponse`**
+
+Edit `crates/rimap-server/src/mcp/response.rs:14-25`. Replace the struct definition with:
+
+```rust
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
+pub struct ToolResponse<M: Serialize = serde_json::Value, U: Serialize = serde_json::Value> {
+    pub meta: M,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub untrusted: Option<U>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub security_warnings: Vec<rimap_content::SecurityWarning>,
+}
+```
+
+The generic bounds need updating — `schemars::JsonSchema` for the impl. Add `JsonSchema` to the `M` and `U` bounds **only** when the feature is on:
+
+```rust
+#[cfg(feature = "test-support")]
+impl<M: Serialize + schemars::JsonSchema, U: Serialize + schemars::JsonSchema> ToolResponse<M, U> {
+    // (no new methods — the bound carries through the derive)
+}
+```
+
+If the derive macro refuses the bound combination, fall back to a manual `JsonSchema` impl that emits the `{meta, untrusted?, security_warnings?}` shape with `for_M`/`for_U` recursion. Document the fallback inline if used.
+
+- [ ] **Step 6: Add the derive to the 14 rimap-server response structs**
+
+For each struct, add the derive next to the existing `Serialize` derive. Use the narrower gate:
 
 ```rust
 // before
@@ -77,10 +171,10 @@ For each struct listed in the file table for this task, replace its existing der
 
 // after
 #[derive(Debug, Serialize)]
-#[cfg_attr(any(test, feature = "test-support"), derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "test-support", derive(schemars::JsonSchema))]
 ```
 
-Apply the same two-line pattern to each of these structs (every one already has `#[derive(Debug, Serialize)]`):
+Apply to each of these structs (every one already has `#[derive(Debug, Serialize)]`):
 
 - `accounts.rs`: `UseAccountMeta`, `AccountEntry`, `ListAccountsMeta`
 - `list_folders.rs`: every `#[derive(Debug, Serialize)]` struct in the file (currently `ListFoldersMeta` + 1 helper at line 82)
@@ -89,37 +183,45 @@ Apply the same two-line pattern to each of these structs (every one already has 
 - `move_message.rs`: `MoveEntry`, `MoveMessageMeta`
 - `create_draft.rs`: `CreateDraftMeta`
 - `search.rs`: `SearchResultEntry`, `SearchMeta`, `SearchUntrusted`
-- `fetch_message.rs`: `FetchMessageMeta`, `FetchMessageUntrusted`
+- `fetch_message.rs`: `FetchMessageMeta`, `FetchMessageUntrusted` (the `Vec<rimap_content::AttachmentMeta>` field is now schema-able from Step 3; the `Option<time::OffsetDateTime>` field is schema-able from Step 1's `time` feature)
 - `list_attachments.rs`: `AttachmentInfo`, `ListAttachmentsMeta`, `ListAttachmentsUntrusted`
 - `download_attachment.rs`: `DownloadAttachmentMeta`, `DownloadAttachmentUntrusted`
 
-If a nested type does not implement `JsonSchema` (e.g. a third-party type), apply `#[cfg_attr(any(test, feature = "test-support"), schemars(with = "String"))]` on the offending field as a fallback.
+Do NOT use `schemars(with = "String")` as a fallback on any structured field — the schema would then misdescribe the wire shape (Codex review #1).
 
-- [ ] **Step 3: Verify the workspace still compiles with the feature off**
+- [ ] **Step 7: Verify the workspace still compiles with the feature off**
 
 Run: `cargo check -p rimap-server --locked`
 Expected: clean compile. (Production build does not enable `test-support`, so derives are inert.)
 
-- [ ] **Step 4: Verify the workspace still compiles with the feature on**
+- [ ] **Step 8: Verify the workspace still compiles with the feature on**
 
 Run: `cargo check -p rimap-server --features test-support --locked`
-Expected: clean compile.
+Expected: clean compile. If a `JsonSchema` derive fails because of a missing trait bound, locate the offending nested type and either (a) derive `JsonSchema` on it under the same gate, or (b) replace the field type with one that does — never `String` fallback for structured wire fields.
 
-- [ ] **Step 5: Run clippy with `-D warnings` to catch derive-induced lints**
+- [ ] **Step 9: Run clippy with `-D warnings` to catch derive-induced lints**
 
 Run: `cargo clippy -p rimap-server --features test-support --all-targets --locked -- -D warnings`
 Expected: clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add crates/rimap-server/src/tools/
-git commit -m "feat(server): add schemars derives to tool response structs
+git add Cargo.toml crates/rimap-content/Cargo.toml crates/rimap-content/src/output.rs \
+        crates/rimap-server/Cargo.toml crates/rimap-server/src/mcp/response.rs \
+        crates/rimap-server/src/tools/
+git commit -m "feat: add schemars derives for Phase 3 wire conformance (#265)
 
-Test-support-only derives on every <Tool>Meta and <Tool>Untrusted in
-scope for Phase 3 wire conformance (#265). Gated behind
-cfg(any(test, feature = \"test-support\")) so production builds do not
-pull schemars into their dep graph.
+Adds an opt-in test-support feature to rimap-content that derives
+JsonSchema on the wire-facing public types (AttachmentMeta,
+SecurityWarning, WarningCode) and propagates the feature through
+rimap-server. Adds JsonSchema to ToolResponse and the 14 in-scope
+<Tool>Meta and <Tool>Untrusted structs, plus enables schemars's time
+feature in the workspace so OffsetDateTime fields are schema-able.
+
+The derive gate is feature = \"test-support\" only (no any(test, ...))
+so cfg(test) builds of rimap-content do not need schemars in the dep
+graph. Production builds remain unchanged.
 "
 ```
 
@@ -207,13 +309,29 @@ fn build_schemas() -> BTreeMap<&'static str, Value> {
     out
 }
 
+// Top-level wire envelope is `{meta, untrusted?, security_warnings?}`
+// per crates/rimap-server/src/mcp/response.rs:14-25. untrusted and
+// security_warnings are skip-serialize-if-empty/None, so the schema
+// makes them optional, not required.
+
+fn warnings_schema() -> Value {
+    let schema = schemars::schema_for!(rimap_content::SecurityWarning);
+    serde_json::json!({
+        "type": "array",
+        "items": schema,
+    })
+}
+
 fn meta_only<M: schemars::JsonSchema>() -> Value {
     let schema = schemars::schema_for!(M);
     serde_json::json!({
         "type": "object",
-        "properties": { "meta": schema },
+        "properties": {
+            "meta": schema,
+            "security_warnings": warnings_schema(),
+        },
         "required": ["meta"],
-        "additionalProperties": true,
+        "additionalProperties": false,
     })
 }
 
@@ -222,9 +340,13 @@ fn meta_and_untrusted<M: schemars::JsonSchema, U: schemars::JsonSchema>() -> Val
     let u = schemars::schema_for!(U);
     serde_json::json!({
         "type": "object",
-        "properties": { "meta": m, "untrusted": u },
+        "properties": {
+            "meta": m,
+            "untrusted": u,
+            "security_warnings": warnings_schema(),
+        },
         "required": ["meta", "untrusted"],
-        "additionalProperties": true,
+        "additionalProperties": false,
     })
 }
 
@@ -457,21 +579,28 @@ dump-tool-schemas subcommand. Schemas are committed; Phase 3 CI step
 Run: `grep -nE "^  [a-z-]+:|name:" .github/workflows/ci.yml | head -40`
 Expected: a list of jobs including `test (stable)`. Pick a placement after the existing test job and before `mcp-conformance-node` (so build artifacts can be reused if caching is in place; if not, the job is independent).
 
-- [ ] **Step 2: Add the drift job**
+- [ ] **Step 2: Add the drift job with the same prerequisites the existing Ubuntu Rust jobs install**
 
-Append the following job to `.github/workflows/ci.yml` (adjust indentation to match the existing file):
+The existing `test (stable)` job installs `libdbus-1-dev pkg-config` before running cargo (the keyring crate depends on libdbus on Linux), installs `just` via `taiki-e/install-action`, and pins every action to a SHA with a version comment. The drift job must mirror that setup — Codex review #2 caught the bare-uses-action version of this step as a CI failure waiting to happen. Append to `.github/workflows/ci.yml` (match indentation to the existing file):
 
 ```yaml
   tool-schema-drift:
     name: tool-schema drift
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@<sha>  # vX.Y.Z   ← match the SHA already used elsewhere in this file
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@<sha>  # stable
-      - uses: Swatinem/rust-cache@<sha>  # vX.Y.Z
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: 1.94.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+      - uses: taiki-e/install-action@1329c298aa20c3257846c9b2e0e55967df3e3c37  # v2.75.25
+        with:
+          tool: just
       - name: Regenerate tool schemas
         run: just regen-tool-schemas
       - name: Verify no schema drift
@@ -480,7 +609,7 @@ Append the following job to `.github/workflows/ci.yml` (adjust indentation to ma
             || { echo "::error::Tool response struct changed without rerunning just regen-tool-schemas"; exit 1; }
 ```
 
-Use the exact SHA + version pins already present in `.github/workflows/ci.yml` for `actions/checkout`, `dtolnay/rust-toolchain`, and `Swatinem/rust-cache`. Run: `grep -nE "uses: (actions/checkout|dtolnay/rust-toolchain|Swatinem/rust-cache)" .github/workflows/ci.yml` to find them.
+The SHAs and version comments above are copied verbatim from the existing `test (stable)` job (see `.github/workflows/ci.yml` lines 66-83 as of branch `test/mcp-behavioral-conformance-spec`). If those pins have advanced since this plan was written, regrep them with: `grep -nE "uses: (actions/checkout|dtolnay/rust-toolchain|Swatinem/rust-cache|taiki-e/install-action)" .github/workflows/ci.yml` and update both jobs in the same commit so the pin set stays consistent.
 
 - [ ] **Step 3: Lint the workflow**
 
@@ -1501,6 +1630,12 @@ async fn call_tool(harness: &mut Harness, name: &str, args: Value) -> Value {
     ).await;
     assert_envelope_valid(&resp);
     assert!(resp["error"].is_null(), "tool {name} failed: {resp}");
+    // Validate the MCP method-result shape (CallToolResult) on top of
+    // the envelope check. Codex review #4 surfaced that the previous
+    // helper would have missed a regression that mangled the
+    // tools/call result fields outside structuredContent (e.g. the
+    // `content` array, `isError`, or any future MCP fields).
+    assert_valid(&resp["result"], "CallToolResult");
     let body = &resp["result"]["structuredContent"];
     // Per-tool schema: name is the bare tool name without the namespace prefix.
     let bare = name.rsplit_once('.').map(|(_, b)| b).unwrap_or(name);
@@ -1740,14 +1875,32 @@ async fn wire_e2e_readonly_posture_denial() {
     let _ = harness.initialize_handshake().await;
     harness.send_initialized().await;
 
-    // Negative tools/list check: readonly.move_message must NOT appear.
+    // Both negative and positive tools/list checks: readonly hides
+    // mutating tools but ADVERTISES the read tools.
     let tools_list = harness.request("tools/list", json!({})).await;
     let names: Vec<&str> = tools_list["result"]["tools"]
         .as_array().expect("tools").iter()
         .filter_map(|t| t["name"].as_str()).collect();
     assert!(names.contains(&"draftsafe.move_message"));
+    assert!(names.contains(&"readonly.list_folders"),
+        "readonly.list_folders must be advertised under the read-only namespace; got {names:?}");
     assert!(!names.contains(&"readonly.move_message"),
         "readonly.move_message must not be advertised; got {names:?}");
+
+    // Readonly success path — Codex review #3 surfaced that the
+    // original plan only exercised the denial path. A regression that
+    // broke successful readonly dispatch, advertisement, or audit
+    // attribution would pass without this. Drive a real readonly read
+    // tool, validate it through the same call_tool helper used by the
+    // draft-safe test (which itself validates envelope + CallToolResult
+    // + per-tool response schema), and assert the audit pair carries
+    // account="readonly".
+    let readonly_folders = call_tool(&mut harness, "readonly.list_folders", json!({})).await;
+    let folder_names: Vec<&str> = readonly_folders["meta"]["folders"]
+        .as_array().expect("folders").iter()
+        .filter_map(|f| f["name"].as_str()).collect();
+    assert!(folder_names.contains(&"INBOX"),
+        "readonly.list_folders did not return INBOX: {folder_names:?}");
 
     // Posture denial on the wire.
     let resp = harness.request(
@@ -1771,22 +1924,43 @@ async fn wire_e2e_readonly_posture_denial() {
     let status = harness.shutdown_and_wait().await;
     assert!(status.success(), "child must exit 0, got {status:?}");
 
-    // Audit: exactly one tool_start for readonly.move_message paired
-    // with a tool_end, both carrying account="readonly".
+    // Audit assertions cover both the success and denial paths:
+    //   1. readonly.list_folders produces a paired tool_start/tool_end
+    //      under account="readonly" — confirms successful read-only
+    //      dispatch records with the correct namespace.
+    //   2. readonly.move_message produces a paired tool_start/tool_end
+    //      under account="readonly" carrying the posture-denial
+    //      outcome — confirms denial wire records carry the correct
+    //      namespace and are not collapsed to legacy None.
     let records = read_audit_records(&audit_path);
-    let starts: Vec<&Value> = records.iter()
+
+    // Success path: list_folders pair.
+    let lf_starts: Vec<&Value> = records.iter()
+        .filter(|r| r["kind"] == "tool_start" && r["tool"] == "list_folders")
+        .collect();
+    assert_eq!(lf_starts.len(), 1, "expected exactly one list_folders tool_start");
+    assert_eq!(lf_starts[0]["account"].as_str(), Some("readonly"),
+        "readonly.list_folders tool_start must record account=\"readonly\": {records:#?}");
+    let lf_ends: Vec<&Value> = records.iter()
+        .filter(|r| r["kind"] == "tool_end" && r["tool"] == "list_folders")
+        .collect();
+    assert_eq!(lf_ends.len(), 1);
+    assert_eq!(lf_ends[0]["account"].as_str(), Some("readonly"));
+    assert_eq!(lf_ends[0]["start_seq"], lf_starts[0]["seq"]);
+
+    // Denial path: move_message pair.
+    let mm_starts: Vec<&Value> = records.iter()
         .filter(|r| r["kind"] == "tool_start" && r["tool"] == "move_message")
         .collect();
-    assert_eq!(starts.len(), 1, "expected exactly one move_message tool_start");
-    assert_eq!(starts[0]["account"].as_str(), Some("readonly"),
-        "tool_start.account must be \"readonly\" (not collapsed to None): {records:#?}");
-
-    let ends: Vec<&Value> = records.iter()
+    assert_eq!(mm_starts.len(), 1, "expected exactly one move_message tool_start");
+    assert_eq!(mm_starts[0]["account"].as_str(), Some("readonly"),
+        "readonly.move_message tool_start must record account=\"readonly\" (not collapsed to None): {records:#?}");
+    let mm_ends: Vec<&Value> = records.iter()
         .filter(|r| r["kind"] == "tool_end" && r["tool"] == "move_message")
         .collect();
-    assert_eq!(ends.len(), 1);
-    assert_eq!(ends[0]["account"].as_str(), Some("readonly"));
-    assert_eq!(ends[0]["start_seq"], starts[0]["seq"]);
+    assert_eq!(mm_ends.len(), 1);
+    assert_eq!(mm_ends[0]["account"].as_str(), Some("readonly"));
+    assert_eq!(mm_ends[0]["start_seq"], mm_starts[0]["seq"]);
 }
 ```
 
@@ -1810,13 +1984,17 @@ Expected: 2 tests pass.
 
 ```bash
 git add crates/rimap-server/tests/e2e_wire.rs
-git commit -m "test(server): add Phase 3 read-only posture denial test (#265)
+git commit -m "test(server): add Phase 3 read-only posture coverage (#265)
 
 wire_e2e_readonly_posture_denial verifies that
-1. readonly.move_message is NOT advertised on tools/list,
-2. tools/call against readonly.move_message returns the pinned
-   posture-denial JSON-RPC error envelope, and
-3. the audit log records a tool_start+tool_end pair carrying
+1. readonly advertises read tools (list_folders) and hides mutating
+   tools (move_message) on tools/list,
+2. tools/call readonly.list_folders succeeds end-to-end (envelope +
+   CallToolResult + per-tool schema), proving readonly dispatch and
+   advertisement work as well as denial,
+3. tools/call readonly.move_message returns the pinned posture-denial
+   JSON-RPC error envelope, and
+4. both the success and denial tool_start/tool_end audit pairs carry
    account=\"readonly\" (not collapsed to legacy None) — proving the
    audit boundary is correctly scoped under the read-only namespace
    even though DEFAULT_ACCOUNT_NAME would collapse it.
