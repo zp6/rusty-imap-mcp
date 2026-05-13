@@ -609,12 +609,16 @@ impl ReservedPort {
 const STALE_PROJECT_AGE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 fn uuid_like() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{nanos:x}")
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos:x}-{pid:x}-{n:x}")
 }
 
 use rimap_audit::{AuditOptions, AuditWriter, Seq};
