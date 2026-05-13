@@ -201,6 +201,32 @@ tempfile = "3.14"
 proptest = "1.6"
 temp-env = "0.3"
 insta = { version = "1.47", features = ["json"] }
+# JSON Schema validator used only by integration tests
+# (crates/rimap-server/tests/mcp_wire_conformance.rs) to validate MCP
+# JSON-RPC envelopes against the vendored MCP spec schemas. Pure-Rust,
+# Draft 2020-12 capable. Test-only scope — not shipped in release
+# binaries — so the audit bar is lighter than for runtime deps.
+# SC-PROC-01 review 2026-05-12: relative to the prior workspace
+# lockfile this entry adds 22 new transitives. Build-time-executed
+# surface (3 crates, all local-only codegen with no network,
+# filesystem-outside-`OUT_DIR`, or arbitrary process spawn):
+#   - `ahash 0.8.12`              — build.rs calls `version_check` to
+#                                   gate stable-vs-nightly rustc
+#                                   intrinsics; no net/fs/process.
+#   - `unicode-general-category 1.1.0`
+#                                 — build.rs emits a UAX #44 category
+#                                   lookup table to `OUT_DIR` from the
+#                                   in-crate `src/tables.rs`.
+#   - `version_check 0.9.5`       — pure library; no build.rs of its
+#                                   own, but invoked from `ahash`'s
+#                                   build.rs at compile time.
+# Remaining 19 new transitives are pure-data (no build.rs, no
+# proc-macros): `borrow-or-share`, `bytecount`, `data-encoding`,
+# `fancy-regex`, `fluent-uri`, `fraction`, `jsonschema`, `micromap`,
+# `num`, `num-bigint`, `num-cmp`, `num-complex`, `num-integer`,
+# `num-iter`, `num-rational`, `outref`, `referencing`, `uuid-simd`,
+# `vsimd`.
+jsonschema = { version = "0.46", default-features = false }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

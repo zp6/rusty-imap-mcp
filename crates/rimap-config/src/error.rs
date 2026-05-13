@@ -163,6 +163,13 @@ pub enum ConfigError {
     #[error(transparent)]
     InvalidAccountName(#[from] InvalidAccountName),
     /// Multi-account config has an empty `[[accounts]]` array.
+    ///
+    /// Codex adversarial review (PR #270, 2026-05-12) flagged that
+    /// silently accepting empty-accounts configs in production makes
+    /// broken deployments look identical to healthy zero-data servers.
+    /// The check stays in production; tests opt in via
+    /// [`crate::validate::validate_multi_allowing_empty`] behind the
+    /// `test-support` feature.
     #[error("no accounts defined in [[accounts]] array")]
     NoAccounts,
 }

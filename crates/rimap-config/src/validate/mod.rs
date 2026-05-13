@@ -72,7 +72,30 @@ pub fn validate_multi(config: MultiAccountConfig) -> Result<ValidatedMultiConfig
     if config.accounts.is_empty() {
         return Err(ConfigError::NoAccounts);
     }
+    validate_multi_inner(config)
+}
 
+/// Variant of [`validate_multi`] that skips the empty-accounts
+/// rejection. Used exclusively by the wire-conformance harness so the
+/// production server can fail-fast on `accounts = []` while tests
+/// still spawn an infrastructure-only binary. Gated behind the
+/// `test-support` feature.
+///
+/// # Errors
+/// Same surface as [`validate_multi`], minus `ConfigError::NoAccounts`
+/// for empty multi-account configs.
+#[cfg(feature = "test-support")]
+pub fn validate_multi_allowing_empty(
+    config: MultiAccountConfig,
+) -> Result<ValidatedMultiConfig, ConfigError> {
+    validate_multi_inner(config)
+}
+
+/// Shared body of [`validate_multi`] and (under `test-support`)
+/// [`validate_multi_allowing_empty`]. Performs per-account validation
+/// and global path checks; does not enforce the non-empty accounts
+/// invariant — callers must do that when required.
+fn validate_multi_inner(config: MultiAccountConfig) -> Result<ValidatedMultiConfig, ConfigError> {
     let mut accounts = BTreeMap::new();
     for raw in config.accounts {
         let id = AccountId::new(&raw.name)?;
@@ -626,6 +649,8 @@ path = "/tmp/audit.jsonl"
 
     use crate::model::{DefaultsConfig, MultiAccountConfig, RawAccountConfig};
     use crate::validate::validate_multi;
+    #[cfg(feature = "test-support")]
+    use crate::validate::validate_multi_allowing_empty;
 
     fn base_multi_config(
         audit_dir: &std::path::Path,
@@ -751,11 +776,30 @@ allowed_base_dir = "{}"
     }
 
     #[test]
-    fn no_accounts_rejected() {
+    fn empty_accounts_array_rejected_by_production_validator() {
+        // Production must fail-fast on `accounts = []` so operators
+        // immediately see a broken deployment instead of a healthy
+        // zero-data server (Codex adversarial review on PR #270).
         let dir = TempDir::new().unwrap();
         let cfg = base_multi_config(dir.path(), vec![]);
         let err = validate_multi(cfg).unwrap_err();
-        assert!(matches!(err, ConfigError::NoAccounts));
+        assert!(
+            matches!(err, ConfigError::NoAccounts),
+            "expected ConfigError::NoAccounts, got {err:?}",
+        );
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn empty_accounts_array_validates_under_test_support() {
+        // Mirror of the previous task's intent, now routed through the
+        // test-only relaxed validator. The wire-conformance harness
+        // depends on this path to spawn the binary with `accounts = []`
+        // (Codex review on PR #270).
+        let dir = TempDir::new().unwrap();
+        let cfg = base_multi_config(dir.path(), vec![]);
+        let validated = validate_multi_allowing_empty(cfg).unwrap();
+        assert!(validated.accounts.is_empty());
     }
 
     #[test]

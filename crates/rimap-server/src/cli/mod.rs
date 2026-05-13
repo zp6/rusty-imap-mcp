@@ -34,6 +34,15 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// Skip the empty-accounts rejection in `rimap_config::validate_multi`.
+    /// Used by the wire-conformance harness (#263) so the binary can
+    /// boot with `accounts = []`. Hidden from `--help` because it is a
+    /// test-only knob; compiled out entirely when the `test-support`
+    /// feature is off.
+    #[cfg(feature = "test-support")]
+    #[arg(long, hide = true)]
+    pub allow_empty_accounts: bool,
+
     /// Subcommand (optional; default is the MCP server loop — not yet implemented).
     #[command(subcommand)]
     pub command: Option<Command>,

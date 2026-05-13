@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- MCP wire-shape conformance test
+  (`crates/rimap-server/tests/mcp_wire_conformance.rs`) — spawns the
+  binary, drives JSON-RPC over stdio, and validates every response
+  against the vendored MCP spec schema. Permanent regression net for
+  #261 (empty capabilities) and `fix/tool-input-schema-object-type`
+  (empty inputSchema). Issue #263.
+- `scripts/refresh-mcp-spec.sh` to refresh or drift-check the vendored
+  MCP spec schema.
+- `.github/workflows/mcp-spec-drift.yml` — weekly check that opens a
+  tracking issue when the vendored MCP schema differs from upstream.
+
+### Changed
+
+- `rimap-config` now accepts configs with `accounts = []`. The server
+  boots in infrastructure-only mode (only `list_accounts` /
+  `use_account` are functionally useful). Unblocks the wire-conformance
+  harness. Removes `ConfigError::NoAccounts`.
+
 ### Fixed
 
 - `list_folders` and `list_accounts` now advertise a proper
