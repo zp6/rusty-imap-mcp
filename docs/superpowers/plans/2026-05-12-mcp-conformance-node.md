@@ -473,11 +473,88 @@ Read once from `process.env.RUSTY_IMAP_MCP_BIN`, falling back to a path computed
 
 - [ ] **Step 2: Write the failing test at `tests/mcp-conformance/src/raw-harness.test.ts`**
 
-```ts
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { spawnRaw, type RawHandles } from "./raw-harness.js";
+The first block of tests targets `assertEnvelopeValid` as a pure
+function — it can be unit-tested without spawning a child. The
+second block exercises the live harness against the binary.
 
-describe("raw-harness", () => {
+```ts
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  assertEnvelopeValid,
+  spawnRaw,
+  type JsonRpcResponse,
+  type RawHandles,
+} from "./raw-harness.js";
+
+describe("assertEnvelopeValid", () => {
+  it("accepts a well-formed result envelope", () => {
+    const ok: JsonRpcResponse = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: { foo: "bar" },
+    };
+    expect(() => { assertEnvelopeValid(ok, 1); }).not.toThrow();
+  });
+
+  it("accepts a well-formed error envelope", () => {
+    const err: JsonRpcResponse = {
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -32601, message: "method not found" },
+    };
+    expect(() => { assertEnvelopeValid(err, 1); }).not.toThrow();
+  });
+
+  it("rejects a missing jsonrpc field", () => {
+    const bad = { id: 1, result: {} } as unknown as JsonRpcResponse;
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/jsonrpc/);
+  });
+
+  it("rejects a wrong jsonrpc value", () => {
+    const bad = { jsonrpc: "1.0", id: 1, result: {} } as unknown as JsonRpcResponse;
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/jsonrpc/);
+  });
+
+  it("rejects mismatched id", () => {
+    const bad: JsonRpcResponse = { jsonrpc: "2.0", id: 99, result: {} };
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/id/);
+  });
+
+  it("rejects an envelope with both result and error", () => {
+    const bad = {
+      jsonrpc: "2.0",
+      id: 1,
+      result: {},
+      error: { code: -1, message: "x" },
+    } as unknown as JsonRpcResponse;
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/exactly one/);
+  });
+
+  it("rejects an envelope with neither result nor error", () => {
+    const bad = { jsonrpc: "2.0", id: 1 } as unknown as JsonRpcResponse;
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/exactly one/);
+  });
+
+  it("rejects an error envelope with non-numeric code", () => {
+    const bad = {
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: "not-a-number", message: "x" },
+    } as unknown as JsonRpcResponse;
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/error\.code/);
+  });
+
+  it("rejects an error envelope with missing message", () => {
+    const bad = {
+      jsonrpc: "2.0",
+      id: 1,
+      error: { code: -1 },
+    } as unknown as JsonRpcResponse;
+    expect(() => { assertEnvelopeValid(bad, 1); }).toThrow(/error\.message/);
+  });
+});
+
+describe("raw-harness (live)", () => {
   let harness: RawHandles | undefined;
 
   afterEach(async () => {
@@ -500,7 +577,7 @@ describe("raw-harness", () => {
     expect(response.jsonrpc).toBe("2.0");
     expect(response.id).toBe(1);
     expect(response.result).toBeDefined();
-    expect(response.result?.protocolVersion).toBe("2025-11-25");
+    expect(response.result?.["protocolVersion"]).toBe("2025-11-25");
   });
 
   it("reports no stdout response within a window after a notification", async () => {
@@ -554,6 +631,73 @@ export interface JsonRpcError {
 }
 
 export type JsonRpcResponse = JsonRpcSuccess | JsonRpcError;
+
+/**
+ * Validates a parsed JSON-RPC envelope received over stdio.
+ * Mirrors Phase 1's `assert_envelope_valid` (Rust:
+ * `crates/rimap-server/tests/mcp_wire_conformance.rs`). Phase 2's
+ * regression net for negative-path wire tests depends on this:
+ * without it, `request()` could happily return a malformed payload
+ * and the only thing the unknown-method test would catch is `code`
+ * and `message`, missing structural drift (missing `jsonrpc`,
+ * simultaneous `result`+`error`, non-numeric `error.code`, etc).
+ *
+ * Throws a descriptive `Error` on any structural violation.
+ */
+export function assertEnvelopeValid(
+  response: JsonRpcResponse,
+  expectedId: number,
+): void {
+  const env = response as Record<string, unknown>;
+
+  if (env["jsonrpc"] !== "2.0") {
+    throw new Error(
+      `envelope must declare jsonrpc="2.0"; got ${JSON.stringify(env["jsonrpc"])}`,
+    );
+  }
+
+  if (env["id"] !== expectedId) {
+    throw new Error(
+      `response id ${JSON.stringify(env["id"])} did not match request id ${expectedId}`,
+    );
+  }
+
+  const hasResult = Object.prototype.hasOwnProperty.call(env, "result");
+  const hasError = Object.prototype.hasOwnProperty.call(env, "error");
+
+  if (hasResult === hasError) {
+    throw new Error(
+      `envelope must contain exactly one of \`result\` or \`error\`; got result=${hasResult} error=${hasError}`,
+    );
+  }
+
+  if (hasResult) {
+    const result = env["result"];
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+      throw new Error(
+        `envelope.result must be an object; got ${JSON.stringify(result)}`,
+      );
+    }
+  } else {
+    const error = env["error"];
+    if (error === null || typeof error !== "object" || Array.isArray(error)) {
+      throw new Error(
+        `envelope.error must be an object; got ${JSON.stringify(error)}`,
+      );
+    }
+    const errObj = error as Record<string, unknown>;
+    if (typeof errObj["code"] !== "number") {
+      throw new Error(
+        `envelope.error.code must be a number; got ${JSON.stringify(errObj["code"])}`,
+      );
+    }
+    if (typeof errObj["message"] !== "string") {
+      throw new Error(
+        `envelope.error.message must be a string; got ${JSON.stringify(errObj["message"])}`,
+      );
+    }
+  }
+}
 
 export interface RawHandles {
   request(method: string, params: unknown): Promise<JsonRpcResponse>;
@@ -661,9 +805,10 @@ export async function spawnRaw(): Promise<RawHandles> {
       throw new Error(`stdout closed before responding to ${method}`);
     }
     const parsed = JSON.parse(line) as JsonRpcResponse;
-    if (parsed.id !== id) {
-      throw new Error(`response id ${parsed.id} did not match request id ${id}`);
-    }
+    // Full envelope validation — matches Phase 1's `assert_envelope_valid`.
+    // Without this, negative-path tests (unknown method, unknown tool)
+    // could pass against a malformed error envelope.
+    assertEnvelopeValid(parsed, id);
     return parsed;
   }
 
@@ -883,15 +1028,22 @@ git commit -m "test(mcp): add sdk-harness for Phase 2 conformance (#264)"
 
 ---
 
-### Task 7: Implement wire tests 1–3 (SDK: smoke, capabilities, version negotiation)
+### Task 7: Implement wire tests 1 and 2 (SDK: smoke + capabilities)
+
+Test 3 (version negotiation) is deliberately NOT in this task. The
+SDK's `Client` does not expose the server's negotiated
+`protocolVersion` through a stable public accessor at version 1.29.0;
+relying on `(client as any).protocolVersion` would let the test pass
+when that property is `undefined`, silently voiding the regression
+net. Test 3 is implemented in Task 9 against the raw harness, where
+`result.protocolVersion` can be read directly from the wire.
 
 **Files:**
 - Create: `tests/mcp-conformance/src/wire.test.ts`
 
-- [ ] **Step 1: Write the three test cases**
+- [ ] **Step 1: Write the two test cases**
 
 ```ts
-import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { spawnSdk, type SdkHandles } from "./sdk-harness.js";
@@ -930,33 +1082,10 @@ describe("wire conformance (SDK harness)", () => {
       "capabilities.tools must be advertised — regression net for #261",
     ).toBeDefined();
   });
-
-  it("wire_protocol_version_negotiation_matches_vendored_schema (SDK)", async () => {
-    // Four-way drift check (extends Phase 1's three-way):
-    //   1. SDK's LATEST_PROTOCOL_VERSION constant
-    //   2. literal "2025-11-25" pinned in this test
-    //   3. Phase 1's PINNED_PROTOCOL_VERSION + fixture dir + rmcp::ProtocolVersion::LATEST
-    //   4. negotiated value returned by the server
-    expect(
-      LATEST_PROTOCOL_VERSION,
-      "SDK's LATEST drifted from this test's pinned literal — refresh both",
-    ).toBe(PINNED_PROTOCOL_VERSION);
-
-    harness = await spawnSdk();
-    const info = harness.client.getServerVersion();
-    expect(info).toBeDefined();
-    // The SDK exposes the negotiated protocolVersion via the
-    // implementation-info / capabilities chain depending on the version.
-    // If client.getServerVersion() does not return it directly, fall
-    // back to inspecting `client.transport` or read from the
-    // initialize response via a getter on the SDK. (Task 3 should
-    // have confirmed the surface; adjust this line accordingly.)
-    const negotiated = (harness.client as { protocolVersion?: string }).protocolVersion;
-    if (negotiated !== undefined) {
-      expect(negotiated).toBe(PINNED_PROTOCOL_VERSION);
-    }
-  });
 });
+
+// PINNED_PROTOCOL_VERSION is consumed by Task 9's raw-harness block,
+// which appends to this same file. Keep it as a module-scoped const.
 ```
 
 - [ ] **Step 2: Run the tests, verify pass**
@@ -968,7 +1097,7 @@ cd tests/mcp-conformance
 RUSTY_IMAP_MCP_BIN=$(pwd)/../../target/debug/rusty-imap-mcp pnpm test src/wire.test.ts
 ```
 
-Expected: 3 tests pass. If the third test's `negotiated` reading is wrong shape (Task 3 should have confirmed), update it to the actual accessor before continuing.
+Expected: 2 tests pass.
 
 - [ ] **Step 3: Type-check**
 
@@ -982,7 +1111,7 @@ Expected: 0 errors.
 
 ```bash
 git add tests/mcp-conformance/src/wire.test.ts
-git commit -m "test(mcp): add wire tests 1-3 (smoke, capabilities, version) (#264)"
+git commit -m "test(mcp): add wire tests 1-2 (smoke, capabilities) (#264)"
 ```
 
 ---
@@ -1072,7 +1201,15 @@ git commit -m "test(mcp): add wire tests 5-7 (tools, resources, unknown tool) (#
 
 ---
 
-### Task 9: Implement wire tests 4, 8, 9 (Raw: no-response, unknown method, clean EOF)
+### Task 9: Implement wire tests 3, 4, 8, 9 (Raw: version negotiation, no-response, unknown method, clean EOF)
+
+Test 3 (version negotiation) lives here, not with the SDK tests:
+`client.protocolVersion` is not a stable accessor at SDK 1.29.0, so
+reading the negotiated version from the wire via the raw harness is
+the only way to make the assertion unconditional. The SDK's
+`LATEST_PROTOCOL_VERSION` constant is still imported and checked,
+giving the four-way drift comparison: SDK constant ↔ test literal ↔
+server response ↔ Phase 1's vendored fixture / rmcp constant.
 
 **Files:**
 - Modify: `tests/mcp-conformance/src/wire.test.ts`
@@ -1082,6 +1219,8 @@ git commit -m "test(mcp): add wire tests 5-7 (tools, resources, unknown tool) (#
 Append to the end of `wire.test.ts`:
 
 ```ts
+import { LATEST_PROTOCOL_VERSION } from "@modelcontextprotocol/sdk/types.js";
+
 import { spawnRaw, type RawHandles } from "./raw-harness.js";
 
 describe("wire conformance (raw harness)", () => {
@@ -1097,10 +1236,41 @@ describe("wire conformance (raw harness)", () => {
     }
   });
 
+  it("wire_protocol_version_negotiation_matches_vendored_schema (Raw)", async () => {
+    // Four-way drift check (extends Phase 1's three-way):
+    //   1. SDK's LATEST_PROTOCOL_VERSION constant
+    //   2. PINNED_PROTOCOL_VERSION literal pinned in this test file
+    //   3. negotiated value returned by the server on the wire
+    //   4. Phase 1's PINNED_PROTOCOL_VERSION + fixture dir + rmcp::ProtocolVersion::LATEST
+    // The wire read is direct — no optional/escape-hatch path. If the
+    // server fails to echo the version, the test fails hard.
+    expect(
+      LATEST_PROTOCOL_VERSION,
+      "SDK's LATEST drifted from this test's pinned literal — refresh both",
+    ).toBe(PINNED_PROTOCOL_VERSION);
+
+    raw = await spawnRaw();
+    const response = await raw.request("initialize", {
+      protocolVersion: PINNED_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "raw-self", version: "0.0.0" },
+    });
+    expect(response.result, "initialize must produce a result envelope").toBeDefined();
+    const negotiated = response.result?.["protocolVersion"];
+    expect(
+      typeof negotiated,
+      "result.protocolVersion must be a string on the wire",
+    ).toBe("string");
+    expect(
+      negotiated,
+      "server must echo the pinned protocol version on the wire",
+    ).toBe(PINNED_PROTOCOL_VERSION);
+  });
+
   it("wire_initialized_notification_elicits_no_response (Raw)", async () => {
     raw = await spawnRaw();
     await raw.request("initialize", {
-      protocolVersion: "2025-11-25",
+      protocolVersion: PINNED_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "raw-self", version: "0.0.0" },
     });
@@ -1111,22 +1281,26 @@ describe("wire conformance (raw harness)", () => {
   it("wire_unknown_method_returns_minus_32601 (Raw)", async () => {
     raw = await spawnRaw();
     await raw.request("initialize", {
-      protocolVersion: "2025-11-25",
+      protocolVersion: PINNED_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "raw-self", version: "0.0.0" },
     });
     await raw.notify("notifications/initialized", {});
 
+    // The raw harness now validates the full envelope inside
+    // request() (jsonrpc==2.0, matching id, exactly-one-of, error
+    // structural shape). The test below adds the JSON-RPC-specific
+    // semantic check (the code value).
     const response = await raw.request("rimap/no_such_method", {});
     expect(response.error, "expected error envelope").toBeDefined();
     expect(response.error?.code, "JSON-RPC method-not-found code").toBe(-32601);
-    expect(typeof response.error?.message, "error.message must be a string").toBe("string");
+    expect(response.error?.message.length, "error.message must be non-empty").toBeGreaterThan(0);
   });
 
   it("wire_clean_eof_shutdown_exits_zero (Raw)", async () => {
     raw = await spawnRaw();
     await raw.request("initialize", {
-      protocolVersion: "2025-11-25",
+      protocolVersion: PINNED_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: "raw-self", version: "0.0.0" },
     });
@@ -1145,7 +1319,7 @@ describe("wire conformance (raw harness)", () => {
 RUSTY_IMAP_MCP_BIN=$(pwd)/../../target/debug/rusty-imap-mcp pnpm test src/wire.test.ts
 ```
 
-Expected: 9 wire tests pass.
+Expected: 9 wire tests pass total (2 SDK from Task 7 + 3 SDK from Task 8 + 4 Raw from this task).
 
 - [ ] **Step 3: Run the full suite (config + harness self-tests + wire tests)**
 
@@ -1167,7 +1341,7 @@ Expected: 0 errors.
 
 ```bash
 git add tests/mcp-conformance/src/wire.test.ts
-git commit -m "test(mcp): add wire tests 4, 8, 9 (raw-harness path) (#264)"
+git commit -m "test(mcp): add wire tests 3, 4, 8, 9 (raw-harness path) (#264)"
 ```
 
 ---
@@ -1651,7 +1825,7 @@ Expected: list now includes `mcp-conformance (Node)`.
 | §3.2 Two harness flavors | T5, T6 |
 | §3.3 SDK harness | T6 |
 | §3.4 Raw harness | T5 |
-| §3.5 9 test cases | T7, T8, T9 |
+| §3.5 9 test cases | T7 (tests 1-2 SDK), T8 (tests 5-7 SDK), T9 (tests 3, 4, 8, 9 Raw — test 3 moved here because SDK Client at 1.29.0 has no stable accessor for the negotiated protocolVersion; raw read of `result.protocolVersion` is the only way to assert unconditionally) |
 | §4.1 justfile target | T10 |
 | §4.2 package.json | T1 |
 | §4.3 .npmrc | T1 |
@@ -1667,6 +1841,6 @@ Expected: list now includes `mcp-conformance (Node)`.
 
 **Placeholder scan** — no TBDs, no "implement later," every step has concrete code or commands.
 
-**Type consistency** — `RawHandles`, `SdkHandles`, `JsonRpcResponse`, `JsonRpcSuccess`, `JsonRpcError`, `buildConfigToml`, `spawnRaw`, `spawnSdk` are defined in T4/T5/T6 and referenced consistently in T7/T8/T9. Method names `request`, `notify`, `assertNoResponseWithin`, `shutdownAndWait`, `close` match across raw-harness implementation and call sites.
+**Type consistency** — `RawHandles`, `SdkHandles`, `JsonRpcResponse`, `JsonRpcSuccess`, `JsonRpcError`, `assertEnvelopeValid`, `buildConfigToml`, `spawnRaw`, `spawnSdk` are defined in T4/T5/T6 and referenced consistently in T7/T8/T9. Method names `request`, `notify`, `assertNoResponseWithin`, `shutdownAndWait`, `close` match across raw-harness implementation and call sites. `assertEnvelopeValid` is exported from `raw-harness.ts` so its tests can target it directly, and it is called from inside `request()` on every wire response.
 
 **Type-checking caveat:** Task 3 ground-truths the SDK API surface before T6/T7 commit; if names diverge (e.g. `client.getServerVersion()` doesn't exist at v1.29.0 or `protocolVersion` is exposed via a different accessor), the affected tasks document the adjustment inline.
