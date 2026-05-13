@@ -103,6 +103,8 @@ crates/rimap-server/tests/
         ├── fetch_message.schema.json
         ├── mark_read.schema.json
         ├── mark_unread.schema.json
+        ├── flag.schema.json
+        ├── unflag.schema.json
         ├── add_label.schema.json
         ├── remove_label.schema.json
         ├── move_message.schema.json
@@ -243,6 +245,8 @@ fn dump_tool_schemas() -> Result<()> {
     out.insert("list_labels",   g.root_schema_for::<ListLabelsMeta>());
     out.insert("mark_read",     g.root_schema_for::<FlagsMeta>());
     out.insert("mark_unread",   g.root_schema_for::<FlagsMeta>());
+    out.insert("flag",          g.root_schema_for::<FlagsMeta>());
+    out.insert("unflag",        g.root_schema_for::<FlagsMeta>());
     out.insert("add_label",     g.root_schema_for::<LabelsMeta>());
     out.insert("remove_label",  g.root_schema_for::<LabelsMeta>());
     out.insert("move_message",  g.root_schema_for::<MoveMessageMeta>());
@@ -284,14 +288,20 @@ the existing `Serialize` derive on each struct, gated behind
 does not depend on `schemars`.
 
 Tools advertised by the server but not in the dump set
-(`flag`, `unflag`, `send_email`, `delete_message`, `expunge`,
-`create_folder`, `rename_folder`, `delete_folder`) are out of scope
-for Phase 3 — they are either gated by postures Phase 3 does not
-exercise (`ready-to-send`, mutating-folder operations the suite does
-not seed for) or covered transitively by sibling tools with identical
-response shapes (`flag` ↔ `mark_read`, both produce `FlagsMeta`).
-They can be added in a follow-up without spec churn — the regen
-recipe just needs another line.
+(`send_email`, `delete_message`, `expunge`, `create_folder`,
+`rename_folder`, `delete_folder`) are out of scope for Phase 3 — they
+are gated by postures Phase 3 does not exercise (`ready-to-send`,
+mutating-folder operations) or require seeded state the suite does not
+build (folder lifecycle). They can be added in a follow-up without
+spec churn — the regen recipe just needs another line and the test
+sequence one more `tools/call`.
+
+`flag` and `unflag` *are* in scope despite sharing `FlagsMeta` with
+`mark_read`/`mark_unread`: schema equivalence does not imply dispatch
+equivalence. They have separate `ToolName` variants, separate
+posture-matrix entries, separate handler functions, and mutate a
+different IMAP flag (`\Flagged` vs `\Seen`). A regression in either
+would pass a `mark_read`-only test.
 
 ### 4.5 `e2e_wire.rs`
 
@@ -314,12 +324,22 @@ Two `#[tokio::test]` cases:
 
 `support::wire::config::build_dovecot_config(harness, audit_path,
 allowed_base) -> String` writes a `[[accounts]]`-table TOML with two
-accounts (`default` draft-safe, `readonly` read-only) both pointing at
+accounts (`draftsafe` draft-safe, `readonly` read-only) both pointing at
 Dovecot's seeded `rimap-test` user.
 
 Two MCP accounts, one Dovecot user. The surface under test is the
 posture matrix on the wire; auth isolation is `rimap-imap`'s concern
 and is already tested there.
+
+**Why not the id `default`.** `crates/rimap-server/src/mcp/server.rs`
+records `account = None` in audit envelopes for any account whose id
+equals `rimap_core::account::DEFAULT_ACCOUNT_NAME` (`"default"`), even
+in multi-account deployments — a backwards-compat carve-out for the
+legacy single-account path. Naming one of the two test accounts
+`default` would mask the very thing the suite is meant to verify: that
+account-scoped tool calls are attributed to the right tenant in the
+audit log. Both Phase 3 accounts therefore use non-reserved ids
+(`draftsafe`, `readonly`).
 
 Because the test config has more than one account, the binary
 advertises namespaced tool names (`<account>.<tool>`) — the same
@@ -335,30 +355,58 @@ intentional additional coverage.
 2. harness.create_mailbox("Drafts")
    harness.create_mailbox("Trash")
 3. Build multi-account TOML in tempdir:
-     - [[accounts]] id="default"   posture="draft-safe"  → rimap-test@dovecot
+     - [[accounts]] id="draftsafe" posture="draft-safe"  → rimap-test@dovecot
      - [[accounts]] id="readonly"  posture="read-only"   → rimap-test@dovecot
      - [audit] path=<tempdir>/audit.jsonl  allowed_base_dir=<tempdir>
-4. Seed one message into INBOX via in-process Connection::append_message
-   (same path e2e.rs uses; no MCP tool appends an arbitrary raw message —
-   create_draft is opinionated).
+   (Neither id is "default" — see §4.6 for why DEFAULT_ACCOUNT_NAME
+   would mask audit attribution.)
+4. Seed one multipart MIME message into INBOX via in-process
+   Connection::append_message. The seed body has at least one
+   non-trivial attachment part (e.g. `application/octet-stream` with
+   filename `attached.bin` and a known byte payload) so the wire
+   `list_attachments` and `download_attachment` calls in step 9
+   exercise the real-bytes path, not an empty-list edge. The seed is
+   built once in `support::dovecot::fixtures::multipart_with_attachment()`.
 5. Harness::spawn_with_config(config_path)
 6. initialize → assert_valid(InitializeResult); capture protocol version
 7. notifications/initialized
 8. tools/list → assert_valid(ListToolsResult)
    - Build a map { tool_name → tool_def } from the response
-   - Assert namespaced names exist: default.list_folders, readonly.list_folders, etc.
+   - Assert namespaced names exist: draftsafe.list_folders,
+     readonly.list_folders, etc.
    - Assert read-only namespace LACKS mutating tools
-     (move_message, create_draft, mark_read, …)
+     (move_message, create_draft, mark_read, mark_unread, flag, unflag,
+     add_label, remove_label, …)
 9. For each step in the e2e_full_session sequence + issue-named extras:
-     a. tools/call name="default.<tool>" arguments=<json>
+     a. tools/call name="draftsafe.<tool>" arguments=<json>
      b. assert_envelope_valid(response)
      c. assert_valid(response.result.structuredContent, tool_response_schema)
      d. Apply the same behavioral assertion e2e.rs makes
         (folders contains INBOX; search returns the seed uid; …)
+   The sequence covers:
+     - list_folders                                  (list/folders)
+     - list_attachments → assert ≥1 part with a non-empty `part_id`
+     - download_attachment → assert the downloaded path is under the
+       per-account `download_dir` (sandboxed) and bytes equal the
+       seed attachment payload
+     - list_labels                                   (list/labels)
+     - search → fetch_message (round-trip the seed uid)
+     - mark_read / mark_unread                       (flag mutation,
+       Seen)
+     - flag / unflag                                 (flag mutation,
+       Flagged — distinct ToolName variants from mark_read/unread)
+     - add_label / remove_label                      (label mutation)
+     - create_draft × 2                              (one with
+       in_reply_to_uid, one bare)
+     - move_message → re-search to assert it's gone from INBOX
+     - use_account (admin, switches to readonly), list_accounts
 10. shutdown_and_wait() → assert exit 0
 11. Read audit.jsonl, group records by (tool_start, tool_end):
-    - For each tools/call from step 9, exactly one tool_start + one tool_end
-    - tool_end.start_seq == tool_start.seq (pairing invariant)
+    - For each account-scoped tools/call from step 9: exactly one
+      tool_start + one tool_end, both carrying `account = "draftsafe"`.
+    - For each infrastructure tools/call (`use_account`,
+      `list_accounts`): both records carry `account = None`.
+    - tool_end.start_seq == tool_start.seq (pairing invariant).
 ```
 
 ### 5.2 `wire_e2e_readonly_posture_denial`
@@ -367,7 +415,7 @@ intentional additional coverage.
 1-7. Same harness/initialize/initialized as above.
 8. tools/list →
    - Assert readonly.move_message is NOT advertised.
-   - Assert default.move_message IS advertised.
+   - Assert draftsafe.move_message IS advertised.
 9. tools/call name="readonly.move_message"
    arguments={"folder":"INBOX","destination":"Trash","uid":1}
    - assert_envelope_valid(response)
@@ -378,10 +426,12 @@ intentional additional coverage.
      pin on unknown-tool calls).
 10. shutdown_and_wait() → exit 0
 11. Read audit.jsonl → assert exactly one tool_start for
-    readonly.move_message paired with a tool_end carrying the
-    posture-denial outcome (exact field name from the current
-    AuditRecord shape; looked up during plan execution, not pinned
-    in this spec).
+    readonly.move_message carrying `account = "readonly"` (proving
+    the audit boundary is correctly scoped under the read-only
+    namespace, not collapsed to legacy `None`), paired with a
+    tool_end carrying the posture-denial outcome (exact field name
+    from the current AuditRecord shape; looked up during plan
+    execution, not pinned in this spec).
 ```
 
 ### 5.3 Seed strategy
@@ -394,6 +444,29 @@ the seeding step to one of the assertions later in the same flow.
 
 The wire surface is what's being exercised; the seed is plumbing.
 Keeping the seed in-process makes the test's intent honest.
+
+**Seed body shape.** Phase 3's seed differs from `e2e.rs`'s
+`test_message()`. Where `e2e_full_session` uses a single-part
+`text/plain` body — sufficient for its assertions — Phase 3 requires
+a multipart message because the wire flow exercises `list_attachments`
+and `download_attachment`. A `text/plain`-only seed makes both calls
+either empty or error paths, voiding the real-bytes attachment
+regression coverage Phase 3 claims.
+
+`support::dovecot::fixtures::multipart_with_attachment()` constructs a
+`multipart/mixed` MIME message with:
+
+- A `text/plain` body part with deterministic content (so
+  `fetch_message` assertions remain a one-line equality check).
+- One `application/octet-stream` attachment part with
+  `Content-Disposition: attachment; filename="attached.bin"` and a
+  small fixed byte payload (e.g. 16–64 deterministic bytes) so
+  `download_attachment` can byte-compare the downloaded file against
+  the known payload.
+
+The fixture is a `pub const`/`fn` in `support::dovecot::fixtures` so
+both seeds and assertions reference the same payload — no duplication
+between "what was seeded" and "what to compare against."
 
 ## 6. Error Handling
 
@@ -479,16 +552,33 @@ Phase 3's job blurs the line with Phase 4 and inflates this PR.
 
 ## 8. Acceptance criteria (from #265, refined)
 
-- [ ] `cargo test -p rimap-server --tests e2e_wire` exercises at least
-  one wire-driven Dovecot scenario.
+- [ ] `cargo test -p rimap-server --test e2e_wire` exercises at least
+  one wire-driven Dovecot scenario. (`--test` selects the integration
+  target; the earlier `--tests <name>` form would silently degrade to
+  a name-filter that matches nothing and pass with zero tests run.)
+- [ ] CI runs the Phase 3 target via `cargo nextest run -p rimap-server
+  --test e2e_wire` (or the `cargo test` equivalent) wrapped in a
+  zero-tests-selected guard — `nextest`'s `--no-tests=fail` or, with
+  `cargo test`, a `--list` count check — so a future rename / move /
+  delete of the test file cannot produce a green CI signal with no
+  Phase 3 scenarios actually run. Exact flag pinned in the plan.
 - [ ] Coverage of all draft-safe-posture tools named in the issue
   scope is confirmed by tool-call audit records in the captured audit
-  log: list_folders, list_attachments, download_attachment,
-  list_labels, list_accounts, search, fetch_message, mark_read,
+  log, every record carrying the correct account namespace
+  (`draftsafe` for account-scoped tools; `None` for the
+  `use_account` / `list_accounts` infrastructure tools): list_folders,
+  list_attachments, download_attachment, list_labels, list_accounts,
+  search, fetch_message, mark_read, mark_unread, flag, unflag,
   add_label, remove_label, move_message, create_draft, use_account.
+- [ ] Attachment coverage is concrete: the seed is a `multipart/mixed`
+  message with at least one non-trivial attachment; `list_attachments`
+  returns ≥1 part with a non-empty `part_id`; `download_attachment`
+  writes a file inside the sandboxed `download_dir` whose bytes equal
+  the seed attachment's known payload.
 - [ ] Posture denial: at least one mutating tool call against the
   read-only account returns the pinned posture-denial error envelope
-  and produces a paired tool_start/tool_end record in the audit log.
+  and produces a paired tool_start/tool_end record in the audit log
+  carrying `account = "readonly"` (not collapsed to `None`).
 - [ ] Every wire response validates against (a) Phase 1's vendored MCP
   spec envelope/method schemas and (b) the per-tool response schema in
   `tests/fixtures/rimap-tool-schemas/`.
