@@ -30,6 +30,15 @@ pub const PLAIN_BODY: &str = "Hello from the Phase 3 wire-driven e2e smoke test.
 /// with `PLAIN_BODY` and one `application/octet-stream` attachment
 /// part with filename `ATTACHMENT_FILENAME` and payload `ATTACHMENT_BYTES`.
 ///
+/// The filename is duplicated in both the `Content-Type` `name`
+/// parameter and `Content-Disposition` `filename` parameter. IMAP
+/// BODYSTRUCTURE only exposes the Content-Type params dict, so the
+/// `list_attachments` tool reads the filename from there (see
+/// `crates/rimap-server/src/tools/retrieval/list_attachments.rs::extract_filename`);
+/// repeating the value in Content-Disposition matches what real-world
+/// clients send and keeps the fixture forwards-compatible with a
+/// future server-side parser that walks the disposition field.
+///
 /// The Content-Transfer-Encoding for the attachment is `base64`. The
 /// returned bytes are CRLF-terminated as required by RFC 5322.
 #[expect(clippy::expect_used, reason = "test fixture; base64 output is ASCII")]
@@ -60,7 +69,7 @@ pub fn multipart_with_attachment() -> Vec<u8> {
          \r\n\
          {PLAIN_BODY}\r\n\
          --{BOUNDARY}\r\n\
-         Content-Type: application/octet-stream\r\n\
+         Content-Type: application/octet-stream; name=\"{ATTACHMENT_FILENAME}\"\r\n\
          Content-Disposition: attachment; filename=\"{ATTACHMENT_FILENAME}\"\r\n\
          Content-Transfer-Encoding: base64\r\n\
          \r\n\
