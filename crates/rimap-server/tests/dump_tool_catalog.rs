@@ -1,0 +1,54 @@
+//! Integration test for the `dump-tool-catalog` test-support
+//! subcommand (issue #264, Phase 2 Codex follow-up).
+//!
+//! Verifies the CLI subcommand emits the full `TOOL_DEFS` catalog as
+//! line-delimited JSON, with each entry's `inputSchema.type` equal
+//! to `"object"`. The Node conformance harness consumes this output
+//! to drive every tool's schema through the SDK's Zod Tool validator.
+
+#![expect(clippy::expect_used, reason = "integration tests")]
+
+use assert_cmd::cargo::cargo_bin;
+use serde_json::Value;
+use std::process::Command;
+
+#[test]
+fn dump_tool_catalog_emits_object_schemas() {
+    let output = Command::new(cargo_bin("rusty-imap-mcp"))
+        .arg("dump-tool-catalog")
+        .output()
+        .expect("spawn rusty-imap-mcp dump-tool-catalog");
+    assert!(
+        output.status.success(),
+        "dump-tool-catalog must exit 0; stderr: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+
+    // 24 ToolName variants minus 2 sub-capabilities (SearchAdvanced,
+    // FetchMessageHtml) that share schemas with their parents = 22 defs.
+    assert_eq!(
+        lines.len(),
+        22,
+        "expected 22 tool defs (24 ToolName variants - 2 sub-capabilities); got {}",
+        lines.len(),
+    );
+
+    for line in lines {
+        let value: Value = serde_json::from_str(line).expect("each line is JSON");
+        let name = value["name"].as_str().expect("name is string");
+        let schema = &value["inputSchema"];
+        assert!(
+            schema.is_object(),
+            "tool {name}: inputSchema must be an object, got {schema}",
+        );
+        assert_eq!(
+            schema["type"],
+            Value::String("object".to_string()),
+            "tool {name}: inputSchema.type must be \"object\", got {}",
+            schema["type"],
+        );
+    }
+}

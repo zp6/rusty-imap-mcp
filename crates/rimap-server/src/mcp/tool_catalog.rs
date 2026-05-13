@@ -182,7 +182,12 @@ fn tool_spec(name: ToolName) -> Option<ToolSpec> {
 
 /// Memoized MCP tool definitions. Built once at first access; each
 /// `list_tools` call reuses the same `Arc<JsonObject>` for schemas.
-pub(super) static TOOL_DEFS: std::sync::LazyLock<HashMap<ToolName, Tool>> =
+///
+/// `pub` so the binary's test-support `dump-tool-catalog` subcommand
+/// (#264) can iterate the catalog from outside the library crate. The
+/// parent `mcp` module is `#[doc(hidden)]` so this does not become a
+/// stable library API.
+pub static TOOL_DEFS: std::sync::LazyLock<HashMap<ToolName, Tool>> =
     std::sync::LazyLock::new(|| {
         let mut map = HashMap::new();
         for tn in ToolName::all() {

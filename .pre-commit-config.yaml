@@ -73,6 +73,22 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: ts-typecheck
+        name: tsc --noEmit + oxlint (mcp-conformance)
+        entry: bash -c 'cd tests/mcp-conformance && pnpm install --frozen-lockfile --silent && pnpm lint'
+        language: system
+        files: '^tests/mcp-conformance/.*\.(ts|json|jsonc)$'
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: ts-format-check
+        name: oxfmt --check (mcp-conformance)
+        entry: bash -c 'cd tests/mcp-conformance && pnpm install --frozen-lockfile --silent && pnpm format:check'
+        language: system
+        files: '^tests/mcp-conformance/.*\.ts$'
+        pass_filenames: false
+        stages: [pre-commit]
+
   # Shell script hygiene.
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.10.0.1

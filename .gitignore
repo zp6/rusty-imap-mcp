@@ -10,3 +10,7 @@
 .worktrees/
 .desloppify/
 docs/superpoweres/plans/
+
+# Phase 2 (Node) conformance suite — installed deps and coverage outputs
+tests/mcp-conformance/node_modules/
+tests/mcp-conformance/coverage/

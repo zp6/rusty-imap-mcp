@@ -160,3 +160,61 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@55e44800a8f495208cce6e4e82f5dedb45fcf0ef  # v7.2.0
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  mcp-conformance-node:
+    name: mcp-conformance (Node)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      # libdbus-1-dev + pkg-config are required because the workspace
+      # keyring dependency enables Linux native keyring (secret-service)
+      # support, which links against libdbus at build time. Every
+      # existing Ubuntu Rust build job in this workflow installs these
+      # for the same reason.
+      - name: Install libdbus-1-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9  # v1 (toolchain: 1.94.0) # zizmor: ignore[superfluous-actions]
+        with:
+          toolchain: 1.94.0
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: mcp-conformance-node
+
+      # --features test-support activates the --allow-empty-accounts
+      # CLI flag (#[cfg(feature = "test-support")] in rimap-server).
+      # Without it, the Node harness hits a clap rejection before the
+      # MCP handshake.
+      - name: Build rusty-imap-mcp (debug, test-support)
+        run: cargo build -p rimap-server --bin rusty-imap-mcp --features test-support --locked
+
+      - uses: pnpm/action-setup@91ab88e2619ed1f46221f0ba42d1492c02baf788  # v6.0.6
+        with:
+          version: 11.1.1
+          run_install: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: tests/mcp-conformance/pnpm-lock.yaml
+
+      - name: Install Node deps
+        working-directory: tests/mcp-conformance
+        run: pnpm install --frozen-lockfile
+
+      - name: Type-check
+        working-directory: tests/mcp-conformance
+        run: pnpm lint
+
+      - name: Format check
+        working-directory: tests/mcp-conformance
+        run: pnpm format:check
+
+      - name: Run conformance suite
+        working-directory: tests/mcp-conformance
+        env:
+          RUSTY_IMAP_MCP_BIN: ${{ github.workspace }}/target/debug/rusty-imap-mcp
+        run: pnpm test

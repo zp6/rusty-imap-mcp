@@ -20,6 +20,16 @@ default = []
 # the wire-conformance harness (#263) can boot with `accounts = []`;
 # propagates to `rimap-config/test-support` to expose
 # `load_and_validate_allowing_empty`.
+#
+# CONSTRAINT: code under `#[cfg(feature = "test-support")]` MUST NOT
+# alter any MCP wire-protocol behavior — the initialize handshake,
+# tools/list, resources/list, JSON-RPC error mapping, or notification
+# acceptance. The Phase 2 Node conformance harness (issue #264) spawns
+# this binary with `--features test-support` enabled; if any feature
+# path here changes the wire shape, Phase 2 tests the test-support
+# binary's wire shape rather than the production binary's, silently
+# voiding its regression nets. See:
+#   docs/superpowers/specs/2026-05-12-mcp-conformance-node-design.md §4.7
 test-support = ["rimap-config/test-support"]
 
 [lib]

@@ -104,6 +104,11 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         );
     }
 
+    #[cfg(feature = "test-support")]
+    if let Some(result) = run_test_support_subcommands(&cli) {
+        return result;
+    }
+
     if cli.dry_run {
         let path = resolve_cli_config_path(&cli)?;
         let mut stdout = std::io::stdout().lock();
@@ -344,6 +349,24 @@ fn resolve_download_dir_multi(
             .with_context(|| format!("setting 0700 perms on {}", dir.display()))?;
     }
     Ok(dir)
+}
+
+/// Dispatch subcommands that are gated behind `#[cfg(feature = "test-support")]`.
+///
+/// Returns `Some(result)` if a test-support subcommand handled the request,
+/// or `None` if `cli.command` is not a test-support subcommand and normal
+/// dispatch should continue. Kept as a separate function (rather than
+/// inlined in `run`) so the test-only branch lives outside the production
+/// code path and the `run` body stays under the workspace 100-line cap.
+#[cfg(feature = "test-support")]
+fn run_test_support_subcommands(cli: &Cli) -> Option<anyhow::Result<()>> {
+    if matches!(cli.command, Some(Command::DumpToolCatalog)) {
+        let mut stdout = std::io::stdout().lock();
+        return Some(
+            cli::dump_tool_catalog::dump_tool_catalog(&mut stdout).context("dumping tool catalog"),
+        );
+    }
+    None
 }
 
 /// Handle the `migrate-keyring` subcommand.
