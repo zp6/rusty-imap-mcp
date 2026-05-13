@@ -45,6 +45,7 @@ setup:
             H_ACTIONLINT='brew install actionlint'
             H_ZIZMOR='brew install zizmor'
             H_TYPOS='brew install typos-cli'
+            H_PNPM='brew install pnpm'
             ;;
         fedora)
             H_JUST='sudo dnf install just'
@@ -54,6 +55,7 @@ setup:
             H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
             H_ZIZMOR='cargo install --locked zizmor'
             H_TYPOS='cargo install --locked typos-cli'
+            H_PNPM='npm install -g pnpm@11.1.1'
             ;;
         debian)
             H_JUST='sudo apt install just'
@@ -63,6 +65,7 @@ setup:
             H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
             H_ZIZMOR='cargo install --locked zizmor'
             H_TYPOS='cargo install --locked typos-cli'
+            H_PNPM='npm install -g pnpm@11.1.1'
             ;;
         arch)
             H_JUST='sudo pacman -S just'
@@ -72,6 +75,7 @@ setup:
             H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
             H_ZIZMOR='cargo install --locked zizmor'
             H_TYPOS='cargo install --locked typos-cli'
+            H_PNPM='sudo pacman -S pnpm'
             ;;
         suse)
             H_JUST='sudo zypper install just'
@@ -81,6 +85,7 @@ setup:
             H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
             H_ZIZMOR='cargo install --locked zizmor'
             H_TYPOS='cargo install --locked typos-cli'
+            H_PNPM='npm install -g pnpm@11.1.1'
             ;;
         *)
             H_JUST='cargo install --locked just'
@@ -90,6 +95,7 @@ setup:
             H_ACTIONLINT='go install github.com/rhysd/actionlint/cmd/actionlint@latest'
             H_ZIZMOR='cargo install --locked zizmor'
             H_TYPOS='cargo install --locked typos-cli'
+            H_PNPM='npm install -g pnpm@11.1.1'
             ;;
     esac
     missing=()
@@ -107,6 +113,8 @@ setup:
     need actionlint "$H_ACTIONLINT"
     need zizmor     "$H_ZIZMOR"
     need typos      "$H_TYPOS"
+    need node       "install Node 22 LTS via your package manager or nvm"
+    need pnpm       "$H_PNPM"
     if [ "${#missing[@]}" -ne 0 ]; then
         echo "Missing required tools:"
         printf '  - %s\n' "${missing[@]}"
@@ -224,8 +232,24 @@ deny:
 audit-msrv:
     cargo msrv verify
 
+# Run the Node strict-client conformance suite (issue #264, Phase 2).
+# The binary is built with `--features test-support` so the
+# `--allow-empty-accounts` CLI flag (#[cfg(feature = "test-support")]
+# in rimap-server) is compiled in. A plain `cargo build` produces a
+# binary where clap rejects that flag before the MCP handshake runs.
+# `pnpm lint` (tsc --noEmit) runs BEFORE `pnpm test` so local CI
+# parity matches GitHub Actions, which runs both gates.
+mcp-conformance-node:
+    cargo build -p rimap-server --bin rusty-imap-mcp \
+        --features test-support --locked
+    cd tests/mcp-conformance && pnpm install --frozen-lockfile
+    cd tests/mcp-conformance && pnpm lint
+    cd tests/mcp-conformance && \
+        RUSTY_IMAP_MCP_BIN="{{justfile_directory()}}/target/debug/rusty-imap-mcp" \
+        pnpm test
+
 # Full local-CI equivalent. If this passes, CI will pass.
-ci: fmt-check lint test test-msrv deny
+ci: fmt-check lint test test-msrv deny mcp-conformance-node
     typos
 
 # Re-run pre-commit hooks across all files.
