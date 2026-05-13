@@ -139,3 +139,69 @@ proptest! {
         });
     }
 }
+
+/// Build an arbitrary `arguments` map for `use_account`. Mixes:
+/// - Well-formed argument names (`account`, `name`, etc.) with
+///   wrong value types
+/// - Random argument names with random values
+/// - Empty maps
+fn arb_arguments() -> impl Strategy<Value = Value> {
+    let well_formed_keys = prop_oneof![
+        Just("account".to_string()),
+        Just("name".to_string()),
+        Just("id".to_string()),
+        "[a-z]{1,16}".prop_map(String::from),
+    ];
+    let any_value = prop_oneof![
+        Just(json!(null)),
+        proptest::arbitrary::any::<bool>().prop_map(|b| json!(b)),
+        proptest::arbitrary::any::<i64>().prop_map(|n| json!(n)),
+        "[\\PC]{0,64}".prop_map(|s| json!(s)),
+    ];
+    proptest::collection::hash_map(well_formed_keys, any_value, 0..6).prop_map(|m| {
+        let obj: serde_json::Map<String, Value> = m.into_iter().collect();
+        Value::Object(obj)
+    })
+}
+
+// Property 3: `use_account` with arbitrary argument shapes. With
+// zero accounts configured (the harness's default), every call
+// MUST fail. Stateless by construction.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(
+        std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000)
+    ))]
+
+    #[test]
+    fn prop_tools_call_use_account_argument_shape(
+        arguments in arb_arguments(),
+    ) {
+        runtime().block_on(async move {
+            let harness = HARNESS.lock().expect("HARNESS lock").take();
+            let harness = with_live_harness(harness, |mut h| async move {
+                let response = h
+                    .request(
+                        "tools/call",
+                        json!({
+                            "name": "use_account",
+                            "arguments": arguments,
+                        }),
+                    )
+                    .await;
+                let is_envelope_error = response.get("error").is_some();
+                let is_tool_error = response["result"]["isError"]
+                    .as_bool()
+                    .unwrap_or(false);
+                assert!(
+                    is_envelope_error || is_tool_error,
+                    "use_account with arbitrary args must fail (no accounts configured), got {response}",
+                );
+                h
+            }).await;
+            *HARNESS.lock().expect("HARNESS lock") = harness;
+        });
+    }
+}
