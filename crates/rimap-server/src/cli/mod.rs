@@ -10,6 +10,8 @@
 
 pub(crate) mod audit_merge;
 pub(crate) mod dry_run;
+#[cfg(feature = "test-support")]
+pub(crate) mod dump_tool_catalog;
 pub(crate) mod migrate_keyring;
 
 use std::path::PathBuf;
@@ -85,6 +87,16 @@ pub enum Command {
         #[command(subcommand)]
         action: AuditAction,
     },
+    /// Print the static MCP tool catalog as line-delimited JSON to
+    /// stdout. Used by the Phase 2 Node conformance harness (#264) to
+    /// validate every tool's `inputSchema` through the SDK's Zod Tool
+    /// definition without standing up a configured account or live
+    /// IMAP server. Hidden from `--help` because it is a test-only
+    /// utility; compiled out entirely when the `test-support` feature
+    /// is off.
+    #[cfg(feature = "test-support")]
+    #[command(name = "dump-tool-catalog", hide = true)]
+    DumpToolCatalog,
 }
 
 /// Actions under `rusty-imap-mcp audit <action>`.

@@ -6,7 +6,11 @@ pub(crate) mod dispatch;
 pub mod error;
 pub mod response;
 pub mod server;
-pub(crate) mod tool_catalog;
+// `tool_catalog` is `pub` (doc-hidden via the parent `#[doc(hidden)] pub mod
+// mcp` in `lib.rs`) so the binary's test-support `dump-tool-catalog`
+// subcommand (#264) can reach `TOOL_DEFS`. Production callers route through
+// `dispatch` and `server` and do not import this module directly.
+pub mod tool_catalog;
 pub(crate) mod tool_name;
 
 /// Render a `tokio::task::JoinError` from `spawn_blocking` as
