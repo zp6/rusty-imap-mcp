@@ -25,7 +25,11 @@ log, posture-based authorization, and rate limiting.
 (`2026-04-12-v2-design.md`), and sprint 3 spec
 (`2026-04-13-sprint-3-design.md`). Read them before making non-trivial
 changes. Sprint-by-sprint implementation plans live in
-[`docs/superpowers/plans/`](docs/superpowers/plans/).
+[`docs/superpowers/plans/`](docs/superpowers/plans/). The Phase 2 MCP Node
+strict-client conformance spec (`2026-05-12-mcp-conformance-node-design.md`)
+extends the Phase 1 wire-conformance work
+(`2026-05-12-mcp-wire-conformance-design.md`) with a Node + TypeScript harness
+that drives `rusty-imap-mcp` through the official `@modelcontextprotocol/sdk`.
 
 ## Repository status
 
