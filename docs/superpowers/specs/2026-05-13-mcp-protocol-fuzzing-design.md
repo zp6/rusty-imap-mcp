@@ -45,22 +45,26 @@ config surface is added.
 - Tool-output schema fuzzing — Phase 4 targets the wire/envelope
   layer; output schemas are validated in Phase 1 and Phase 3.
 - New tools, new config surface, new production code paths. Phase 4
-  is testing only, except for the small `test-support` knob noted in
-  §6.4 if `chmod`-based audit failure injection turns out to be
-  unreliable in CI.
+  is testing only. The audit-failure tests reuse the existing
+  `AuditWriter::force_next_write_failure()` hook (§6.4) rather than
+  introducing any new sink, feature flag, or filesystem trickery.
 
 ## 3. Architecture
 
-Four new test binaries, all reusing the existing `support/wire/`
-module from Phase 1. The harness is extended in place — no new
-struct, no forked spawn path.
+Five new test binaries across two crates, all reusing the existing
+`support/wire/` module from Phase 1 where they cross the wire. The
+harness is extended in place — no new struct, no forked spawn
+path. Four binaries live under `rimap-server/tests/`; the audit-
+layer Drop test lives under `rimap-audit/tests/` (see §4.4.2 for
+the rationale).
 
 | File | Purpose | Spawn config |
 | --- | --- | --- |
 | `crates/rimap-server/tests/mcp_wire_negative.rs` | Malformed JSON, protocol-state errors, version negotiation failures, concurrent in-flight requests. | Zero-account (`Harness::spawn`). |
-| `crates/rimap-server/tests/mcp_wire_proptest.rs` | `proptest`-driven envelope and `tools/call` argument fuzzing. ≥1000 cases per property by default. | Zero-account, harness reused across cases per property block. |
+| `crates/rimap-server/tests/mcp_wire_proptest.rs` | `proptest`-driven envelope and `tools/call` argument fuzzing. ≥1000 cases per property by default. | Zero-account, harness reused across cases with restart-on-close discipline (§3.2). |
 | `crates/rimap-server/tests/mcp_audit_failure.rs` | Audit fail-closed boundary tests. | Zero-account, audit path on a write-failing target. |
-| `crates/rimap-server/tests/e2e_wire_cancellation.rs` | `notifications/cancelled` mid-`tools/call`, assert `tool_end { status: cancelled }` audit record. | Phase 3 Dovecot fixture (`support/dovecot/harness.rs`). |
+| `crates/rimap-server/tests/e2e_wire_cancellation.rs` | Wire-layer cancellation: server accepts `notifications/cancelled` and stays responsive. Race-free assertions only (no `tool_end {status: cancelled}` here — see audit-layer test). | Phase 3 Dovecot fixture (`support/dovecot/harness.rs`). |
+| `crates/rimap-audit/tests/drop_emits_cancelled.rs` (new) | Audit-layer Drop discipline (#99): construct a `run_with_audit_envelope` future, poll once, drop it, assert exactly one `tool_end {status: cancelled}` record was written. Deterministic, no Dovecot, no race. | In-process unit test, no spawned binary. |
 
 ### 3.1 Harness extensions
 
@@ -96,6 +100,30 @@ without touching stdout.
 - **Proptest seeds** — `proptest-regressions/` is committed (same
   pattern `rimap-content` already uses). Each shrink reproduces from
   the committed seed.
+- **Proptest session isolation** — properties share a harness across
+  cases for speed (re-spawning the binary per case would push 1000
+  cases per property past the CI budget). Two disciplines keep
+  cases from poisoning each other:
+  - **Restart-on-close**: after every case, the harness checks
+    whether the connection is still alive (child process running,
+    stdout not at EOF). If not, the case records "connection closed
+    cleanly" as its result and the next case spawns a fresh
+    harness. No case ever runs against a poisoned session.
+  - **State-mutating-method exclusion** (property 1 only): the
+    strategy explicitly avoids generating `method` values that
+    mutate MCP session state. Pinned exclusion set:
+    `{"initialize", "notifications/initialized"}`. A pinned
+    assertion in the test cross-references this set against
+    `rmcp`'s known stateful methods so a future MCP spec addition
+    that introduces a new stateful method trips the assertion
+    rather than silently coupling cases. Properties 2 and 3 are
+    stateless by construction (`method` is fixed to
+    `tools/call <X>`) so they need no exclusion.
+  - **Shrinking caveat**: a shrunk regression assumes a freshly
+    initialized session. If a committed seed in
+    `proptest-regressions/` fails to reproduce against a fresh
+    harness, that is evidence of state-coupling — investigate as a
+    bug, do not delete the seed.
 
 ## 4. Test inventory & contracts
 
@@ -125,17 +153,29 @@ future readers can tell why the assertion is shaped that way.
 ```
 
 `PROPTEST_CASES` overrides the case count. Overnight runs use 100 000.
-Each property block spawns one `Harness` and replays N envelopes
-through it — re-spawning per case would push the suite past minutes
-without adding coverage.
+Each property block starts with one `Harness` and replays N
+envelopes through it. The restart-on-close discipline from §3.2
+spawns a fresh harness whenever a case closes the connection, so a
+case that legitimately ends the session never poisons the next
+case. Re-spawning unconditionally per case would push the suite
+past minutes without adding coverage, since properties 2 and 3 are
+stateless by construction and property 1 excludes the pinned
+state-mutating method set.
 
 1. **`prop_envelope_never_panics`** — strategy generates arbitrary
    JSON values with optional `jsonrpc`, `id`, `method`, `params`
-   fields of randomized types. Assert: every input either produces a
-   well-formed JSON-RPC envelope validating against
-   `JSONRPCResponse`/`JSONRPCError`, or the server cleanly closes the
-   connection. No panic, no hang past `REQUEST_TIMEOUT`, no
-   malformed line.
+   fields of randomized types. The `method` strategy excludes the
+   pinned state-mutating set `{"initialize", "notifications/initialized"}`
+   (see §3.2 Proptest session isolation) so cases stay independent
+   of session state. The test asserts at compile time / startup
+   that the exclusion set matches the methods rmcp documents as
+   stateful; a future spec addition that introduces a new stateful
+   method trips this assertion before silently coupling cases.
+   Assert per case: the input either produces a well-formed
+   JSON-RPC envelope validating against
+   `JSONRPCResponse`/`JSONRPCError`, or the server cleanly closes
+   the connection (restart-on-close discipline handles the latter).
+   No panic, no hang past `REQUEST_TIMEOUT`, no malformed line.
 2. **`prop_tools_call_unknown_tool`** — arbitrary string tool names
    plus arbitrary JSON `arguments`. Assert: every response validates
    as `JSONRPCErrorResponse`; `code` is one of a documented small
@@ -152,15 +192,42 @@ without adding coverage.
 
 | Test | Setup | Contract |
 | --- | --- | --- |
-| `audit_write_failure_fails_closed_for_tools_call` | Audit path on a read-only directory (preferred) or a sentinel-rejecting `AuditSink` behind `test-support` feature (fallback, §6.4). | `tools/call use_account` returns an error envelope; server does NOT silently succeed. |
-| `audit_write_failure_does_not_block_initialize` | Same setup. | `initialize` either succeeds or fails with a clear error; exact behavior asserted from probe. |
+| `audit_write_failure_fails_closed_for_tools_call` | Arm the in-process `AuditWriter` via `force_next_write_failure()` (see §6.4), then send `tools/call use_account` over the wire. | `tools/call use_account` returns an error envelope; server does NOT silently succeed. Exercises the real writer's lock / append / error-mapping path. |
+| `audit_write_failure_does_not_block_initialize` | Same setup, but the failure is armed before `initialize`. | `initialize` either succeeds or fails with a clear error; exact behavior asserted from probe. |
 
-### 4.4 `e2e_wire_cancellation.rs` (2 tests, Dovecot-backed)
+### 4.4 Cancellation — split across two layers
+
+The contract has two parts and they belong in two places. The wire
+layer's job is to accept the cancel envelope without crashing or
+breaking the session; the audit layer's job is to emit
+`tool_end {status: cancelled}` on Drop. Testing both ends in a
+single Dovecot-backed wire test forces a race (was the call still
+in flight when the cancel arrived?). The Codex adversarial review
+flagged this; the fix is to split.
+
+#### 4.4.1 `e2e_wire_cancellation.rs` (2 tests, Dovecot-backed)
+
+Race-free assertions only — these tests do *not* try to prove that
+the in-flight call was cancelled mid-execution.
 
 | Test | Flow | Contract |
 | --- | --- | --- |
-| `cancel_search_emits_tool_end_cancelled` | `use_account` → start `tools/call search` over a large folder → poll audit log for `tool_start` (≤ 100 ms) → send `notifications/cancelled` with the request id → drain stdout. | Exactly one `tool_end` audit record for the cancelled request with `status: cancelled` (issues #71, #99). No `tool_end {status: ok}`. No panic. |
+| `cancel_during_inflight_tools_call_keeps_session_alive` | `use_account` → start `tools/call search` → immediately send `notifications/cancelled` with the request id (no audit-log polling) → drain stdout. | Server emits exactly one response envelope for the cancelled request id (either result or error, race-dependent), then accepts a subsequent `tools/list` without restart. No panic, no malformed envelope, no orphaned stdout bytes. |
 | `cancel_unknown_request_id_is_noop` | Send `notifications/cancelled` for an id that was never used. | No response, no panic, server still responsive to subsequent `tools/list`. |
+
+#### 4.4.2 `crates/rimap-audit/tests/drop_emits_cancelled.rs` (new, 1–2 tests)
+
+In-process tests that drive the Drop discipline directly. No
+spawned binary, no Dovecot, no timing dependency.
+
+| Test | Flow | Contract |
+| --- | --- | --- |
+| `drop_after_tool_start_emits_cancelled_end` | Construct an `AuditWriter` writing to a tempdir. Wrap a never-completing future in `run_with_audit_envelope`. Poll once (drives the `tool_start` write). Drop. Read the audit log. | Exactly one `tool_start` followed by exactly one `tool_end` with `status: cancelled`. Issues #71, #99. |
+| `drop_before_tool_start_emits_nothing` | Construct the future but never poll it. Drop. | Audit log is empty. (Documents that the Drop guard only fires once `tool_start` has been written, which is the contract that #71 fixed.) |
+
+If `run_with_audit_envelope` is private to `rimap-server`, a
+crate-internal `#[cfg(test)]` accessor is added to expose it for
+the new test — flagged in §7 risk register.
 
 ## 5. Error handling
 
@@ -194,9 +261,15 @@ the fix.
 - Overnight runs: GitHub Actions cron workflow at
   `.github/workflows/mcp-fuzz-nightly.yml` sets
   `PROPTEST_CASES=100000` and runs
-  `cargo test -p rimap-server --tests mcp_wire_proptest -- --nocapture`.
-  Pinned to a SHA per the repo's existing convention; `zizmor`
-  passes before merge.
+  `cargo test -p rimap-server --test mcp_wire_proptest -- --nocapture`
+  (singular `--test`, selects the integration-test binary by name;
+  the plural `--tests` form would have turned `mcp_wire_proptest`
+  into a substring filter on test function names and silently run
+  zero properties). A subsequent step parses the test output and
+  fails the workflow if the runner reports zero tests executed —
+  this is the guard that catches any future drift in the selector
+  syntax. Pinned to a SHA per the repo's existing convention;
+  `zizmor` passes before merge.
 - Nextest classification: proptest tests use
   `slow-timeout` overrides so a stuck case fails fast instead of
   hitting the full CI timeout.
@@ -227,29 +300,44 @@ commits so probing-phase fallout does not block earlier commits:
    lands.
 3. **`mcp_wire_proptest.rs`** — three properties at 1000 cases.
    `proptest-regressions/` directory committed.
-4. **`mcp_audit_failure.rs`** — fail-closed boundary tests. May
-   reveal a small accessor need in `rimap-audit` (e.g., a way to
-   observe writer failure from a test); scope-flagged in the PR if
-   needed.
-5. **`e2e_wire_cancellation.rs`** — Dovecot-backed cancel tests.
-   Lands last; depends on Phase 3 harness + #99 Drop-emits-cancelled
-   discipline.
-6. **Nightly CI workflow** — same PR, reviewed separately.
+4. **`mcp_audit_failure.rs`** — fail-closed boundary tests via
+   `AuditWriter::force_next_write_failure()` (§6.4).
+5. **`drop_emits_cancelled.rs` in `rimap-audit/tests/`** —
+   audit-layer Drop discipline (#99). In-process, deterministic, no
+   wire. Lands before the wire-layer cancel test so the source-of-
+   truth contract is pinned first.
+6. **`e2e_wire_cancellation.rs`** — Dovecot-backed wire-layer
+   cancel acceptance test. Race-free assertions only (§4.4.1).
+   Lands last; depends on Phase 3 harness.
+7. **Nightly CI workflow** — same PR, reviewed separately.
 
-### 6.4 Audit failure injection — primary and fallback
+### 6.4 Audit failure injection
 
-Primary mechanism: write the audit path to a `chmod 0o500` directory
-(`tempfile::TempDir` followed by a `std::fs::set_permissions` to
-revoke write). This is hermetic, requires no production-code change,
-and tests the real `AuditSink` against a real `EACCES`.
+`rimap-audit::AuditWriter` already exposes a real test-injection
+hook used by `crates/rimap-server/tests/audit_fail_open.rs`:
 
-Fallback (if `chmod` is unreliable as root in some CI runners): a
-`SentinelRejectingAuditSink` behind a `test-support` feature on
-`rimap-audit` that returns `Err` from every write. The test enables
-the feature and configures the sink via a `test-support`-gated config
-hook. Adds a permanent test-only branch in `rimap-audit`; choose
-during implementation based on whether the `chmod` path actually
-works on Linux + macOS CI.
+```rust
+writer.force_next_write_failure();
+```
+
+This forces the *real* `AuditWriter`'s next `log_*` call to take
+the write-failure path through the real lock / append / error-
+mapping logic — it is not a swappable sink. Phase 4's audit tests
+reuse this hook rather than relying on filesystem permissions
+(`chmod 0o500` is unreliable as root on some CI runners) or a
+sentinel sink (which would bypass the very path the tests need to
+exercise, and add a permanent non-production branch). The Codex
+adversarial review flagged the sentinel-sink approach for exactly
+this reason.
+
+The audit-failure tests in `mcp_audit_failure.rs` drive the wire
+from the outside but use `force_next_write_failure()` on the
+in-process `AuditWriter` via the binary's existing test-support
+surface. If the surface needs a small extension (e.g., to call
+`force_next_write_failure()` from outside the process), that
+extension lives behind the existing `test-support` feature flag on
+`rimap-server` rather than `rimap-audit`, since the hook itself is
+already public on `AuditWriter`.
 
 ## 7. Risk register
 
@@ -258,16 +346,20 @@ works on Linux + macOS CI.
 | Probing reveals a panic in the server on malformed input. | File issue, fix on sibling branch, regression test lands in Phase 4. Expected outcome, not blocker. |
 | Proptest finds a minimal-shrunk case hard to reproduce. | `proptest-regressions/` committed; each property's regressions reviewed in the PR. |
 | Concurrent-request test flaky under nextest. | Determinism comes from `send_request_no_wait` + `recv_until_id` (no clock races). If the binary serializes responses, the test still passes — just less interesting. |
-| `chmod 0o500` audit-fail trick doesn't work as root in CI. | Fall back to `SentinelRejectingAuditSink` (§6.4). |
-| Dovecot cancel test races `tool_start` audit landing. | Poll audit file 100 ms cap, 10 ms granularity rather than sleep-and-hope. |
+| `run_with_audit_envelope` is private to `rimap-server`, so the audit-layer Drop test in `rimap-audit/tests/drop_emits_cancelled.rs` can't reach it. | Add a crate-internal `#[cfg(test)]` accessor on `rimap-server`, or move the test under `rimap-server/tests/` if the future is wholly server-internal. Decided during implementation; flagged here so the choice is visible. |
+| Wire-layer cancel test asserts race-dependent outcomes. | Tests only race-free invariants (server stays responsive, response envelope is well-formed). Cancellation-status assertion lives in the audit-layer Drop test, not here. |
 | Proptest at 100 000 cases overruns the nightly job's runner budget. | `slow-timeout` per property; nightly runs publish duration as part of the failure summary so we can split a single property into smaller ones if needed. |
 
 ## 8. Acceptance criteria mapping
 
 Each acceptance criterion from issue #266 maps to a concrete artifact:
 
-- [ ] `cargo test -p rimap-server --tests mcp_wire_*` exercises every
-      category — covered by §4.1–§4.4 across four files.
+- [ ] Every category exercised by an explicit per-binary
+      invocation (no glob): `cargo test -p rimap-server --test mcp_wire_negative`,
+      `--test mcp_wire_proptest`, `--test mcp_audit_failure`,
+      `--test e2e_wire_cancellation`, and
+      `cargo test -p rimap-audit --test drop_emits_cancelled`.
+      Covered by §4.1–§4.4.
 - [ ] Property tests run for ≥1000 cases per property in CI, gated by
       env flag — `ProptestConfig::with_cases(1000)` + `PROPTEST_CASES`
       override, §4.2 and §6.1.
