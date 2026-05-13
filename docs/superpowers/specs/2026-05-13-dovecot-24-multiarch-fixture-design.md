@@ -21,20 +21,22 @@ Run the Dovecot-backed integration suites on both `linux/amd64` (CI) and `arm64 
 
 ## Approach
 
-Single-step replacement: bump the fixture to `dovecot/dovecot:2.4.4`, rewrite `dovecot.conf` to 2.4 syntax, and delete the arch gate from both harnesses. No 2.3 fallback, no runtime config translation, no dual-image branching — consistent with the project's "replace, don't deprecate" rule.
+Single-step replacement: bump the fixture to `dovecot/dovecot:2.4.4-root`, rewrite `dovecot.conf` to 2.4 syntax, and delete the arch gate from both harnesses. No 2.3 fallback, no runtime config translation, no dual-image branching — consistent with the project's "replace, don't deprecate" rule.
+
+The `-root` flavor (not the default `2.4.4`) is the intentional choice: upstream's default 2.4 images are rootless, run as `vmail` UID 1000, listen on non-privileged ports (`31143`/`31993`), and expect config drop-ins under `/etc/dovecot/conf.d` plus mail data under `/srv/vmail`. Our existing entrypoint writes under `/etc/dovecot`, `/var/run/dovecot`, and `/var/mail`, binds 143/993 directly, and runs as root. Adopting rootless would require simultaneously rewriting the entrypoint, ports, paths, and volume layout — a wider change than this work needs. The `-root` flavor preserves the existing fixture contract; migrating to rootless is a separate, optional follow-up.
 
 ## Components Touched
 
 ### 1. Image bump
 - File: `crates/rimap-imap/tests/integration/dovecot/docker-compose.yml`
-- Change: `image: docker.io/dovecot/dovecot:2.3.21` → `image: docker.io/dovecot/dovecot:2.4.4`
-- Drop the multi-line comment that explained the amd64-only constraint; the new image is multi-arch.
+- Change: `image: docker.io/dovecot/dovecot:2.3.21` → `image: docker.io/dovecot/dovecot:2.4.4-root`
+- Drop the multi-line comment that explained the amd64-only constraint.
 
-`2.4.4` was published 2026-05-12 and ships both `linux/amd64` and `linux/arm64` manifests. The plan stage will confirm the tag is still the latest stable at implementation time and bump if a newer 2.4.x has shipped.
+Both `2.4.4` (rootless) and `2.4.4-root` (rootful) ship `linux/amd64` and `linux/arm64` manifests on Docker Hub (verified 2026-05-13). The plan stage confirms the tag is still the latest stable at implementation time and that the `-root` variant carries an arm64 manifest before pinning.
 
 ### 2. Config rewrite
 
-File: `crates/rimap-imap/tests/integration/dovecot/dovecot.conf`. Rewritten from scratch in 2.4 syntax. Final text is verified at implementation time against `doveconf -n` inside the running 2.4.4 container; the table below records intent.
+File: `crates/rimap-imap/tests/integration/dovecot/dovecot.conf`. Rewritten from scratch in 2.4 syntax against the upstream upgrade guide (`https://doc.dovecot.org/2.4.3/installation/upgrade/2.3-to-2.4.html`) and verified at implementation time by capturing `doveconf -n` output from the running 2.4.4-root container and treating that as the source of truth. The table records the renames the upgrade guide names explicitly; anything ambiguous is resolved by `doveconf -n`, not by guessing.
 
 | 2.3 (current) | 2.4 target | Notes |
 |---|---|---|
@@ -42,19 +44,21 @@ File: `crates/rimap-imap/tests/integration/dovecot/dovecot.conf`. Rewritten from
 | (none) | `dovecot_storage_version = 2.4.4` | new required setting in 2.4 |
 | `protocols = imap` | unchanged | |
 | `ssl = required` | unchanged | tightened semantics: login_trusted_networks also requires TLS; our list is empty so test path is unaffected |
-| `ssl_cert = </etc/dovecot/cert.pem` | unchanged | |
-| `ssl_key = </etc/dovecot/key.pem` | unchanged | |
+| `ssl_cert = </etc/dovecot/cert.pem` | `ssl_server_cert_file = /etc/dovecot/cert.pem` | renamed; `<file` literal-load syntax replaced with a plain path |
+| `ssl_key = </etc/dovecot/key.pem` | `ssl_server_key_file = /etc/dovecot/key.pem` | same rename pattern |
 | `ssl_min_protocol = TLSv1.2` | unchanged | `SSLv3` removed in 2.4; we don't use it |
-| `disable_plaintext_auth = yes` | unchanged | |
+| `disable_plaintext_auth = yes` | `auth_allow_cleartext = no` | renamed (and inverted polarity) |
 | `login_trusted_networks =` | unchanged | empty list preserved |
-| `mail_location = maildir:~/Maildir` | `mail_path = ~/Maildir` + `mail_driver = maildir` | per 2.4 rename; exact split verified via `doveconf -n` in the new image |
+| `mail_location = maildir:~/Maildir` | `mail_path = ~/Maildir` + `mail_driver = maildir` | per 2.4 rename; verify exact split via `doveconf -n` |
 | `passdb { driver = passwd-file; args = scheme=PLAIN /etc/dovecot/users }` | `passdb passwd-file { passwd_file_path = /etc/dovecot/users; default_password_scheme = PLAIN }` | sections require names in 2.4; `args =` removed in favour of named settings |
-| `userdb { driver = static; args = uid=1000 gid=1000 home=/var/mail/%u }` | `userdb static { fields = uid=1000 gid=1000 home=/var/mail/%u }` | named section; `args` → `fields` |
+| `userdb { driver = static; args = uid=1000 gid=1000 home=/var/mail/%u }` | `userdb static { fields { uid = 1000; gid = 1000; home = /var/mail/%{user} } }` | named section; static-userdb fields are a nested block in 2.4 (not `fields = ...`); `%u` removed, use `%{user}` |
 | `namespace inbox { … mailbox Drafts/Junk/Sent/Trash { special_use=…; auto=subscribe } }` | structurally unchanged | already named `inbox`; mailbox blocks already named |
-| `service imap-login { inet_listener imap { port=143 } inet_listener imaps { port=993; ssl=yes } }` | structurally unchanged | already-named sections satisfy 2.4 rule |
+| `service imap-login { inet_listener imap { port=143 } inet_listener imaps { port=993; ssl=yes } }` | structurally unchanged | already-named sections satisfy 2.4 rule; we still bind 143/993 inside the container because we run the `-root` flavor |
 | `log_path = /dev/stderr` / `info_log_path = /dev/stderr` / `debug_log_path = /dev/stderr` | unchanged | `auth_debug`/`mail_debug` removed but we don't use them |
 
-**Implementation-time follow-up:** if the upstream image's baked-in `/etc/dovecot/conf.d/*.conf` overrides our settings, explicitly disable the conf.d include (drop the `!include conf.d/*.conf` line if our config inherits it, or rely on `dovecot -c /etc/dovecot/dovecot.conf` mounting our file directly, which is already the layout).
+**Variable syntax:** anywhere the existing config or entrypoint emits a one-letter `%`-variable (only `%u` in `userdb static.fields.home` here), it must become the new `%{...}` form (e.g., `%{user}`). All one-letter variables were removed in 2.4.
+
+**Implementation-time follow-up:** the `-root` image still ships baked-in defaults under `/etc/dovecot/conf.d/`. Our compose mounts a single `dovecot.conf` over `/etc/dovecot/dovecot.conf`, so confirm during bring-up that the mounted file does not `!include conf.d/*.conf`. If it does, drop the include or mount an empty `conf.d/` over the inherited one to prevent upstream defaults from overriding our test config.
 
 ### 3. Harness arch gate removal
 
@@ -109,26 +113,30 @@ The migration is complete only when verification passes on **both** `linux/amd64
 
 ### Bring-up (manual, both arches)
 
-1. `docker pull docker.io/dovecot/dovecot:2.4.4`; confirm host-native manifest with `docker image inspect | jq '.[].Architecture'`.
+1. `docker pull docker.io/dovecot/dovecot:2.4.4-root`; confirm host-native manifest with `docker image inspect docker.io/dovecot/dovecot:2.4.4-root | jq '.[].Architecture'` and that it reports `arm64` on Apple Silicon (and `amd64` on Linux CI).
 2. `RIMAP_DOVECOT_HOST_PORT=9993 RIMAP_DOVECOT_HOST_PORT_STARTTLS=1143 docker compose -p smoke up -d`
-3. `docker compose -p smoke logs dovecot` — no `dovecot_config_version` upgrade-required error, no unknown-setting errors, `[entrypoint] ready` line emitted.
-4. `openssl s_client -connect 127.0.0.1:9993 -servername localhost` returns the self-signed cert.
-5. `docker exec <name> doveadm mailbox list -u rimap-test` returns INBOX and the seeded sub-folders without `Disconnected unexpectedly`.
-6. `docker compose -p smoke down -v --remove-orphans` cleans up.
+3. `docker compose -p smoke exec dovecot id` reports `uid=0` (the `-root` flavor runs as root, satisfying our entrypoint's `/etc/dovecot` / `/var/mail` writes and 143/993 bind).
+4. `docker compose -p smoke logs dovecot` — no `dovecot_config_version` upgrade-required error, no unknown-setting errors, `[entrypoint] ready` line emitted.
+5. `docker compose -p smoke exec dovecot doveconf -n` returns a config file with no `Conflicting/unknown setting` warnings. Capture this output and diff it against the committed `dovecot.conf` for parity — any drift indicates an inherited `conf.d/` default sneaking through.
+6. `openssl s_client -connect 127.0.0.1:9993 -servername localhost` returns the self-signed cert.
+7. `docker exec <name> doveadm mailbox list -u rimap-test` returns INBOX and the seeded sub-folders without `Disconnected unexpectedly`.
+8. `docker compose -p smoke down -v --remove-orphans` cleans up.
 
 ### Automated (CI on amd64, local on arm64 macOS)
 
-7. `RIMAP_REQUIRE_DOCKER=1 cargo nextest run -p rimap-imap --test dovecot --locked`
-8. `RIMAP_REQUIRE_DOCKER=1 cargo nextest run -p rimap-server --test e2e --locked`
-9. `RIMAP_REQUIRE_DOCKER=1 cargo nextest run -p rimap-server --test e2e_wire --locked`
+9. `RIMAP_REQUIRE_DOCKER=1 cargo nextest run -p rimap-imap --test dovecot --locked`
+10. `RIMAP_REQUIRE_DOCKER=1 cargo nextest run -p rimap-server --test e2e --locked`
+11. `RIMAP_REQUIRE_DOCKER=1 cargo nextest run -p rimap-server --test e2e_wire --locked`
 
 Each suite must pass on both arches. Silent-skip on arm64 = failure of this migration's central goal.
 
 ### Specific risks
 
+- **`-root` image deprecation.** Upstream's strategic direction is rootless; the `-root` flavor exists to ease migration. If upstream stops publishing `-root` images for 2.5+, the next Dovecot version bump will force a rootless redesign of the entrypoint, ports, paths, and volumes. That's a known, accepted follow-up — not blocker for #273.
 - **`case_11` force-recreate flow** (rimap-imap). Relies on the shared volume persisting `cert.pem` / `key.pem` across `docker compose up --force-recreate` so the pinned TLS fingerprint stays stable. 2.4 doesn't touch volume semantics, but this test exercises a real TCP/TLS race and is the most likely regression site.
 - **`doveadm -u rimap-test`**. 2.4 tightened `doveadm` USER-env-var semantics, but our calls already pass `-u`, so should be unaffected.
-- **Entrypoint wait-for-LISTEN ordering**. The current `entrypoint.sh` parses `/proc/net/tcp{,6}` to wait for port 993 before publishing readiness markers; 2.4's child-process startup order may differ. Step 4 of bring-up + step 9 of automated verification jointly cover this.
+- **Entrypoint wait-for-LISTEN ordering**. The current `entrypoint.sh` parses `/proc/net/tcp{,6}` to wait for port 993 before publishing readiness markers; 2.4's child-process startup order may differ. Bring-up step 4 + automated step 11 jointly cover this.
+- **Inherited `/etc/dovecot/conf.d/` defaults.** The upstream image bakes in default drop-ins; bring-up step 5 (`doveconf -n` diff) is the explicit guard.
 
 ### No-silent-skip regression guard
 
@@ -148,7 +156,8 @@ The plan derived from this spec should sequence work so that intermediate states
 
 ## Open Questions for the Plan Stage
 
-1. **Exact image tag.** Plan-time check: is `2.4.4` still latest stable, or has `2.4.5+` shipped? Pin to whatever is current.
-2. **`mail_location` replacement form.** `mail_path` + `mail_driver` is the most likely split per the 2.4 docs; `doveconf -n` from the running image is authoritative.
-3. **`userdb static.args` → `fields` rename.** Same — confirm via `doveconf -n`.
-4. **Inherited `/etc/dovecot/conf.d/*.conf`.** Does the upstream image ship them? If yes, do they interfere? The current 2.3 mount uses a single `dovecot.conf` that does not include `conf.d/` — verify same behaviour on 2.4.4.
+1. **Exact image tag.** Plan-time check: is `2.4.4-root` still latest stable in the `-root` line, or has `2.4.5-root+` shipped? Pin to whatever is current and confirm the tag carries an arm64 manifest.
+2. **`mail_location` replacement form.** `mail_path` + `mail_driver` is the rename per the 2.4 docs; `doveconf -n` from the running image is authoritative.
+3. **Static `userdb` field block.** This spec writes `userdb static { fields { uid = 1000; ... } }` per the upstream 2.4 static-userdb docs. Confirm against `doveconf -n` — if upstream emits a flat form instead of a nested block, match what `doveconf -n` produces.
+4. **Inherited `/etc/dovecot/conf.d/*.conf` defaults.** The upstream image ships drop-ins. Bring-up step 5 catches any conflict; if a drop-in does override one of our settings, either mount an empty `conf.d/` over the inherited one or drop the offending include line.
+5. **Are there other `%`-variables hiding outside `dovecot.conf`?** Sweep `entrypoint.sh`, fixture `.eml` files, and any test harness arguments for one-letter `%` variables before declaring the migration complete.
