@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use assert_cmd::cargo::cargo_bin;
+use rmcp::model::ProtocolVersion;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -166,7 +167,7 @@ allowed_base_dir = "{}"
         self.request(
             "initialize",
             json!({
-                "protocolVersion": PINNED_PROTOCOL_VERSION,
+                "protocolVersion": ProtocolVersion::LATEST.as_str(),
                 "capabilities": {},
                 "clientInfo": {
                     "name": "rusty-imap-mcp-conformance-harness",
@@ -333,22 +334,49 @@ async fn wire_initialize_advertises_tools_capability() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wire_protocol_version_negotiation_matches_vendored_schema() {
-    // Sends an initialize request with the LATEST version known to
-    // the test, asks the server to echo it back. rmcp negotiates
-    // min(client, server), so when the server bumps to a newer
-    // LATEST this still succeeds — but if the server somehow
-    // negotiates to an older version (e.g. the pinned string is
-    // wrong) this test catches it. The fragment-validation tests
-    // depend on this invariant.
+    // Three-way drift check (Codex adversarial review finding #1):
+    //
+    //   1. rmcp::ProtocolVersion::LATEST.as_str()
+    //   2. PINNED_PROTOCOL_VERSION (the constant in this file)
+    //   3. crates/rimap-server/tests/fixtures/mcp-spec/<version>/
+    //
+    // All three MUST agree. If any one drifts (rmcp bumps LATEST, the
+    // pinned constant goes stale, or someone deletes the fixture
+    // directory) this test fails first with a precise diagnostic
+    // before any fragment-validation test validates against an
+    // outdated schema.
+
+    let rmcp_latest = ProtocolVersion::LATEST.as_str();
+    assert_eq!(
+        rmcp_latest, PINNED_PROTOCOL_VERSION,
+        "rmcp::ProtocolVersion::LATEST ({rmcp_latest}) drifted from \
+         PINNED_PROTOCOL_VERSION ({PINNED_PROTOCOL_VERSION}). Run \
+         `scripts/refresh-mcp-spec.sh {rmcp_latest}` to vendor the new \
+         schema, update PINNED_PROTOCOL_VERSION + MCP_SCHEMA_JSON in \
+         this file, and update the README under \
+         tests/fixtures/mcp-spec/.",
+    );
+
+    // The fixture directory must exist on disk under the pinned name.
+    let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/mcp-spec")
+        .join(PINNED_PROTOCOL_VERSION);
+    assert!(
+        fixture_dir.is_dir(),
+        "expected vendored fixture directory at {} for pinned version \
+         {PINNED_PROTOCOL_VERSION}; refresh script may not have run",
+        fixture_dir.display(),
+    );
+
+    // And rmcp must echo whatever the harness sends as the negotiated
+    // version, which the harness now derives from LATEST.
     let mut harness = Harness::spawn().await;
     let response = harness.initialize_handshake().await;
     assert_eq!(
         response["result"]["protocolVersion"],
-        json!(PINNED_PROTOCOL_VERSION),
-        "harness pinned to {PINNED_PROTOCOL_VERSION} but server returned a \
-         different value; either update PINNED_PROTOCOL_VERSION + the \
-         tests/fixtures/mcp-spec/<version>/ directory, or fix the rmcp \
-         negotiation regression. Full response: {response}",
+        json!(rmcp_latest),
+        "server must echo the rmcp LATEST version sent by the harness; \
+         got {response}",
     );
 }
 
