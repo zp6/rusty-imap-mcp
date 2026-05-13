@@ -21,8 +21,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::time::timeout;
 
-use super::schema::assert_envelope_valid;
-
 /// MCP protocol version pinned by this harness. Matches the
 /// directory under `tests/fixtures/mcp-spec/` and the `LATEST` value
 /// in `rmcp 1.5`. Update both when bumping.
@@ -57,9 +55,12 @@ pub enum CloseOrResponse {
     /// within `SHUTDOWN_TIMEOUT`. The server shut down
     /// cleanly. Harness is now poisoned (process reaped).
     CleanClose,
-    /// EOF observed AND child exited with a non-zero status or
-    /// was killed by a signal. The server crashed. Includes the
-    /// raw exit-status string for diagnostics. Harness poisoned.
+    /// EOF observed AND either: the child exited with a non-zero
+    /// status, was killed by a signal, `child.wait()` itself
+    /// errored, OR the child failed to exit within `SHUTDOWN_TIMEOUT`
+    /// after stdout closed. The server crashed or got stuck post-
+    /// EOF. Includes a diagnostic string with the precise sub-
+    /// reason and captured stderr. Harness poisoned.
     Crashed(String),
     /// Stdout did NOT yield EOF AND no line arrived within
     /// `request_dur`. The server is hung or unresponsive.
@@ -90,12 +91,11 @@ pub struct Harness {
     /// timeout where stdout is still open but the server is
     /// unresponsive, or schema validation failure on a parsed
     /// envelope. Once poisoned the harness MUST NOT be used for
-    /// further requests — `is_usable` returns false for poisoned
-    /// harnesses regardless of process status, which is what the
-    /// proptest restart-on-close discipline (Task 6) consults.
-    /// Codex review finding #2 verified this is necessary because
-    /// a closed-stdout child may not yet be reaped, so `try_wait`
-    /// alone is insufficient.
+    /// further requests. A future `is_usable` accessor (Task 6)
+    /// will consult this flag for the proptest restart-on-close
+    /// discipline. Codex review finding #2 verified the flag is
+    /// necessary because a closed-stdout child may not yet be
+    /// reaped, so `try_wait` alone is insufficient.
     poisoned: bool,
     // Hold the tempdir until the harness drops so the audit log path
     // remains valid for the lifetime of the spawned process.
@@ -251,7 +251,7 @@ allowed_base_dir = "{}"
 
         let envelope = self.read_one_envelope(method).await;
         assert_eq!(envelope["id"], json!(id), "response id must match request");
-        assert_envelope_valid(&envelope);
+        super::schema::assert_envelope_valid(&envelope);
         envelope
     }
 
