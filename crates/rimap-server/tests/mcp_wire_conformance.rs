@@ -130,6 +130,7 @@ allowed_base_dir = "{}"
         assert!(read > 0, "stdout closed before responding to {method}");
         let response: Value = serde_json::from_str(buf.trim_end()).expect("parse response JSON");
         assert_eq!(response["id"], json!(id), "response id must match request");
+        assert_envelope_valid(&response);
         response
     }
 
@@ -259,6 +260,34 @@ fn assert_valid(value: &Value, fragment: &'static str) {
             "schema validation failed for fragment {fragment}:\n  {}",
             errors.join("\n  ")
         );
+    }
+}
+
+/// Validate the FULL JSON-RPC envelope returned by `Harness::request`.
+/// Success responses validate against `JSONRPCResultResponse`; error
+/// responses validate against `JSONRPCErrorResponse`. Asserts the
+/// `jsonrpc` version field on both paths. Codex adversarial review
+/// finding #2 (PR #270): the previous negative-path tests checked only
+/// `code` and `message` and would have missed a regression that
+/// stripped `jsonrpc` or otherwise mangled the envelope.
+fn assert_envelope_valid(response: &Value) {
+    assert_eq!(
+        response["jsonrpc"],
+        json!("2.0"),
+        "envelope must declare jsonrpc=\"2.0\"; got {response}",
+    );
+
+    let has_result = response.get("result").is_some();
+    let has_error = response.get("error").is_some();
+    match (has_result, has_error) {
+        (true, false) => assert_valid(response, "JSONRPCResultResponse"),
+        (false, true) => assert_valid(response, "JSONRPCErrorResponse"),
+        (true, true) => {
+            panic!("envelope must not contain both `result` and `error`; got {response}",)
+        }
+        (false, false) => {
+            panic!("envelope must contain either `result` or `error`; got {response}",)
+        }
     }
 }
 
