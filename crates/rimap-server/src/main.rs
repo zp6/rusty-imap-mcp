@@ -59,14 +59,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         username,
     }) = &cli.command
     {
-        let store = KeyringStore;
-        let account_id = rimap_core::account::AccountId::new(account)
-            .with_context(|| format!("invalid account name `{account}`"))?;
-        run_login(&store, &account_id, username, host, tty_prompt)
-            .with_context(|| format!("storing credential for {username}@{host}"))?;
-        let mut stdout = std::io::stdout().lock();
-        writeln!(stdout, "credential stored for {username}@{host}")?;
-        return Ok(());
+        return run_login_command(account, username, host);
     }
 
     if let Some(Command::MigrateKeyring {
@@ -121,6 +114,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     let multi = load_validated_multi(&cli, &config_path)?;
     let audit = audit_init::init_audit_writer_multi(&multi, &config_path)
         .with_context(|| format!("opening audit log at {}", multi.audit.path.display()))?;
+
+    #[cfg(feature = "test-support")]
+    maybe_arm_audit_write_failure(&audit);
 
     let credentials: Arc<dyn CredentialStore> = Arc::new(KeyringStore);
     let download_dir: Arc<std::path::Path> =
@@ -351,6 +347,23 @@ fn resolve_download_dir_multi(
     Ok(dir)
 }
 
+/// Arm the `AuditWriter`'s forced-write-failure hook when the
+/// `RIMAP_TEST_FORCE_NEXT_AUDIT_WRITE_FAILURE=1` env var is set.
+///
+/// Used by `mcp_audit_failure.rs` to exercise the real
+/// lock/append/error-mapping path without adding a sentinel sink.
+/// This hook changes the audit write OUTCOME, not the wire shape,
+/// so it complies with the `test-support` convention.
+#[cfg(feature = "test-support")]
+fn maybe_arm_audit_write_failure(audit: &rimap_audit::AuditWriter) {
+    if std::env::var("RIMAP_TEST_FORCE_NEXT_AUDIT_WRITE_FAILURE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        audit.force_next_write_failure();
+    }
+}
+
 /// Dispatch subcommands that are gated behind `#[cfg(feature = "test-support")]`.
 ///
 /// Returns `Some(result)` if a test-support subcommand handled the request,
@@ -377,6 +390,18 @@ fn run_test_support_subcommands(cli: &Cli) -> Option<anyhow::Result<()>> {
         }
         _ => None,
     }
+}
+
+/// Handle the `login` subcommand: store the credential and print confirmation.
+fn run_login_command(account: &str, username: &str, host: &str) -> anyhow::Result<()> {
+    let store = KeyringStore;
+    let account_id = rimap_core::account::AccountId::new(account)
+        .with_context(|| format!("invalid account name `{account}`"))?;
+    run_login(&store, &account_id, username, host, tty_prompt)
+        .with_context(|| format!("storing credential for {username}@{host}"))?;
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "credential stored for {username}@{host}")?;
+    Ok(())
 }
 
 /// Handle the `migrate-keyring` subcommand.

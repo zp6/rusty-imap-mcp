@@ -114,6 +114,10 @@ pub struct Harness {
     reason = "type-link to suppress per-binary dead-code in binaries that don't call these items"
 )]
 fn force_use_for_dead_code_link() {
+    // Harness::spawn: used by mcp_wire_conformance / e2e_wire / mcp_wire_negative /
+    // mcp_wire_proptest, but not by mcp_audit_failure (which always uses
+    // spawn_with_config to inject the env var).
+    let _ = Harness::spawn;
     // CloseOrResponse and its associated methods: used by mcp_wire_negative,
     // unused by mcp_wire_conformance / e2e_wire. The inner String fields of
     // Response and Crashed must also be referenced to suppress the
