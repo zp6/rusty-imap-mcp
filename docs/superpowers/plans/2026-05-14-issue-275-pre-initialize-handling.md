@@ -26,11 +26,11 @@
 
 ---
 
-## Task 0: Pre-flight — Verify dependency on #266 is satisfied
+## Task 0: Pre-flight — Sanity-check the working tree
 
 **Files:** none (verification only)
 
-**Context:** This plan exercises the wire-level negative-test harness from #266 / PR #278. As of the spec date (2026-05-14), that harness lived only on the `feature/issue-266-mcp-fuzzing` branch. Before starting any implementation, confirm the harness is present on the current branch — either because #266 merged to main and the implementer rebased, or because this branch is stacked on `feature/issue-266-mcp-fuzzing`. If absent, **stop and resolve the branching strategy with the user** per the spec's Dependencies section.
+**Context:** This branch is stacked on `feature/issue-266-mcp-fuzzing` so the wire harness from #266 (`mcp_wire_negative.rs` + `support/wire/harness.rs`) is present. The PR opened from this branch targets `feature/issue-266-mcp-fuzzing` as its base — see the spec's Dependencies section for why. This task confirms the working tree is in the expected shape before any code changes begin.
 
 - [ ] **Step 1: Confirm the harness files exist**
 
@@ -41,7 +41,7 @@ test -f crates/rimap-server/tests/support/wire/harness.rs && \
 echo "OK: harness present"
 ```
 
-Expected: `OK: harness present`. If either file is missing, halt and consult the spec's Dependencies section.
+Expected: `OK: harness present`. If either file is missing, the rebase onto `feature/issue-266-mcp-fuzzing` did not land — halt and consult the spec's Dependencies section.
 
 - [ ] **Step 2: Confirm the ignored test we plan to un-ignore is present and ignored**
 
@@ -1169,14 +1169,14 @@ EOF
 
 ```bash
 git push -u origin fix/issue-275-pre-initialize-handling
-gh pr create --title "fix(rimap-server): handle pre-initialize requests with -32002 envelope (#275)" --body "$(cat <<'EOF'
+gh pr create --base feature/issue-266-mcp-fuzzing --title "fix(rimap-server): handle pre-initialize requests with -32002 envelope (#275)" --body "$(cat <<'EOF'
 ## Summary
 
 - Pre-initialize Request → JSON-RPC `-32002` "Server not initialized" envelope (request id echoed verbatim), clean close, exit 0, audit `reason: Eof`.
 - Pre-initialize Notification / Response → silent clean close, exit 0, audit `reason: Eof`.
 - Envelope write failure → propagated `anyhow::Error`, non-zero exit, audit `reason: Error` (Codex adversarial-review finding 2026-05-14).
 
-Fixes #275.
+Fixes #275. One of three merge blockers (#275, #276, #277) for PR #278; targets `feature/issue-266-mcp-fuzzing` so the un-ignore commit travels with the fix.
 
 ## Test plan
 

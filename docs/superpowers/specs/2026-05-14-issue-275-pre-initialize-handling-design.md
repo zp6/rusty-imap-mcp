@@ -103,31 +103,42 @@ mid-dispatch cancellation; the early-return path skips them entirely.
 
 ## Dependencies
 
-This spec assumes the wire-level negative-test harness from #266 / PR
-#278. As of 2026-05-14, that PR is still in DRAFT and the harness lives
-only on the `feature/issue-266-mcp-fuzzing` branch:
+This spec exercises the wire-level negative-test harness introduced in
+#266 / PR #278:
 
 - `crates/rimap-server/tests/mcp_wire_negative.rs` — file under
-  which `tools_list_before_initialize` is `#[ignore]`'d
+  which `tools_list_before_initialize` is `#[ignore]`'d, plus the
+  three new pre-initialize tests added by this fix
 - `crates/rimap-server/tests/support/wire/harness.rs` — the
   `Harness` / `CloseOrResponse` / `response_or_close` plumbing the
   test plan below references
 
-Implementation of #275 is therefore gated on #266 landing. Branching
-strategy is decided at implementation kickoff, not here:
+#275 is one of three merge blockers (#275, #276, #277) explicitly
+listed on PR #278. The blocker policy from #266's plan §5 — "bugs
+found during implementation are fixed before this phase merges" —
+keeps it literally true: by the time PR #278 reaches `main`, no
+`#[ignore]`'d Phase 4 tests remain in history.
 
-1. **Preferred: rebase onto `main` after #266 merges.** Clean history,
-   independent PR review.
-2. **Fallback: stack `fix/issue-275-pre-initialize-handling` on
-   `feature/issue-266-mcp-fuzzing`** and mark the PR as merge-after-#266.
-   Use this only if both PRs need to be in flight simultaneously.
+**Branching strategy.** The fix PR targets `feature/issue-266-mcp-fuzzing`
+as its merge base:
 
-If #266's harness shape changes during its review (e.g. `CloseOrResponse`
-gains variants, `response_or_close` signature shifts), the test
-assertions in this spec are re-aligned to the merged shape before
-implementation begins. Adopting #266's harness wholesale into #275 is
-explicitly rejected: it would duplicate ~600 lines of #266's
-contribution and guarantee a merge conflict.
+- It un-ignores `tools_list_before_initialize` and adds the three new
+  pre-initialize tests in the same PR as the production fix.
+  Reviewers see "this server change makes this previously-ignored test
+  pass" in one diff.
+- Once #275, #276, and #277 have all landed on
+  `feature/issue-266-mcp-fuzzing`, PR #278 is marked ready for review
+  and merges to `main` carrying all three fixes + un-ignores together.
+
+Note: targeting the feature branch is a *workflow* decision that keeps
+the un-ignore commit attached to the fix. The fix itself can be
+verified against the harness in a working copy regardless of which
+branch the PR ultimately targets. The constraint is only on PR base,
+not on local development.
+
+Cherry-picking the negative harness from #266 into a standalone #275
+PR off `main` is explicitly rejected: it duplicates ~600 lines of
+#266's contribution and guarantees a merge conflict.
 
 ## Envelope shape
 
