@@ -136,6 +136,19 @@ fn force_use_for_dead_code_link() {
     // Method used by mcp_wire_negative (pre-initialize tests), not by
     // other binaries.
     let _ = Harness::audit_path;
+    // Method used by mcp_wire_negative (pre-initialize write-failure
+    // test), not by other binaries.
+    let _ = Harness::spawn_with_closed_stdout;
+    // DetachedStdoutHarness methods used by mcp_wire_negative, not by
+    // other binaries. The pub `child` / `stdin` fields are read by the
+    // pre-initialize write-failure test only; reference them here so
+    // every test-binary compilation sees them as used.
+    let _ = DetachedStdoutHarness::audit_path;
+    let _ = DetachedStdoutHarness::captured_stderr;
+    let _ = |h: &DetachedStdoutHarness| {
+        let _ = &h.child;
+        let _ = &h.stdin;
+    };
     // Methods used by mcp_wire_negative and e2e_wire_cancellation, not
     // by other binaries.
     let _ = Harness::send_request_no_wait;
@@ -219,6 +232,59 @@ allowed_base_dir = "{}"
             stderr_log,
             buffered_responses: std::collections::VecDeque::new(),
             poisoned: false,
+            _tempdir: tempdir,
+        }
+    }
+
+    /// Spawn the binary with the legacy zero-account config, then
+    /// immediately drop the `BufReader<ChildStdout>` read handle. The
+    /// child's stdout pipe write end is now connected to a closed
+    /// reader; the next write the server attempts will fail with
+    /// `BrokenPipe`. Used by `pre_initialize_envelope_write_failure`
+    /// to exercise the propagated-error path on transport failure.
+    #[expect(clippy::unused_async, reason = "uniform async surface")]
+    pub async fn spawn_with_closed_stdout() -> DetachedStdoutHarness {
+        let tempdir = TempDir::new().expect("tempdir");
+        let config_path = tempdir.path().join("config.toml");
+        let audit_path = tempdir.path().join("audit.jsonl");
+        let allowed_base = tempdir.path();
+        let config = format!(
+            r#"
+accounts = []
+
+[audit]
+path = "{}"
+allowed_base_dir = "{}"
+"#,
+            audit_path.display(),
+            allowed_base.display(),
+        );
+        std::fs::write(&config_path, config).expect("write config");
+
+        let stderr_log = tempdir.path().join("rusty-imap-mcp.stderr.log");
+        let stderr_file = File::create(&stderr_log).expect("create stderr log file");
+
+        let mut cmd = Command::new(cargo_bin("rusty-imap-mcp"));
+        cmd.arg("--config")
+            .arg(&config_path)
+            .arg("--allow-empty-accounts")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(stderr_file))
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().expect("spawn rusty-imap-mcp binary");
+
+        let stdin = child.stdin.take().expect("stdin");
+        // Take the read end of the stdout pipe and drop it immediately.
+        // The child's write end is now connected to a closed reader.
+        let stdout = child.stdout.take().expect("stdout");
+        drop(stdout);
+
+        DetachedStdoutHarness {
+            child,
+            stdin,
+            stderr_log,
+            audit_path,
             _tempdir: tempdir,
         }
     }
@@ -567,5 +633,32 @@ allowed_base_dir = "{}"
             .expect("clean exit within timeout")
             .expect("wait");
         (status, tempdir)
+    }
+}
+
+/// Lightweight harness variant used by transport-failure regression
+/// tests that intentionally close the server's stdout read end before
+/// sending input. The server's pre-initialize envelope write will
+/// fail with `BrokenPipe`. This struct cannot read stdout responses;
+/// it exists only to drive stdin, wait for the child exit, and read
+/// the resulting audit log + captured stderr.
+pub struct DetachedStdoutHarness {
+    pub child: Child,
+    pub stdin: ChildStdin,
+    stderr_log: PathBuf,
+    audit_path: PathBuf,
+    // Held until drop so the audit log path stays valid.
+    _tempdir: TempDir,
+}
+
+impl DetachedStdoutHarness {
+    /// Path to the audit log produced by the spawned binary.
+    pub fn audit_path(&self) -> &std::path::Path {
+        &self.audit_path
+    }
+
+    /// Read the captured stderr file. Empty string on read failure.
+    pub fn captured_stderr(&self) -> String {
+        std::fs::read_to_string(&self.stderr_log).unwrap_or_default()
     }
 }
