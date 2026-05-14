@@ -12,6 +12,7 @@
 //! fail the test, regardless of which input produced them.
 
 #![expect(clippy::panic, reason = "test assertions render diagnostics")]
+#![expect(clippy::expect_used, reason = "integration tests")]
 
 #[path = "support/mod.rs"]
 mod support;
@@ -460,6 +461,74 @@ async fn pre_initialize_notification_silent_close() {
     // Audit log captured the success path as reason Eof.
     let reason = read_process_end_reason(&audit_path);
     assert_eq!(reason, rimap_audit::ProcessEndReason::Eof);
+}
+
+/// Codex review finding 2026-05-14 (medium): transport-level write
+/// failures while emitting the pre-initialize envelope must NOT be
+/// classified as clean EOF. Server's stdout read end is closed
+/// before the request arrives; the envelope write fails with
+/// `BrokenPipe`; the server exits non-zero and the audit log records
+/// `reason: Error`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_initialize_envelope_write_failure_records_error() {
+    use support::wire::harness::SHUTDOWN_TIMEOUT;
+    use tokio::io::AsyncWriteExt;
+    use tokio::time::timeout;
+
+    let mut detached = support::wire::harness::Harness::spawn_with_closed_stdout().await;
+
+    // Send a pre-initialize request. Server will read it, attempt to
+    // write the envelope, and fail with BrokenPipe because stdout's
+    // read end is already closed.
+    let line = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#.to_string() + "\n";
+    detached
+        .stdin
+        .write_all(line.as_bytes())
+        .await
+        .expect("write request");
+    detached.stdin.flush().await.expect("flush request");
+
+    // Wait for the child to exit.
+    let status = timeout(SHUTDOWN_TIMEOUT, detached.child.wait())
+        .await
+        .expect("child exit within SHUTDOWN_TIMEOUT")
+        .expect("child wait");
+
+    // Server must NOT exit 0 on a broken-pipe write failure. It may
+    // exit with a non-zero status (anyhow propagated) or, if Rust's
+    // SIGPIPE handling regresses, be killed by signal 13 — both are
+    // failures we want to surface but only the first is the
+    // contract we lock in.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        assert!(
+            status.signal().is_none(),
+            "server must not be killed by SIGPIPE (regression in Rust runtime); got {status:?}\n--- captured stderr ---\n{}",
+            detached.captured_stderr(),
+        );
+    }
+    assert!(
+        !status.success(),
+        "server must exit non-zero when envelope write fails; got {status:?}\n--- captured stderr ---\n{}",
+        detached.captured_stderr(),
+    );
+
+    // Audit log must record reason Error, NOT Eof.
+    let reason = read_process_end_reason(detached.audit_path());
+    assert_eq!(
+        reason,
+        rimap_audit::ProcessEndReason::Error,
+        "process_end.reason must be Error when envelope delivery fails, not Eof — \
+         masking transport failures as clean EOF defeats the audit-correctness goal",
+    );
+
+    // The propagated anyhow context must surface in stderr.
+    let stderr = detached.captured_stderr();
+    assert!(
+        stderr.contains("pre-init error envelope"),
+        "expected propagated 'pre-init error envelope' anyhow context in stderr, got:\n{stderr}",
+    );
 }
 
 // ---------------------------------------------------------------------------
