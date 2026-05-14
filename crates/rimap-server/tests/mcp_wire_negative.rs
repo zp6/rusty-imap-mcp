@@ -431,6 +431,37 @@ async fn tools_list_before_initialize_str_id() {
     }
 }
 
+/// Pre-initialize NOTIFICATION (no `id`) must NOT receive an error
+/// envelope — per JSON-RPC §4.1 notifications never get a response.
+/// Server closes cleanly and exits 0 with audit reason Eof.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pre_initialize_notification_silent_close() {
+    let mut harness = Harness::spawn().await;
+    let audit_path = harness.audit_path();
+
+    // Send a pre-initialize notification (not a request — no id).
+    harness
+        .notify(
+            "notifications/cancelled",
+            json!({"requestId": 1, "reason": "client decided not to initialize"}),
+        )
+        .await;
+
+    // No response should arrive; the server should close cleanly.
+    match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::CleanClose => {}
+        CloseOrResponse::Response(line) => {
+            let envelope = parse_response_line(&line);
+            panic!("pre-initialize notification must NOT produce an envelope, got {envelope}");
+        }
+        other => panic!("expected clean close, got {other:?}"),
+    }
+
+    // Audit log captured the success path as reason Eof.
+    let reason = read_process_end_reason(&audit_path);
+    assert_eq!(reason, rimap_audit::ProcessEndReason::Eof);
+}
+
 // ---------------------------------------------------------------------------
 // Test 9: two `tools/list` requests in flight simultaneously
 // ---------------------------------------------------------------------------
