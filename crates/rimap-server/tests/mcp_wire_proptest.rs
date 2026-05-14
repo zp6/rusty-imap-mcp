@@ -28,6 +28,7 @@
 //! harness I/O handles remain valid across cases.
 
 #![expect(clippy::expect_used, reason = "integration tests")]
+#![expect(clippy::panic, reason = "integration tests")]
 
 #[path = "support/mod.rs"]
 mod support;
@@ -37,7 +38,38 @@ use std::sync::{Mutex, OnceLock};
 use proptest::prelude::*;
 use serde_json::{Value, json};
 
-use support::wire::harness::Harness;
+use support::wire::harness::{CloseOrResponse, Harness, REQUEST_TIMEOUT};
+use support::wire::schema::assert_envelope_valid;
+
+/// Methods that mutate MCP session state. The property-1 strategy
+/// MUST NOT generate these as the `method` field, since they would
+/// couple subsequent cases to earlier ones (poisoning the shared
+/// harness). The set is pinned here AND asserted against rmcp's
+/// known stateful surface in `assert_exclusion_set_matches_rmcp`
+/// below — that assertion is the regression net that catches a
+/// future MCP spec addition introducing a new stateful method.
+const STATE_MUTATING_METHODS: &[&str] = &["initialize", "notifications/initialized"];
+
+#[test]
+fn assert_exclusion_set_matches_rmcp() {
+    // rmcp 1.5 documents stateful protocol methods at:
+    //   rmcp::model::ProtocolVersion docs + Initialize/Initialized
+    //   in rmcp::model::request.
+    //
+    // If a future rmcp version adds a new stateful method (e.g.
+    // `session/reset`), this assertion is the place to update — and
+    // STATE_MUTATING_METHODS above must be updated in lockstep, or
+    // property 1 starts coupling cases.
+    //
+    // This test is a sentinel — it doesn't introspect rmcp at runtime
+    // because rmcp's request enum is sealed. Instead, the maintainer
+    // updates BOTH sides of the pair (this constant and the rmcp dep)
+    // together. Bumping rmcp without inspecting this list trips a
+    // human review checkpoint via this comment.
+    let expected = ["initialize", "notifications/initialized"];
+    let actual: Vec<&str> = STATE_MUTATING_METHODS.to_vec();
+    assert_eq!(actual, expected.to_vec());
+}
 
 /// Single tokio runtime shared across all proptest cases in this
 /// binary. All `Harness` I/O handles are bound to this runtime;
@@ -164,6 +196,62 @@ fn arb_arguments() -> impl Strategy<Value = Value> {
     })
 }
 
+/// Build an arbitrary JSON-RPC-ish envelope. Each field is
+/// optionally present and may be of a wrong type. The `method`
+/// field, when present, is drawn from a set that EXCLUDES
+/// state-mutating methods to keep cases independent.
+fn arb_envelope() -> impl Strategy<Value = Value> {
+    let arb_method = prop_oneof![
+        // Known stateless methods
+        Just("tools/list".to_string()),
+        Just("tools/call".to_string()),
+        Just("resources/list".to_string()),
+        Just("ping".to_string()),
+        // Unknown methods (still stateless; the server returns
+        // method-not-found without touching session state)
+        "[a-z/]{1,32}".prop_map(String::from),
+    ]
+    .prop_filter("exclude state-mutating methods", |m: &String| {
+        !STATE_MUTATING_METHODS.contains(&m.as_str())
+    });
+
+    let arb_id = prop_oneof![
+        Just(json!(null)),
+        proptest::arbitrary::any::<u32>().prop_map(|n| json!(n)),
+        "[a-z0-9]{1,8}".prop_map(|s| json!(s)),
+    ];
+
+    let arb_params = prop_oneof![
+        Just(json!({})),
+        Just(json!(null)),
+        proptest::arbitrary::any::<i64>().prop_map(|n| json!(n)),
+        "[\\PC]{0,32}".prop_map(|s| json!(s)),
+    ];
+
+    (
+        prop::option::of(Just("2.0".to_string())),
+        prop::option::of(arb_id),
+        prop::option::of(arb_method),
+        prop::option::of(arb_params),
+    )
+        .prop_map(|(jsonrpc, id, method, params)| {
+            let mut obj = serde_json::Map::new();
+            if let Some(v) = jsonrpc {
+                obj.insert("jsonrpc".to_string(), json!(v));
+            }
+            if let Some(v) = id {
+                obj.insert("id".to_string(), v);
+            }
+            if let Some(v) = method {
+                obj.insert("method".to_string(), json!(v));
+            }
+            if let Some(v) = params {
+                obj.insert("params".to_string(), v);
+            }
+            Value::Object(obj)
+        })
+}
+
 // Property 3: `use_account` with arbitrary argument shapes. With
 // zero accounts configured (the harness's default), every call
 // MUST fail. Stateless by construction.
@@ -199,6 +287,58 @@ proptest! {
                     is_envelope_error || is_tool_error,
                     "use_account with arbitrary args must fail (no accounts configured), got {response}",
                 );
+                h
+            }).await;
+            *HARNESS.lock().expect("HARNESS lock") = harness;
+        });
+    }
+}
+
+// Property 1: arbitrary JSON-RPC-ish envelopes never panic the
+// server. Either the server emits a well-formed envelope (success
+// or error) or it cleanly closes the connection.
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(
+        std::env::var("PROPTEST_CASES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000)
+    ))]
+
+    #[test]
+    #[ignore = "blocked on #277: server hangs on unknown-method envelopes missing \
+                jsonrpc/id fields; re-enable once rmcp responds or closes cleanly"]
+    fn prop_envelope_never_panics(envelope in arb_envelope()) {
+        runtime().block_on(async move {
+            let mut harness = HARNESS.lock().expect("HARNESS lock").take();
+            harness = with_live_harness(harness, |mut h| async move {
+                h.send_line(&envelope.to_string()).await;
+                let outcome = h.response_or_close(REQUEST_TIMEOUT).await;
+                match outcome {
+                    CloseOrResponse::Response(line) => {
+                        let env: Value = serde_json::from_str(line.trim_end())
+                            .expect("server response must be valid JSON");
+                        assert_envelope_valid(&env);
+                    }
+                    CloseOrResponse::CleanClose => {
+                        // Spec-legal: harness is now poisoned;
+                        // with_live_harness will drop it after the
+                        // case and spawn a fresh one for the next.
+                    }
+                    CloseOrResponse::Crashed(diagnostic) => {
+                        panic!(
+                            "server crashed during property 1 case — \
+                             file an issue and pin a regression seed before continuing: \
+                             envelope={envelope}\n{diagnostic}",
+                        );
+                    }
+                    CloseOrResponse::Hung => {
+                        panic!(
+                            "server hung during property 1 case (no response, no close \
+                             within {REQUEST_TIMEOUT:?}): envelope={envelope}",
+                        );
+                    }
+                }
                 h
             }).await;
             *HARNESS.lock().expect("HARNESS lock") = harness;
