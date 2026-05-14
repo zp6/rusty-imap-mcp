@@ -29,6 +29,24 @@ fn parse_response_line(line: &str) -> Value {
     })
 }
 
+/// Read the `process_end.reason` from the audit log produced by the
+/// harness. Panics if no `process_end` record is found.
+fn read_process_end_reason(path: &std::path::Path) -> rimap_audit::ProcessEndReason {
+    let contents = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read audit log at {}: {e}", path.display()));
+    for line in contents.lines() {
+        let record: rimap_audit::AuditRecord = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("parse audit record {line:?}: {e}"));
+        if let rimap_audit::Payload::ProcessEnd(p) = record.payload {
+            return p.reason;
+        }
+    }
+    panic!(
+        "no process_end record found in audit log at {}",
+        path.display()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 1: unparsable JSON
 // ---------------------------------------------------------------------------
@@ -327,44 +345,58 @@ async fn initialize_after_already_initialized() {
 // Test 7: `tools/list` before `initialize`
 // ---------------------------------------------------------------------------
 
-/// `tools/list` before `initialize` must error or close the session
-/// cleanly. Server is in the "uninitialized" state and cannot answer
-/// protocol-level requests until handshake completes.
+/// `tools/list` before `initialize` must return a JSON-RPC error
+/// envelope with code -32002 (Server not initialized), echo the
+/// request id verbatim, then close stdin and exit `0`. Fixed by #275.
 ///
-/// Probed 2026-05-13 (rmcp 1.5): server CRASHES with exit code 1.
-/// This is a bug filed as #275. The test below pins the spec-
-/// compliant behavior (error envelope OR clean close); it is
-/// `#[ignore]`'d until the underlying bug is fixed. Un-ignore
-/// after #275 lands.
+/// Audit log MUST record `process_end.reason: Eof` on the success
+/// path — this is the contract the bug report flagged as broken.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on #275: server crashes on pre-initialize requests"]
 async fn tools_list_before_initialize() {
     let mut harness = Harness::spawn().await;
+    let audit_path = harness.audit_path();
+
     // Deliberately skip initialize_handshake.
+    let id = harness.send_request_no_wait("tools/list", json!({})).await;
 
-    let _id = harness.send_request_no_wait("tools/list", json!({})).await;
+    // Phase 1: error envelope arrives with -32002.
+    let envelope = match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::Response(line) => parse_response_line(&line),
+        other => {
+            panic!("expected -32002 error envelope for pre-initialize tools/list, got {other:?}")
+        }
+    };
+    assert!(
+        envelope["error"].is_object(),
+        "must be an error envelope, got {envelope}",
+    );
+    assert_eq!(
+        envelope["error"]["code"],
+        json!(-32002),
+        "must be code -32002 (Server not initialized), got {envelope}",
+    );
+    assert_eq!(
+        envelope["id"],
+        json!(id),
+        "id must be echoed verbatim, got {envelope}",
+    );
+    assert_envelope_valid(&envelope);
 
+    // Phase 2: stdout closes and the server exits 0.
     match harness.response_or_close(REQUEST_TIMEOUT).await {
-        CloseOrResponse::Response(line) => {
-            let envelope = parse_response_line(&line);
-            assert!(
-                envelope["error"].is_object(),
-                "tools/list before initialize must return an error envelope, got {envelope}",
-            );
-            assert_envelope_valid(&envelope);
-        }
-        CloseOrResponse::CleanClose => {
-            // Spec-compliant: server closed cleanly.
-        }
-        CloseOrResponse::Crashed(diag) => {
-            panic!("server crashed on pre-initialize tools/list (bug #275): {diag}",);
-        }
-        CloseOrResponse::Hung => {
-            panic!(
-                "server hung (no response within {REQUEST_TIMEOUT:?}) on pre-initialize tools/list",
-            );
-        }
+        CloseOrResponse::CleanClose => {}
+        other => panic!(
+            "expected clean close after envelope on pre-initialize tools/list, got {other:?}"
+        ),
     }
+
+    // Phase 3: audit log captured the success path as reason Eof.
+    let reason = read_process_end_reason(&audit_path);
+    assert_eq!(
+        reason,
+        rimap_audit::ProcessEndReason::Eof,
+        "process_end.reason must be Eof on successful pre-initialize handling",
+    );
 }
 
 // ---------------------------------------------------------------------------

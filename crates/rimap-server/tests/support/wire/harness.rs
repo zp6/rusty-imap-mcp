@@ -133,6 +133,9 @@ fn force_use_for_dead_code_link() {
     // Methods used by mcp_wire_negative, not by other binaries.
     let _ = Harness::response_or_close;
     let _ = Harness::send_line;
+    // Method used by mcp_wire_negative (pre-initialize tests), not by
+    // other binaries.
+    let _ = Harness::audit_path;
     // Methods used by mcp_wire_negative and e2e_wire_cancellation, not
     // by other binaries.
     let _ = Harness::send_request_no_wait;
@@ -256,6 +259,18 @@ allowed_base_dir = "{}"
     /// panic messages.
     pub fn captured_stderr(&self) -> String {
         std::fs::read_to_string(&self.stderr_log).unwrap_or_default()
+    }
+
+    /// Path to the audit log file for this harness. Used by tests
+    /// that need to read `process_end` records post-shutdown.
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the leading underscore on `_tempdir` is a visual convention to flag that the \
+                  field is held purely for its drop guard; this accessor exposes its path on \
+                  purpose so audit-log assertions can read the file before the guard drops"
+    )]
+    pub fn audit_path(&self) -> std::path::PathBuf {
+        self._tempdir.path().join("audit.jsonl")
     }
 
     /// Read exactly one parsed envelope from stdout. Skips
