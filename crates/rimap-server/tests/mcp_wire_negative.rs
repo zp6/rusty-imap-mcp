@@ -399,6 +399,38 @@ async fn tools_list_before_initialize() {
     );
 }
 
+/// Same contract as `tools_list_before_initialize`, but with a string
+/// id. Pins id-type preservation at the wire layer: numeric coercion
+/// of `id` in the synthesizer would surface here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tools_list_before_initialize_str_id() {
+    let mut harness = Harness::spawn().await;
+
+    // Send a hand-crafted request with a STRING id rather than using
+    // send_request_no_wait (which auto-assigns a u64).
+    let raw = r#"{"jsonrpc":"2.0","id":"abc-123","method":"tools/list","params":{}}"#;
+    harness.send_line(raw).await;
+
+    let envelope = match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::Response(line) => parse_response_line(&line),
+        other => panic!(
+            "expected -32002 error envelope for pre-initialize tools/list w/ str id, got {other:?}"
+        ),
+    };
+    assert_eq!(envelope["error"]["code"], json!(-32002));
+    assert_eq!(
+        envelope["id"],
+        json!("abc-123"),
+        "string id must survive verbatim through the envelope synthesizer, got {envelope}",
+    );
+    assert_envelope_valid(&envelope);
+
+    match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::CleanClose => {}
+        other => panic!("expected clean close, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Test 9: two `tools/list` requests in flight simultaneously
 // ---------------------------------------------------------------------------
