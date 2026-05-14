@@ -18,14 +18,8 @@ use crate::mcp::error::NOT_INITIALIZED;
 /// Build the newline-terminated JSON-RPC error line to emit for an
 /// offending pre-initialize message. Returns `Some` only for the
 /// `Request` variant.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into main.rs::run in the next commit (#275 task 4)"
-    )
-)]
-pub(crate) fn synthesize_pre_init_error_envelope(msg: &ClientJsonRpcMessage) -> Option<String> {
+#[must_use]
+pub fn synthesize_pre_init_error_envelope(msg: &ClientJsonRpcMessage) -> Option<String> {
     match msg {
         ClientJsonRpcMessage::Request(req) => {
             let id = req.id.clone().into_json_value();

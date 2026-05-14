@@ -24,7 +24,9 @@ use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
 use rimap_config::validate::ValidatedAccountConfig;
 use rimap_imap::Connection;
+use rmcp::service::ServerInitializeError;
 use secrecy::ExposeSecret;
+use tokio::io::AsyncWriteExt;
 
 use crate::cli::{AuditAction, Cli, Command};
 
@@ -135,9 +137,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 
         let mcp_server = server::ImapMcpServer::new(registry, audit, cancellation_tx);
         let transport = rmcp::transport::io::stdio();
-        let service = Box::pin(rmcp::serve_server(mcp_server, transport))
-            .await
-            .map_err(|e| anyhow::anyhow!("MCP server init: {e}"))?;
+        let service = match Box::pin(rmcp::serve_server(mcp_server, transport)).await {
+            Ok(svc) => svc,
+            Err(ServerInitializeError::ExpectedInitializeRequest(Some(msg))) => {
+                emit_pre_init_error_envelope(&msg).await?;
+                return Ok(());
+            }
+            Err(other) => return Err(anyhow::anyhow!("MCP server init: {other}")),
+        };
         // waiting() takes ownership of service, consuming it and dropping the
         // ImapMcpServer (including all cancellation sender clones) when it
         // returns. The drainer task exits once all senders have dropped.
@@ -171,6 +178,28 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     }
 
     mcp_result
+}
+
+/// Write the JSON-RPC -32002 error envelope for a pre-initialize request
+/// to stdout (newline-terminated, flushed). Notification / Response /
+/// Error variants synthesize no envelope (per JSON-RPC §4.1) and this
+/// helper is a no-op. Write failures (broken pipe, closed reader) are
+/// propagated via `?` so the caller records `process_end.reason: Error`.
+async fn emit_pre_init_error_envelope(
+    msg: &rmcp::model::ClientJsonRpcMessage,
+) -> anyhow::Result<()> {
+    let Some(line) = rimap_server::mcp::preinit::synthesize_pre_init_error_envelope(msg) else {
+        return Ok(());
+    };
+    let mut out = tokio::io::stdout();
+    out.write_all(line.as_bytes())
+        .await
+        .context("writing pre-init error envelope to stdout")?;
+    out.flush()
+        .await
+        .context("flushing pre-init error envelope")?;
+    tracing::info!("rejected pre-initialize request with -32002 envelope");
+    Ok(())
 }
 
 /// Resolve the config file path from `--config` or the

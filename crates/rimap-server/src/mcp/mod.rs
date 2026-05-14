@@ -4,7 +4,7 @@ pub(crate) mod audit_envelope;
 pub mod content;
 pub(crate) mod dispatch;
 pub mod error;
-pub(crate) mod preinit;
+pub mod preinit;
 pub mod response;
 pub mod server;
 // `tool_catalog` is `pub` (doc-hidden via the parent `#[doc(hidden)] pub mod
