@@ -38,7 +38,10 @@ The originating test —
 2. **Pre-initialize Notification or Response**: drop silently, close cleanly,
    exit `0`. (Per JSON-RPC §4.1, notifications never receive a response;
    a response without a matching server request is malformed.)
-3. **Audit log**: `process_end` emits with `reason: Eof`, not `Error`.
+3. **Audit log**: `process_end` emits with `reason: Eof` (not `Error`)
+   on the success path. Transport-level write failures while emitting
+   the envelope remain classified as `reason: Error` and exit non-zero
+   — those are real server faults, not misbehaving-client input.
 
 ## Approach
 
@@ -63,8 +66,13 @@ let service = match Box::pin(rmcp::serve_server(mcp_server, transport)).await {
     Err(ServerInitializeError::ExpectedInitializeRequest(Some(msg))) => {
         if let Some(line) = synthesize_pre_init_error_envelope(&msg) {
             let mut out = tokio::io::stdout();
-            let _ = out.write_all(line.as_bytes()).await;
-            let _ = out.flush().await;
+            out.write_all(line.as_bytes())
+                .await
+                .context("writing pre-init error envelope to stdout")?;
+            out.flush()
+                .await
+                .context("flushing pre-init error envelope")?;
+            tracing::info!("rejected pre-initialize request with -32002 envelope");
         }
         return Ok(());
     }
@@ -72,9 +80,18 @@ let service = match Box::pin(rmcp::serve_server(mcp_server, transport)).await {
 };
 ```
 
-Returning `Ok(())` causes the outer `mcp_result` to be `Ok`, which the
-existing `process_end` block at `main.rs:158-171` records as `reason: Eof`
-and the process exits `0`.
+Returning `Ok(())` on the success path causes the outer `mcp_result` to
+be `Ok`, which the existing `process_end` block at `main.rs:158-171`
+records as `reason: Eof` and the process exits `0`.
+
+Write/flush failures are propagated with `?`. A failed stdout write is
+a genuine server fault: the client never received the envelope and we
+have no other transport to recover. The `?` returns `Err` to
+`mcp_result`, which records `reason: Error` and exits non-zero —
+correct for that case. The bug we are fixing was misclassifying a
+successful handling of a misbehaving client as an error; propagating
+real transport faults to the same shutdown machinery preserves that
+audit-correctness goal at the failure boundary.
 
 Because rmcp has already consumed its `tokio::io::Stdout` by the time the
 error returns, the helper writes through a freshly acquired
@@ -83,6 +100,34 @@ process stdout file descriptor.
 
 The cancellation channel + drainer (`main.rs:133-134`) only matter for
 mid-dispatch cancellation; the early-return path skips them entirely.
+
+## Dependencies
+
+This spec assumes the wire-level negative-test harness from #266 / PR
+#278. As of 2026-05-14, that PR is still in DRAFT and the harness lives
+only on the `feature/issue-266-mcp-fuzzing` branch:
+
+- `crates/rimap-server/tests/mcp_wire_negative.rs` — file under
+  which `tools_list_before_initialize` is `#[ignore]`'d
+- `crates/rimap-server/tests/support/wire/harness.rs` — the
+  `Harness` / `CloseOrResponse` / `response_or_close` plumbing the
+  test plan below references
+
+Implementation of #275 is therefore gated on #266 landing. Branching
+strategy is decided at implementation kickoff, not here:
+
+1. **Preferred: rebase onto `main` after #266 merges.** Clean history,
+   independent PR review.
+2. **Fallback: stack `fix/issue-275-pre-initialize-handling` on
+   `feature/issue-266-mcp-fuzzing`** and mark the PR as merge-after-#266.
+   Use this only if both PRs need to be in flight simultaneously.
+
+If #266's harness shape changes during its review (e.g. `CloseOrResponse`
+gains variants, `response_or_close` signature shifts), the test
+assertions in this spec are re-aligned to the merged shape before
+implementation begins. Adopting #266's harness wholesale into #275 is
+explicitly rejected: it would duplicate ~600 lines of #266's
+contribution and guarantee a merge conflict.
 
 ## Envelope shape
 
@@ -148,10 +193,38 @@ mid-dispatch cancellation; the early-return path skips them entirely.
 
 ### Audit log
 
-One assertion in either the un-ignored test or a sibling test that
-reads the audit log post-shutdown and verifies `process_end.reason
-== Eof`. The pattern follows existing audit-tail tests under
-`crates/rimap-server/tests/`.
+Two cases, both reading the audit log post-shutdown via the pattern
+established by existing audit-tail tests under
+`crates/rimap-server/tests/`:
+
+1. **Success path.** `tools_list_before_initialize` (and the string-id
+   variant) asserts `process_end.reason == Eof` after the envelope is
+   written and the server exits `0`. This is the case the bug report
+   is asking us to fix.
+2. **Write-failure path.** A new wire test
+   `pre_initialize_envelope_write_failure_records_error` closes the
+   harness's child-stdout read end before the server attempts to write
+   the envelope (Codex review finding 2026-05-14, medium). Asserts:
+   - server exits non-zero
+   - `process_end.reason == Error`
+   - the rejected envelope is observable in stderr or via the
+     `tracing::error!` machinery (no silent audit success on
+     transport failure)
+
+   This test requires a new harness helper —
+   `Harness::drop_stdout_reader()` or equivalent — that drops the
+   `BufReader<ChildStdout>` while keeping `child` alive so its exit
+   status can still be observed. Adding this helper is in scope for
+   #275 (small, ~10 lines in `support/wire/harness.rs`).
+
+### SIGPIPE handling
+
+The broken-stdout test relies on Rust's default SIGPIPE behavior
+(`SIG_IGN` since 1.0): writes to a closed pipe return `Err(BrokenPipe)`
+rather than terminating the process. This is checked by the test
+itself — if the assertion that the server exits non-zero (rather than
+being killed by SIGPIPE with `status.signal() == Some(13)`) ever
+fails, the test surfaces a SIGPIPE regression.
 
 ### Out of scope
 
@@ -168,11 +241,16 @@ reads the audit log post-shutdown and verifies `process_end.reason
    `Err(other) =>` arm preserves today's behavior for every other
    initialization failure (transport errors, unsupported protocol
    version, etc.) so we do not silently swallow real bugs.
-2. **stderr behavior.** The early-return path no longer emits
-   `tracing::error!`. A single `tracing::info!` log entry is added
-   at envelope-write time so audit operators can correlate the
-   wire event — kept at `info` because this is a normal handled
-   case, not a fault.
+2. **stderr behavior.** Two distinct outcomes:
+   - **Success** (envelope written, exit 0, `reason: Eof`): one
+     `tracing::info!` entry so audit operators can correlate the
+     wire event. Kept at `info` because this is a normal handled
+     case, not a fault.
+   - **Write failure** (envelope could not be delivered, exit
+     non-zero, `reason: Error`): the existing `tracing::error!("{e:#}")`
+     in `main.rs:49` fires from the propagated `anyhow::Error`,
+     same as today's behavior for other transport faults. No silent
+     classification of write failures as clean EOF.
 3. **stdout fd reuse.** Acquiring a fresh `tokio::io::stdout()` after
    rmcp drops its handle is safe because both wrap the same OS file
    descriptor. Anything rmcp wrote on this path (e.g. a ping response
@@ -202,7 +280,17 @@ Mirrors the issue:
 - Pre-initialize Request results in a JSON-RPC error envelope with
   `code == -32002`; pre-initialize Notification / Response is dropped
   silently.
-- `tools_list_before_initialize` and the two new wire tests pass with
+- `tools_list_before_initialize` (un-ignored) plus the three new wire
+  tests (`tools_list_before_initialize_str_id`,
+  `pre_initialize_notification_silent_close`,
+  `pre_initialize_envelope_write_failure_records_error`) pass with
   strict assertions on the chosen behavior.
-- `rusty-imap-mcp` exits `0` (not `1`) on misbehaving-client input.
-- `process_end` audit record reports `reason: Eof`.
+- `rusty-imap-mcp` exits `0` (not `1`) on misbehaving-client input
+  when the envelope is delivered successfully.
+- `process_end` audit record reports `reason: Eof` on the success
+  path.
+- Pre-initialize handling does **not** mask transport-level write
+  failures: if the server cannot deliver the envelope, exit
+  non-zero and audit `reason: Error`. The new
+  `pre_initialize_envelope_write_failure_records_error` wire test
+  pins this contract.
