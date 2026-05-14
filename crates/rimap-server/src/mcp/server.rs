@@ -106,6 +106,35 @@ impl ImapMcpServer {
     }
 }
 
+/// In-crate unit-test constructor. Compiled only under `cfg(test)` so it
+/// never ships in the released binary. Builds an `ImapMcpServer` with an
+/// empty `AccountRegistry` and the caller-supplied audit writer +
+/// cancellation sender — the minimum surface needed to drive
+/// [`ImapMcpServer::run_with_audit_envelope`] (which reads only `audit`,
+/// `redaction_salt`, and `cancellation_sender`) without the heavyweight
+/// boot machinery that real `ImapMcpServer::new` requires.
+#[cfg(test)]
+impl ImapMcpServer {
+    /// Minimal test constructor — only fields touched by
+    /// `run_with_audit_envelope` (and its inner callees `redact_tool_args`,
+    /// `emit_tool_start`, `emit_tool_end`) get caller-supplied values.
+    /// The `AccountRegistry` is empty; tool dispatch through this server
+    /// will fail at account resolution, which is fine because the
+    /// wrapper-level test injects its own body closure and never reaches
+    /// dispatch.
+    pub(crate) fn new_for_tests(
+        audit: AuditWriter,
+        cancellation_sender: CancelledToolEndSender,
+    ) -> Self {
+        Self {
+            registry: AccountRegistry::new(std::collections::BTreeMap::new()),
+            audit,
+            cancellation_sender,
+            redaction_salt: Arc::new(RedactionSalt::new_random()),
+        }
+    }
+}
+
 /// Integration-test entry point. Exposed under `#[cfg(any(test, feature =
 /// "test-support"))]` so tests exercise the exact same pipeline (account
 /// resolve → `pre_dispatch` → audit envelope → `dispatch_tool`) as real
