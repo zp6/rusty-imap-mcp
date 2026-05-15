@@ -18,16 +18,10 @@ use rmcp::RoleServer;
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ErrorCode as McpCode, ErrorData, Implementation,
-    ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, RawResource,
-    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
-    ServerInfo, Tool,
+    InitializeRequestParams, InitializeResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, RawResource, ReadResourceRequestParams,
+    ReadResourceResult, Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
-// Wired into ImapMcpServer::initialize in the next commit (#276 task 2).
-#[expect(
-    unused_imports,
-    reason = "wired into ImapMcpServer::initialize in the next commit (#276 task 2)"
-)]
-use rmcp::model::{InitializeRequestParams, InitializeResult};
 use rmcp::service::RequestContext;
 
 use crate::boot::registry::{AccountRegistry, AccountState};
@@ -278,6 +272,29 @@ impl ServerHandler for ImapMcpServer {
         ))
     }
 
+    async fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<InitializeResult, ErrorData> {
+        // LATEST-only acceptance per spec §"Why LATEST-only" (#276):
+        // rmcp 1.5 emits LATEST wire shapes regardless of negotiated
+        // version, so accepting older known versions would echo the
+        // peer's version string while serving 2025-11-25 capabilities.
+        // The exact-equality check is the only honest option.
+        if request.protocol_version != ProtocolVersion::LATEST {
+            return Err(unsupported_protocol_version_error(
+                &request.protocol_version,
+            ));
+        }
+        // Preserve the default-impl behavior for the happy path so the
+        // peer's ClientInfo is captured for subsequent dispatch.
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        Ok(self.get_info())
+    }
+
     async fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -503,13 +520,6 @@ impl ServerHandler for ImapMcpServer {
 /// `supported_versions` as a single-element array so clients have a
 /// machine-readable retry hint, and the message echoes the offending
 /// version in single quotes for log readability. (#276)
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into ImapMcpServer::initialize in the next commit (#276 task 2)"
-    )
-)]
 fn unsupported_protocol_version_error(peer_version: &ProtocolVersion) -> ErrorData {
     let supported = [ProtocolVersion::LATEST.as_str()];
     let message = format!(
