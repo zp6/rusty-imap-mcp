@@ -100,12 +100,14 @@ completes:
 5. **Session stays alive after rejection**: the next valid envelope on
    the wire continues to dispatch normally.
 
-Pre-initialize handling is unchanged. The validator and the existing
-`preinit.rs` are independent: `preinit` handles
-`ServerInitializeError::ExpectedInitializeRequest` from rmcp (a
-semantically-wrong-but-syntactically-valid first message); the validator
-catches everything that rmcp's codec would otherwise silently drop, both
-pre- and post-initialize.
+Pre-initialize handling is otherwise unchanged — `preinit` still owns
+`ServerInitializeError::ExpectedInitializeRequest` (a
+semantically-wrong-but-syntactically-valid first message), and the
+validator catches everything that rmcp's codec would otherwise silently
+drop, both pre- and post-initialize. **One mechanical change is
+required**: `emit_pre_init_error_envelope` in `main.rs` writes to real
+stdout and so must lock the validator's shared mutex — see "Pre-init
+shares the validator stdout" below.
 
 ### Why respond rather than close
 
@@ -130,13 +132,18 @@ Replace `rmcp::transport::io::stdio()` in
 rmcp's transport via `tokio::io::duplex`:
 
 ```
-                          ┌──────────── Arc<Mutex<Stdout>> ───────────┐
-                          ↓ (rejections)                              ↓ (rmcp frames)
-real stdin → [validator] ─┴─valid line─→ duplex_in.our_end            │
-                                         duplex_in.rmcp_end → rmcp ───┤
-                            duplex_out.our_end ← duplex_out.rmcp_end ←┘
-                              ↓
-                          [passthrough] ─────────────────────────→ real stdout
+                       ┌──── Arc<Mutex<Stdout>> ─ shared writer ────┐
+                       ↑ rejections     ↑ rmcp frames     ↑ pre-init envelope
+                       │                │                 │
+real stdin → [validator] ──valid line→ duplex_in.our_end  │     main.rs::run
+                                       duplex_in.rmcp_end →─→ rmcp transport
+                       [passthrough] ← duplex_out.our_end ←─ duplex_out.rmcp_end
+                                          │
+                                          └──── locks shared writer ──→ real stdout
+
+   supervisor.join() races service.waiting() in main.rs:
+     - validator/passthrough JoinHandle errors → mcp_outcome: Err → process_end.reason: Error
+     - clean EOF on both directions               → mcp_outcome: Ok  → process_end.reason: Eof
 ```
 
 Two background tokio tasks live for the lifetime of the MCP session,
@@ -169,8 +176,10 @@ drops its inbound duplex end → rmcp's `FramedRead` sees EOF on its
 next poll → `service.waiting()` resolves cleanly. EOF on the
 outbound duplex (rmcp dropped) → passthrough exits → tasks complete.
 Broken pipe on real stdout propagates as `io::Error` from the locked
-write; whichever task hit it logs and exits, the other follows when
-its duplex peer drops.
+write; the affected bridge task returns that error from its
+`JoinHandle` and the supervisor surfaces it to `main.rs::run` so
+`process_end.reason: Error` is recorded (see "Bridge-task supervisor"
+below).
 
 rmcp's `IntoTransport` impl
 (`rmcp/transport/async_rw.rs:22-31`) accepts any
@@ -180,30 +189,67 @@ rmcp.
 
 ### Validator entry point
 
+The validator returns a struct rather than a bare tuple so the bridge
+tasks' lifecycle, the shared stdout writer, and the rmcp-facing
+transport are owned together. The shared stdout is exposed so all
+synchronized stdout writers in the process (validator rejections,
+passthrough frames, **and** the pre-init error envelope emitted from
+`main.rs`) lock the same mutex — see "Pre-init shares the validator
+stdout" below.
+
 ```rust
 // crates/rimap-server/src/mcp/wire_validator.rs
 
-/// Return a transport-compatible (read, write) pair that pre-validates
-/// JSON-RPC 2.0 envelopes on the inbound side. Invalid envelopes are
-/// rejected directly to real stdout; valid envelopes are forwarded to
-/// the returned read half. The write half is bridged to real stdout
-/// unchanged.
-///
-/// Drop both returned streams to terminate the background tasks.
-pub fn stdio_with_validation() -> (DuplexStream, DuplexStream) {
+pub struct ValidatedStdio {
+    /// Hand to rmcp via `rmcp::serve_server(server, validated.transport)`.
+    pub transport: (DuplexStream, DuplexStream),
+    /// Shared writer for synchronized stdout output. `main.rs`'s
+    /// pre-init error path locks this same mutex; the bridge tasks
+    /// hold `Arc::clone`s.
+    pub stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+    /// Bridge-task supervisor; must be polled alongside
+    /// `service.waiting()` so write errors propagate.
+    pub supervisor: ValidatorSupervisor,
+}
+
+pub struct ValidatorSupervisor {
+    inbound: JoinHandle<io::Result<()>>,
+    outbound: JoinHandle<io::Result<()>>,
+}
+
+impl ValidatorSupervisor {
+    /// Resolves with the first bridge-task error encountered, or
+    /// `Ok(())` once both tasks exit cleanly (the normal EOF path).
+    ///
+    /// On error from either task, the other is aborted; both
+    /// duplex ends are dropped, which surfaces to rmcp as a
+    /// transport error on its next read/write.
+    pub async fn join(mut self) -> io::Result<()> { ... }
+}
+
+/// Build the validated stdio transport. The two bridge tasks are
+/// spawned immediately; their lifecycle is exposed via `supervisor`.
+pub fn stdio_with_validation() -> ValidatedStdio {
     let (inbound_our_end, inbound_rmcp_end) = tokio::io::duplex(BUF_SIZE);
     let (outbound_rmcp_end, outbound_our_end) = tokio::io::duplex(BUF_SIZE);
 
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
 
-    tokio::spawn(validate_inbound(
+    let inbound = tokio::spawn(validate_inbound(
         tokio::io::stdin(),
         inbound_our_end,
         Arc::clone(&stdout),
     ));
-    tokio::spawn(passthrough_outbound(outbound_our_end, stdout));
+    let outbound = tokio::spawn(passthrough_outbound(
+        outbound_our_end,
+        Arc::clone(&stdout),
+    ));
 
-    (inbound_rmcp_end, outbound_rmcp_end)
+    ValidatedStdio {
+        transport: (inbound_rmcp_end, outbound_rmcp_end),
+        stdout,
+        supervisor: ValidatorSupervisor { inbound, outbound },
+    }
 }
 ```
 
@@ -211,15 +257,92 @@ pub fn stdio_with_validation() -> (DuplexStream, DuplexStream) {
 fits in a single write; both directions are independent tasks so
 inbound stalls cannot cause outbound deadlock.
 
-`main.rs::run` swap:
+### Bridge-task supervisor
+
+`main.rs::run` races `service.waiting()` against the supervisor so a
+broken-pipe write from either bridge task short-circuits to an error
+return — recording `process_end.reason: Error` instead of `Eof`. This
+preserves the audit semantics established by #275 for pre-init write
+failures (`tests/mcp_wire_negative.rs::process_end_on_pre_init_write_failure`).
 
 ```rust
-- let transport = rmcp::transport::io::stdio();
-+ let transport = rimap_server::mcp::wire_validator::stdio_with_validation();
+let validated = wire_validator::stdio_with_validation();
+let stdout_for_preinit = Arc::clone(&validated.stdout);
+
+let service = match Box::pin(rmcp::serve_server(mcp_server, validated.transport)).await {
+    Ok(svc) => svc,
+    Err(ServerInitializeError::ExpectedInitializeRequest(Some(msg))) => {
+        emit_pre_init_error_envelope(&msg, &stdout_for_preinit).await?;
+        // Drop the supervisor: both tasks see EOF/closed-duplex and exit.
+        return Ok(());
+    }
+    Err(ServerInitializeError::InitializeFailed(error_data)) => {
+        return handle_initialize_failed(&error_data);
+    }
+    Err(other) => return Err(anyhow::anyhow!("MCP server init: {other}")),
+};
+
+let mcp_outcome = tokio::select! {
+    biased;
+    bridge_err = validated.supervisor.join() => {
+        bridge_err.map_err(|e| anyhow::anyhow!("validator bridge: {e}"))
+    }
+    result = service.waiting() => {
+        result.map_err(|e| anyhow::anyhow!("MCP server error: {e}"))
+    }
+};
 ```
 
-`rmcp::serve_server(mcp_server, transport)` accepts the duplex pair
-via `IntoTransport::<RoleServer, std::io::Error, TransportAdapterAsyncRW>::into_transport`.
+`biased` prefers the supervisor arm so a write error during a
+near-simultaneous EOF resolution still records as `Error`. After
+either arm wins, the dropped streams cascade EOF to the other path
+and any remaining queued audit work flushes via the existing
+`drainer_handle.await`.
+
+The `Validator entry point`'s code block returns to `main.rs`
+unchanged: same `mcp_outcome` then `emit_process_end(&audit, &mcp_outcome)`
+as today.
+
+### Pre-init shares the validator stdout
+
+`main.rs`'s `emit_pre_init_error_envelope` currently writes directly to
+`tokio::io::stdout()` (`main.rs:199-211`). After the transport swap,
+the bridge tasks hold the synchronized stdout writer; a direct
+`tokio::io::stdout()` write from `emit_pre_init_error_envelope` races
+the passthrough task and can corrupt line-delimited output (e.g. a
+pre-init `ping` request arrives, rmcp emits a response via passthrough,
+and the next line is a `tools/list` rejection envelope — interleaved
+mid-line).
+
+Mechanical change to `main.rs`:
+
+```rust
+async fn emit_pre_init_error_envelope(
+    msg: &rmcp::model::ClientJsonRpcMessage,
+    stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+) -> anyhow::Result<()> {
+    let Some(line) = rimap_server::mcp::preinit::synthesize_pre_init_error_envelope(msg) else {
+        return Ok(());
+    };
+    let mut out = stdout.lock().await;
+    out.write_all(line.as_bytes())
+        .await
+        .context("writing pre-init error envelope to stdout")?;
+    out.flush()
+        .await
+        .context("flushing pre-init error envelope")?;
+    Ok(())
+}
+```
+
+`preinit::synthesize_pre_init_error_envelope` itself is unchanged — it
+remains a pure formatter. Only the caller in `main.rs` and the
+function's signature change.
+
+The new pre-init wire test
+`preinit_envelope_does_not_interleave_with_rmcp_frame` (see "Testing")
+exercises the formerly racy ordering and asserts both stdout lines
+parse cleanly.
 
 ### Validation rules
 
@@ -294,16 +417,23 @@ Lines are emitted with a trailing `\n` and flushed, same as
 ## File layout
 
 - **New:** `crates/rimap-server/src/mcp/wire_validator.rs`
-  - `pub fn stdio_with_validation() -> (DuplexStream, DuplexStream)` —
-    entry point used by `main.rs`.
+  - `pub struct ValidatedStdio { transport, stdout, supervisor }` and
+    `pub fn stdio_with_validation() -> ValidatedStdio` — entry point
+    used by `main.rs`.
+  - `pub struct ValidatorSupervisor` with `pub async fn join(self) -> io::Result<()>`.
   - `fn validate(line: &str) -> ValidationOutcome` — pure
     function, no I/O. Unit-testable in isolation.
   - `enum ValidationOutcome { Forward, Skip, Reject(ErrorEnvelope) }`
   - `fn synthesize_error_envelope(code: i32, message: &str, id: Option<Value>) -> String`
   - `async fn validate_inbound(...)` and `async fn passthrough_outbound(...)` —
-    the two background tasks.
-- **Modified:** `crates/rimap-server/src/main.rs:140` — swap the
-  transport constructor as above. One-line change.
+    the two bridge tasks, each returning `io::Result<()>` so write
+    failures surface via the supervisor's `JoinHandle`s.
+- **Modified:** `crates/rimap-server/src/main.rs` —
+  - swap the transport constructor (`stdio_with_validation()`),
+  - thread `Arc<Mutex<Stdout>>` into `emit_pre_init_error_envelope` so
+    pre-init rejections share the validator's stdout writer,
+  - race `service.waiting()` against `supervisor.join()` via
+    `tokio::select! { biased; ... }`.
 - **Modified:** `crates/rimap-server/src/mcp/mod.rs` — `pub mod wire_validator;`
 - **Modified:** `crates/rimap-server/tests/mcp_wire_proptest.rs:310` —
   remove the `#[ignore]` from `prop_envelope_never_panics`, and amend
@@ -311,9 +441,9 @@ Lines are emitted with a trailing `\n` and flushed, same as
   "Property body adjustment").
 - **Modified:** `crates/rimap-server/tests/mcp_wire_negative.rs` — new
   pinned tests (see "Testing" below).
-- **No changes to** `crates/rimap-server/src/mcp/preinit.rs` — its
-  responsibility (intercepting `ServerInitializeError::ExpectedInitializeRequest`
-  from rmcp) is orthogonal.
+- **No changes to** `crates/rimap-server/src/mcp/preinit.rs` itself —
+  its `synthesize_pre_init_error_envelope` remains a pure formatter;
+  the I/O caller in `main.rs` is what changes.
 
 ## Property body adjustment (case 2)
 
@@ -335,11 +465,29 @@ match outcome {
     CloseOrResponse::CleanClose => {},
     CloseOrResponse::Crashed(d) => panic!("crashed: {d}"),
     CloseOrResponse::Hung if is_spec_legal_notification => {
-        // JSON-RPC §4.1: server MUST NOT reply to a notification.
-        // Silence within REQUEST_TIMEOUT is the correct outcome.
-        // Harness is poisoned by the timeout path; `with_live_harness`
-        // respawns on the next case. The throughput cost is the
-        // proptest's choice, not the server's.
+        // JSON-RPC §4.1 permits no response. BUT silence by itself
+        // doesn't prove the server is healthy — it could be hung
+        // or deadlocked. Send a `ping` request and require a
+        // well-formed response within LIVENESS_TIMEOUT; otherwise
+        // the notification poisoned the session and the property
+        // must fail.
+        let ping_outcome = h
+            .request_with_timeout("ping", json!({}), LIVENESS_TIMEOUT)
+            .await;
+        match ping_outcome {
+            CloseOrResponse::Response(line) => {
+                let env: Value = serde_json::from_str(line.trim_end())
+                    .expect("ping response must be valid JSON");
+                assert_envelope_valid(&env);
+                assert!(
+                    env.get("result").is_some(),
+                    "ping after notification {envelope} did not return a result envelope",
+                );
+            }
+            other => panic!(
+                "ping liveness check failed after notification {envelope}: {other:?}",
+            ),
+        }
     }
     CloseOrResponse::Hung => panic!("hung on {envelope}"),
 }
@@ -350,13 +498,22 @@ strategy, so the missing-`jsonrpc` cases that originally triggered
 #277 stay in coverage and exercise the validator's reject path. The
 strategy is unchanged.
 
-The harness respawn overhead (every notification-shaped case triggers
-`with_live_harness` to spawn a fresh server) is acceptable for 1000-
-case property runs and matches the cost we already pay for
-`CleanClose` outcomes in #275/#276 tests. If the overhead becomes a
-problem under nightly higher case counts, a follow-up can add a
-`send_notification_and_confirm_silence(line, dur)` harness method
-that doesn't poison on timeout.
+**Liveness check rationale.** `CloseOrResponse::Hung` is just "no
+bytes within `REQUEST_TIMEOUT`" — it does not prove the child process
+is alive or responsive. Without the follow-up `ping`, a panic-on-
+notification or a deadlock-on-notification would be silently
+classified as spec-legal silence and the property would respawn the
+harness, defeating the `never_panics` guarantee for this input class.
+The ping forces the server to *demonstrate* it is still processing
+requests before we accept the case. `LIVENESS_TIMEOUT` is a new
+harness constant (suggested 1 s — same order as `REQUEST_TIMEOUT`)
+and `request_with_timeout` is a small extension to the existing
+`Harness::request` API.
+
+**Overhead.** Roughly 25% of generated envelopes are notification-
+shaped under the current strategy. Each contributes one extra ping
+round-trip (~5–10 ms on the local harness without Dovecot). Total
+overhead on a 1000-case run: ~2.5 s. Acceptable and stable.
 
 ## Testing
 
@@ -393,9 +550,28 @@ and id):
 10. `session_survives_invalid_envelope` — valid `initialize` →
     invalid envelope → valid `tools/list`. The third message gets a
     normal response; the session is not closed.
+11. `preinit_envelope_does_not_interleave_with_rmcp_frame` — pre-init
+    `ping` (which rmcp answers via the passthrough) immediately
+    followed by a pre-init `tools/list` (which `emit_pre_init_error_envelope`
+    rejects with `-32002`) → both stdout lines parse as well-formed,
+    distinct JSON-RPC envelopes with the expected `id` mapping. Pins
+    the new shared-stdout invariant.
+12. `process_end_on_validator_rejection_write_failure` — closed-stdout
+    harness variant: client sends an invalid envelope, validator's
+    `-32600` write fails with `BrokenPipe`, supervisor surfaces the
+    error to `mcp_outcome`, audit records `process_end.reason: Error`,
+    exit is non-zero. Mirrors #275's `process_end_on_pre_init_write_failure`.
+13. `process_end_on_rmcp_response_write_failure` — closed-stdout
+    harness variant: client sends a valid `tools/list`, rmcp's
+    response write into the passthrough fails downstream, supervisor
+    surfaces the error to `mcp_outcome`, audit records
+    `process_end.reason: Error`, exit is non-zero. Companion to test
+    12 for the outbound bridge.
 
 All tests run against the production binary via the existing
-`Harness` — no test-only hooks needed in the validator.
+`Harness` — no test-only hooks needed in the validator. Tests 12 and
+13 use the closed-stdout harness variant added in
+`tests/support/wire/harness.rs` for #275.
 
 **Unit tests** in `wire_validator.rs::tests` covering `validate()` in
 isolation, one assertion per row of the validation rules table. Pure
@@ -425,16 +601,32 @@ this should hold by construction.
   far larger than any sane envelope. Mitigation: leave the buffer
   generous; the proptest will exercise heterogeneous envelope sizes.
 - **Async cancellation safety.** The validator and passthrough tasks
-  are spawned with `tokio::spawn`; they own their I/O handles and
-  drop them on task exit. Cancellation on the outer runtime cancels
-  the tasks, which closes the duplex ends, which surfaces to rmcp as
-  EOF or write-error — the same shutdown shape as today's direct
-  stdio transport.
+  are spawned with `tokio::spawn`; the supervisor owns their
+  `JoinHandle`s. On `service.waiting()` resolution the supervisor's
+  `join()` is dropped, which aborts the tasks; the tasks own their
+  I/O handles and drop them on exit, surfacing EOF/write-error to
+  rmcp. Same shutdown shape as today's direct stdio transport, with
+  the added guarantee that a write error from either task is
+  captured by `tokio::select!` before the supervisor is dropped.
 - **Backpressure under sustained malformed input.** Each rejection
   writes to real stdout from the validator task. A slow consumer
   could stall the validator; that's identical to today's stall
   behavior on rmcp's outbound write under a slow consumer, and is
   out of scope.
+- **Audit-record masking by silent task failures.** Without the
+  supervisor (the original spec draft), a bridge task could die
+  with `BrokenPipe` and `service.waiting()` could resolve `Ok(())`
+  on its own EOF path, recording `process_end.reason: Eof` even
+  though no response ever reached the client. Mitigation: the
+  supervisor races `service.waiting()` via `tokio::select!` with
+  `biased` priority on the supervisor arm, and tests 12 and 13
+  pin the audit semantics on both bridge sides.
+- **Notification liveness blind spot.** The property's amended
+  arm for spec-legal notifications must prove the server is still
+  responsive, not merely silent. Mitigation: each notification-
+  shaped `Hung` is followed by a `ping` round-trip with a bounded
+  timeout — a hung or crashed server fails the case instead of
+  being respawned as "spec-legal silence."
 
 ## Dependencies and merge plan
 
@@ -442,12 +634,18 @@ This fix is the final merge blocker for PR #278 (the #266 fuzzing
 umbrella). The implementation lands on
 `feature/issue-266-mcp-fuzzing` directly, in one diff that includes:
 
-1. `wire_validator.rs` and `main.rs` swap.
-2. Property body amendment for `is_spec_legal_notification` (case 2
-   distinction).
-3. Un-ignore `prop_envelope_never_panics`.
-4. The 10 new wire-pinned tests in `mcp_wire_negative.rs`.
-5. Mirror docs (this spec is committed before implementation starts).
+1. `wire_validator.rs` with `ValidatedStdio` / `ValidatorSupervisor`,
+   the `validate()` pure function, and the two bridge tasks.
+2. `main.rs` updates: transport swap, supervisor `tokio::select!`,
+   `emit_pre_init_error_envelope` signature thread-through.
+3. Property body amendment for `is_spec_legal_notification` and the
+   liveness ping (with `LIVENESS_TIMEOUT` + `request_with_timeout`
+   on the harness if not present).
+4. Un-ignore `prop_envelope_never_panics`.
+5. 13 new wire-pinned tests in `mcp_wire_negative.rs` (10 for the
+   validation rules, 1 for pre-init ordering, 2 for closed-stdout
+   audit semantics).
+6. Mirror docs (this spec, committed before implementation starts).
 
 Once green, PR #278 comes out of draft and goes to review with all
 three blockers (#275, #276, #277) resolved.
