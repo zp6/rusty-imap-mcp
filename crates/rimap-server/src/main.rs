@@ -24,6 +24,7 @@ use rimap_config::loader::{load_and_validate, resolve_config_path};
 use rimap_config::login::{run_login, tty_prompt};
 use rimap_config::validate::ValidatedAccountConfig;
 use rimap_imap::Connection;
+use rmcp::model::ErrorCode as McpErrorCode;
 use rmcp::service::ServerInitializeError;
 use secrecy::ExposeSecret;
 use tokio::io::AsyncWriteExt;
@@ -200,6 +201,24 @@ async fn emit_pre_init_error_envelope(
         .context("flushing pre-init error envelope")?;
     tracing::info!("rejected pre-initialize request with -32002 envelope");
     Ok(())
+}
+
+/// Classify a `ServerInitializeError::InitializeFailed` outcome by its
+/// inner `ErrorData.code`. Returns `true` for client-side bad-input
+/// codes that the wire envelope already communicated cleanly; the
+/// caller treats these as handled rejections (exit 0, audit `Eof`).
+/// Returns `false` for server-fault classes (`INTERNAL_ERROR` and
+/// anything else) so they propagate as non-zero exit with audit
+/// `Error`, keeping initialize-time outages observable. (#276)
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "wired into main.rs::run in the next commit (#276 task 4)"
+    )
+)]
+fn initialize_failure_is_handled_rejection(code: McpErrorCode) -> bool {
+    matches!(code, McpErrorCode::INVALID_PARAMS)
 }
 
 /// Resolve the config file path from `--config` or the
@@ -502,5 +521,48 @@ mod resolve_download_dir_tests {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o700, "expected 0700, got {mode:o}");
+    }
+}
+
+#[cfg(test)]
+mod initialize_failure_classifier_tests {
+    use rmcp::model::ErrorCode as McpErrorCode;
+
+    use super::initialize_failure_is_handled_rejection;
+
+    #[test]
+    fn invalid_params_is_handled_rejection() {
+        assert!(initialize_failure_is_handled_rejection(
+            McpErrorCode::INVALID_PARAMS
+        ));
+    }
+
+    #[test]
+    fn internal_error_is_not_handled_rejection() {
+        assert!(!initialize_failure_is_handled_rejection(
+            McpErrorCode::INTERNAL_ERROR
+        ));
+    }
+
+    #[test]
+    fn method_not_found_is_not_handled_rejection() {
+        assert!(!initialize_failure_is_handled_rejection(
+            McpErrorCode::METHOD_NOT_FOUND
+        ));
+    }
+
+    #[test]
+    fn unknown_codes_are_not_handled_rejection() {
+        // Future-proofing: any code we haven't explicitly allow-listed
+        // must propagate as a server fault.
+        assert!(!initialize_failure_is_handled_rejection(McpErrorCode(
+            -32099
+        )));
+        assert!(!initialize_failure_is_handled_rejection(McpErrorCode(
+            -32603 - 1
+        )));
+        assert!(!initialize_failure_is_handled_rejection(McpErrorCode(
+            -32700
+        )));
     }
 }
