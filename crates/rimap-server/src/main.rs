@@ -144,6 +144,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 emit_pre_init_error_envelope(&msg).await?;
                 return Ok(());
             }
+            Err(ServerInitializeError::InitializeFailed(error_data)) => {
+                return handle_initialize_failed(&error_data);
+            }
             Err(other) => return Err(anyhow::anyhow!("MCP server init: {other}")),
         };
         // waiting() takes ownership of service, consuming it and dropping the
@@ -162,8 +165,17 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         Ok(())
     });
 
-    // Best-effort process_end emission.
-    let reason = match &mcp_result {
+    emit_process_end(&audit_for_shutdown, &mcp_result);
+
+    mcp_result
+}
+
+/// Emit the `process_end` audit record at process shutdown. Reason
+/// reflects whether the MCP server loop completed cleanly (`Eof`)
+/// or with an error (`Error`). Failures to write are logged but do
+/// not propagate.
+fn emit_process_end(audit: &rimap_audit::AuditWriter, mcp_result: &anyhow::Result<()>) {
+    let reason = match mcp_result {
         Ok(()) => rimap_audit::ProcessEndReason::Eof,
         Err(_) => rimap_audit::ProcessEndReason::Error,
     };
@@ -173,12 +185,10 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         reason,
         total_tool_calls: 0,
     };
-    match audit_for_shutdown.log_process_end(process_end) {
+    match audit.log_process_end(process_end) {
         Ok(seq) => tracing::info!(seq = %seq, "process_end audit record written"),
         Err(e) => tracing::error!(error = %e, "failed to write process_end audit record"),
     }
-
-    mcp_result
 }
 
 /// Write the JSON-RPC -32002 error envelope for a pre-initialize request
@@ -210,15 +220,29 @@ async fn emit_pre_init_error_envelope(
 /// Returns `false` for server-fault classes (`INTERNAL_ERROR` and
 /// anything else) so they propagate as non-zero exit with audit
 /// `Error`, keeping initialize-time outages observable. (#276)
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wired into main.rs::run in the next commit (#276 task 4)"
-    )
-)]
 fn initialize_failure_is_handled_rejection(code: McpErrorCode) -> bool {
     matches!(code, McpErrorCode::INVALID_PARAMS)
+}
+
+/// Classify and react to a `ServerInitializeError::InitializeFailed`
+/// outcome. `INVALID_PARAMS` is a handled client rejection (rmcp already
+/// sent the wire envelope — log at info and exit clean). Anything else
+/// is a server-fault class that must propagate as a non-zero exit so
+/// `process_end.reason: Error` is recorded. (#276)
+fn handle_initialize_failed(error_data: &rmcp::model::ErrorData) -> anyhow::Result<()> {
+    if initialize_failure_is_handled_rejection(error_data.code) {
+        tracing::info!(
+            code = error_data.code.0,
+            "rejected initialize with error envelope",
+        );
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "MCP server init failed: code {}: {}",
+            error_data.code.0,
+            error_data.message,
+        ))
+    }
 }
 
 /// Resolve the config file path from `--config` or the
