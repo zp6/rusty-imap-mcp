@@ -80,8 +80,8 @@ both manifest as `Hung` in the proptest harness:
    server.
 
 The implementation must address both. The validator (below) closes
-case 1; a small property-body change classifies case 2 as a non-fault
-outcome.
+case 1; a property-strategy filter excludes case 2 from the property
+entirely (notifications get their own fixed-case test instead).
 
 ## Desired behavior
 
@@ -279,7 +279,22 @@ impl ValidatorSupervisor {
     /// returns the first error encountered. Used after
     /// `service.waiting()` resolves so final-write failures
     /// surface.
+    ///
+    /// **Do not call on init-failure paths** — the inbound bridge
+    /// only exits on real stdin EOF, but a client may legitimately
+    /// keep stdin open while waiting for the error response,
+    /// causing this to hang. Use `shutdown_after_init_failure`
+    /// instead.
     pub async fn drain(self) -> io::Result<()>;
+
+    /// Init-failure shutdown. Aborts the inbound bridge
+    /// (the client may keep stdin open after an init error;
+    /// without abort, we'd block forever waiting for EOF), then
+    /// awaits the outbound bridge to drain rmcp's queued init
+    /// error envelope plus any validator-synthesized rejections.
+    /// Returns the first error from the outbound path; inbound
+    /// cancellation is expected and ignored.
+    pub async fn shutdown_after_init_failure(self) -> io::Result<()>;
 }
 ```
 
@@ -293,15 +308,24 @@ let service = match Box::pin(rmcp::serve_server(mcp_server, validated.transport)
     Ok(svc) => svc,
     Err(ServerInitializeError::ExpectedInitializeRequest(Some(msg))) => {
         emit_pre_init_error_envelope(&msg, &stdout_for_preinit).await?;
-        // Drop the supervisor (drain on the way out so any pre-init
-        // queued frames flush; failures surface as Err).
-        return match validated.supervisor.drain().await {
+        // Init-failure shutdown: abort inbound (client may hold
+        // stdin open), drain outbound (our pre-init envelope plus
+        // any rmcp-queued frames must flush).
+        return match validated.supervisor.shutdown_after_init_failure().await {
             Ok(()) => Ok(()),
-            Err(e) => Err(anyhow!("validator bridge drain after pre-init: {e}")),
+            Err(e) => Err(anyhow!("validator bridge after pre-init: {e}")),
         };
     }
     Err(ServerInitializeError::InitializeFailed(error_data)) => {
-        return handle_initialize_failed(&error_data);
+        let handled = handle_initialize_failed(&error_data);
+        // rmcp already wrote the error envelope (e.g. -32602 for
+        // #276) into the outbound duplex before returning. Drain
+        // outbound so it actually reaches stdout; failures during
+        // drain promote a handled rejection to Error.
+        return match validated.supervisor.shutdown_after_init_failure().await {
+            Ok(()) => handled,
+            Err(e) => Err(anyhow!("validator bridge after init failure: {e}")),
+        };
     }
     Err(other) => return Err(anyhow!("MCP server init: {other}")),
 };
@@ -390,6 +414,19 @@ parse cleanly.
 
 ### Validation rules
 
+JSON-RPC 2.0 §4-5 defines four valid envelope shapes from a peer:
+
+- **Request**: `{jsonrpc:"2.0", method:string, id:string|number, params?}`
+- **Notification**: `{jsonrpc:"2.0", method:string, params?}` (no `id`)
+- **Response (success)**: `{jsonrpc:"2.0", id:string|number|null, result:any}` (no `method`, no `error`)
+- **Error response**: `{jsonrpc:"2.0", id:string|number|null, error:{code,message,data?}}` (no `method`, no `result`)
+
+The validator forwards all four; rejects everything else. Responses
+and Errors from the client side are part of MCP's server-initiated
+flow (e.g. sampling requests where the server asks the client to
+invoke its LLM and the client returns a response) — rejecting them
+would be a feature regression, not just a test gap.
+
 | Input shape | Decision | Wire response | Notes |
 |---|---|---|---|
 | Empty / whitespace-only line | Skip silently | (none) | Transport noise; rmcp tolerates the same today. |
@@ -397,15 +434,70 @@ parse cleanly.
 | Valid JSON, not an object (incl. JSON arrays — MCP forbids batches) | Reject | `-32600 Invalid Request`, `id: null` | rmcp 1.5 doesn't speak batches; we reject for forward-compat. |
 | Object missing `jsonrpc` | Reject | `-32600`, `id: <echoed or null>` | The #277 minimal failing case. |
 | Object with `jsonrpc` ≠ `"2.0"` | Reject | `-32600`, `id: <echoed or null>` | E.g. `"1.0"`, `2.0` (number), `"2.00"`. |
-| Object missing `method` | Reject | `-32600`, `id: <echoed or null>` | A response or error message — not valid client input. |
-| Object with non-string `method` | Reject | `-32600`, `id: <echoed or null>` | |
 | Object with `id` field of disallowed type (object/array/boolean) | Reject | `-32600`, `id: null` | Per JSON-RPC §5: "if there was an error in detecting the id … it MUST be Null." |
-| Everything else | Forward to rmcp | — | rmcp may still reject for MCP-specific reasons (unknown method, schema mismatch). |
+| **Has `method` (string)**, no `result`, no `error` | Forward | — | Request (if `id`) or Notification (if no `id`). |
+| **Has `method` (non-string)** | Reject | `-32600`, `id: <echoed or null>` | |
+| **Has `result`** (and `id` present + valid), no `method`, no `error` | Forward | — | Client Response to a server-initiated request. |
+| **Has `error`** (and `id` present + valid), no `method`, no `result` | Forward | — | Client Error response to a server-initiated request. |
+| **Has both `result` AND `error`** | Reject | `-32600`, `id: <echoed or null>` | Per JSON-RPC §5: exactly one of result/error. |
+| Has `result` or `error` but no `id` | Reject | `-32600`, `id: null` | Response/Error envelopes MUST have an `id`. |
+| Empty object (no `method`, no `result`, no `error`) | Reject | `-32600`, `id: <echoed or null>` | |
+| Mixes `method` with `result` or `error` | Reject | `-32600`, `id: <echoed or null>` | A line is exactly one envelope shape. |
 
-The forward set is a strict subset of the JSON-RPC 2.0 envelope grammar.
-Any envelope rmcp 1.5 accepts and that is also spec-compliant passes
-through. The only behavior change vs today is: malformed inputs that
-rmcp silently drops now get a `-32600`/`-32700` response.
+The forward set is the JSON-RPC 2.0 envelope grammar restricted to
+non-batch shapes. The only behavior change vs today is: malformed
+inputs that rmcp silently drops now get a `-32600`/`-32700` response.
+
+### `validate()` decision logic
+
+```rust
+fn validate(line: &str) -> ValidationOutcome {
+    if line.trim().is_empty() {
+        return ValidationOutcome::Skip;
+    }
+    let parsed: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return ValidationOutcome::Reject(parse_error()),
+    };
+    let obj = match parsed.as_object() {
+        Some(o) => o,
+        None => return ValidationOutcome::Reject(invalid_request(None)),
+    };
+    if obj.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
+        return ValidationOutcome::Reject(invalid_request(extract_id(obj)));
+    }
+    let id = obj.get("id");
+    if let Some(id) = id {
+        if !is_valid_id(id) {
+            return ValidationOutcome::Reject(invalid_request(None));
+        }
+    }
+
+    let method = obj.get("method");
+    let result = obj.get("result");
+    let error = obj.get("error");
+
+    match (method, result, error) {
+        // Request or Notification
+        (Some(m), None, None) if m.is_string() => ValidationOutcome::Forward,
+        (Some(_), None, None) /* non-string method */ => {
+            ValidationOutcome::Reject(invalid_request(extract_id(obj)))
+        }
+        // Response / Error response — id MUST be present and valid
+        (None, Some(_), None) | (None, None, Some(_)) if id.is_some() => {
+            ValidationOutcome::Forward
+        }
+        // Response without id, or empty / mixed shape
+        _ => ValidationOutcome::Reject(invalid_request(extract_id(obj))),
+    }
+}
+```
+
+`extract_id(obj)` returns `Some(Value)` if `obj["id"]` is
+`string|number|null`, else `None` (we use `null` on the wire). The
+catch-all arm covers: empty object, both `result` and `error`, method
+mixed with result/error, and response/error without id — all single-
+line `-32600` rejections.
 
 ### `id`-echo policy
 
@@ -481,112 +573,79 @@ Lines are emitted with a trailing `\n` and flushed, same as
     then unconditionally `supervisor.drain().await` before classifying
     `mcp_outcome`.
 - **Modified:** `crates/rimap-server/src/mcp/mod.rs` — `pub mod wire_validator;`
-- **Modified:** `crates/rimap-server/tests/support/wire/harness.rs` —
-  - `pub enum NotificationOutcome { SilentThenAlive, UnexpectedResponse(String), FailedLiveness(CloseOrResponse) }`
-  - `pub async fn assert_notification_then_alive(&mut self, line, silence_dur, liveness_dur) -> NotificationOutcome`
-    that does not poison the harness on `SilentThenAlive`.
-  - `pub const SILENCE_TIMEOUT: Duration = Duration::from_millis(250);`
-  - `pub const LIVENESS_TIMEOUT: Duration = Duration::from_secs(1);`
-  - `pub async fn request_with_timeout(&mut self, method, params, dur) -> CloseOrResponse`
-    (small extension; reuses the existing send + `response_or_close` core
-    with a parameterized timeout).
-- **Modified:** `crates/rimap-server/tests/mcp_wire_proptest.rs:310` —
-  remove the `#[ignore]` from `prop_envelope_never_panics`, and amend
-  the property body to dispatch spec-legal notifications through
-  `assert_notification_then_alive` (see "Property body adjustment").
+- **Modified:** `crates/rimap-server/tests/mcp_wire_proptest.rs` —
+  - add `prop_filter` to `arb_envelope()` excluding spec-legal
+    notifications (see "Property strategy adjustment"),
+  - remove the `#[ignore]` from `prop_envelope_never_panics` so it
+    runs at the default 1000 cases and nightly 100k.
+  - No changes to the property body; no liveness probe needed.
+- **No changes to** `tests/support/wire/harness.rs` for the
+  notification path — earlier drafts proposed a non-poisoning
+  `assert_notification_then_alive` method but the strategy filter
+  approach removes the need. The closed-stdout helpers added for
+  #275 remain in use for tests 12-14.
 - **Modified:** `crates/rimap-server/tests/mcp_wire_negative.rs` — new
   pinned tests (see "Testing" below).
 - **No changes to** `crates/rimap-server/src/mcp/preinit.rs` itself —
   its `synthesize_pre_init_error_envelope` remains a pure formatter;
   the I/O caller in `main.rs` is what changes.
 
-## Property body adjustment (case 2)
+## Property strategy adjustment (case 2)
 
 `prop_envelope_never_panics` currently treats `CloseOrResponse::Hung`
 as a `panic!`. After the validator lands, the only remaining `Hung`
 source is the spec-compliant silent-ignore path: valid JSON-RPC 2.0
-notifications (`jsonrpc:"2.0"`, no `id`, non-standard `method`). The
-property body must distinguish that case from a real hang — AND not
-poison the harness, since `Harness::response_or_close` poisons on
-every `Hung` outcome (`harness.rs:514-516`). Poisoning means
-`with_live_harness` respawns the harness for the next case,
-defeating the throughput rationale for accepting notifications at
-all.
+notifications (`jsonrpc:"2.0"`, no `id`, non-standard `method`).
 
-### Non-poisoning probe on the harness
+**Approach: filter notifications out of the property strategy
+entirely; cover the notification path via a fixed-case test.**
 
-Add a method to `Harness` (in `tests/support/wire/harness.rs`) that
-handles the entire send → expected-silence → liveness-ping pattern
-atomically without poisoning on the spec-legal silent timeout:
+This is the simplest design that keeps the property meaningful and
+the nightly workflow within budget. Earlier drafts threaded an
+in-test liveness probe to distinguish spec-legal silence from a real
+hang; that approach was rejected because it (a) added a non-trivial
+non-poisoning harness API, and (b) extrapolated to ~104 minutes on
+nightly runs at `PROPTEST_CASES=100000`, exceeding the workflow's
+90-minute timeout.
+
+### Strategy filter
 
 ```rust
-pub enum NotificationOutcome {
-    /// Expected: notification produced no response, ping confirmed
-    /// the server is still responsive.
-    SilentThenAlive,
-    /// Spec violation: notification produced a response.
-    UnexpectedResponse(String),
-    /// Liveness ping failed (hung, crashed, or closed unexpectedly).
-    /// Harness IS poisoned in this case.
-    FailedLiveness(CloseOrResponse),
+fn arb_envelope() -> impl Strategy<Value = Value> {
+    (
+        prop::option::of(Just("2.0".to_string())),
+        prop::option::of(arb_id),
+        prop::option::of(arb_method),
+        prop::option::of(arb_params),
+    )
+        .prop_map(/* ... unchanged ... */)
+        .prop_filter(
+            "exclude spec-legal notifications (jsonrpc==\"2.0\" + missing id + present method) — \
+             their silent-ignore is JSON-RPC §4.1 compliant and covered separately by \
+             valid_notification_does_not_hang_session",
+            |env| {
+                let is_notification = env.get("jsonrpc").and_then(|v| v.as_str()) == Some("2.0")
+                    && env.get("id").is_none()
+                    && env.get("method").and_then(|v| v.as_str()).is_some();
+                !is_notification
+            },
+        )
 }
-
-/// Send `line` as a notification (no response expected), wait
-/// `silence_dur` to confirm no response arrives, then send a `ping`
-/// request and require a well-formed response within `liveness_dur`.
-///
-/// `self.poisoned` is set to `true` ONLY for `UnexpectedResponse`
-/// and `FailedLiveness` outcomes — the `SilentThenAlive` path
-/// leaves the harness usable so subsequent proptest cases can reuse it.
-pub async fn assert_notification_then_alive(
-    &mut self,
-    line: &str,
-    silence_dur: Duration,
-    liveness_dur: Duration,
-) -> NotificationOutcome;
 ```
 
-Behavior detail:
-- Send `line` via `send_line`.
-- Read with timeout `silence_dur`. If a line arrives:
-  → `UnexpectedResponse(line)`, set `poisoned = true`.
-- If `silence_dur` elapses with no read: **do not poison** (this is
-  the spec-legal outcome). Continue to liveness probe.
-- Send a `ping` request via `request_with_timeout("ping", json!({}), liveness_dur)`.
-- If `CloseOrResponse::Response` with a well-formed result envelope:
-  → `SilentThenAlive`, harness stays usable.
-- Otherwise (Hung, CleanClose, Crashed): → `FailedLiveness(outcome)`,
-  `poisoned = true`.
+`prop_filter` drops cases that fail the predicate — proptest will
+generate replacement cases until the strategy yields a non-
+notification envelope. The missing-`jsonrpc` cases that originally
+triggered #277 stay in coverage (they aren't notifications because
+the first clause of the filter fails). Request-shaped, invalid, and
+batch envelopes all flow unchanged.
 
-### Property body using the probe
+### Property body
+
+With notifications filtered out, the body reverts to the simple
+original form — no liveness probe, no non-poisoning machinery:
 
 ```rust
-let is_spec_legal_notification = envelope
-    .get("jsonrpc").and_then(|v| v.as_str()) == Some("2.0")
-    && envelope.get("id").is_none()
-    && envelope.get("method").and_then(|v| v.as_str()).is_some();
-
-if is_spec_legal_notification {
-    match h
-        .assert_notification_then_alive(
-            &envelope.to_string(),
-            SILENCE_TIMEOUT,
-            LIVENESS_TIMEOUT,
-        )
-        .await
-    {
-        NotificationOutcome::SilentThenAlive => {} // pass; harness stays usable
-        NotificationOutcome::UnexpectedResponse(line) => panic!(
-            "notification {envelope} produced a response: {line}",
-        ),
-        NotificationOutcome::FailedLiveness(o) => panic!(
-            "ping after notification {envelope} failed liveness: {o:?}",
-        ),
-    }
-    return h;
-}
-
-// Non-notification path: the existing flow.
 h.send_line(&envelope.to_string()).await;
 let outcome = h.response_or_close(REQUEST_TIMEOUT).await;
 match outcome {
@@ -595,46 +654,41 @@ match outcome {
             .expect("server response must be valid JSON");
         assert_envelope_valid(&env);
     }
-    CloseOrResponse::CleanClose => {} // harness already poisoned by harness.rs
+    CloseOrResponse::CleanClose => {} // spec-legal; harness drops + respawns
     CloseOrResponse::Crashed(d) => panic!("crashed on {envelope}: {d}"),
-    CloseOrResponse::Hung => panic!("hung on {envelope} (post-validator)"),
+    CloseOrResponse::Hung => panic!(
+        "hung on {envelope} (validator should reject malformed or rmcp should respond)",
+    ),
 }
 ```
 
-The `is_spec_legal_notification` check is in the test body, not the
-strategy, so the missing-`jsonrpc` cases that originally triggered
-#277 stay in coverage and exercise the validator's reject path. The
-strategy is unchanged.
+### Fixed-case notification coverage
 
-**New constants** in `harness.rs`:
-- `SILENCE_TIMEOUT: Duration = Duration::from_millis(250)` — long
-  enough that a spec-legal notification doesn't false-positive as
-  `UnexpectedResponse`, short enough that 1000 cases × 25% × 250ms
-  ≈ 62.5s isn't unbearable. Tunable.
-- `LIVENESS_TIMEOUT: Duration = Duration::from_secs(1)` — same order
-  as the existing `REQUEST_TIMEOUT`.
+One wire-pinned test in `mcp_wire_negative.rs` covers the notification
+path explicitly:
 
-**Liveness rationale.** `Hung` is just "no bytes within timeout" — it
-does not prove the child process is responsive. Without the ping, a
-panic-on-notification or a deadlock-on-notification would be silently
-classified as spec-legal silence, defeating the `never_panics`
-guarantee for this input class. The probe forces the server to
-*demonstrate* it is still processing requests before the case passes.
+- `valid_notification_does_not_hang_session` — send a standard MCP
+  notification (`notifications/cancelled` with `params.requestId: 0`),
+  then a `tools/list` request, and assert `tools/list` returns a
+  well-formed response within `REQUEST_TIMEOUT`. Proves notifications
+  don't poison or hang the session, without needing a property-level
+  liveness probe.
 
-**Overhead under 1000-case runs.** Roughly 25% of envelopes are
-notification-shaped → ~250 cases each pay `SILENCE_TIMEOUT` +
-`LIVENESS_TIMEOUT` round-trip (`~250ms + ~5ms ≈ 255ms`). Total
-overhead: ~64s. Significantly larger than the prior estimate
-(~2.5s); the SILENCE_TIMEOUT dominates. Trade-off note:
-shortening `SILENCE_TIMEOUT` to e.g. 50ms cuts overhead 5× at the
-cost of false-positive risk on slow systems. The 250ms default
-matches the rmcp `FramedRead` poll cadence and gives generous
-margin; nightly runs can override via env var if needed.
+This is sufficient regression coverage because rmcp's notification
+handling is a single control-flow path (silent-ignore for non-MCP
+notifications, dispatch for standard ones). One test exercises both
+sides — `notifications/cancelled` is on the standard list, so rmcp
+dispatches it; the subsequent `tools/list` proves the session is
+still alive.
 
-Critically, this is the cost of the **probe**, NOT the cost of
-respawning the harness — which under the original (poisoning) design
-would have been ~1.5s × 250 cases ≈ 6 minutes. The non-poisoning
-probe is what keeps the property practical.
+### Overhead
+
+Filtering removes the ~25% notification share of generated cases.
+The remaining strategy still generates 1000 cases per invocation;
+proptest's `prop_filter` may generate slightly more upstream
+candidates to maintain that, but the cost is negligible (proptest
+strategies are cheap). Nightly remains within its 90-minute
+budget; no env-overridable timeouts needed.
 
 ## Testing
 
@@ -696,19 +750,45 @@ and id):
     fails. `supervisor.drain()` surfaces the error, audit records
     `process_end.reason: Error`, exit non-zero. Pins the race-vs-drain
     distinction.
-15. `harness_notification_probe_does_not_poison` — unit test on the
-    harness alone (no proptest involvement): construct a harness,
-    complete the initialize handshake, call
-    `assert_notification_then_alive("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":0}}", SILENCE_TIMEOUT, LIVENESS_TIMEOUT)`,
-    assert the outcome is `SilentThenAlive`, then assert
-    `harness.is_usable() == true`. Pins the non-poisoning contract
-    so a regression in the harness method gets caught before the
-    proptest runs it 250 times per session.
+15. `valid_notification_does_not_hang_session` — fixed-case
+    notification coverage (replaces the property's notification
+    strategy). Send a standard MCP notification
+    (`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":0}}`),
+    then a `tools/list` request, and assert `tools/list` returns a
+    well-formed response within `REQUEST_TIMEOUT`. Proves the
+    notification path doesn't poison or hang the session.
+16. `valid_response_envelope_forwards` — send a client-shaped
+    Response envelope (`{"jsonrpc":"2.0","id":99,"result":{"x":1}}`)
+    after init. The validator must NOT reject. rmcp handles the
+    spurious response (likely a `notifications/cancelled`-style
+    silent drop since there's no pending server request), so the
+    test asserts no `-32600` envelope appears within
+    `REQUEST_TIMEOUT`, then issues a `tools/list` and verifies the
+    session is alive. Pins that the validator does not regress
+    MCP's server-initiated flow.
+17. `valid_error_envelope_forwards` — send a client-shaped Error
+    envelope (`{"jsonrpc":"2.0","id":99,"error":{"code":-32601,"message":"not found"}}`)
+    after init. Same shape as test 16: no validator rejection,
+    session stays alive.
+18. `envelope_with_both_result_and_error_returns_invalid_request`
+    — `{"jsonrpc":"2.0","id":1,"result":{},"error":{}}` → `-32600`
+    with `id: 1`.
+19. `envelope_response_without_id_returns_invalid_request` —
+    `{"jsonrpc":"2.0","result":{}}` → `-32600` with `id: null`.
+20. `init_failure_with_open_stdin_returns_promptly` — client sends
+    `initialize` with an unsupported `protocolVersion` (rmcp emits
+    `-32602`), then **does NOT close stdin**. The server must
+    `shutdown_after_init_failure`, write the `-32602` envelope,
+    abort inbound, drain outbound, and exit within a bounded
+    timeout (e.g. 2 s). Pins that the drain path does not require
+    real stdin EOF.
 
 All tests run against the production binary via the existing
-`Harness`. Tests 12, 13, and 14 use the closed-stdout harness variant
-added in `tests/support/wire/harness.rs` for #275. Test 15 exercises
-the new `assert_notification_then_alive` method in isolation.
+`Harness`. Tests 12-14 use the closed-stdout harness variant added
+in `tests/support/wire/harness.rs` for #275. Tests 16-17 add small
+client-side helpers (`send_line` + bounded silence wait) reusing
+existing primitives. Test 20 needs a harness variant that holds
+stdin open after sending — small extension.
 
 **Unit tests** in `wire_validator.rs::tests` covering `validate()` in
 isolation, one assertion per row of the validation rules table. Pure
@@ -766,19 +846,26 @@ this should hold by construction.
   duplex; a subsequent `BrokenPipe` on that write would be lost.
   Mitigation: drain is unconditional after the race; test 14
   exercises exactly this ordering.
-- **Notification liveness blind spot.** The property's amended
-  arm for spec-legal notifications must prove the server is still
-  responsive, not merely silent. Mitigation: each notification-
-  shaped envelope dispatches through `assert_notification_then_alive`
-  which sends a `ping` after the silence wait — a hung or crashed
-  server fails the case instead of being respawned as "spec-legal
-  silence."
-- **Harness poisoning kills proptest throughput.** The existing
-  `Harness::response_or_close` poisons on every `Hung`, so a naïve
-  liveness-ping after `Hung` would still leave the harness flagged
-  for respawn. Mitigation: `assert_notification_then_alive` owns
-  the entire send → silence → ping cycle and only poisons on
-  actual liveness failure. Test 15 pins the non-poisoning contract.
+- **Notification path narrows proptest coverage.** Filtering
+  spec-legal notifications out of the property strategy means the
+  property no longer exercises the ~25% notification share of the
+  case space. Mitigation: notifications collapse to a single
+  control-flow path (silent-ignore for non-MCP, dispatch for
+  standard); test 15 exercises both ends explicitly. The
+  alternative (in-test liveness probe) was rejected on nightly-
+  budget grounds (~104 min at 100k cases) and complexity.
+- **Init-failure shutdown hang.** A naïve `drain()` after init
+  failure would wait for real stdin EOF; clients legitimately keep
+  stdin open while waiting for the error response. Mitigation:
+  `shutdown_after_init_failure` aborts the inbound bridge before
+  awaiting the outbound; test 20 pins prompt exit with stdin open.
+- **Validator rejecting server-initiated flow responses.** MCP's
+  sampling and similar flows send a server-initiated request and
+  expect a client-shaped Response or Error envelope back. An
+  over-strict validator (rejecting any envelope without `method`)
+  would silently break these. Mitigation: validator forwards all
+  four spec-defined envelope shapes (Request, Notification,
+  Response, Error); tests 16-19 pin the inclusive forward set.
 
 ## Dependencies and merge plan
 
@@ -787,23 +874,31 @@ umbrella). The implementation lands on
 `feature/issue-266-mcp-fuzzing` directly, in one diff that includes:
 
 1. `wire_validator.rs` with `ValidatedStdio` / `ValidatorSupervisor`
-   (`watch_for_error` + `drain`), the `validate()` pure function,
-   and the two bridge tasks.
+   (`watch_for_error` + `drain` + `shutdown_after_init_failure`),
+   the `validate()` pure function recognizing all four spec
+   envelope shapes, and the two bridge tasks.
 2. `main.rs` updates: transport swap, `emit_pre_init_error_envelope`
-   signature thread-through, two-phase shutdown
-   (race `watch_for_error` against `service.waiting()` then
-   unconditional `drain`).
-3. Harness extensions in `tests/support/wire/harness.rs`:
-   `NotificationOutcome`, `assert_notification_then_alive`,
-   `request_with_timeout`, `SILENCE_TIMEOUT`, `LIVENESS_TIMEOUT`.
-4. Property body amendment dispatching spec-legal notifications
-   through `assert_notification_then_alive`.
-5. Un-ignore `prop_envelope_never_panics`.
-6. 15 new wire-pinned tests across `mcp_wire_negative.rs` and the
-   harness suite (10 for validation rules, 1 for pre-init ordering,
-   3 for closed-stdout audit semantics on both shutdown phases,
-   1 for the non-poisoning harness contract).
-7. Mirror docs (this spec, committed before implementation starts).
+   signature thread-through, two-phase shutdown for the
+   post-init path (race + drain), and `shutdown_after_init_failure`
+   for both init-failure arms (`ExpectedInitializeRequest` and
+   `InitializeFailed`).
+3. `mcp_wire_proptest.rs`: `prop_filter` on `arb_envelope()` to
+   exclude spec-legal notifications; un-ignore
+   `prop_envelope_never_panics`. No property-body changes beyond
+   that (no liveness probe, no non-poisoning harness method).
+4. Small harness extension for test 20: variant that holds stdin
+   open after sending. Existing closed-stdout helpers cover
+   tests 12-14 unchanged.
+5. 20 new wire-pinned tests in `mcp_wire_negative.rs`:
+   - 10 for validation rules (tests 1-10)
+   - 1 for pre-init ordering (test 11)
+   - 3 for closed-stdout audit semantics on both shutdown phases
+     (tests 12-14)
+   - 1 fixed-case notification path (test 15)
+   - 2 for Response/Error envelope forwarding (tests 16-17)
+   - 2 for malformed Response/Error rejection (tests 18-19)
+   - 1 for init-failure-with-open-stdin shutdown (test 20)
+6. Mirror docs (this spec, committed before implementation starts).
 
 Once green, PR #278 comes out of draft and goes to review with all
 three blockers (#275, #276, #277) resolved.
