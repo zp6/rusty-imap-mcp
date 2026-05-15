@@ -259,11 +259,31 @@ inbound stalls cannot cause outbound deadlock.
 
 ### Bridge-task supervisor
 
-`main.rs::run` races `service.waiting()` against the supervisor so a
-broken-pipe write from either bridge task short-circuits to an error
-return — recording `process_end.reason: Error` instead of `Eof`. This
-preserves the audit semantics established by #275 for pre-init write
-failures (`tests/mcp_wire_negative.rs::process_end_on_pre_init_write_failure`).
+The supervisor has two methods so the shutdown logic can both
+**fail-fast** during service runtime and **drain** after service
+completion — `service.waiting()` resolving `Ok(())` only proves
+rmcp finished writing to the duplex, not that the passthrough
+flushed those bytes to real stdout. Without the drain phase, a
+`BrokenPipe` on the final response would be silently lost.
+
+```rust
+impl ValidatorSupervisor {
+    /// Non-consuming. Resolves when either bridge task returns
+    /// `Err`, OR when both bridges exit `Ok` cleanly (an exotic
+    /// mid-service condition — usually one side stays alive
+    /// until the service ends and drains it). Used for fail-fast
+    /// during the `service.waiting()` race.
+    pub async fn watch_for_error(&mut self) -> io::Result<()>;
+
+    /// Consuming. Awaits both bridge tasks to completion;
+    /// returns the first error encountered. Used after
+    /// `service.waiting()` resolves so final-write failures
+    /// surface.
+    pub async fn drain(self) -> io::Result<()>;
+}
+```
+
+`main.rs::run` runs two phases — race, then drain:
 
 ```rust
 let validated = wire_validator::stdio_with_validation();
@@ -273,35 +293,59 @@ let service = match Box::pin(rmcp::serve_server(mcp_server, validated.transport)
     Ok(svc) => svc,
     Err(ServerInitializeError::ExpectedInitializeRequest(Some(msg))) => {
         emit_pre_init_error_envelope(&msg, &stdout_for_preinit).await?;
-        // Drop the supervisor: both tasks see EOF/closed-duplex and exit.
-        return Ok(());
+        // Drop the supervisor (drain on the way out so any pre-init
+        // queued frames flush; failures surface as Err).
+        return match validated.supervisor.drain().await {
+            Ok(()) => Ok(()),
+            Err(e) => Err(anyhow!("validator bridge drain after pre-init: {e}")),
+        };
     }
     Err(ServerInitializeError::InitializeFailed(error_data)) => {
         return handle_initialize_failed(&error_data);
     }
-    Err(other) => return Err(anyhow::anyhow!("MCP server init: {other}")),
+    Err(other) => return Err(anyhow!("MCP server init: {other}")),
 };
 
-let mcp_outcome = tokio::select! {
+let mut supervisor = validated.supervisor;
+let mut service_fut = Box::pin(service.waiting());
+
+// Phase 1: race service against bridge errors.
+let service_outcome: anyhow::Result<()> = tokio::select! {
     biased;
-    bridge_err = validated.supervisor.join() => {
-        bridge_err.map_err(|e| anyhow::anyhow!("validator bridge: {e}"))
+    bridge = supervisor.watch_for_error() => {
+        match bridge {
+            Err(e) => Err(anyhow!("validator bridge: {e}")),
+            Ok(()) => {
+                // Both bridges exited cleanly while service still
+                // running (exotic). Treat as a transport teardown
+                // and let service finish — it will see EOF.
+                (&mut service_fut).await.map_err(|e| anyhow!("rmcp: {e}"))
+            }
+        }
     }
-    result = service.waiting() => {
-        result.map_err(|e| anyhow::anyhow!("MCP server error: {e}"))
-    }
+    result = &mut service_fut => result.map_err(|e| anyhow!("rmcp: {e}")),
+};
+
+// Phase 2: drop service to release rmcp's transport ends, then drain.
+drop(service_fut);
+let drain_outcome = supervisor
+    .drain()
+    .await
+    .map_err(|e| anyhow!("validator bridge drain: {e}"));
+
+let mcp_outcome = match (service_outcome, drain_outcome) {
+    (Err(e), _) => Err(e),         // race-phase failure dominates
+    (Ok(()), Err(e)) => Err(e),    // drain-phase failure surfaces
+    (Ok(()), Ok(())) => Ok(()),
 };
 ```
 
-`biased` prefers the supervisor arm so a write error during a
-near-simultaneous EOF resolution still records as `Error`. After
-either arm wins, the dropped streams cascade EOF to the other path
-and any remaining queued audit work flushes via the existing
-`drainer_handle.await`.
-
-The `Validator entry point`'s code block returns to `main.rs`
-unchanged: same `mcp_outcome` then `emit_process_end(&audit, &mcp_outcome)`
-as today.
+The `biased` discriminator gives the supervisor arm priority on
+race-phase ties; the drain phase is unconditional after the race
+resolves so a final-write `BrokenPipe` always lands in
+`mcp_outcome: Err` → `process_end.reason: Error`. Any audit work
+still flushes via the existing `drainer_handle.await` further down
+in `main.rs::run`.
 
 ### Pre-init shares the validator stdout
 
@@ -432,13 +476,24 @@ Lines are emitted with a trailing `\n` and flushed, same as
   - swap the transport constructor (`stdio_with_validation()`),
   - thread `Arc<Mutex<Stdout>>` into `emit_pre_init_error_envelope` so
     pre-init rejections share the validator's stdout writer,
-  - race `service.waiting()` against `supervisor.join()` via
-    `tokio::select! { biased; ... }`.
+  - two-phase shutdown: race `service.waiting()` against
+    `supervisor.watch_for_error()` via `tokio::select! { biased; ... }`,
+    then unconditionally `supervisor.drain().await` before classifying
+    `mcp_outcome`.
 - **Modified:** `crates/rimap-server/src/mcp/mod.rs` — `pub mod wire_validator;`
+- **Modified:** `crates/rimap-server/tests/support/wire/harness.rs` —
+  - `pub enum NotificationOutcome { SilentThenAlive, UnexpectedResponse(String), FailedLiveness(CloseOrResponse) }`
+  - `pub async fn assert_notification_then_alive(&mut self, line, silence_dur, liveness_dur) -> NotificationOutcome`
+    that does not poison the harness on `SilentThenAlive`.
+  - `pub const SILENCE_TIMEOUT: Duration = Duration::from_millis(250);`
+  - `pub const LIVENESS_TIMEOUT: Duration = Duration::from_secs(1);`
+  - `pub async fn request_with_timeout(&mut self, method, params, dur) -> CloseOrResponse`
+    (small extension; reuses the existing send + `response_or_close` core
+    with a parameterized timeout).
 - **Modified:** `crates/rimap-server/tests/mcp_wire_proptest.rs:310` —
   remove the `#[ignore]` from `prop_envelope_never_panics`, and amend
-  the property body to recognize spec-legal notifications (see
-  "Property body adjustment").
+  the property body to dispatch spec-legal notifications through
+  `assert_notification_then_alive` (see "Property body adjustment").
 - **Modified:** `crates/rimap-server/tests/mcp_wire_negative.rs` — new
   pinned tests (see "Testing" below).
 - **No changes to** `crates/rimap-server/src/mcp/preinit.rs` itself —
@@ -451,7 +506,59 @@ Lines are emitted with a trailing `\n` and flushed, same as
 as a `panic!`. After the validator lands, the only remaining `Hung`
 source is the spec-compliant silent-ignore path: valid JSON-RPC 2.0
 notifications (`jsonrpc:"2.0"`, no `id`, non-standard `method`). The
-property body must distinguish that case from a real hang:
+property body must distinguish that case from a real hang — AND not
+poison the harness, since `Harness::response_or_close` poisons on
+every `Hung` outcome (`harness.rs:514-516`). Poisoning means
+`with_live_harness` respawns the harness for the next case,
+defeating the throughput rationale for accepting notifications at
+all.
+
+### Non-poisoning probe on the harness
+
+Add a method to `Harness` (in `tests/support/wire/harness.rs`) that
+handles the entire send → expected-silence → liveness-ping pattern
+atomically without poisoning on the spec-legal silent timeout:
+
+```rust
+pub enum NotificationOutcome {
+    /// Expected: notification produced no response, ping confirmed
+    /// the server is still responsive.
+    SilentThenAlive,
+    /// Spec violation: notification produced a response.
+    UnexpectedResponse(String),
+    /// Liveness ping failed (hung, crashed, or closed unexpectedly).
+    /// Harness IS poisoned in this case.
+    FailedLiveness(CloseOrResponse),
+}
+
+/// Send `line` as a notification (no response expected), wait
+/// `silence_dur` to confirm no response arrives, then send a `ping`
+/// request and require a well-formed response within `liveness_dur`.
+///
+/// `self.poisoned` is set to `true` ONLY for `UnexpectedResponse`
+/// and `FailedLiveness` outcomes — the `SilentThenAlive` path
+/// leaves the harness usable so subsequent proptest cases can reuse it.
+pub async fn assert_notification_then_alive(
+    &mut self,
+    line: &str,
+    silence_dur: Duration,
+    liveness_dur: Duration,
+) -> NotificationOutcome;
+```
+
+Behavior detail:
+- Send `line` via `send_line`.
+- Read with timeout `silence_dur`. If a line arrives:
+  → `UnexpectedResponse(line)`, set `poisoned = true`.
+- If `silence_dur` elapses with no read: **do not poison** (this is
+  the spec-legal outcome). Continue to liveness probe.
+- Send a `ping` request via `request_with_timeout("ping", json!({}), liveness_dur)`.
+- If `CloseOrResponse::Response` with a well-formed result envelope:
+  → `SilentThenAlive`, harness stays usable.
+- Otherwise (Hung, CleanClose, Crashed): → `FailedLiveness(outcome)`,
+  `poisoned = true`.
+
+### Property body using the probe
 
 ```rust
 let is_spec_legal_notification = envelope
@@ -459,37 +566,38 @@ let is_spec_legal_notification = envelope
     && envelope.get("id").is_none()
     && envelope.get("method").and_then(|v| v.as_str()).is_some();
 
-// ...
-match outcome {
-    CloseOrResponse::Response(line) => assert_envelope_valid(&parsed),
-    CloseOrResponse::CleanClose => {},
-    CloseOrResponse::Crashed(d) => panic!("crashed: {d}"),
-    CloseOrResponse::Hung if is_spec_legal_notification => {
-        // JSON-RPC §4.1 permits no response. BUT silence by itself
-        // doesn't prove the server is healthy — it could be hung
-        // or deadlocked. Send a `ping` request and require a
-        // well-formed response within LIVENESS_TIMEOUT; otherwise
-        // the notification poisoned the session and the property
-        // must fail.
-        let ping_outcome = h
-            .request_with_timeout("ping", json!({}), LIVENESS_TIMEOUT)
-            .await;
-        match ping_outcome {
-            CloseOrResponse::Response(line) => {
-                let env: Value = serde_json::from_str(line.trim_end())
-                    .expect("ping response must be valid JSON");
-                assert_envelope_valid(&env);
-                assert!(
-                    env.get("result").is_some(),
-                    "ping after notification {envelope} did not return a result envelope",
-                );
-            }
-            other => panic!(
-                "ping liveness check failed after notification {envelope}: {other:?}",
-            ),
-        }
+if is_spec_legal_notification {
+    match h
+        .assert_notification_then_alive(
+            &envelope.to_string(),
+            SILENCE_TIMEOUT,
+            LIVENESS_TIMEOUT,
+        )
+        .await
+    {
+        NotificationOutcome::SilentThenAlive => {} // pass; harness stays usable
+        NotificationOutcome::UnexpectedResponse(line) => panic!(
+            "notification {envelope} produced a response: {line}",
+        ),
+        NotificationOutcome::FailedLiveness(o) => panic!(
+            "ping after notification {envelope} failed liveness: {o:?}",
+        ),
     }
-    CloseOrResponse::Hung => panic!("hung on {envelope}"),
+    return h;
+}
+
+// Non-notification path: the existing flow.
+h.send_line(&envelope.to_string()).await;
+let outcome = h.response_or_close(REQUEST_TIMEOUT).await;
+match outcome {
+    CloseOrResponse::Response(line) => {
+        let env: Value = serde_json::from_str(line.trim_end())
+            .expect("server response must be valid JSON");
+        assert_envelope_valid(&env);
+    }
+    CloseOrResponse::CleanClose => {} // harness already poisoned by harness.rs
+    CloseOrResponse::Crashed(d) => panic!("crashed on {envelope}: {d}"),
+    CloseOrResponse::Hung => panic!("hung on {envelope} (post-validator)"),
 }
 ```
 
@@ -498,22 +606,35 @@ strategy, so the missing-`jsonrpc` cases that originally triggered
 #277 stay in coverage and exercise the validator's reject path. The
 strategy is unchanged.
 
-**Liveness check rationale.** `CloseOrResponse::Hung` is just "no
-bytes within `REQUEST_TIMEOUT`" — it does not prove the child process
-is alive or responsive. Without the follow-up `ping`, a panic-on-
-notification or a deadlock-on-notification would be silently
-classified as spec-legal silence and the property would respawn the
-harness, defeating the `never_panics` guarantee for this input class.
-The ping forces the server to *demonstrate* it is still processing
-requests before we accept the case. `LIVENESS_TIMEOUT` is a new
-harness constant (suggested 1 s — same order as `REQUEST_TIMEOUT`)
-and `request_with_timeout` is a small extension to the existing
-`Harness::request` API.
+**New constants** in `harness.rs`:
+- `SILENCE_TIMEOUT: Duration = Duration::from_millis(250)` — long
+  enough that a spec-legal notification doesn't false-positive as
+  `UnexpectedResponse`, short enough that 1000 cases × 25% × 250ms
+  ≈ 62.5s isn't unbearable. Tunable.
+- `LIVENESS_TIMEOUT: Duration = Duration::from_secs(1)` — same order
+  as the existing `REQUEST_TIMEOUT`.
 
-**Overhead.** Roughly 25% of generated envelopes are notification-
-shaped under the current strategy. Each contributes one extra ping
-round-trip (~5–10 ms on the local harness without Dovecot). Total
-overhead on a 1000-case run: ~2.5 s. Acceptable and stable.
+**Liveness rationale.** `Hung` is just "no bytes within timeout" — it
+does not prove the child process is responsive. Without the ping, a
+panic-on-notification or a deadlock-on-notification would be silently
+classified as spec-legal silence, defeating the `never_panics`
+guarantee for this input class. The probe forces the server to
+*demonstrate* it is still processing requests before the case passes.
+
+**Overhead under 1000-case runs.** Roughly 25% of envelopes are
+notification-shaped → ~250 cases each pay `SILENCE_TIMEOUT` +
+`LIVENESS_TIMEOUT` round-trip (`~250ms + ~5ms ≈ 255ms`). Total
+overhead: ~64s. Significantly larger than the prior estimate
+(~2.5s); the SILENCE_TIMEOUT dominates. Trade-off note:
+shortening `SILENCE_TIMEOUT` to e.g. 50ms cuts overhead 5× at the
+cost of false-positive risk on slow systems. The 250ms default
+matches the rmcp `FramedRead` poll cadence and gives generous
+margin; nightly runs can override via env var if needed.
+
+Critically, this is the cost of the **probe**, NOT the cost of
+respawning the harness — which under the original (poisoning) design
+would have been ~1.5s × 250 cases ≈ 6 minutes. The non-poisoning
+probe is what keeps the property practical.
 
 ## Testing
 
@@ -562,16 +683,32 @@ and id):
     error to `mcp_outcome`, audit records `process_end.reason: Error`,
     exit is non-zero. Mirrors #275's `process_end_on_pre_init_write_failure`.
 13. `process_end_on_rmcp_response_write_failure` — closed-stdout
-    harness variant: client sends a valid `tools/list`, rmcp's
-    response write into the passthrough fails downstream, supervisor
-    surfaces the error to `mcp_outcome`, audit records
-    `process_end.reason: Error`, exit is non-zero. Companion to test
-    12 for the outbound bridge.
+    harness variant during race phase: client sends a valid
+    `tools/list`, rmcp's response write into the passthrough fails
+    while `service.waiting()` is still running, `watch_for_error`
+    catches it, audit records `process_end.reason: Error`, exit
+    non-zero. Companion to test 12 for the outbound bridge.
+14. `process_end_on_drain_phase_write_failure` — closed-stdout
+    harness variant during drain phase: client sends valid
+    `initialize` + `tools/list`, then closes stdin so `service.waiting()`
+    resolves `Ok(())`. rmcp's `tools/list` response is queued in the
+    outbound duplex but the passthrough's write to (closed) stdout
+    fails. `supervisor.drain()` surfaces the error, audit records
+    `process_end.reason: Error`, exit non-zero. Pins the race-vs-drain
+    distinction.
+15. `harness_notification_probe_does_not_poison` — unit test on the
+    harness alone (no proptest involvement): construct a harness,
+    complete the initialize handshake, call
+    `assert_notification_then_alive("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":0}}", SILENCE_TIMEOUT, LIVENESS_TIMEOUT)`,
+    assert the outcome is `SilentThenAlive`, then assert
+    `harness.is_usable() == true`. Pins the non-poisoning contract
+    so a regression in the harness method gets caught before the
+    proptest runs it 250 times per session.
 
 All tests run against the production binary via the existing
-`Harness` — no test-only hooks needed in the validator. Tests 12 and
-13 use the closed-stdout harness variant added in
-`tests/support/wire/harness.rs` for #275.
+`Harness`. Tests 12, 13, and 14 use the closed-stdout harness variant
+added in `tests/support/wire/harness.rs` for #275. Test 15 exercises
+the new `assert_notification_then_alive` method in isolation.
 
 **Unit tests** in `wire_validator.rs::tests` covering `validate()` in
 isolation, one assertion per row of the validation rules table. Pure
@@ -618,15 +755,30 @@ this should hold by construction.
   with `BrokenPipe` and `service.waiting()` could resolve `Ok(())`
   on its own EOF path, recording `process_end.reason: Eof` even
   though no response ever reached the client. Mitigation: the
-  supervisor races `service.waiting()` via `tokio::select!` with
-  `biased` priority on the supervisor arm, and tests 12 and 13
-  pin the audit semantics on both bridge sides.
+  supervisor uses two-phase shutdown — `watch_for_error()` for
+  race-phase fail-fast plus an unconditional `drain()` after
+  service completion. Tests 12, 13, and 14 pin the audit
+  semantics on both bridges across both shutdown phases.
+- **Drain-phase write failure invisibility.** If we only raced
+  `service.waiting()` against the supervisor and short-circuited
+  on whichever resolved first, `service.waiting() → Ok(())` could
+  fire while a final passthrough frame is still queued in the
+  duplex; a subsequent `BrokenPipe` on that write would be lost.
+  Mitigation: drain is unconditional after the race; test 14
+  exercises exactly this ordering.
 - **Notification liveness blind spot.** The property's amended
   arm for spec-legal notifications must prove the server is still
   responsive, not merely silent. Mitigation: each notification-
-  shaped `Hung` is followed by a `ping` round-trip with a bounded
-  timeout — a hung or crashed server fails the case instead of
-  being respawned as "spec-legal silence."
+  shaped envelope dispatches through `assert_notification_then_alive`
+  which sends a `ping` after the silence wait — a hung or crashed
+  server fails the case instead of being respawned as "spec-legal
+  silence."
+- **Harness poisoning kills proptest throughput.** The existing
+  `Harness::response_or_close` poisons on every `Hung`, so a naïve
+  liveness-ping after `Hung` would still leave the harness flagged
+  for respawn. Mitigation: `assert_notification_then_alive` owns
+  the entire send → silence → ping cycle and only poisons on
+  actual liveness failure. Test 15 pins the non-poisoning contract.
 
 ## Dependencies and merge plan
 
@@ -634,18 +786,24 @@ This fix is the final merge blocker for PR #278 (the #266 fuzzing
 umbrella). The implementation lands on
 `feature/issue-266-mcp-fuzzing` directly, in one diff that includes:
 
-1. `wire_validator.rs` with `ValidatedStdio` / `ValidatorSupervisor`,
-   the `validate()` pure function, and the two bridge tasks.
-2. `main.rs` updates: transport swap, supervisor `tokio::select!`,
-   `emit_pre_init_error_envelope` signature thread-through.
-3. Property body amendment for `is_spec_legal_notification` and the
-   liveness ping (with `LIVENESS_TIMEOUT` + `request_with_timeout`
-   on the harness if not present).
-4. Un-ignore `prop_envelope_never_panics`.
-5. 13 new wire-pinned tests in `mcp_wire_negative.rs` (10 for the
-   validation rules, 1 for pre-init ordering, 2 for closed-stdout
-   audit semantics).
-6. Mirror docs (this spec, committed before implementation starts).
+1. `wire_validator.rs` with `ValidatedStdio` / `ValidatorSupervisor`
+   (`watch_for_error` + `drain`), the `validate()` pure function,
+   and the two bridge tasks.
+2. `main.rs` updates: transport swap, `emit_pre_init_error_envelope`
+   signature thread-through, two-phase shutdown
+   (race `watch_for_error` against `service.waiting()` then
+   unconditional `drain`).
+3. Harness extensions in `tests/support/wire/harness.rs`:
+   `NotificationOutcome`, `assert_notification_then_alive`,
+   `request_with_timeout`, `SILENCE_TIMEOUT`, `LIVENESS_TIMEOUT`.
+4. Property body amendment dispatching spec-legal notifications
+   through `assert_notification_then_alive`.
+5. Un-ignore `prop_envelope_never_panics`.
+6. 15 new wire-pinned tests across `mcp_wire_negative.rs` and the
+   harness suite (10 for validation rules, 1 for pre-init ordering,
+   3 for closed-stdout audit semantics on both shutdown phases,
+   1 for the non-poisoning harness contract).
+7. Mirror docs (this spec, committed before implementation starts).
 
 Once green, PR #278 comes out of draft and goes to review with all
 three blockers (#275, #276, #277) resolved.
