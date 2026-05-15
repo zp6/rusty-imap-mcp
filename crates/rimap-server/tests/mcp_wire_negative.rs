@@ -675,3 +675,59 @@ async fn initialize_unsupported_protocol_version() {
         "process_end.reason must be Eof on handled INVALID_PARAMS rejection",
     );
 }
+
+/// Strict-posture tripwire (#276 Codex adversarial-review Finding 1):
+/// known older MCP versions (`2024-11-05`, etc.) MUST also be rejected
+/// with -32602, even though they appear in `ProtocolVersion::KNOWN_VERSIONS`.
+/// rmcp 1.5 doesn't actually emit older wire shapes — accepting them
+/// would echo "2024-11-05" while serving 2025-11-25-shaped responses.
+/// This test fails if a future change ever broadens the acceptance set,
+/// forcing the relaxation to be a deliberate spec revision.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initialize_with_known_older_version_is_rejected() {
+    let mut harness = Harness::spawn().await;
+
+    let _id = harness
+        .send_request_no_wait(
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "rusty-imap-mcp-phase4-test",
+                    "version": "0.0.0",
+                },
+            }),
+        )
+        .await;
+
+    let envelope = match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::Response(line) => parse_response_line(&line),
+        other => {
+            panic!("expected -32602 rejection for known older version 2024-11-05, got {other:?}")
+        }
+    };
+    assert_eq!(
+        envelope["error"]["code"],
+        json!(-32602),
+        "known older version must be rejected, not silently accepted; got {envelope}",
+    );
+    assert_eq!(
+        envelope["error"]["data"]["supported_versions"],
+        json!([PINNED_PROTOCOL_VERSION]),
+        "supported_versions must remain [PINNED_PROTOCOL_VERSION] even when peer asks for a known older version, got {envelope}",
+    );
+    let message = envelope["error"]["message"].as_str().unwrap_or_else(|| {
+        panic!("error.message must be a string, got {envelope}");
+    });
+    assert!(
+        message.contains("2024-11-05"),
+        "message must echo the rejected peer version 2024-11-05, got {message:?}",
+    );
+    assert_envelope_valid(&envelope);
+
+    match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::CleanClose => {}
+        other => panic!("expected clean close, got {other:?}"),
+    }
+}
