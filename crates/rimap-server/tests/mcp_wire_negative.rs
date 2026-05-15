@@ -600,19 +600,15 @@ async fn bidi_override_in_tool_argument() {
 // Test 8: `initialize` with unsupported protocol version
 // ---------------------------------------------------------------------------
 
-/// Client requests a protocol version the server doesn't support.
-/// Spec (per MCP): "If the server supports the requested protocol
-/// version, it MUST respond with the same version. Otherwise, the
-/// server MUST respond with a version it does support."
-///
-/// Probed 2026-05-13 (rmcp 1.5): rmcp accepts the unknown version
-/// and echoes it back. This is a bug filed as #276. The test
-/// below pins the spec-compliant behavior; it is `#[ignore]`'d
-/// until #276 lands.
+/// Client requests a protocol version the server doesn't support. Per
+/// spec §"Desired behavior" (#276), the server must reply with a
+/// JSON-RPC -32602 error envelope listing `supported_versions ==
+/// ["2025-11-25"]`, then close cleanly and exit 0 with audit reason
+/// Eof. Fixed by #276.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "blocked on #276: server echoes unsupported protocol versions"]
 async fn initialize_unsupported_protocol_version() {
     let mut harness = Harness::spawn().await;
+    let audit_path = harness.audit_path();
 
     let _id = harness
         .send_request_no_wait(
@@ -628,41 +624,54 @@ async fn initialize_unsupported_protocol_version() {
         )
         .await;
 
+    // Phase 1: error envelope arrives with -32602.
+    let envelope = match harness.response_or_close(REQUEST_TIMEOUT).await {
+        CloseOrResponse::Response(line) => parse_response_line(&line),
+        other => {
+            panic!("expected -32602 error envelope for unsupported protocol version, got {other:?}")
+        }
+    };
+    assert!(
+        envelope["error"].is_object(),
+        "must be an error envelope, got {envelope}",
+    );
+    assert_eq!(
+        envelope["error"]["code"],
+        json!(-32602),
+        "must be code -32602 (INVALID_PARAMS), got {envelope}",
+    );
+    assert_eq!(
+        envelope["error"]["data"]["supported_versions"],
+        json!([PINNED_PROTOCOL_VERSION]),
+        "supported_versions must be exactly [PINNED_PROTOCOL_VERSION] — locks in LATEST-only \
+         posture and prevents older version names from sneaking onto the wire; got {envelope}",
+    );
+    let message = envelope["error"]["message"].as_str().unwrap_or_else(|| {
+        panic!("error.message must be a string, got {envelope}");
+    });
+    assert!(
+        message.contains("1999-01-01"),
+        "message must echo the peer version 1999-01-01, got {message:?}",
+    );
+    assert!(
+        message.contains(PINNED_PROTOCOL_VERSION),
+        "message must include the supported version PINNED_PROTOCOL_VERSION, got {message:?}",
+    );
+    assert_envelope_valid(&envelope);
+
+    // Phase 2: stdout closes and the server exits 0.
     match harness.response_or_close(REQUEST_TIMEOUT).await {
-        CloseOrResponse::Response(line) => {
-            let envelope = parse_response_line(&line);
-            if envelope.get("error").is_some() {
-                // Error path. Spec-legal: server rejected the version.
-                let code = &envelope["error"]["code"];
-                assert!(
-                    code.is_i64(),
-                    "error code must be an integer per JSON-RPC, got {envelope}",
-                );
-            } else {
-                // Counter-proposal path. The server's response must include
-                // a SUPPORTED version, NOT echo the client's bad input.
-                let version = envelope["result"]["protocolVersion"]
-                    .as_str()
-                    .unwrap_or_else(|| {
-                        panic!("protocolVersion must be a string, got {envelope}");
-                    });
-                assert_ne!(
-                    version, "1999-01-01",
-                    "server must not echo the unsupported version back (bug #276); got {envelope}",
-                );
-                assert_envelope_valid(&envelope);
-            }
-        }
-        CloseOrResponse::CleanClose => {
-            // Server elected clean close on unsupported version — also spec-legal.
-        }
-        CloseOrResponse::Crashed(diag) => {
-            panic!("server crashed on unsupported protocol version: {diag}");
-        }
-        CloseOrResponse::Hung => {
-            panic!(
-                "server hung (no response within {REQUEST_TIMEOUT:?}) on unsupported protocol version",
-            );
-        }
+        CloseOrResponse::CleanClose => {}
+        other => panic!(
+            "expected clean close after envelope on unsupported protocol version, got {other:?}"
+        ),
     }
+
+    // Phase 3: audit log captured the success path as reason Eof.
+    let reason = read_process_end_reason(&audit_path);
+    assert_eq!(
+        reason,
+        rimap_audit::ProcessEndReason::Eof,
+        "process_end.reason must be Eof on handled INVALID_PARAMS rejection",
+    );
 }
