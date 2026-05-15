@@ -1086,6 +1086,35 @@ umbrella). The implementation lands on
 Once green, PR #278 comes out of draft and goes to review with all
 three blockers (#275, #276, #277) resolved.
 
+## Implementation follow-ups
+
+These items are NOT spec gaps that need design work — they're
+narrow tightenings the implementer applies at the `validate()` call
+site, captured here so they don't get lost between spec and code.
+Each is bounded to a few lines plus matching tests.
+
+- **Tighten `is_forwardable_id` to rmcp's numeric grammar.** rmcp 1.5
+  deserializes `RequestId::Number` as `i64`. The current
+  `Value::is_number()` check accepts fractional or out-of-range
+  values that pass the validator but fail inside rmcp — defeating
+  the "no silent drop" promise. Replace with
+  `v.as_i64().is_some()` (which already rejects fractional and
+  out-of-i64-range values via serde_json's number representation).
+  Add tests for fractional id (`{"jsonrpc":"2.0","method":"x","id":1.5}`
+  → -32600) and out-of-range id (`{...,"id":9223372036854775808}` →
+  -32600 — note: serde_json may parse very large integers as f64,
+  also rejected by `as_i64()`).
+- **Tighten `is_well_formed_error.code` to rmcp's `ErrorCode = i32`.**
+  Same class of issue: replace `Value::is_number()` on `code` with
+  `v.as_i64().is_some_and(|n| i32::try_from(n).is_ok())`. Add tests
+  for fractional `code` (`{"code":1.5,"message":"x"}` → -32600 on
+  the parent envelope) and out-of-i32-range `code` (`{"code":2147483648,...}` →
+  -32600).
+
+These were surfaced by Codex round 6 after the agreed stop on spec
+iteration. The implementer applies them when writing the actual
+validator; no further spec change is needed.
+
 ## Out of scope
 
 - **Upstream rmcp fix.** Filing a separate issue against rmcp to make
