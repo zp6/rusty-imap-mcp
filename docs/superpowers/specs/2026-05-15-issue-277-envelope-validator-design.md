@@ -311,33 +311,74 @@ impl ValidatorSupervisor {
 let validated = wire_validator::stdio_with_validation();
 let stdout_for_preinit = Arc::clone(&validated.stdout);
 
-let service = match Box::pin(rmcp::serve_server(mcp_server, validated.transport)).await {
+let mut supervisor = validated.supervisor;
+let mut init_fut = Box::pin(rmcp::serve_server(mcp_server, validated.transport));
+
+// Race init against bridge errors. Without this, a bridge BrokenPipe
+// during the pre-initialize phase (e.g. client sends a pre-init `ping`
+// rmcp accepts, then stdout breaks before the response flushes) goes
+// unobserved while rmcp waits indefinitely for `initialize`. The
+// process would hang and never record `process_end.reason: Error`.
+let init_outcome = tokio::select! {
+    biased;
+    bridge = supervisor.watch_for_error() => {
+        // Bridge failed (or both bridges exited) before init resolved.
+        Err(InitOutcome::Bridge(bridge))
+    }
+    result = &mut init_fut => match result {
+        Ok(svc) => Ok(svc),
+        Err(e) => Err(InitOutcome::Rmcp(e)),
+    },
+};
+drop(init_fut); // releases rmcp's transport handles on any error path
+
+let service = match init_outcome {
     Ok(svc) => svc,
-    Err(ServerInitializeError::ExpectedInitializeRequest(Some(msg))) => {
+    Err(InitOutcome::Bridge(bridge_result)) => {
+        let primary = bridge_result
+            .err()
+            .map(|e| anyhow!("validator bridge during init: {e}"))
+            .unwrap_or_else(|| anyhow!("validator bridges exited before init completed"));
+        return match supervisor.shutdown_after_failure().await {
+            Ok(()) => Err(primary),
+            Err(_secondary) => Err(primary), // primary already captures the failure
+        };
+    }
+    Err(InitOutcome::Rmcp(ServerInitializeError::ExpectedInitializeRequest(Some(msg)))) => {
         emit_pre_init_error_envelope(&msg, &stdout_for_preinit).await?;
-        // Init-failure shutdown: abort inbound (client may hold
-        // stdin open), drain outbound (our pre-init envelope plus
-        // any rmcp-queued frames must flush).
-        return match validated.supervisor.shutdown_after_failure().await {
+        return match supervisor.shutdown_after_failure().await {
             Ok(()) => Ok(()),
             Err(e) => Err(anyhow!("validator bridge after pre-init: {e}")),
         };
     }
-    Err(ServerInitializeError::InitializeFailed(error_data)) => {
+    Err(InitOutcome::Rmcp(ServerInitializeError::InitializeFailed(error_data))) => {
         let handled = handle_initialize_failed(&error_data);
-        // rmcp already wrote the error envelope (e.g. -32602 for
-        // #276) into the outbound duplex before returning. Drain
-        // outbound so it actually reaches stdout; failures during
-        // drain promote a handled rejection to Error.
-        return match validated.supervisor.shutdown_after_failure().await {
+        return match supervisor.shutdown_after_failure().await {
             Ok(()) => handled,
             Err(e) => Err(anyhow!("validator bridge after init failure: {e}")),
         };
     }
-    Err(other) => return Err(anyhow!("MCP server init: {other}")),
+    Err(InitOutcome::Rmcp(other)) => {
+        // Any non-handled init error: clean shutdown then propagate.
+        let _ = supervisor.shutdown_after_failure().await;
+        return Err(anyhow!("MCP server init: {other}"));
+    }
 };
+```
 
-let mut supervisor = validated.supervisor;
+`InitOutcome` is a small local enum:
+
+```rust
+enum InitOutcome<Svc> {
+    Bridge(io::Result<()>),
+    Rmcp(ServerInitializeError),
+}
+```
+
+After this block, `service` is bound and `supervisor` is still owned
+locally for the post-init race below.
+
+```rust
 let mut service_fut = Box::pin(service.waiting());
 
 // Phase 1: race service against bridge errors.
@@ -449,14 +490,24 @@ JSON-RPC 2.0 §4-5 defines four valid envelope shapes from a peer:
 
 - **Request**: `{jsonrpc:"2.0", method:string, id:string|number, params?}`
 - **Notification**: `{jsonrpc:"2.0", method:string, params?}` (no `id`)
-- **Response (success)**: `{jsonrpc:"2.0", id:string|number|null, result:any}` (no `method`, no `error`)
-- **Error response**: `{jsonrpc:"2.0", id:string|number|null, error:{code,message,data?}}` (no `method`, no `result`)
+- **Response (success)**: `{jsonrpc:"2.0", id:string|number, result:any}` (no `method`, no `error`)
+- **Error response**: `{jsonrpc:"2.0", id:string|number, error:{code:number, message:string, data?:any}}` (no `method`, no `result`)
 
 The validator forwards all four; rejects everything else. Responses
 and Errors from the client side are part of MCP's server-initiated
 flow (e.g. sampling requests where the server asks the client to
 invoke its LLM and the client returns a response) — rejecting them
 would be a feature regression, not just a test gap.
+
+**`id` is string|number — NOT null — on incoming envelopes.** rmcp 1.5
+deserializes id fields via `RequestId = NumberOrString`; null ids fail
+deserialization on `JsonRpcRequest`, `JsonRpcResponse`, and
+`JsonRpcError`. The JSON-RPC 2.0 spec allows null id only on
+*synthesized server responses* when the server couldn't detect the
+request's id (e.g. parse errors). The validator emits null in those
+synthesized responses (see "`id`-echo policy") but rejects incoming
+envelopes with null id. This matches rmcp's accepted grammar and
+upholds the "validator forwards only what rmcp can parse" promise.
 
 | Input shape | Decision | Wire response | Notes |
 |---|---|---|---|
@@ -466,10 +517,13 @@ would be a feature regression, not just a test gap.
 | Object missing `jsonrpc` | Reject | `-32600`, `id: <echoed or null>` | The #277 minimal failing case. |
 | Object with `jsonrpc` ≠ `"2.0"` | Reject | `-32600`, `id: <echoed or null>` | E.g. `"1.0"`, `2.0` (number), `"2.00"`. |
 | Object with `id` field of disallowed type (object/array/boolean) | Reject | `-32600`, `id: null` | Per JSON-RPC §5: "if there was an error in detecting the id … it MUST be Null." |
-| **Has `method` (string)**, no `result`, no `error` | Forward | — | Request (if `id`) or Notification (if no `id`). |
+| Object with `id: null` | Reject | `-32600`, `id: null` | rmcp's `RequestId` = `NumberOrString`; null isn't deserializable on Request/Response/Error. |
+| **Has `method` (string)** with `id: string|number`, no `result`, no `error` | Forward | — | Request. |
+| **Has `method` (string)** with no `id`, no `result`, no `error` | Forward | — | Notification. |
 | **Has `method` (non-string)** | Reject | `-32600`, `id: <echoed or null>` | |
-| **Has `result`** (and `id` present + valid), no `method`, no `error` | Forward | — | Client Response to a server-initiated request. |
-| **Has `error`** (and `id` present + valid), no `method`, no `result` | Forward | — | Client Error response to a server-initiated request. |
+| **Has `result`** with `id: string|number`, no `method`, no `error` | Forward | — | Client Response to a server-initiated request. |
+| **Has `error`** with `id: string|number`, valid error object, no `method`, no `result` | Forward | — | Client Error response to a server-initiated request. |
+| **Has `error`** but error is not an object, or missing numeric `code`, or missing string `message` | Reject | `-32600`, `id: <echoed or null>` | JSON-RPC §5.1 grammar for `error`. |
 | **Has both `result` AND `error`** | Reject | `-32600`, `id: <echoed or null>` | Per JSON-RPC §5: exactly one of result/error. |
 | Has `result` or `error` but no `id` | Reject | `-32600`, `id: null` | Response/Error envelopes MUST have an `id`. |
 | Empty object (no `method`, no `result`, no `error`) | Reject | `-32600`, `id: <echoed or null>` | |
@@ -482,6 +536,20 @@ inputs that rmcp silently drops now get a `-32600`/`-32700` response.
 ### `validate()` decision logic
 
 ```rust
+/// `id` accepted by rmcp's RxJsonRpcMessage. Null is excluded
+/// because rmcp's RequestId = NumberOrString.
+fn is_forwardable_id(v: &Value) -> bool {
+    v.is_string() || v.is_number()
+}
+
+/// `error` body matches JSON-RPC §5.1: an object with numeric
+/// `code` and string `message`. `data` is optional.
+fn is_well_formed_error(v: &Value) -> bool {
+    let Some(obj) = v.as_object() else { return false; };
+    obj.get("code").is_some_and(Value::is_number)
+        && obj.get("message").is_some_and(Value::is_string)
+}
+
 fn validate(line: &str) -> ValidationOutcome {
     if line.trim().is_empty() {
         return ValidationOutcome::Skip;
@@ -497,52 +565,68 @@ fn validate(line: &str) -> ValidationOutcome {
     if obj.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
         return ValidationOutcome::Reject(invalid_request(extract_id(obj)));
     }
-    let id = obj.get("id");
-    if let Some(id) = id {
-        if !is_valid_id(id) {
-            return ValidationOutcome::Reject(invalid_request(None));
-        }
-    }
+
+    let id_present_and_valid = match obj.get("id") {
+        None => false,                                   // notification or invalid response
+        Some(v) if is_forwardable_id(v) => true,         // string|number
+        Some(_) => return ValidationOutcome::Reject(invalid_request(None)), // null/array/object/bool
+    };
 
     let method = obj.get("method");
     let result = obj.get("result");
     let error = obj.get("error");
 
     match (method, result, error) {
-        // Request or Notification
-        (Some(m), None, None) if m.is_string() => ValidationOutcome::Forward,
-        (Some(_), None, None) /* non-string method */ => {
-            ValidationOutcome::Reject(invalid_request(extract_id(obj)))
-        }
-        // Response / Error response — id MUST be present and valid
-        (None, Some(_), None) | (None, None, Some(_)) if id.is_some() => {
+        // Request: method+id, no result, no error
+        (Some(m), None, None) if m.is_string() && id_present_and_valid => {
             ValidationOutcome::Forward
         }
-        // Response without id, or empty / mixed shape
+        // Notification: method, no id, no result, no error
+        (Some(m), None, None) if m.is_string() && !id_present_and_valid => {
+            ValidationOutcome::Forward
+        }
+        // Non-string method
+        (Some(_), None, None) => ValidationOutcome::Reject(invalid_request(extract_id(obj))),
+        // Response: id+result, no method, no error
+        (None, Some(_), None) if id_present_and_valid => ValidationOutcome::Forward,
+        // Error response: id+error, no method, no result, error well-formed
+        (None, None, Some(err)) if id_present_and_valid && is_well_formed_error(err) => {
+            ValidationOutcome::Forward
+        }
+        // Catch-all: empty object, response/error without id, malformed error,
+        // both result+error, method mixed with result/error.
         _ => ValidationOutcome::Reject(invalid_request(extract_id(obj))),
     }
 }
 ```
 
 `extract_id(obj)` returns `Some(Value)` if `obj["id"]` is
-`string|number|null`, else `None` (we use `null` on the wire). The
-catch-all arm covers: empty object, both `result` and `error`, method
-mixed with result/error, and response/error without id — all single-
-line `-32600` rejections.
+`string|number`, else `None` (we use `null` on the wire — note that
+synthesized rejection envelopes can carry `id: null` per JSON-RPC §5,
+but incoming envelopes with `id: null` are rejected at the third
+check above). The catch-all arm covers: empty object, both `result`
+and `error`, method mixed with result/error, response/error without
+id, and malformed `error` bodies — all single-line `-32600` rejections.
 
 ### `id`-echo policy
 
-Decision tree for the `id` field on a rejection envelope:
+Decision tree for the `id` field on a **synthesized rejection
+envelope** (validator → wire). Note: incoming envelopes with `id: null`
+are *rejected* by the validator (see "Validation rules" — null doesn't
+deserialize on rmcp's `RequestId`), but the rejection envelope itself
+emits `id: null` per JSON-RPC §5 when the original id couldn't be
+detected:
 
 - Top-level `"id"` is a JSON string → echo as-is.
 - Top-level `"id"` is a JSON number → echo as-is.
-- Top-level `"id"` is JSON `null` → echo `null`.
+- Top-level `"id"` is JSON `null` → echo `null` (envelope rejected
+  for null id, but we preserve the spec's "couldn't detect id" path
+  by reflecting it on the wire — alternative is `null` either way).
 - Top-level `"id"` is missing → `null`.
 - Top-level `"id"` is any other shape (object, array, bool) → `null`.
 - Input not parseable as JSON → `null`.
 
-Matches `preinit.rs::synthesize_pre_init_error_envelope` and JSON-RPC §5
-exactly.
+Matches `preinit.rs::synthesize_pre_init_error_envelope` and JSON-RPC §5.
 
 ## Error envelope shapes
 
@@ -823,13 +907,41 @@ and id):
     (e.g. 2 s), record `process_end.reason: Error`, and exit
     non-zero. Pins the bounded-exit invariant for the post-init
     failure path; companion to test 20 for the post-init equivalent.
+22. `process_end_on_pre_init_bridge_error_with_open_stdin` —
+    closed-stdout harness variant for an INIT-PHASE bridge failure:
+    client sends a pre-init `ping` (rmcp accepts and queues a
+    response). The passthrough write to (closed) stdout fails
+    while rmcp is still waiting for `initialize`. **Client keeps
+    stdin open** and never sends `initialize`. The init-phase
+    `tokio::select!` (race `serve_server` against
+    `watch_for_error`) must observe the bridge error and route
+    through `shutdown_after_failure`, exit within bounded time,
+    record `process_end.reason: Error`. Pins the init-phase
+    supervisor visibility added in revision 15.
+23. `envelope_request_with_null_id_returns_invalid_request` —
+    `{"jsonrpc":"2.0","method":"tools/list","id":null}` → `-32600`
+    with `id: null`. Pins that the validator rejects null ids that
+    rmcp's `RequestId = NumberOrString` cannot deserialize — without
+    this, the envelope would pass the validator and produce an
+    inconsistent error path inside rmcp.
+24. `envelope_error_response_with_malformed_body_returns_invalid_request`
+    — `{"jsonrpc":"2.0","id":1,"error":{"code":"not-a-number"}}` →
+    `-32600` with `id: 1`. Pins the `is_well_formed_error` check
+    (`code` must be number, `message` must be string).
+25. `envelope_error_response_without_code_returns_invalid_request`
+    — `{"jsonrpc":"2.0","id":1,"error":{"message":"oops"}}` →
+    `-32600` with `id: 1`. Same `is_well_formed_error` check —
+    missing-`code` variant.
+
+Note: tests 16-17 use **non-null integer ids** (e.g. `99`) so they
+pass the validator's `is_forwardable_id` check.
 
 All tests run against the production binary via the existing
-`Harness`. Tests 12-14 use the closed-stdout harness variant added
-in `tests/support/wire/harness.rs` for #275. Tests 16-17 add small
-client-side helpers (`send_line` + bounded silence wait) reusing
-existing primitives. Tests 20 and 21 need a harness variant that
-holds stdin open after sending — small extension.
+`Harness`. Tests 12-14 and 22 use the closed-stdout harness variant
+added in `tests/support/wire/harness.rs` for #275. Tests 16-17 add
+small client-side helpers (`send_line` + bounded silence wait)
+reusing existing primitives. Tests 20-22 need a harness variant
+that holds stdin open after sending — small extension.
 
 **Unit tests** in `wire_validator.rs::tests` covering `validate()` in
 isolation, one assertion per row of the validation rules table. Pure
@@ -912,6 +1024,22 @@ this should hold by construction.
   would silently break these. Mitigation: validator forwards all
   four spec-defined envelope shapes (Request, Notification,
   Response, Error); tests 16-19 pin the inclusive forward set.
+- **Validator forwarding what rmcp can't deserialize.** The
+  validator's grammar must be a subset of rmcp's accepted grammar
+  — forwarding an envelope rmcp then rejects with a deserialization
+  error defeats the "no silent drop" promise (the result is not a
+  hang, but an inconsistent error path). Specifically: rmcp 1.5's
+  `RequestId = NumberOrString` excludes null ids. The validator
+  rejects `id: null` on incoming envelopes, restricting the forward
+  set to `id: string|number` per rmcp. Test 23 pins this.
+- **Init-phase bridge errors going unobserved.** Until rmcp returns
+  a service, the supervisor isn't being polled. A bridge `BrokenPipe`
+  during the pre-init handshake (e.g. rmcp answers a pre-init
+  `ping` and stdout breaks) would otherwise let rmcp wait
+  indefinitely for `initialize` while the validator is dead.
+  Mitigation: `rmcp::serve_server(...).await` is itself wrapped in
+  `tokio::select!` against `supervisor.watch_for_error()`; test 22
+  pins bounded exit on this path.
 
 ## Dependencies and merge plan
 
@@ -925,10 +1053,14 @@ umbrella). The implementation lands on
    recognizing all four spec envelope shapes, and the two bridge
    tasks.
 2. `main.rs` updates: transport swap, `emit_pre_init_error_envelope`
-   signature thread-through, two-phase post-init shutdown (race
-   then dispatch — `drain` on success, `shutdown_after_failure`
-   on failure), and `shutdown_after_failure` for both init-failure
-   arms (`ExpectedInitializeRequest` and `InitializeFailed`).
+   signature thread-through, init-phase race (`rmcp::serve_server`
+   future against `supervisor.watch_for_error()`), two-phase
+   post-init shutdown (race then dispatch — `drain` on success,
+   `shutdown_after_failure` on failure), and `shutdown_after_failure`
+   for both init-failure arms (`ExpectedInitializeRequest` and
+   `InitializeFailed`) plus the new init-phase bridge-error arm.
+   Local `InitOutcome` enum disambiguates init-phase failure
+   sources.
 3. `mcp_wire_proptest.rs`: `prop_filter` on `arb_envelope()` to
    exclude spec-legal notifications; un-ignore
    `prop_envelope_never_panics`. No property-body changes beyond
@@ -936,16 +1068,19 @@ umbrella). The implementation lands on
 4. Small harness extension for test 20: variant that holds stdin
    open after sending. Existing closed-stdout helpers cover
    tests 12-14 unchanged.
-5. 21 new wire-pinned tests in `mcp_wire_negative.rs`:
+5. 25 new wire-pinned tests in `mcp_wire_negative.rs`:
    - 10 for validation rules (tests 1-10)
    - 1 for pre-init ordering (test 11)
-   - 3 for closed-stdout audit semantics on both shutdown phases
+   - 3 for closed-stdout audit semantics during post-init phases
      (tests 12-14)
    - 1 fixed-case notification path (test 15)
    - 2 for Response/Error envelope forwarding (tests 16-17)
    - 2 for malformed Response/Error rejection (tests 18-19)
-   - 2 for bounded-exit with open stdin on failure paths
-     (tests 20 pre-init, 21 post-init)
+   - 3 for bounded-exit with open stdin on failure paths
+     (tests 20 pre-init init-failure, 21 post-init service error,
+     22 init-phase bridge error)
+   - 3 for rmcp-grammar id and error-body matching
+     (test 23 null id, tests 24-25 malformed error body)
 6. Mirror docs (this spec, committed before implementation starts).
 
 Once green, PR #278 comes out of draft and goes to review with all
