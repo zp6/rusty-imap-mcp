@@ -283,18 +283,25 @@ impl ValidatorSupervisor {
     /// **Do not call on init-failure paths** — the inbound bridge
     /// only exits on real stdin EOF, but a client may legitimately
     /// keep stdin open while waiting for the error response,
-    /// causing this to hang. Use `shutdown_after_init_failure`
+    /// causing this to hang. Use `shutdown_after_failure`
     /// instead.
     pub async fn drain(self) -> io::Result<()>;
 
-    /// Init-failure shutdown. Aborts the inbound bridge
-    /// (the client may keep stdin open after an init error;
-    /// without abort, we'd block forever waiting for EOF), then
-    /// awaits the outbound bridge to drain rmcp's queued init
-    /// error envelope plus any validator-synthesized rejections.
-    /// Returns the first error from the outbound path; inbound
-    /// cancellation is expected and ignored.
-    pub async fn shutdown_after_init_failure(self) -> io::Result<()>;
+    /// Failure-path shutdown. Aborts the inbound bridge (the
+    /// client may keep stdin open while waiting for an error
+    /// response; without abort, we'd block forever in `read_until`
+    /// on real stdin), then awaits the outbound bridge to drain
+    /// rmcp's queued error envelope plus any validator-synthesized
+    /// rejections. Returns the first error from the outbound path;
+    /// inbound cancellation is expected and ignored.
+    ///
+    /// Used on EVERY failure path — pre-init `ExpectedInitializeRequest`,
+    /// `InitializeFailed`, post-init bridge race error, and post-init
+    /// `service.waiting()` error. The only path that uses `drain` is
+    /// the clean post-init success, where `service.waiting()`
+    /// returning `Ok` already implies the inbound bridge exited
+    /// (rmcp saw EOF on its read).
+    pub async fn shutdown_after_failure(self) -> io::Result<()>;
 }
 ```
 
@@ -311,7 +318,7 @@ let service = match Box::pin(rmcp::serve_server(mcp_server, validated.transport)
         // Init-failure shutdown: abort inbound (client may hold
         // stdin open), drain outbound (our pre-init envelope plus
         // any rmcp-queued frames must flush).
-        return match validated.supervisor.shutdown_after_init_failure().await {
+        return match validated.supervisor.shutdown_after_failure().await {
             Ok(()) => Ok(()),
             Err(e) => Err(anyhow!("validator bridge after pre-init: {e}")),
         };
@@ -322,7 +329,7 @@ let service = match Box::pin(rmcp::serve_server(mcp_server, validated.transport)
         // #276) into the outbound duplex before returning. Drain
         // outbound so it actually reaches stdout; failures during
         // drain promote a handled rejection to Error.
-        return match validated.supervisor.shutdown_after_init_failure().await {
+        return match validated.supervisor.shutdown_after_failure().await {
             Ok(()) => handled,
             Err(e) => Err(anyhow!("validator bridge after init failure: {e}")),
         };
@@ -350,26 +357,50 @@ let service_outcome: anyhow::Result<()> = tokio::select! {
     result = &mut service_fut => result.map_err(|e| anyhow!("rmcp: {e}")),
 };
 
-// Phase 2: drop service to release rmcp's transport ends, then drain.
+// Phase 2: drop service to release rmcp's transport ends, then
+// shut down the supervisor. Dispatch on service_outcome — clean
+// success can wait for natural EOF on both bridges; any failure
+// must abort inbound first because the client may keep stdin open.
 drop(service_fut);
-let drain_outcome = supervisor
-    .drain()
-    .await
-    .map_err(|e| anyhow!("validator bridge drain: {e}"));
+let shutdown_outcome = match &service_outcome {
+    Ok(()) => {
+        // service.waiting() Ok implies rmcp saw EOF on its read,
+        // which implies the inbound bridge already exited. drain()
+        // resolves inbound instantly and waits for outbound to
+        // flush any queued frames.
+        supervisor.drain().await
+    }
+    Err(_) => {
+        // Any failure path: inbound may still be blocked in
+        // `read_until` on real stdin. Abort before awaiting
+        // outbound drain.
+        supervisor.shutdown_after_failure().await
+    }
+}
+.map_err(|e| anyhow!("validator bridge shutdown: {e}"));
 
-let mcp_outcome = match (service_outcome, drain_outcome) {
+let mcp_outcome = match (service_outcome, shutdown_outcome) {
     (Err(e), _) => Err(e),         // race-phase failure dominates
-    (Ok(()), Err(e)) => Err(e),    // drain-phase failure surfaces
+    (Ok(()), Err(e)) => Err(e),    // shutdown-phase failure surfaces
     (Ok(()), Ok(())) => Ok(()),
 };
 ```
 
 The `biased` discriminator gives the supervisor arm priority on
-race-phase ties; the drain phase is unconditional after the race
+race-phase ties; the shutdown phase is unconditional after the race
 resolves so a final-write `BrokenPipe` always lands in
 `mcp_outcome: Err` → `process_end.reason: Error`. Any audit work
 still flushes via the existing `drainer_handle.await` further down
 in `main.rs::run`.
+
+**Why two shutdown methods.** `drain()` is the natural success path —
+it waits for both bridges to exit, which on `service.waiting() == Ok`
+is essentially immediate. `shutdown_after_failure()` aborts the
+inbound bridge first because a client legitimately keeping stdin open
+after a server error would otherwise cause `drain()` to hang forever
+in inbound's `read_until`. Tests 12-14 (race-phase and drain-phase
+write failures), 20 (init-failure with open stdin), and 21 (post-init
+failure with open stdin) pin the bounded-exit invariant on all paths.
 
 ### Pre-init shares the validator stdout
 
@@ -778,17 +809,27 @@ and id):
 20. `init_failure_with_open_stdin_returns_promptly` — client sends
     `initialize` with an unsupported `protocolVersion` (rmcp emits
     `-32602`), then **does NOT close stdin**. The server must
-    `shutdown_after_init_failure`, write the `-32602` envelope,
-    abort inbound, drain outbound, and exit within a bounded
-    timeout (e.g. 2 s). Pins that the drain path does not require
+    `shutdown_after_failure`, write the `-32602` envelope, abort
+    inbound, drain outbound, and exit within a bounded timeout
+    (e.g. 2 s). Pins that the failure-shutdown path does not require
     real stdin EOF.
+21. `process_end_on_post_init_service_error_with_open_stdin` —
+    closed-stdout harness variant for a POST-init failure: client
+    completes `initialize`, sends a valid `tools/list`, rmcp's
+    response write into the passthrough fails (closed stdout) →
+    `service.waiting()` returns Err. **Client keeps stdin open**
+    and sends nothing more. The server must `shutdown_after_failure`
+    (abort inbound, drain outbound), exit within a bounded timeout
+    (e.g. 2 s), record `process_end.reason: Error`, and exit
+    non-zero. Pins the bounded-exit invariant for the post-init
+    failure path; companion to test 20 for the post-init equivalent.
 
 All tests run against the production binary via the existing
 `Harness`. Tests 12-14 use the closed-stdout harness variant added
 in `tests/support/wire/harness.rs` for #275. Tests 16-17 add small
 client-side helpers (`send_line` + bounded silence wait) reusing
-existing primitives. Test 20 needs a harness variant that holds
-stdin open after sending — small extension.
+existing primitives. Tests 20 and 21 need a harness variant that
+holds stdin open after sending — small extension.
 
 **Unit tests** in `wire_validator.rs::tests` covering `validate()` in
 isolation, one assertion per row of the validation rules table. Pure
@@ -854,11 +895,16 @@ this should hold by construction.
   standard); test 15 exercises both ends explicitly. The
   alternative (in-test liveness probe) was rejected on nightly-
   budget grounds (~104 min at 100k cases) and complexity.
-- **Init-failure shutdown hang.** A naïve `drain()` after init
-  failure would wait for real stdin EOF; clients legitimately keep
-  stdin open while waiting for the error response. Mitigation:
-  `shutdown_after_init_failure` aborts the inbound bridge before
-  awaiting the outbound; test 20 pins prompt exit with stdin open.
+- **Shutdown hang on open stdin.** A naïve `drain()` waits for both
+  bridge tasks; the inbound bridge only exits on real stdin EOF.
+  A client legitimately keeping stdin open while waiting for an
+  error response (pre-init OR post-init failure) would otherwise
+  cause the server to hang forever instead of exiting with
+  `process_end.reason: Error`. Mitigation: every failure path
+  routes through `shutdown_after_failure` (abort inbound, drain
+  outbound); only the clean post-init success path uses plain
+  `drain`. Tests 20 (pre-init) and 21 (post-init) pin bounded exit
+  with stdin held open by the client.
 - **Validator rejecting server-initiated flow responses.** MCP's
   sampling and similar flows send a server-initiated request and
   expect a client-shaped Response or Error envelope back. An
@@ -874,14 +920,15 @@ umbrella). The implementation lands on
 `feature/issue-266-mcp-fuzzing` directly, in one diff that includes:
 
 1. `wire_validator.rs` with `ValidatedStdio` / `ValidatorSupervisor`
-   (`watch_for_error` + `drain` + `shutdown_after_init_failure`),
-   the `validate()` pure function recognizing all four spec
-   envelope shapes, and the two bridge tasks.
+   (three methods: `watch_for_error`, `drain`,
+   `shutdown_after_failure`), the `validate()` pure function
+   recognizing all four spec envelope shapes, and the two bridge
+   tasks.
 2. `main.rs` updates: transport swap, `emit_pre_init_error_envelope`
-   signature thread-through, two-phase shutdown for the
-   post-init path (race + drain), and `shutdown_after_init_failure`
-   for both init-failure arms (`ExpectedInitializeRequest` and
-   `InitializeFailed`).
+   signature thread-through, two-phase post-init shutdown (race
+   then dispatch — `drain` on success, `shutdown_after_failure`
+   on failure), and `shutdown_after_failure` for both init-failure
+   arms (`ExpectedInitializeRequest` and `InitializeFailed`).
 3. `mcp_wire_proptest.rs`: `prop_filter` on `arb_envelope()` to
    exclude spec-legal notifications; un-ignore
    `prop_envelope_never_panics`. No property-body changes beyond
@@ -889,7 +936,7 @@ umbrella). The implementation lands on
 4. Small harness extension for test 20: variant that holds stdin
    open after sending. Existing closed-stdout helpers cover
    tests 12-14 unchanged.
-5. 20 new wire-pinned tests in `mcp_wire_negative.rs`:
+5. 21 new wire-pinned tests in `mcp_wire_negative.rs`:
    - 10 for validation rules (tests 1-10)
    - 1 for pre-init ordering (test 11)
    - 3 for closed-stdout audit semantics on both shutdown phases
@@ -897,7 +944,8 @@ umbrella). The implementation lands on
    - 1 fixed-case notification path (test 15)
    - 2 for Response/Error envelope forwarding (tests 16-17)
    - 2 for malformed Response/Error rejection (tests 18-19)
-   - 1 for init-failure-with-open-stdin shutdown (test 20)
+   - 2 for bounded-exit with open stdin on failure paths
+     (tests 20 pre-init, 21 post-init)
 6. Mirror docs (this spec, committed before implementation starts).
 
 Once green, PR #278 comes out of draft and goes to review with all
